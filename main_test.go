@@ -325,4 +325,3 @@ func TestRemoveSocketIfSameRefusesReplacement(t *testing.T) {
 		t.Fatalf("replacement file was changed: data=%q err=%v", b, err)
 	}
 }
-
