@@ -616,7 +616,7 @@ dig +tcp @127.0.0.1 -p 5355 example.com A +time=5 +tries=1
 | `address already in use` | Порт UDP/TCP 5355 или HTTP 18765 занят; выберите свободные loopback порты в config и обновите outbound/manifest health target соответственно |
 | `DoH server ... has no upstream/bootstrap entry` | Для нового hostname добавьте объект `upstreams` с `id` и `name` |
 | `group ... references DoH server ... missing from doh-servers.txt` | Убедитесь, что URL с таким hostname есть в `doh-servers.txt` |
-| `all upstreams failed` | Проверьте DNS/HTTPS egress VPS, bootstrap IP, URL/путь DoH, TLS и доступность провайдера |
+| `all upstreams failed` | Проверьте доступность `bootstrap_resolvers` по UDP/TCP 53, HTTPS egress VPS, резервные `bootstrap_ips` (если заданы), URL/путь DoH, TLS и доступность провайдера |
 | HTTP `401/403` на контрольном URL | Может быть блокировка/авторизация; задайте правильный `expected_status` или `required:false`, если это не индикатор полного отказа |
 | `/healthz` OK, но DNS не отвечает | Смотрите `/status`, `plugin.log`, занят ли порт, совпадает ли `rewritePort` Xray с `dns_listen_udp/tcp` |
 | DNS через Xray возвращает пустой ответ для TXT/MX/HTTPS | Проверьте наличие последнего `{ "action": "direct" }` в `dns-out.settings.rules` |
