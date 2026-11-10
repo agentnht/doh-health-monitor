@@ -848,7 +848,7 @@ func (b *bootstrapResolver) bestIP(ctx context.Context, force bool, timeout time
 		return "", resolveErr
 	}
 	b.mu.Lock()
-	usingFallback := resolveErr != nil && len(b.ips) == 0 && len(b.fallback) > 0
+	usingFallback := len(b.ips) == 0 && len(b.fallback) > 0 && (resolveErr != nil || b.refreshed.IsZero())
 	source := "dns"
 	if usingFallback {
 		source = "configured_fallback"
