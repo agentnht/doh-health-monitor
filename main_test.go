@@ -119,13 +119,31 @@ func TestErrorResponse(t *testing.T) {
 	}
 }
 
-func TestBootstrapAddressIsIP(t *testing.T) {
-	for _, ip := range defaultConfig().Upstreams {
-		for _, raw := range ip.BootstrapIPs {
-			if net.ParseIP(raw) == nil {
-				t.Fatalf("invalid bootstrap IP %q", raw)
-			}
+func TestDefaultConfigUsesAutomaticBootstrap(t *testing.T) {
+	c := defaultConfig()
+	if len(c.BootstrapResolvers) == 0 {
+		t.Fatal("expected independent bootstrap DNS resolvers")
+	}
+	for _, raw := range c.BootstrapResolvers {
+		if net.ParseIP(raw) == nil {
+			t.Fatalf("invalid bootstrap resolver IP %q", raw)
 		}
+	}
+	for _, upstream := range c.Upstreams {
+		if len(upstream.BootstrapIPs) != 0 {
+			t.Errorf("upstream %s should use automatic bootstrap by default", upstream.ID)
+		}
+	}
+	if err := validateConfig(c); err != nil {
+		t.Fatalf("automatic-bootstrap default config invalid: %v", err)
+	}
+}
+
+func TestLegacyBootstrapIPsRemainValidAsFallback(t *testing.T) {
+	c := defaultConfig()
+	c.Upstreams[0].BootstrapIPs = []string{"203.0.113.53"}
+	if err := validateConfig(c); err != nil {
+		t.Fatalf("legacy bootstrap_ips fallback rejected: %v", err)
 	}
 }
 
