@@ -1,7 +1,7 @@
 {
   "id": "doh-health-monitor",
   "name": "DoH DNS Proxy & Health Monitor",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "apiVersion": 1,
   "type": "sidecar",
   "entrypoint": "bin/doh-health-monitor",
