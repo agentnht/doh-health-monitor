@@ -29,7 +29,7 @@ import (
 
 const (
 	pluginID      = "doh-health-monitor"
-	pluginVersion = "1.4.0"
+	pluginVersion = "1.5.0"
 	maxDNSMessage = 65535
 	maxHTTPBody   = 2 << 20
 )
@@ -117,6 +117,7 @@ type bootstrapResolver struct {
 	mu         sync.Mutex
 	ips        []string
 	refreshed  time.Time
+	lastAttempt time.Time
 	refreshFor time.Duration
 	idx        atomic.Uint64
 }
@@ -344,7 +345,7 @@ func loadConfig(path string) (Config, error) {
 		if e = os.WriteFile(path, append(b, '\n'), 0600); e != nil {
 			return Config{}, fmt.Errorf("create default config: %w", e)
 		}
-		logLine("WARN", "CONFIG_TEMPLATE_CREATED path=%s; review domain groups and bootstrap IPs", path)
+		logLine("WARN", "CONFIG_TEMPLATE_CREATED path=%s; review domain groups and bootstrap_resolvers", path)
 	}
 	b, e := os.ReadFile(path)
 	if e != nil {
@@ -616,6 +617,11 @@ func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if !force && len(b.ips) > 0 && time.Since(b.refreshed) < b.refreshFor { return append([]string(nil), b.ips...), nil }
+	if !force && time.Since(b.lastAttempt) < time.Minute {
+		if len(b.ips) > 0 { return append([]string(nil), b.ips...), nil }
+		if len(b.fallback) > 0 { return append([]string(nil), b.fallback...), nil }
+	}
+	b.lastAttempt = time.Now()
 	resolver := &net.Resolver{PreferGo: true, StrictErrors: false, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
 		var last error
 		for _, server := range b.resolvers {
