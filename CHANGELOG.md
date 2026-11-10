@@ -1,10 +1,6 @@
 ﻿# Changelog
 
-## [1.3.0]
-
-- Initial tracked release: UDP/TCP DNS proxy with DoH upstreams, health monitoring, `/healthz` and `/status`, optional Gemini API mode.
-
-## [1.4.0]
+ ## [1.4.0]
 
 ### Security
 - Strengthened OIDC issuer and discovery URL validation.
@@ -21,3 +17,8 @@
 - Clarified LucX-UI event handling.
 - Removed legacy resolver references.
 - Clarified rollback and data-directory removal behavior.
+
+
+## [1.3.0]
+
+- Initial tracked release: UDP/TCP DNS proxy with DoH upstreams, health monitoring, `/healthz` and `/status`, optional Gemini API mode.
