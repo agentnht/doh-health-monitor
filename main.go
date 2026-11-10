@@ -768,6 +768,7 @@ func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string
 	b.lastAttempt = time.Now()
 	ips := make([]string, 0, 8)
 	seen := map[string]bool{}
+	resolvedBy := ""
 	var err error
 	for _, server := range b.resolvers {
 		lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -789,6 +790,7 @@ func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string
 			}
 			if len(ips) > 0 {
 				err = nil
+				resolvedBy = server
 				break
 			}
 		}
@@ -802,7 +804,7 @@ func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string
 	}
 	if len(ips) > 0 {
 		b.ips = ips
-		b.resolvedBy = server
+		b.resolvedBy = resolvedBy
 		b.refreshed = time.Now()
 		return append([]string(nil), ips...), nil
 	}
