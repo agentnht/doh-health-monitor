@@ -59,7 +59,7 @@ func TestDNSQueryAndAResponse(t *testing.T) {
 func TestCacheTTLAndTransactionID(t *testing.T) {
 	q := makeDNSQuery("cache.example", 1)
 	resp := testAResponse(q, 90)
-	c := CacheConfig{Enabled: true, MinTTL: 1, MaxTTL: 120, NegativeTTL: 10, MaxEntries: 10}
+	c := CacheConfig{Enabled: true, MinTTL: 1, MaxTTL: 120, NegativeTTL: 10, MaxEntries: 10, MaxBytes: 4096}
 	r := &Runtime{cache: map[string]cacheItem{}}
 	key := cacheKey(q)
 	r.cachePut(key, resp, c)
@@ -81,8 +81,124 @@ func TestCacheTTLAndTransactionID(t *testing.T) {
 }
 
 func TestDefaultConfigValid(t *testing.T) {
-	if err := validateConfig(defaultConfig()); err != nil {
+	c := defaultConfig()
+	if err := validateConfig(c); err != nil {
 		t.Fatal(err)
+	}
+	if c.Health.IntervalSeconds != 25*60 {
+		t.Fatalf("health interval=%d, want 1500 seconds", c.Health.IntervalSeconds)
+	}
+	if c.Health.SuccessThreshold != 1 {
+		t.Fatalf("success threshold=%d, want one successful check", c.Health.SuccessThreshold)
+	}
+	if c.Health.FailureThreshold != 3 {
+		t.Fatalf("failure threshold=%d, want three consecutive failures", c.Health.FailureThreshold)
+	}
+}
+
+
+func TestCacheRejectsZeroEntryLimitWhenEnabled(t *testing.T) {
+	c := defaultConfig()
+	c.Cache.MaxEntries = 0
+	if err := validateConfig(c); err == nil {
+		t.Fatal("enabled cache with max_entries=0 must be rejected")
+	}
+}
+
+func TestCacheFIFOAndByteLimit(t *testing.T) {
+	c := CacheConfig{Enabled: true, MinTTL: 1, MaxTTL: 120, NegativeTTL: 10, MaxEntries: 10, MaxBytes: 120}
+	r := &Runtime{cache: map[string]cacheItem{}}
+	q1 := makeDNSQuery("one.example", 1)
+	q2 := makeDNSQuery("two.example", 1)
+	resp1 := testAResponse(q1, 60)
+	resp2 := testAResponse(q2, 60)
+	cost1 := len(cacheKey(q1)) + len(resp1)
+	c.MaxBytes = cost1 + 1
+
+	r.cachePut(cacheKey(q1), resp1, c)
+	r.cachePut(cacheKey(q2), resp2, c)
+	entries, used := r.cacheStats()
+	if entries > c.MaxEntries || used > c.MaxBytes {
+		t.Fatalf("cache limits exceeded: entries=%d bytes=%d", entries, used)
+	}
+	if entries != 1 {
+		t.Fatalf("entries=%d, want one after byte-cap eviction", entries)
+	}
+	if _, ok := r.cacheGet(cacheKey(q1), packetID(q1)); ok {
+		t.Fatal("oldest entry should have been evicted")
+	}
+	if _, ok := r.cacheGet(cacheKey(q2), packetID(q2)); !ok {
+		t.Fatal("newest cache entry should remain")
+	}
+}
+
+func TestInitHealthPrunesRemovedUpstreams(t *testing.T) {
+	s := &Snapshot{
+		groups: map[string]Group{"google": {ID: "google", Upstreams: []string{"current"}}},
+		upstreams: map[string]*UpstreamRuntime{"current": {}},
+	}
+	r := &Runtime{
+		health: map[string]map[string]HealthEntry{
+			"google": {"current": {State: "up"}, "removed": {State: "down"}},
+			"old-group": {"stale": {State: "down"}},
+		},
+		active: map[string]string{"google": "current", "old-group": "stale"},
+		lastGemini: map[string]time.Time{"current": time.Now(), "removed": time.Now()},
+	}
+	r.initHealth(s)
+	if _, ok := r.health["google"]["removed"]; ok {
+		t.Fatal("removed upstream health entry was not pruned")
+	}
+	if _, ok := r.health["old-group"]; ok {
+		t.Fatal("removed group health state was not pruned")
+	}
+	if _, ok := r.lastGemini["removed"]; ok {
+		t.Fatal("removed upstream Gemini timestamp was not pruned")
+	}
+	if r.active["google"] != "current" {
+		t.Fatalf("active=%q, want current", r.active["google"])
+	}
+}
+
+func TestOneSuccessIsEnoughToQualifyUpstream(t *testing.T) {
+	r := &Runtime{health: map[string]map[string]HealthEntry{}}
+	r.updateHealth("google", "u1", true, time.Millisecond, "", 200, "", nil, HealthConfig{
+		SuccessThreshold: 1, FailureThreshold: 3,
+	})
+	if got := r.health["google"]["u1"].State; got != "up" {
+		t.Fatalf("state=%q, want up after one successful check", got)
+	}
+}
+
+func TestPinnedHTTPClientKeepsTLSVerificationAndBoundsIdleConnections(t *testing.T) {
+	client := newPinnedHTTPClient("192.0.2.1", "resolver.example", time.Second)
+	tr, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("expected an HTTP transport")
+	}
+	if tr.TLSClientConfig == nil || tr.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("TLS certificate verification must remain enabled")
+	}
+	if tr.TLSClientConfig.MinVersion < 0x0303 {
+		t.Fatalf("TLS minimum=%d, want TLS 1.2 or newer", tr.TLSClientConfig.MinVersion)
+	}
+	if tr.MaxIdleConnsPerHost != 1 || tr.IdleConnTimeout <= 0 {
+		t.Fatalf("idle transport limits missing: per-host=%d timeout=%s", tr.MaxIdleConnsPerHost, tr.IdleConnTimeout)
+	}
+	client.CloseIdleConnections()
+}
+
+func BenchmarkCacheHit(b *testing.B) {
+	q := makeDNSQuery("benchmark.example", 1)
+	resp := testAResponse(q, 60)
+	cfg := CacheConfig{Enabled: true, MinTTL: 1, MaxTTL: 120, NegativeTTL: 10, MaxEntries: 1000, MaxBytes: 1 << 20}
+	r := &Runtime{cache: map[string]cacheItem{}}
+	key := cacheKey(q)
+	r.cachePut(key, resp, cfg)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		r.cacheGet(key, uint16(i))
 	}
 }
 
