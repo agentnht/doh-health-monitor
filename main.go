@@ -468,7 +468,7 @@ func defaultConfig() Config {
 				{Domain: "accounts.google.com", HTTPURL: "https://accounts.google.com/.well-known/openid-configuration", Required: true, ExpectedStatus: []int{200}, VerifyOIDC: true},
 				{Domain: "ssl.gstatic.com", HTTPURL: "https://ssl.gstatic.com/", Required: false, ExpectedStatus: []int{200, 301, 302, 403}},
 				{Domain: "www.googleapis.com", HTTPURL: "https://www.googleapis.com/", Required: false, ExpectedStatus: []int{200, 301, 302, 403}},
-			},
+			}},
 		},
 		GeminiAPI: GeminiAPIConfig{Enabled: false, RequiredForGroup: false, GroupID: "google", Model: "gemini-3.8-flash", IntervalSeconds: 1800, KeyFile: "gemini_api_key", Prompt: "Reply with exactly OK.", MaxOutputTokens: 8},
 	}
