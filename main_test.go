@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -77,6 +78,16 @@ func TestCacheTTLAndTransactionID(t *testing.T) {
 	}
 	if binary.BigEndian.Uint32(got[pos[0]:pos[0]+4]) > 90 {
 		t.Fatal("TTL increased")
+	}
+}
+
+func TestTimevalNanoseconds(t *testing.T) {
+	got := timevalNanoseconds(syscall.Timeval{Sec: 2, Usec: 250000})
+	if want := uint64(2250000000); got != want {
+		t.Fatalf("nanoseconds=%d, want %d", got, want)
+	}
+	if got := timevalNanoseconds(syscall.Timeval{Sec: -1, Usec: 0}); got != 0 {
+		t.Fatalf("negative timeval should return 0, got %d", got)
 	}
 }
 
