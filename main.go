@@ -240,6 +240,8 @@ type Status struct {
 	HeapAllocBytes uint64                          `json:"heap_alloc_bytes"`
 	HeapInuseBytes uint64                          `json:"heap_inuse_bytes"`
 	HeapSysBytes   uint64                          `json:"heap_sys_bytes"`
+	CPUUserNS      uint64                          `json:"cpu_user_ns"`
+	CPUSystemNS    uint64                          `json:"cpu_system_ns"`
 	LastReload   time.Time                       `json:"last_reload,omitempty"`
 	LastError    string                          `json:"last_error,omitempty"`
 }
@@ -2199,6 +2201,11 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 		HeapAllocBytes: mem.HeapAlloc, HeapInuseBytes: mem.HeapInuse, HeapSysBytes: mem.HeapSys,
 		GeminiAPI: "disabled",
 	}
+	var cpu syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &cpu); err == nil {
+		out.CPUUserNS = timevalNanoseconds(cpu.Utime)
+		out.CPUSystemNS = timevalNanoseconds(cpu.Stime)
+	}
 	r.mu.RLock()
 	for gid, g := range s.groups {
 		gs := GroupStatus{ActiveUpstream: r.active[gid], Upstreams: map[string]HealthEntry{}}
@@ -2227,6 +2234,13 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 }
 
 var startedAt = time.Now().UTC()
+
+func timevalNanoseconds(tv syscall.Timeval) uint64 {
+	if tv.Sec < 0 || tv.Usec < 0 {
+		return 0
+	}
+	return uint64(tv.Sec)*uint64(time.Second) + uint64(tv.Usec)*uint64(time.Microsecond)
+}
 
 func (r *Runtime) cacheStats() (int, int) {
 	r.cacheMu.Lock()
