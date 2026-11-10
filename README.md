@@ -247,6 +247,8 @@ https://dns.zapret.moe/dns-query
 
 Путь URL может быть другим, если провайдер его требует, но схема должна быть `https://`. Для каждого hostname должен быть соответствующий объект в `upstreams`.
 
+При обновлении уже установленного плагина существующие `config.json` и `doh-servers.txt` сохраняются: новые значения по умолчанию автоматически применяются только при создании файлов. Для существующей установки нужно отдельно обновить оба файла, указав новые upstream ID во всех `groups[].upstreams`.
+
 **Приоритет попыток задаётся в `groups[].upstreams`**, а не порядком строк файла. `doh-servers.txt` лишь задаёт URL для upstream ID. Изменение файла применяется автоматически за `reload_interval_seconds`.
 
 Чтобы добавить провайдера:
@@ -385,14 +387,11 @@ https://dns.zapret.moe/dns-query
 
 ### 6.2 Встроенный DNS Xray
 
-Пример `dns` для FakeDNS whitelist и локального DoH fallback самого Xray (для внутренних разрешений имён Xray):
+Пример `dns` для FakeDNS whitelist и локального DNS fallback через sidecar (для внутренних разрешений имён Xray):
 
 ```json
 "dns": {
   "tag": "dns_inbound",
-  "hosts": {
-    "dns.google": ["8.8.8.8", "8.8.4.4"]
-  },
   "servers": [
     {
       "address": "fakedns",
@@ -427,7 +426,7 @@ https://dns.zapret.moe/dns-query
       ],
       "skipFallback": true
     },
-    "https+local://dns.google/dns-query"
+    "tcp://127.0.0.1:5355"
   ],
   "queryStrategy": "UseIP",
   "disableCache": false,
@@ -440,7 +439,7 @@ https://dns.zapret.moe/dns-query
 
 Список доменов в `fakedns` должен отражать только те группы, у которых `fake_dns:true`. Если меняете `fake_dns` или `domains` в `config.json`, синхронно обновите этот список и `dns-out.settings.rules` в Xray, затем один раз перезапустите Xray. Это изменение политики FakeDNS, не обычное переключение DoH.
 
-Fallback `https+local://dns.google/dns-query` — встроенный DNS upstream Xray для его собственных разрешений; он не выбирается монитором. `hosts` для `dns.google` задан, чтобы bootstrap hostname Xray DoH не зависел от того же DNS-запроса.
+Последний сервер `tcp://127.0.0.1:5355` направляет внутренние DNS-запросы Xray в локальный sidecar. Это не отдельный резервный DNS-провайдер: sidecar сам использует выбранные DoH proxy upstream. Его bootstrap-адреса разрешаются напрямую через IP из `bootstrap_resolvers`, поэтому DNS-петля не возникает.
 
 ### 6.3 DNS outbound Xray
 
