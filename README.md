@@ -439,7 +439,7 @@ https://dns.zapret.moe/dns-query
 
 Список доменов в `fakedns` должен отражать только те группы, у которых `fake_dns:true`. Если меняете `fake_dns` или `domains` в `config.json`, синхронно обновите этот список и `dns-out.settings.rules` в Xray, затем один раз перезапустите Xray. Это изменение политики FakeDNS, не обычное переключение DoH.
 
-Последний сервер `tcp://127.0.0.1:5355` направляет внутренние DNS-запросы Xray в локальный sidecar. Это не отдельный резервный DNS-провайдер: sidecar сам использует выбранные DoH proxy upstream. Его bootstrap-адреса разрешаются напрямую через IP из `bootstrap_resolvers`, поэтому DNS-петля не возникает.
+Последний сервер `tcp://127.0.0.1:5355` направляет внутренние DNS-запросы Xray в локальный sidecar. Это не отдельный резервный DNS-провайдер: sidecar сам использует выбранные DoH proxy upstream. Его bootstrap-адреса разрешаются напрямую через IP из `bootstrap_resolvers`, поэтому DNS-петля не возникает. Схема `tcp://host:port` означает DNS-over-TCP в Xray; подробности — в [официальной документации Xray](https://xtls.github.io/ru/config/dns.html).
 
 ### 6.3 DNS outbound Xray
 
