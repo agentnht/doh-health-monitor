@@ -445,7 +445,6 @@ func defaultConfig() Config {
 			{ID: "google", FakeDNS: true, Domains: []string{"google.com", "googleapis.com", "gstatic.com", "googleusercontent.com", "google.org", "googleadservices.com", "google-analytics.com", "gemini.google.com", "generativelanguage.googleapis.com", "clients6.google.com", "jnn-pa.googleapis.com", "waa-pa.clients6.google.com"}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{
 				{Domain: "gemini.google.com", HTTPURL: "https://gemini.google.com/robots.txt", Required: true, ExpectedStatus: []int{200}},
 				{Domain: "accounts.google.com", HTTPURL: "https://accounts.google.com/.well-known/openid-configuration", Required: true, ExpectedStatus: []int{200}, VerifyOIDC: true},
-				{Domain: "connectivitycheck.gstatic.com", HTTPURL: "https://connectivitycheck.gstatic.com/generate_204", Required: true, ExpectedStatus: []int{204}},
 				{Domain: "aistudio.google.com", Required: false},
 				{Domain: "alkalimakersuite-pa.clients6.google.com", Required: false},
 				{Domain: "apis.google.com", Required: false},
