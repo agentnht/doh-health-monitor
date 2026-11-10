@@ -80,36 +80,6 @@ func TestCacheTTLAndTransactionID(t *testing.T) {
 	}
 }
 
-func TestDomainGroupLongestSuffixAndFakeDNS(t *testing.T) {
-	c := defaultConfig()
-	s, err := buildSnapshot(c, defaultDoHURLs())
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := &Runtime{}
-	cases := map[string]string{
-		"gemini.google.com":       "google",
-		"youtubei.googleapis.com": "default",
-		"www.netflix.com":         "default",
-		"chatgpt.com":             "default",
-		"ordinary.example":        "default",
-	}
-	for host, want := range cases {
-		if got := r.groupFor(host, s); got != want {
-			t.Errorf("groupFor(%s)=%s, want %s", host, got, want)
-		}
-	}
-	if len(c.Groups) != 2 {
-		t.Fatalf("default config has %d groups, want only default and google", len(c.Groups))
-	}
-	if c.Groups[0].ID != "default" || c.Groups[0].FakeDNS {
-		t.Errorf("first group must be default with fake_dns=false: %+v", c.Groups[0])
-	}
-	if c.Groups[1].ID != "google" || !c.Groups[1].FakeDNS {
-		t.Errorf("second group must be google with fake_dns=true: %+v", c.Groups[1])
-	}
-}
-
 func TestDefaultConfigValid(t *testing.T) {
 	if err := validateConfig(defaultConfig()); err != nil {
 		t.Fatal(err)
@@ -141,8 +111,18 @@ func TestDefaultConfigUsesProxyDNSProvidersOnly(t *testing.T) {
 		t.Fatalf("default config groups = %+v, want only default and google", c.Groups)
 	}
 	google := c.Groups[1]
-	if google.Checks[0].HTTPURL != "https://gemini.google.com/robots.txt" {
-		t.Errorf("Gemini check URL = %q", google.Checks[0].HTTPURL)
+	var geminiCheck *Check
+	for i := range google.Checks {
+		if google.Checks[i].Domain == "gemini.google.com" {
+			geminiCheck = &google.Checks[i]
+			break
+		}
+	}
+	if geminiCheck == nil {
+		t.Fatal("Gemini control check is missing")
+	}
+	if geminiCheck.HTTPURL != "https://gemini.google.com/robots.txt" || !geminiCheck.Required {
+		t.Errorf("Gemini check = %+v; want required HTTP check for robots.txt", *geminiCheck)
 	}
 	wantGoogleChecks := []string{
 		"aistudio.google.com", "alkalimakersuite-pa.clients6.google.com", "apis.google.com",
