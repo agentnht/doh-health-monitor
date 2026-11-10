@@ -425,8 +425,9 @@ func TestGeminiRegionBlockDetection(t *testing.T) {
 	}
 }
 
-func TestDefaultConfigUsesProxyDNSProvidersOnly(t *testing.T) {
+func TestDefaultConfigUsesSystemDNSFirstAndDoHProviders(t *testing.T) {
 	want := []string{
+		systemDNSUpstreamID,
 		"eu.geohide.ru",
 		"doh.dagami.ru",
 		"dns.comss.one",
@@ -440,6 +441,9 @@ func TestDefaultConfigUsesProxyDNSProvidersOnly(t *testing.T) {
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("default upstreams = %v, want %v", got, want)
+	}
+	if c.Upstreams[0].Type != "system" {
+		t.Fatalf("first upstream type = %q, want system", c.Upstreams[0].Type)
 	}
 	if len(c.Groups) != 1 || c.Groups[0].ID != "google" {
 		t.Fatalf("default config groups = %+v, want only google", c.Groups)
@@ -470,6 +474,205 @@ func TestDefaultConfigUsesProxyDNSProvidersOnly(t *testing.T) {
 	}
 	if accountsCheck == nil || accountsCheck.HTTPURL != "https://accounts.google.com/.well-known/openid-configuration" || !accountsCheck.Required || !accountsCheck.VerifyOIDC {
 		t.Errorf("Accounts check = %+v; want required OIDC discovery check", accountsCheck)
+	}
+}
+
+func TestNormalizeConfigAddsSystemDNSFirstToLegacyConfig(t *testing.T) {
+	c := defaultConfig()
+	filtered := c.Upstreams[:0]
+	for _, upstream := range c.Upstreams {
+		if upstream.ID != systemDNSUpstreamID {
+			filtered = append(filtered, upstream)
+		}
+	}
+	c.Upstreams = filtered
+	group := c.Groups[0]
+	group.Upstreams = group.Upstreams[1:]
+	c.Groups[0] = group
+
+	normalized, err := normalizeConfigGroups(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(normalized.Upstreams) != len(c.Upstreams)+1 {
+		t.Fatalf("upstream count = %d, want %d", len(normalized.Upstreams), len(c.Upstreams)+1)
+	}
+	if normalized.Upstreams[0].ID != systemDNSUpstreamID || normalized.Upstreams[0].Type != "system" {
+		t.Fatalf("first normalized upstream = %+v, want system DNS", normalized.Upstreams[0])
+	}
+	if normalized.Groups[0].Upstreams[0] != systemDNSUpstreamID {
+		t.Fatalf("first group upstream = %q, want %q", normalized.Groups[0].Upstreams[0], systemDNSUpstreamID)
+	}
+}
+
+func TestNormalizeConfigMovesExistingSystemDNSFirst(t *testing.T) {
+	c := defaultConfig()
+	c.Upstreams[0], c.Upstreams[1] = c.Upstreams[1], c.Upstreams[0]
+	c.Groups[0].Upstreams[0], c.Groups[0].Upstreams[1] = c.Groups[0].Upstreams[1], c.Groups[0].Upstreams[0]
+
+	normalized, err := normalizeConfigGroups(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalized.Upstreams[0].ID != systemDNSUpstreamID || normalized.Groups[0].Upstreams[0] != systemDNSUpstreamID {
+		t.Fatalf("system DNS was not moved to first priority: upstreams=%v group=%v", normalized.Upstreams, normalized.Groups[0].Upstreams)
+	}
+}
+
+func TestBuildSnapshotIncludesSystemDNSWithoutDoHURL(t *testing.T) {
+	c := defaultConfig()
+	urls := map[string]string{}
+	for _, id := range []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"} {
+		urls[id] = "https://" + id + "/dns-query"
+	}
+	snapshot, err := buildSnapshot(c, urls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	system := snapshot.upstreams[systemDNSUpstreamID]
+	if system == nil || system.systemDNS == nil {
+		t.Fatal("system DNS runtime was not created")
+	}
+	if system.client != nil || system.bootstrap != nil {
+		t.Fatal("system DNS must not use a DoH HTTP client or bootstrap resolver")
+	}
+	for _, id := range []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"} {
+		if u := snapshot.upstreams[id]; u == nil || u.client == nil || u.bootstrap == nil {
+			t.Errorf("DoH runtime %s was not built", id)
+		}
+	}
+}
+
+func TestBuildSnapshotRejectsDoHURLForSystemDNS(t *testing.T) {
+	c := defaultConfig()
+	urls := map[string]string{systemDNSUpstreamID: "https://system-dns/dns-query"}
+	if _, err := buildSnapshot(c, urls); err == nil {
+		t.Fatal("expected system DNS URL in doh-servers.txt to be rejected")
+	}
+}
+
+func TestParseSystemDNSServersPreservesOrderAndDeduplicates(t *testing.T) {
+	got := parseSystemDNSServers("# resolv.conf\nnameserver 8.8.8.8\nnameserver 2001:4860:4860::8888\nnameserver 8.8.8.8 # duplicate\nsearch example.test\n")
+	want := []string{"8.8.8.8", "2001:4860:4860::8888"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("system DNS servers = %v, want %v", got, want)
+	}
+}
+
+func TestReadSystemDNSServersRejectsEmptyResolverList(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(path, []byte("search example.test\nnameserver not-an-ip\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readSystemDNSServers(path); err == nil {
+		t.Fatal("expected invalid resolver file to be rejected")
+	}
+}
+
+func TestExchangeSystemDNSUDP(t *testing.T) {
+	server, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	done := make(chan error, 1)
+	go func() {
+		buf := make([]byte, maxDNSMessage)
+		n, addr, readErr := server.ReadFromUDP(buf)
+		if readErr != nil {
+			done <- readErr
+			return
+		}
+		_, writeErr := server.WriteToUDP(testAResponse(buf[:n], 45), addr)
+		done <- writeErr
+	}()
+
+	query := makeDNSQuery("system.example", 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	response, err := exchangeSystemDNS(ctx, server.LocalAddr().String(), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dnsRCode(response) != 0 || dnsAnswerCount(response) != 1 {
+		t.Fatalf("unexpected system DNS response: rcode=%d answers=%d", dnsRCode(response), dnsAnswerCount(response))
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExchangeSystemDNSTCPFallbackWhenUDPTruncated(t *testing.T) {
+	tcpListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcpListener.Close()
+	port := tcpListener.Addr().(*net.TCPAddr).Port
+	udpServer, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpServer.Close()
+
+	udpDone := make(chan error, 1)
+	go func() {
+		buf := make([]byte, maxDNSMessage)
+		n, addr, readErr := udpServer.ReadFromUDP(buf)
+		if readErr != nil {
+			udpDone <- readErr
+			return
+		}
+		truncated := testAResponse(buf[:n], 45)
+		flags := binary.BigEndian.Uint16(truncated[2:4]) | 0x0200
+		binary.BigEndian.PutUint16(truncated[2:4], flags)
+		_, writeErr := udpServer.WriteToUDP(truncated, addr)
+		udpDone <- writeErr
+	}()
+
+	tcpDone := make(chan error, 1)
+	go func() {
+		conn, acceptErr := tcpListener.Accept()
+		if acceptErr != nil {
+			tcpDone <- acceptErr
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+		var header [2]byte
+		if _, readErr := io.ReadFull(conn, header[:]); readErr != nil {
+			tcpDone <- readErr
+			return
+		}
+		length := int(binary.BigEndian.Uint16(header[:]))
+		query := make([]byte, length)
+		if _, readErr := io.ReadFull(conn, query); readErr != nil {
+			tcpDone <- readErr
+			return
+		}
+		response := testAResponse(query, 45)
+		frame := make([]byte, len(response)+2)
+		binary.BigEndian.PutUint16(frame[:2], uint16(len(response)))
+		copy(frame[2:], response)
+		_, writeErr := conn.Write(frame)
+		tcpDone <- writeErr
+	}()
+
+	query := makeDNSQuery("large-system-response.example", 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	response, err := exchangeSystemDNS(ctx, net.JoinHostPort("127.0.0.1", fmt.Sprint(port)), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dnsTruncated(response) || dnsAnswerCount(response) != 1 {
+		t.Fatalf("TCP fallback response is still truncated or empty: truncated=%t answers=%d", dnsTruncated(response), dnsAnswerCount(response))
+	}
+	if err := <-udpDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-tcpDone; err != nil {
+		t.Fatal(err)
 	}
 }
 
