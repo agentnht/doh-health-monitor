@@ -1,6 +1,6 @@
 # DoH DNS Proxy & Health Monitor для LucX-UI
 
-**Версия:** 1.6.0  
+**Версия:** 1.7.0  
 **Платформа:** Linux x86-64 (`amd64`), статический Go-бинарник  
 **Тип:** LucX-UI sidecar, `apiVersion: 1`  
 **Режим Gemini API:** необязательный, управляется параметром `gemini_api.enabled`
@@ -95,14 +95,14 @@ $LUCX_PLUGIN_DATA/gemini_api_key
 
 ## 4. Установка в LucX-UI
 
-1. Скачайте `doh-health-monitor-v1.6.0.zip`.
+1. Скачайте `doh-health-monitor-v1.7.0.zip`.
 2. В LucX-UI откройте менеджер плагинов и установите ZIP.
 3. Запустите плагин из панели.
 4. После первого запуска панель создаст приватную папку данных; плагин создаст в ней `config.json` и `doh-servers.txt`.
 5. Посмотрите журнал плагина. Нормальный старт содержит строки примерно такого вида:
 
 ```text
-level=INFO START id=doh-health-monitor version=1.6.0 arch=amd64 data=...
+level=INFO START id=doh-health-monitor version=1.7.0 arch=amd64 data=...
 level=INFO CONFIG loaded ... gemini_api=false
 level=INFO EVENT_SOCKET listening ...
 level=INFO READY DNS=127.0.0.1:5355/127.0.0.1:5355 HTTP=127.0.0.1:18765
