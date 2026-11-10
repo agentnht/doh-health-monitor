@@ -103,14 +103,6 @@
           "verify_oidc": true
         },
         {
-          "domain": "connectivitycheck.gstatic.com",
-          "http_url": "https://connectivitycheck.gstatic.com/generate_204",
-          "required": true,
-          "expected_status": [
-            204
-          ]
-        },
-        {
           "domain": "aistudio.google.com",
           "required": false
         },
