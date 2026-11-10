@@ -1,22 +1,35 @@
-﻿# Changelog
+# Changelog
 
 ## [Unreleased]
 
-### DNS
-- Add optional exact-hostname `local_hosts` overrides for A/AAAA, with 60-second TTL and DNSSEC AD cleared.
-- Return NOERROR/NODATA for missing address families and suppress HTTPS/SVCB records for configured hosts.
-- Keep empty `local_hosts` behavior identical to the normal DoH path.
-
 ## [1.6.0] - 2026-11-10
 
-### Added
-- Optional `local_hosts` overrides for exact DNS hostnames.
-- Local A/AAAA answers with 60-second TTL, NOERROR/NODATA for missing address families, and AD cleared.
-- Empty HTTPS/SVCB answers for configured local hostnames.
-- Russian documentation with configuration examples, address selection guidance, hot reload, and `dig` verification steps.
+## Что нового в 1.6.0
 
+### Локальные DNS-переопределения local_hosts
+- Добавлена необязательная настройка `local_hosts` для задания локальных DNS-ответов по точным именам хостов.
+- По умолчанию `local_hosts` пустой: если ничего не настроено, DNS-запросы продолжают обрабатываться обычным DoH-механизмом без изменений.
+- Для A возвращаются только заданные IPv4-адреса, для AAAA — только заданные IPv6-адреса.
+- Если для запрошенного семейства адресов список пуст, возвращается NOERROR/NODATA, а не NXDOMAIN.
+- Для HTTPS (тип 65) и SVCB (тип 64) у настроенных имён возвращается пустой ответ. Это убирает DNS-подсказки с IP-адресами и ECH-конфигурацию, но не отключает HTTPS или TLS.
+- Запросы других типов и запросы к именам, отсутствующим в `local_hosts`, по-прежнему идут через DoH.
+- Локальные DNS-ответы используют TTL 60 секунд; флаг AD сбрасывается.
+- Поддерживается только точное совпадение имени: без wildcard. Регистр не учитывается, завершающая точка нормализуется.
 
+### Конфигурация и документация
+- Добавлена проверка имён хостов и IP-адресов при загрузке конфигурации; IPv4 и IPv6 проверяются отдельно.
+- Изменения `local_hosts` применяются через hot reload без перезапуска плагина. При ошибке новая конфигурация отклоняется, а последняя корректная продолжает работать.
+- README дополнен подробной русскоязычной инструкцией: примеры JSON, выбор IP-адресов, поведение A/AAAA/HTTPS/SVCB, hot reload и проверка через `dig`.
 
+### Важные замечания
+- `local_hosts` влияет только на DNS-ответы и сам по себе не настраивает маршрутизацию трафика через прокси.
+- Приложения, использующие собственный DoH-резолвер, могут обходить локальный DNS-плагин.
+- Клиентская DNSSEC-валидация может отклонять локальные неподписанные ответы; сброс AD не отключает такую проверку.
+
+### Проверки
+- `go vet ./...` — passed.
+- `go test ./...` — passed.
+- GitHub Actions CI — passed.
 
 ## [1.5.0]
 
@@ -47,7 +60,6 @@
 - Clarified LucX-UI event handling.
 - Removed legacy resolver references.
 - Clarified rollback and data-directory removal behavior.
-
 
 ## [1.3.0]
 
