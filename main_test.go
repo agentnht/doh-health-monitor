@@ -320,6 +320,37 @@ func TestBootstrapFastestIPDetailedReportsEveryCandidate(t *testing.T) {
 	}
 }
 
+func TestBootstrapFallbackSourceIsReportedDuringRetryCooldown(t *testing.T) {
+	b := &bootstrapResolver{
+		host:        "doh.example",
+		endpoint:    "https://doh.example/dns-query",
+		fallback:    []string{"192.0.2.77"},
+		lastAttempt: time.Now(),
+		refreshFor:  6 * time.Hour,
+		probe: func(ctx context.Context, endpoint, ip string, timeout time.Duration) (time.Duration, error) {
+			if ip != "192.0.2.77" {
+				t.Fatalf("unexpected probe IP %s", ip)
+			}
+			return 9 * time.Millisecond, nil
+		},
+	}
+
+	ip, err := b.bestIP(context.Background(), false, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ip != "192.0.2.77" {
+		t.Fatalf("selected IP = %s, want configured fallback", ip)
+	}
+	status := b.status()
+	if status.CandidateSource != "configured_fallback" {
+		t.Errorf("candidate source = %q, want configured_fallback", status.CandidateSource)
+	}
+	if len(status.LastProbe) != 1 || status.LastProbe[0].Source != "configured_fallback" {
+		t.Errorf("fallback probe source is not reported correctly: %+v", status.LastProbe)
+	}
+}
+
 func TestBootstrapStatusReturnsDiagnosticSnapshot(t *testing.T) {
 	probes := []DoHIPProbeStatus{
 		{IP: "192.0.2.10", Source: "dns", Result: "ok", ResponseMS: 12},
