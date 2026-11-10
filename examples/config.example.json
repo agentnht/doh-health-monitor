@@ -43,40 +43,7 @@
   ],
   "groups": [
     {
-      "id": "default",
-      "fake_dns": false,
-      "domains": [],
-      "upstreams": [
-        "eu.geohide.ru",
-        "doh.dagami.ru",
-        "dns.comss.one",
-        "dns.bezmezhau.com",
-        "dns.zapret.moe"
-      ],
-      "checks": [
-        {
-          "domain": "example.com",
-          "required": true
-        }
-      ]
-    },
-    {
       "id": "google",
-      "fake_dns": true,
-      "domains": [
-        "google.com",
-        "googleapis.com",
-        "gstatic.com",
-        "googleusercontent.com",
-        "google.org",
-        "googleadservices.com",
-        "gemini.google.com",
-        "generativelanguage.googleapis.com",
-        "clients6.google.com",
-        "jnn-pa.googleapis.com",
-        "waa-pa.clients6.google.com",
-        "google-analytics.com"
-      ],
       "upstreams": [
         "eu.geohide.ru",
         "doh.dagami.ru",
