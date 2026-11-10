@@ -656,7 +656,8 @@ func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string
 		}
 	}
 	b.lastAttempt = time.Now()
-	var found []net.IP
+	ips := make([]string, 0, 8)
+	seen := map[string]bool{}
 	var err error
 	for _, server := range b.resolvers {
 		lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -666,27 +667,28 @@ func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string
 				return (&net.Dialer{Timeout: 1500 * time.Millisecond}).DialContext(ctx, network, net.JoinHostPort(server, "53"))
 			},
 		}
-		found, err = resolver.LookupNetIP(lookupCtx, "ip", b.host)
+		found, lookupErr := resolver.LookupNetIP(lookupCtx, "ip", b.host)
 		cancel()
 		if len(found) > 0 {
-			err = nil
-			break
+			for _, ip := range found {
+				v := ip.String()
+				if net.ParseIP(v) != nil && !seen[v] {
+					seen[v] = true
+					ips = append(ips, v)
+				}
+			}
+			if len(ips) > 0 {
+				err = nil
+				break
+			}
 		}
+		err = lookupErr
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 	}
 	if len(b.resolvers) == 0 {
 		err = errors.New("no bootstrap DNS resolvers configured")
-	}
-	ips := make([]string, 0, len(found))
-	seen := map[string]bool{}
-	for _, ip := range found {
-		v := ip.String()
-		if net.ParseIP(v) != nil && !seen[v] {
-			seen[v] = true
-			ips = append(ips, v)
-		}
 	}
 	if len(ips) > 0 {
 		b.ips = ips
