@@ -596,7 +596,6 @@ dig +tcp @127.0.0.1 -p 5355 example.com A +time=5 +tries=1
 
 | Сообщение/симптом | Причина / действие |
 |---|---|
-| `read-only file system` при создании `config.json` | Исправить `ReadWritePaths=<LUCX_PLUGIN_DATA>` для transient unit LucX-UI; не использовать `chmod 777`, не отключать `ProtectSystem=strict` |
 | `address already in use` | Порт UDP/TCP 5355 или HTTP 18765 занят; выберите свободные loopback порты в config и обновите outbound/manifest health target соответственно |
 | `DoH server ... has no upstream/bootstrap entry` | Для нового hostname добавьте объект `upstreams` с `id` и `name` |
 | `group ... references DoH server ... missing from doh-servers.txt` | Убедитесь, что URL с таким hostname есть в `doh-servers.txt` |

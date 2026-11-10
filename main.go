@@ -658,26 +658,29 @@ func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string
 		}
 	}
 	b.lastAttempt = time.Now()
-	resolver := &net.Resolver{
-		PreferGo: true, StrictErrors: false,
-		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			var last error
-			for _, server := range b.resolvers {
-				conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, network, net.JoinHostPort(server, "53"))
-				if err == nil {
-					return conn, nil
-				}
-				last = err
-			}
-			if last == nil {
-				last = errors.New("no bootstrap DNS resolvers configured")
-			}
-			return nil, last
-		},
+	var found []net.IP
+	var err error
+	for _, server := range b.resolvers {
+		lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		resolver := &net.Resolver{
+			PreferGo: true, StrictErrors: false,
+			Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{Timeout: 1500 * time.Millisecond}).DialContext(ctx, network, net.JoinHostPort(server, "53"))
+			},
+		}
+		found, err = resolver.LookupNetIP(lookupCtx, "ip", b.host)
+		cancel()
+		if len(found) > 0 {
+			err = nil
+			break
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 	}
-	lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	found, err := resolver.LookupNetIP(lookupCtx, "ip", b.host)
+	if len(b.resolvers) == 0 {
+		err = errors.New("no bootstrap DNS resolvers configured")
+	}
 	ips := make([]string, 0, len(found))
 	seen := map[string]bool{}
 	for _, ip := range found {
@@ -723,9 +726,11 @@ func (b *bootstrapResolver) bestIP(ctx context.Context, force bool, timeout time
 		}
 		return "", resolveErr
 	}
+	b.mu.Lock()
+	usingFallback := resolveErr != nil && len(b.ips) == 0 && len(b.fallback) > 0
+	b.mu.Unlock()
 	ip, latency, probeErr := b.fastestIP(ctx, ips, timeout)
-	usingFallback := false
-	if probeErr != nil && len(b.fallback) > 0 {
+	if probeErr != nil && len(b.fallback) > 0 && !usingFallback {
 		fallbackIP, fallbackLatency, fallbackErr := b.fastestIP(ctx, b.fallback, timeout)
 		if fallbackErr == nil {
 			ip, latency, probeErr, usingFallback = fallbackIP, fallbackLatency, nil, true
@@ -740,8 +745,9 @@ func (b *bootstrapResolver) bestIP(ctx context.Context, force bool, timeout time
 
 	b.mu.Lock()
 	b.selectedIP = ip
-	if resolveErr == nil && !usingFallback {
-		b.selectedTil = time.Now().Add(b.refreshFor)
+	refreshUntil := b.refreshed.Add(b.refreshFor)
+	if !usingFallback && !b.refreshed.IsZero() && time.Now().Before(refreshUntil) {
+		b.selectedTil = refreshUntil
 	} else {
 		// Retry DNS resolution periodically while temporarily relying on cached/fallback IPs.
 		b.selectedTil = time.Now().Add(time.Minute)
@@ -766,9 +772,10 @@ func (b *bootstrapResolver) fastestIP(ctx context.Context, ips []string, timeout
 	for _, candidate := range ips {
 		ip := candidate
 		go func() {
-			probeCtx, cancel := context.WithTimeout(ctx, timeout)
+			probeTimeout := minDuration(timeout, 5*time.Second)
+			probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 			defer cancel()
-			latency, err := probe(probeCtx, b.endpoint, ip, timeout)
+			latency, err := probe(probeCtx, b.endpoint, ip, probeTimeout)
 			results <- result{ip: ip, latency: latency, err: err}
 		}()
 	}
