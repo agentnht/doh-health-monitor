@@ -256,6 +256,7 @@ func main() {
 	}
 
 	var socketPath string
+	var socketInfo os.FileInfo
 	var socketLn net.Listener
 	var socketSrv *http.Server
 	if p := strings.TrimSpace(os.Getenv("LUCX_PLUGIN_SOCKET")); p != "" {
@@ -264,7 +265,12 @@ func main() {
 		if err != nil {
 			logLine("ERROR", "EVENT_SOCKET start failed: %v", err)
 		} else {
-			logLine("INFO", "EVENT_SOCKET listening path=%s", p)
+			socketInfo, err = os.Lstat(p)
+			if err != nil {
+				logLine("ERROR", "EVENT_SOCKET identity check failed: %v", err)
+			} else {
+				logLine("INFO", "EVENT_SOCKET listening path=%s", p)
+			}
 		}
 	} else {
 		logLine("WARN", "EVENT_SOCKET not configured")
@@ -300,8 +306,10 @@ func main() {
 	if socketLn != nil {
 		_ = socketLn.Close()
 	}
-	if socketPath != "" {
-		_ = os.Remove(socketPath)
+	if socketPath != "" && socketInfo != nil {
+		if e := removeSocketIfSame(socketPath, socketInfo); e != nil {
+			logLine("WARN", "EVENT_SOCKET cleanup skipped: %v", e)
+		}
 	}
 	wg.Wait()
 	logLine("INFO", "STOP clean=true")
@@ -1434,6 +1442,23 @@ func removeStaleSocket(path string) error {
 	return os.Remove(path)
 }
 
+func removeSocketIfSame(path string, expected os.FileInfo) error {
+	if expected == nil || expected.Mode()&os.ModeSocket == 0 {
+		return errors.New("expected event socket identity is invalid")
+	}
+	current, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if current.Mode()&os.ModeSocket == 0 || !os.SameFile(expected, current) {
+		return fmt.Errorf("refusing to remove changed event socket path %q", path)
+	}
+	return os.Remove(path)
+}
+
 func startEventSocket(path string) (net.Listener, *http.Server, error) {
 	if e := os.MkdirAll(filepath.Dir(path), 0700); e != nil {
 		return nil, nil, e
@@ -1444,6 +1469,9 @@ func startEventSocket(path string) (net.Listener, *http.Server, error) {
 	ln, e := net.Listen("unix", path)
 	if e != nil {
 		return nil, nil, e
+	}
+	if unixLn, ok := ln.(*net.UnixListener); ok {
+		unixLn.SetUnlinkOnClose(false)
 	}
 	if e = os.Chmod(path, 0600); e != nil {
 		_ = ln.Close()
