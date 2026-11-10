@@ -329,7 +329,7 @@ func TestBootstrapFallbackSourceIsReportedDuringRetryCooldown(t *testing.T) {
 		refreshFor:  6 * time.Hour,
 		probe: func(ctx context.Context, endpoint, ip string, timeout time.Duration) (time.Duration, error) {
 			if ip != "192.0.2.77" {
-				t.Fatalf("unexpected probe IP %s", ip)
+				return 0, fmt.Errorf("unexpected probe IP %s", ip)
 			}
 			return 9 * time.Millisecond, nil
 		},
