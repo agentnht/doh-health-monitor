@@ -1,6 +1,6 @@
 ﻿# Changelog
 
- ## [1.4.0]
+## [1.4.0]
 
 ### Security
 - Strengthened OIDC issuer and discovery URL validation.
