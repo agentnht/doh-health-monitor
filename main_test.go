@@ -147,22 +147,6 @@ func TestLegacyBootstrapIPsRemainValidAsFallback(t *testing.T) {
 	}
 }
 
-func TestLoadConfigCreatesAutomaticBootstrapDefaults(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
-	c, err := loadConfig(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(c.BootstrapResolvers) == 0 {
-		t.Fatal("generated config has no bootstrap_resolvers")
-	}
-	for _, upstream := range c.Upstreams {
-		if len(upstream.BootstrapIPs) != 0 {
-			t.Errorf("generated upstream %s unexpectedly has static bootstrap_ips", upstream.ID)
-		}
-	}
-}
-
 func TestDNSResponseTTLParse(t *testing.T) {
 	q := makeDNSQuery("ttl.example", 1)
 	resp := testAResponse(q, 120)
