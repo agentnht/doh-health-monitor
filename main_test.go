@@ -358,6 +358,29 @@ func BenchmarkCacheHit(b *testing.B) {
 	}
 }
 
+func TestGeminiRegionBlockDetection(t *testing.T) {
+	blocked := [][]byte{
+		[]byte("Gemini is not available in your country"),
+		[]byte("<html>Service not supported in your location</html>"),
+		[]byte("Error code 1060"),
+	}
+	for _, body := range blocked {
+		if !geminiRegionBlocked(body) {
+			t.Errorf("expected regional restriction to be detected in %q", body)
+		}
+	}
+	allowed := [][]byte{
+		[]byte("<html><title>Gemini</title><body>Welcome</body></html>"),
+		[]byte("This service is temporarily unavailable"),
+		[]byte("Please sign in to continue"),
+	}
+	for _, body := range allowed {
+		if geminiRegionBlocked(body) {
+			t.Errorf("unexpected regional restriction detected in %q", body)
+		}
+	}
+}
+
 func TestDefaultConfigUsesProxyDNSProvidersOnly(t *testing.T) {
 	want := []string{
 		"eu.geohide.ru",
@@ -398,8 +421,8 @@ func TestDefaultConfigUsesProxyDNSProvidersOnly(t *testing.T) {
 			accountsCheck = &google.Checks[i]
 		}
 	}
-	if geminiCheck == nil || geminiCheck.HTTPURL != "https://gemini.google.com/robots.txt" || !geminiCheck.Required {
-		t.Errorf("Gemini check = %+v; want required HTTP check for robots.txt", geminiCheck)
+	if geminiCheck == nil || geminiCheck.HTTPURL != "https://gemini.google.com/" || !geminiCheck.Required {
+		t.Errorf("Gemini check = %+v; want required HTTP check for Gemini homepage", geminiCheck)
 	}
 	if accountsCheck == nil || accountsCheck.HTTPURL != "https://accounts.google.com/.well-known/openid-configuration" || !accountsCheck.Required || !accountsCheck.VerifyOIDC {
 		t.Errorf("Accounts check = %+v; want required OIDC discovery check", accountsCheck)
