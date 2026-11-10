@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,8 +30,15 @@ import (
 const (
 	pluginID      = "doh-health-monitor"
 	pluginVersion = "1.7.1"
-	maxDNSMessage = 65535
-	maxHTTPBody   = 2 << 20
+	maxDNSMessage        = 65535
+	maxHTTPBody          = 2 << 20
+	defaultCacheMaxBytes = 8 << 20
+	maxCacheMaxBytes     = 256 << 20
+	maxUDPWorkers        = 64
+	udpQueueCapacity     = 128
+	maxTCPConnections    = 128
+	tcpIdleTimeout       = 30 * time.Second
+	tcpWriteTimeout      = 10 * time.Second
 )
 
 type Config struct {
@@ -66,6 +73,7 @@ type CacheConfig struct {
 	MaxTTL      int  `json:"max_ttl_seconds"`
 	NegativeTTL int  `json:"negative_ttl_seconds"`
 	MaxEntries  int  `json:"max_entries"`
+	MaxBytes    int  `json:"max_bytes"`
 }
 type Upstream struct {
 	ID           string   `json:"id"`
@@ -221,8 +229,17 @@ type Status struct {
 	DoHBootstrap map[string]DoHBootstrapStatus   `json:"doh_bootstrap,omitempty"`
 	GeminiAPI    string                          `json:"gemini_api"`
 	Queries      uint64                          `json:"queries"`
-	CacheHits    uint64                          `json:"cache_hits"`
-	Failures     uint64                          `json:"failures"`
+	CacheHits      uint64                          `json:"cache_hits"`
+	Failures       uint64                          `json:"failures"`
+	ActiveUDP      int64                           `json:"active_udp"`
+	UDPQueueDepth  int64                           `json:"udp_queue_depth"`
+	UDPDropped     uint64                          `json:"udp_dropped"`
+	ActiveTCP      int64                           `json:"active_tcp"`
+	TCPRejected    uint64                          `json:"tcp_rejected"`
+	Goroutines     int                             `json:"goroutines"`
+	HeapAllocBytes uint64                          `json:"heap_alloc_bytes"`
+	HeapInuseBytes uint64                          `json:"heap_inuse_bytes"`
+	HeapSysBytes   uint64                          `json:"heap_sys_bytes"`
 	LastReload   time.Time                       `json:"last_reload,omitempty"`
 	LastError    string                          `json:"last_error,omitempty"`
 }
@@ -230,6 +247,8 @@ type CacheStatus struct {
 	Enabled    bool `json:"enabled"`
 	Entries    int  `json:"entries"`
 	MaxEntries int  `json:"max_entries"`
+	Bytes      int  `json:"bytes"`
+	MaxBytes   int  `json:"max_bytes"`
 }
 type GeminiHTTPError struct{ Status int }
 
@@ -243,9 +262,15 @@ type Event struct {
 	Data   json.RawMessage `json:"data"`
 }
 type cacheItem struct {
-	packet   []byte
-	expires  time.Time
-	inserted time.Time
+	packet     []byte
+	expires    time.Time
+	inserted   time.Time
+	size       int
+	generation uint64
+}
+type cacheOrderEntry struct {
+	key        string
+	generation uint64
 }
 type Runtime struct {
 	dnsSem     chan struct{}
@@ -256,9 +281,18 @@ type Runtime struct {
 	mu         sync.RWMutex
 	health     map[string]map[string]HealthEntry
 	active     map[string]string
-	cacheMu    sync.Mutex
-	cache      map[string]cacheItem
-	cacheHits  atomic.Uint64
+	cacheMu        sync.Mutex
+	cache          map[string]cacheItem
+	cacheOrder     []cacheOrderEntry
+	cacheOrderHead int
+	cacheBytes     int
+	cacheSeq       uint64
+	cacheHits      atomic.Uint64
+	activeUDP      atomic.Int64
+	udpQueueDepth  atomic.Int64
+	udpDropped     atomic.Uint64
+	activeTCP      atomic.Int64
+	tcpRejected    atomic.Uint64
 	queries    atomic.Uint64
 	failures   atomic.Uint64
 	lastGemini map[string]time.Time
@@ -421,6 +455,7 @@ func loadConfig(path string) (Config, error) {
 	}
 	c, e = normalizeConfigGroups(c)
 	if e != nil { return Config{}, e }
+	c = normalizeCacheConfig(c)
 	if e = validateConfig(c); e != nil {
 		return Config{}, e
 	}
@@ -430,8 +465,8 @@ func defaultConfig() Config {
 	return Config{
 		DNSListenUDP: "127.0.0.1:5355", DNSListenTCP: "127.0.0.1:5355", HTTPListen: "127.0.0.1:18765", ReloadSecs: 5,
 		DNSQueryTimeoutSeconds: 15, DoHTimeoutSeconds: 10, DNSMaxConcurrent: 256,
-		Health: HealthConfig{IntervalSeconds: 45, TimeoutSeconds: 5, FailureThreshold: 3, SuccessThreshold: 5},
-		Cache:  CacheConfig{Enabled: true, MinTTL: 5, MaxTTL: 300, NegativeTTL: 15, MaxEntries: 8192},
+		Health: HealthConfig{IntervalSeconds: 25 * 60, TimeoutSeconds: 5, FailureThreshold: 3, SuccessThreshold: 1},
+		Cache:  CacheConfig{Enabled: true, MinTTL: 5, MaxTTL: 300, NegativeTTL: 15, MaxEntries: 8192, MaxBytes: defaultCacheMaxBytes},
 		LocalHosts: map[string]LocalHost{},
 		BootstrapResolvers: []string{"1.1.1.1", "8.8.8.8"},
 		Upstreams: []Upstream{
@@ -485,6 +520,14 @@ func normalizeConfigGroups(c Config) (Config, error) {
 	return Config{}, errors.New("configuration has no group with id 'google'")
 }
 
+func normalizeCacheConfig(c Config) Config {
+	// Older config files predate max_bytes; give them a bounded default.
+	if c.Cache.MaxBytes == 0 {
+		c.Cache.MaxBytes = defaultCacheMaxBytes
+	}
+	return c
+}
+
 func validateConfig(c Config) error {
 	if !validListen(c.DNSListenUDP) || !validListen(c.DNSListenTCP) || !validListen(c.HTTPListen) {
 		return errors.New("dns_listen_udp, dns_listen_tcp and http_listen must be host:port")
@@ -498,8 +541,11 @@ func validateConfig(c Config) error {
 	if c.Health.IntervalSeconds < 5 || c.Health.IntervalSeconds > 3600 || c.Health.TimeoutSeconds < 1 || c.Health.TimeoutSeconds > 60 || c.Health.FailureThreshold < 1 || c.Health.FailureThreshold > 20 || c.Health.SuccessThreshold < 1 || c.Health.SuccessThreshold > 50 {
 		return errors.New("invalid health settings")
 	}
-	if c.Cache.MinTTL < 0 || c.Cache.MaxTTL < 1 || c.Cache.MaxTTL < c.Cache.MinTTL || c.Cache.NegativeTTL < 0 || c.Cache.MaxEntries < 0 {
+	if c.Cache.MinTTL < 0 || c.Cache.MaxTTL < 1 || c.Cache.MaxTTL < c.Cache.MinTTL || c.Cache.NegativeTTL < 0 || c.Cache.MaxEntries < 0 || c.Cache.MaxBytes < 0 {
 		return errors.New("invalid cache settings")
+	}
+	if c.Cache.Enabled && (c.Cache.MaxEntries < 1 || c.Cache.MaxEntries > 100000 || c.Cache.MaxBytes < 1024 || c.Cache.MaxBytes > maxCacheMaxBytes) {
+		return fmt.Errorf("enabled cache limits must be max_entries=1..100000 and max_bytes=1024..%d", maxCacheMaxBytes)
 	}
 	if len(c.Upstreams) == 0 {
 		return errors.New("at least one upstream is required")
@@ -1028,17 +1074,58 @@ func minDuration(a, b time.Duration) time.Duration {
 func (r *Runtime) initHealth(s *Snapshot) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.health == nil {
+		r.health = map[string]map[string]HealthEntry{}
+	}
+	if r.active == nil {
+		r.active = map[string]string{}
+	}
+
+	validGroups := make(map[string]map[string]struct{}, len(s.groups))
+	validUpstreams := make(map[string]struct{}, len(s.upstreams))
+	for uid := range s.upstreams {
+		validUpstreams[uid] = struct{}{}
+	}
 	for gid, g := range s.groups {
+		valid := make(map[string]struct{}, len(g.Upstreams))
+		for _, uid := range g.Upstreams {
+			valid[uid] = struct{}{}
+		}
+		validGroups[gid] = valid
 		if r.health[gid] == nil {
 			r.health[gid] = map[string]HealthEntry{}
+		}
+		for uid := range r.health[gid] {
+			if _, ok := valid[uid]; !ok {
+				delete(r.health[gid], uid)
+			}
 		}
 		for _, uid := range g.Upstreams {
 			if _, ok := r.health[gid][uid]; !ok {
 				r.health[gid][uid] = HealthEntry{State: "unknown", GeminiState: "not_checked"}
 			}
 		}
-		if r.active[gid] == "" && len(g.Upstreams) > 0 {
-			r.active[gid] = g.Upstreams[0]
+		if _, ok := valid[r.active[gid]]; !ok {
+			if len(g.Upstreams) > 0 {
+				r.active[gid] = g.Upstreams[0]
+			} else {
+				delete(r.active, gid)
+			}
+		}
+	}
+	for gid := range r.health {
+		if _, ok := validGroups[gid]; !ok {
+			delete(r.health, gid)
+		}
+	}
+	for gid := range r.active {
+		if _, ok := validGroups[gid]; !ok {
+			delete(r.active, gid)
+		}
+	}
+	for uid := range r.lastGemini {
+		if _, ok := validUpstreams[uid]; !ok {
+			delete(r.lastGemini, uid)
 		}
 	}
 }
@@ -1134,63 +1221,145 @@ func sendDoH(ctx context.Context, u *UpstreamRuntime, packet []byte) ([]byte, er
 	return b, nil
 }
 func (r *Runtime) serveUDP(ctx context.Context, c *net.UDPConn) {
+	type udpJob struct {
+		addr   *net.UDPAddr
+		packet []byte
+	}
+	jobs := make(chan udpJob, udpQueueCapacity)
+	workers := maxUDPWorkers
+	if snap := r.currentSnapshot(); snap != nil && snap.cfg.DNSMaxConcurrent < workers {
+		workers = snap.cfg.DNSMaxConcurrent
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case job, ok := <-jobs:
+					if !ok {
+						return
+					}
+					r.udpQueueDepth.Add(-1)
+					r.activeUDP.Add(1)
+					resp := r.handleDNS(job.packet)
+					r.activeUDP.Add(-1)
+					if len(resp) > 4096 {
+						resp = resp[:4096]
+					}
+					_, _ = c.WriteToUDP(resp, job.addr)
+				}
+			}
+		}()
+	}
+	defer func() {
+		close(jobs)
+		wg.Wait()
+		r.udpQueueDepth.Store(0)
+	}()
+
 	buf := make([]byte, maxDNSMessage)
 	for {
 		_ = c.SetReadDeadline(time.Now().Add(time.Second))
-		n, addr, e := c.ReadFromUDP(buf)
-		if e != nil {
-			if ne, ok := e.(net.Error); ok && ne.Timeout() {
-				select {
-				case <-ctx.Done():
+		n, addr, err := c.ReadFromUDP(buf)
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				if ctx.Err() != nil {
 					return
-				default:
-					continue
 				}
+				continue
 			}
 			if ctx.Err() != nil {
 				return
 			}
-			logLine("WARN", "DNS UDP read: %v", e)
+			logLine("WARN", "DNS UDP read: %v", err)
 			continue
 		}
 		q := append([]byte(nil), buf[:n]...)
-		go func(a *net.UDPAddr, p []byte) {
-			resp := r.handleDNS(p)
-			if len(resp) > 4096 {
-				resp = resp[:4096]
-			}
-			_, _ = c.WriteToUDP(resp, a)
-		}(addr, q)
+		r.udpQueueDepth.Add(1)
+		select {
+		case jobs <- udpJob{addr: addr, packet: q}:
+		case <-ctx.Done():
+			r.udpQueueDepth.Add(-1)
+			return
+		default:
+			r.udpQueueDepth.Add(-1)
+			r.udpDropped.Add(1)
+			_, _ = c.WriteToUDP(servfailResponse(q), addr)
+		}
 	}
 }
 func (r *Runtime) serveTCP(ctx context.Context, ln net.Listener) {
+	sem := make(chan struct{}, maxTCPConnections)
+	var connections sync.Map
+	var wg sync.WaitGroup
+	defer func() {
+		connections.Range(func(key, _ any) bool {
+			if conn, ok := key.(net.Conn); ok {
+				_ = conn.Close()
+			}
+			return true
+		})
+		wg.Wait()
+	}()
+
 	for {
-		_ = ln.(*net.TCPListener).SetDeadline(time.Now().Add(time.Second))
-		conn, e := ln.Accept()
-		if e != nil {
-			if ne, ok := e.(net.Error); ok && ne.Timeout() {
-				select {
-				case <-ctx.Done():
+		if tl, ok := ln.(*net.TCPListener); ok {
+			_ = tl.SetDeadline(time.Now().Add(time.Second))
+		}
+		conn, err := ln.Accept()
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				if ctx.Err() != nil {
 					return
-				default:
-					continue
 				}
+				continue
 			}
 			if ctx.Err() != nil {
 				return
 			}
-			logLine("WARN", "DNS TCP accept: %v", e)
+			logLine("WARN", "DNS TCP accept: %v", err)
 			continue
 		}
-		go r.handleTCPConn(ctx, conn)
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			_ = conn.Close()
+			return
+		default:
+			r.tcpRejected.Add(1)
+			_ = conn.Close()
+			continue
+		}
+		connections.Store(conn, struct{}{})
+		r.activeTCP.Add(1)
+		wg.Add(1)
+		go func(c net.Conn) {
+			defer wg.Done()
+			defer func() {
+				r.activeTCP.Add(-1)
+				<-sem
+				connections.Delete(c)
+			}()
+			r.handleTCPConn(ctx, c)
+		}(conn)
 	}
 }
 func (r *Runtime) handleTCPConn(ctx context.Context, c net.Conn) {
 	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(120 * time.Second))
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+		_ = c.SetReadDeadline(time.Now().Add(tcpIdleTimeout))
 		var l [2]byte
-		if _, e := io.ReadFull(c, l[:]); e != nil {
+		if _, err := io.ReadFull(c, l[:]); err != nil {
 			return
 		}
 		n := int(binary.BigEndian.Uint16(l[:]))
@@ -1198,24 +1367,20 @@ func (r *Runtime) handleTCPConn(ctx context.Context, c net.Conn) {
 			return
 		}
 		q := make([]byte, n)
-		if _, e := io.ReadFull(c, q); e != nil {
+		if _, err := io.ReadFull(c, q); err != nil {
 			return
 		}
 		resp := r.handleDNS(q)
 		if len(resp) > maxDNSMessage {
 			return
 		}
+		_ = c.SetWriteDeadline(time.Now().Add(tcpWriteTimeout))
 		binary.BigEndian.PutUint16(l[:], uint16(len(resp)))
-		if _, e := c.Write(l[:]); e != nil {
+		if _, err := c.Write(l[:]); err != nil {
 			return
 		}
-		if _, e := c.Write(resp); e != nil {
+		if _, err := c.Write(resp); err != nil {
 			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		default:
 		}
 	}
 }
@@ -1251,7 +1416,7 @@ func (r *Runtime) handleDNS(packet []byte) []byte {
 	if s.cfg.Cache.Enabled {
 		r.cachePut(cacheKey, resp, s.cfg.Cache)
 	}
-	logLine("DEBUG", "DNS answer domain=%s profile=google upstream=%s", name, uid)
+	_ = uid // avoid a log entry for every successful DNS query
 	return resp
 }
 
@@ -1386,6 +1551,16 @@ func extractEDNSOPT(query []byte) []byte {
 	return nil
 }
 
+func (r *Runtime) deleteCacheEntryLocked(key string, item cacheItem) {
+	if current, ok := r.cache[key]; ok && current.generation == item.generation {
+		delete(r.cache, key)
+		r.cacheBytes -= current.size
+		if r.cacheBytes < 0 {
+			r.cacheBytes = 0
+		}
+	}
+}
+
 func (r *Runtime) cacheGet(key string, id uint16) ([]byte, bool) {
 	r.cacheMu.Lock()
 	defer r.cacheMu.Unlock()
@@ -1393,8 +1568,8 @@ func (r *Runtime) cacheGet(key string, id uint16) ([]byte, bool) {
 	if !ok {
 		return nil, false
 	}
-	if time.Now().After(v.expires) {
-		delete(r.cache, key)
+	if !time.Now().Before(v.expires) {
+		r.deleteCacheEntryLocked(key, v)
 		return nil, false
 	}
 	b := append([]byte(nil), v.packet...)
@@ -1402,7 +1577,42 @@ func (r *Runtime) cacheGet(key string, id uint16) ([]byte, bool) {
 	decrementTTLs(b, uint32(time.Since(v.inserted).Seconds()))
 	return b, true
 }
+
+func (r *Runtime) evictOldestCacheLocked() bool {
+	for r.cacheOrderHead < len(r.cacheOrder) {
+		entry := r.cacheOrder[r.cacheOrderHead]
+		r.cacheOrderHead++
+		if current, ok := r.cache[entry.key]; ok && current.generation == entry.generation {
+			delete(r.cache, entry.key)
+			r.cacheBytes -= current.size
+			if r.cacheBytes < 0 {
+				r.cacheBytes = 0
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Runtime) compactCacheOrderLocked(maxEntries int) {
+	if len(r.cacheOrder) <= 2*maxEntries+1024 {
+		return
+	}
+	compact := make([]cacheOrderEntry, 0, len(r.cache))
+	for i := r.cacheOrderHead; i < len(r.cacheOrder); i++ {
+		entry := r.cacheOrder[i]
+		if current, ok := r.cache[entry.key]; ok && current.generation == entry.generation {
+			compact = append(compact, entry)
+		}
+	}
+	r.cacheOrder = compact
+	r.cacheOrderHead = 0
+}
+
 func (r *Runtime) cachePut(key string, packet []byte, c CacheConfig) {
+	if !c.Enabled || c.MaxEntries < 1 || c.MaxBytes < 1024 {
+		return
+	}
 	ttl, ok := minResponseTTL(packet)
 	if !ok {
 		if dnsRCode(packet) == 3 {
@@ -1420,31 +1630,44 @@ func (r *Runtime) cachePut(key string, packet []byte, c CacheConfig) {
 	if ttl == 0 {
 		return
 	}
+	cost := len(key) + len(packet)
+	if cost > c.MaxBytes {
+		return
+	}
+
+	now := time.Now()
 	r.cacheMu.Lock()
 	defer r.cacheMu.Unlock()
-	if c.MaxEntries > 0 && len(r.cache) >= c.MaxEntries {
-		for k, v := range r.cache {
-			if time.Now().After(v.expires) {
-				delete(r.cache, k)
-			}
-		}
-		if len(r.cache) >= c.MaxEntries {
-			for k := range r.cache {
-				delete(r.cache, k)
-				break
-			}
+	if previous, exists := r.cache[key]; exists {
+		delete(r.cache, key)
+		r.cacheBytes -= previous.size
+	}
+	r.cacheSeq++
+	item := cacheItem{
+		packet: append([]byte(nil), packet...),
+		expires: now.Add(time.Duration(ttl) * time.Second),
+		inserted: now, size: cost, generation: r.cacheSeq,
+	}
+	r.cache[key] = item
+	r.cacheBytes += cost
+	r.cacheOrder = append(r.cacheOrder, cacheOrderEntry{key: key, generation: item.generation})
+
+	for len(r.cache) > c.MaxEntries || r.cacheBytes > c.MaxBytes {
+		if !r.evictOldestCacheLocked() {
+			break
 		}
 	}
-	b := append([]byte(nil), packet...)
-	r.cache[key] = cacheItem{packet: b, expires: time.Now().Add(time.Duration(ttl) * time.Second), inserted: time.Now()}
+	r.compactCacheOrderLocked(c.MaxEntries)
 }
+
 func cacheKey(p []byte) string {
 	b := append([]byte(nil), p...)
 	if len(b) >= 2 {
 		b[0] = 0
 		b[1] = 0
 	}
-	return hex.EncodeToString(b)
+	sum := sha256.Sum256(b)
+	return string(sum[:])
 }
 func packetID(p []byte) uint16 {
 	if len(p) < 2 {
@@ -1584,6 +1807,7 @@ func (r *Runtime) httpProbe(ctx context.Context, u *UpstreamRuntime, ch Check) (
 		return 0, errors.New("no A records")
 	}
 	client := newPinnedHTTPClient(ips[0], pu.Hostname(), time.Duration(r.currentSnapshot().cfg.DoHTimeoutSeconds)*time.Second)
+	defer client.CloseIdleConnections()
 	req, e := http.NewRequestWithContext(ctx, http.MethodGet, ch.HTTPURL, nil)
 	if e != nil {
 		return 0, e
@@ -1638,7 +1862,7 @@ func verifyOIDCIssuer(body []byte, discoveryURL string) error {
 }
 
 func newPinnedHTTPClient(ip, host string, timeout time.Duration) *http.Client {
-	tr := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: host}, ForceAttemptHTTP2: true, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+	tr := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: host}, ForceAttemptHTTP2: true, MaxIdleConns: 1, MaxIdleConnsPerHost: 1, IdleConnTimeout: 10 * time.Second, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 		_, port, e := net.SplitHostPort(address)
 		if e != nil {
 			port = "443"
@@ -1748,6 +1972,7 @@ func (r *Runtime) geminiProbe(ctx context.Context, u *UpstreamRuntime, c GeminiA
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-goog-api-key", key)
 	client := newPinnedHTTPClient(ips[0], host, time.Duration(r.currentSnapshot().cfg.DoHTimeoutSeconds)*time.Second)
+	defer client.CloseIdleConnections()
 	resp, e := client.Do(req)
 	if e != nil {
 		return "", e
@@ -1899,6 +2124,9 @@ func (r *Runtime) reloadLoop(ctx context.Context) {
 		r.initHealth(ns)
 		r.cacheMu.Lock()
 		r.cache = map[string]cacheItem{}
+		r.cacheOrder = nil
+		r.cacheOrderHead = 0
+		r.cacheBytes = 0
 		r.cacheMu.Unlock()
 		r.mu.Lock()
 		r.lastReload = time.Now().UTC()
@@ -1921,6 +2149,7 @@ func loadConfigNoCreate(path string) (Config, error) {
 	}
 	c, e = normalizeConfigGroups(c)
 	if e != nil { return Config{}, e }
+	c = normalizeCacheConfig(c)
 	if e = validateConfig(c); e != nil {
 		return Config{}, e
 	}
@@ -1933,7 +2162,21 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	s := r.currentSnapshot()
-	out := Status{ID: envOr("LUCX_PLUGIN_ID", pluginID), Version: envOr("LUCX_PLUGIN_VERSION", pluginVersion), StartedAt: startedAt, UpdatedAt: time.Now().UTC(), DNSUDP: s.cfg.DNSListenUDP, DNSTCP: s.cfg.DNSListenTCP, HTTP: s.cfg.HTTPListen, Config: r.configPath, Cache: CacheStatus{Enabled: s.cfg.Cache.Enabled, Entries: r.cacheLen(), MaxEntries: s.cfg.Cache.MaxEntries}, Groups: map[string]GroupStatus{}, DoHBootstrap: map[string]DoHBootstrapStatus{}, Queries: r.queries.Load(), CacheHits: r.cacheHits.Load(), Failures: r.failures.Load(), GeminiAPI: "disabled"}
+	cacheEntries, cacheBytes := r.cacheStats()
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	out := Status{
+		ID: envOr("LUCX_PLUGIN_ID", pluginID), Version: envOr("LUCX_PLUGIN_VERSION", pluginVersion),
+		StartedAt: startedAt, UpdatedAt: time.Now().UTC(), DNSUDP: s.cfg.DNSListenUDP,
+		DNSTCP: s.cfg.DNSListenTCP, HTTP: s.cfg.HTTPListen, Config: r.configPath,
+		Cache: CacheStatus{Enabled: s.cfg.Cache.Enabled, Entries: cacheEntries, MaxEntries: s.cfg.Cache.MaxEntries, Bytes: cacheBytes, MaxBytes: s.cfg.Cache.MaxBytes},
+		Groups: map[string]GroupStatus{}, DoHBootstrap: map[string]DoHBootstrapStatus{},
+		Queries: r.queries.Load(), CacheHits: r.cacheHits.Load(), Failures: r.failures.Load(),
+		ActiveUDP: r.activeUDP.Load(), UDPQueueDepth: r.udpQueueDepth.Load(), UDPDropped: r.udpDropped.Load(),
+		ActiveTCP: r.activeTCP.Load(), TCPRejected: r.tcpRejected.Load(), Goroutines: runtime.NumGoroutine(),
+		HeapAllocBytes: mem.HeapAlloc, HeapInuseBytes: mem.HeapInuse, HeapSysBytes: mem.HeapSys,
+		GeminiAPI: "disabled",
+	}
 	r.mu.RLock()
 	for gid, g := range s.groups {
 		gs := GroupStatus{ActiveUpstream: r.active[gid], Upstreams: map[string]HealthEntry{}}
@@ -1963,7 +2206,15 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 
 var startedAt = time.Now().UTC()
 
-func (r *Runtime) cacheLen() int { r.cacheMu.Lock(); defer r.cacheMu.Unlock(); return len(r.cache) }
+func (r *Runtime) cacheStats() (int, int) {
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+	return len(r.cache), r.cacheBytes
+}
+func (r *Runtime) cacheLen() int {
+	entries, _ := r.cacheStats()
+	return entries
+}
 func (r *Runtime) serveEvent(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost || req.URL.Path != "/_lucx/events" {
 		w.WriteHeader(http.StatusNotFound)
