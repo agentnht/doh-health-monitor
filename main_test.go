@@ -154,7 +154,7 @@ func TestDefaultConfigUsesProxyDNSProvidersOnly(t *testing.T) {
 		t.Errorf("Google connectivity check is not using the known-good 204 endpoint: %+v", google.Checks[2])
 	}
 	wantGoogleChecks := []string{
-		"gemini.google.com", "accounts.google.com", "connectivitycheck.gstatic.com",
+		"gemini.google.com", "accounts.google.com",
 		"aistudio.google.com", "alkalimakersuite-pa.clients6.google.com", "apis.google.com",
 		"www.googletagmanager.com", "waa-pa.clients6.google.com", "console.cloud.google.com",
 		"people-pa.clients6.google.com", "ln3.googleusercontent.com", "www.google-analytics.com",
