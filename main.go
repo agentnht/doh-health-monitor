@@ -29,7 +29,7 @@ import (
 
 const (
 	pluginID      = "doh-health-monitor"
-	pluginVersion = "1.3.0"
+	pluginVersion = "1.4.0"
 	maxDNSMessage = 65535
 	maxHTTPBody   = 2 << 20
 )
@@ -1014,13 +1014,19 @@ func (r *Runtime) httpProbe(ctx context.Context, u *UpstreamRuntime, ch Check) (
 	if e != nil {
 		return 0, e
 	}
-	req.Header.Set("User-Agent", "LucX-DoH-HealthMonitor/1.3.0")
+	req.Header.Set("User-Agent", "LucX-DoH-HealthMonitor/1.4.0")
 	resp, e := client.Do(req)
 	if e != nil {
 		return 0, e
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, (256<<10)+1))
+	if readErr != nil {
+		return resp.StatusCode, fmt.Errorf("read HTTP probe response: %w", readErr)
+	}
+	if len(body) > 256<<10 {
+		return resp.StatusCode, errors.New("HTTP probe response exceeds 256 KiB")
+	}
 	ok := len(ch.ExpectedStatus) == 0 && resp.StatusCode >= 200 && resp.StatusCode < 400
 	for _, s := range ch.ExpectedStatus {
 		if s == resp.StatusCode {
@@ -1031,13 +1037,32 @@ func (r *Runtime) httpProbe(ctx context.Context, u *UpstreamRuntime, ch Check) (
 		return resp.StatusCode, fmt.Errorf("unexpected HTTP status %d", resp.StatusCode)
 	}
 	if ch.VerifyOIDC {
-		var v map[string]any
-		if json.Unmarshal(body, &v) != nil || v["issuer"] == nil {
-			return resp.StatusCode, errors.New("OIDC configuration has no issuer")
+		if err := verifyOIDCIssuer(body, ch.HTTPURL); err != nil {
+			return resp.StatusCode, err
 		}
 	}
 	return resp.StatusCode, nil
 }
+
+func verifyOIDCIssuer(body []byte, discoveryURL string) error {
+	const suffix = "/.well-known/openid-configuration"
+	u, err := url.Parse(discoveryURL)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || !strings.HasSuffix(u.Path, suffix) {
+		return errors.New("OIDC discovery URL must be HTTPS and end with /.well-known/openid-configuration")
+	}
+	expectedIssuer := strings.TrimSuffix(discoveryURL, suffix)
+	var doc struct {
+		Issuer string `json:"issuer"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return fmt.Errorf("decode OIDC discovery document: %w", err)
+	}
+	if doc.Issuer == "" || doc.Issuer != expectedIssuer {
+		return fmt.Errorf("OIDC issuer mismatch: got %q, want %q", doc.Issuer, expectedIssuer)
+	}
+	return nil
+}
+
 func newPinnedHTTPClient(ip, host string, timeout time.Duration) *http.Client {
 	tr := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: host}, ForceAttemptHTTP2: true, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 		_, port, e := net.SplitHostPort(address)
@@ -1065,12 +1090,71 @@ func (r *Runtime) geminiDue(uid string, interval int) bool {
 	r.lastGemini[k] = time.Now()
 	return true
 }
+
+func readGeminiAPIKey(dataDir, relativePath string) ([]byte, error) {
+	if filepath.IsAbs(relativePath) {
+		return nil, errors.New("key file path must be relative to plugin data directory")
+	}
+	clean := filepath.Clean(relativePath)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
+		return nil, errors.New("key file path escapes plugin data directory")
+	}
+	root, err := filepath.EvalSymlinks(dataDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve plugin data directory: %w", err)
+	}
+	target := filepath.Join(root, clean)
+	parent, err := filepath.EvalSymlinks(filepath.Dir(target))
+	if err != nil {
+		return nil, fmt.Errorf("resolve key file directory: %w", err)
+	}
+	relParent, err := filepath.Rel(root, parent)
+	if err != nil || relParent == ".." || strings.HasPrefix(relParent, ".."+string(os.PathSeparator)) {
+		return nil, errors.New("key file path escapes plugin data directory")
+	}
+	target = filepath.Join(parent, filepath.Base(target))
+	fd, err := syscall.Open(target, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	f := os.NewFile(uintptr(fd), target)
+	if f == nil {
+		_ = syscall.Close(fd)
+		return nil, errors.New("open key file failed")
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, errors.New("key file must be a regular file")
+	}
+	if fi.Mode().Perm()&0077 != 0 {
+		return nil, errors.New("key file permissions must not grant group/other access (use 0600 or 0400)")
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Uid != uint32(os.Getuid()) && st.Uid != 0 {
+		return nil, errors.New("key file must be owned by the plugin user or root")
+	}
+	if fi.Size() > 8<<10 {
+		return nil, errors.New("key file exceeds 8 KiB")
+	}
+	b, err := io.ReadAll(io.LimitReader(f, (8<<10)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > 8<<10 {
+		return nil, errors.New("key file exceeds 8 KiB")
+	}
+	return b, nil
+}
+
 func (r *Runtime) geminiProbe(ctx context.Context, u *UpstreamRuntime, c GeminiAPIConfig) (string, error) {
 	keyPath := c.KeyFile
 	if !filepath.IsAbs(keyPath) {
 		keyPath = filepath.Join(r.dataDir, keyPath)
 	}
-	b, e := os.ReadFile(keyPath)
+	b, e := readGeminiAPIKey(r.dataDir, c.KeyFile)
 	if e != nil {
 		return "", fmt.Errorf("read Gemini API key file: %w", e)
 	}
@@ -1095,8 +1179,14 @@ func (r *Runtime) geminiProbe(ctx context.Context, u *UpstreamRuntime, c GeminiA
 		return "", e
 	}
 	defer resp.Body.Close()
-	rb, _ := io.ReadAll(io.LimitReader(resp.Body, maxHTTPBody))
-	if resp.StatusCode != 200 {
+	rb, readErr := io.ReadAll(io.LimitReader(resp.Body, maxHTTPBody+1))
+	if readErr != nil {
+		return "", fmt.Errorf("read Gemini API response: %w", readErr)
+	}
+	if len(rb) > maxHTTPBody {
+		return "", fmt.Errorf("Gemini API response exceeds %d bytes", maxHTTPBody)
+	}
+	if resp.StatusCode != http.StatusOK {
 		return "", GeminiHTTPError{Status: resp.StatusCode}
 	}
 	var out struct {
@@ -1173,8 +1263,15 @@ func (r *Runtime) publishHealthState() {
 				}
 			}
 		}
-		if chosen != "" && r.active[gid] != chosen {
-			old := r.active[gid]
+		old := r.active[gid]
+		if chosen == "" {
+			if old != "" {
+				delete(r.active, gid)
+				logLine("WARN", "DNS upstream selection cleared group=%s old=%s reason=no_usable_upstream", gid, old)
+			}
+			continue
+		}
+		if old != chosen {
 			r.active[gid] = chosen
 			logLine("INFO", "DNS upstream selection changed group=%s old=%s new=%s", gid, old, chosen)
 		}
@@ -1304,11 +1401,46 @@ func (r *Runtime) serveEvent(w http.ResponseWriter, req *http.Request) {
 	logLine("INFO", "EVENT received id=%s type=%s source=%s", safeLog(ev.ID), safeLog(ev.Type), safeLog(ev.Source))
 	w.WriteHeader(http.StatusNoContent)
 }
+
+func removeStaleSocket(path string) error {
+	fi, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("refusing to remove non-socket event path %q", path)
+	}
+	conn, dialErr := net.DialTimeout("unix", path, 200*time.Millisecond)
+	if dialErr == nil {
+		_ = conn.Close()
+		return fmt.Errorf("event socket %q is already active", path)
+	}
+	if !errors.Is(dialErr, syscall.ECONNREFUSED) && !errors.Is(dialErr, syscall.ENOENT) {
+		return fmt.Errorf("cannot verify stale event socket %q: %w", path, dialErr)
+	}
+	current, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(fi, current) || current.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("event socket path %q changed during stale-socket check", path)
+	}
+	return os.Remove(path)
+}
+
 func startEventSocket(path string) (net.Listener, *http.Server, error) {
 	if e := os.MkdirAll(filepath.Dir(path), 0700); e != nil {
 		return nil, nil, e
 	}
-	_ = os.Remove(path)
+	if e := removeStaleSocket(path); e != nil {
+		return nil, nil, e
+	}
 	ln, e := net.Listen("unix", path)
 	if e != nil {
 		return nil, nil, e
