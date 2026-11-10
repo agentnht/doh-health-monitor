@@ -273,3 +273,56 @@ func TestPublishHealthStateClearsUnavailableUpstream(t *testing.T) {
 		t.Fatalf("active upstream = %q, want cleared", got)
 	}
 }
+
+func TestRemoveSocketIfSame(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unixLn := ln.(*net.UnixListener)
+	unixLn.SetUnlinkOnClose(false)
+	expected, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeSocketIfSame(path, expected); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("socket path still exists or cannot be checked: %v", err)
+	}
+}
+
+func TestRemoveSocketIfSameRefusesReplacement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unixLn := ln.(*net.UnixListener)
+	unixLn.SetUnlinkOnClose(false)
+	expected, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("do not remove"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeSocketIfSame(path, expected); err == nil {
+		t.Fatal("expected replacement path to be rejected")
+	}
+	if b, err := os.ReadFile(path); err != nil || string(b) != "do not remove" {
+		t.Fatalf("replacement file was changed: data=%q err=%v", b, err)
+	}
+}
+
