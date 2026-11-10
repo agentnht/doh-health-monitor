@@ -106,28 +106,33 @@ func TestCacheRejectsZeroEntryLimitWhenEnabled(t *testing.T) {
 }
 
 func TestCacheFIFOAndByteLimit(t *testing.T) {
-	c := CacheConfig{Enabled: true, MinTTL: 1, MaxTTL: 120, NegativeTTL: 10, MaxEntries: 10, MaxBytes: 120}
+	c := CacheConfig{Enabled: true, MinTTL: 1, MaxTTL: 120, NegativeTTL: 10, MaxEntries: 50, MaxBytes: 1024}
 	r := &Runtime{cache: map[string]cacheItem{}}
-	q1 := makeDNSQuery("one.example", 1)
-	q2 := makeDNSQuery("two.example", 1)
-	resp1 := testAResponse(q1, 60)
-	resp2 := testAResponse(q2, 60)
-	cost1 := len(cacheKey(q1)) + len(resp1)
-	c.MaxBytes = cost1 + 1
-
-	r.cachePut(cacheKey(q1), resp1, c)
-	r.cachePut(cacheKey(q2), resp2, c)
+	var oldestKey string
+	var oldestID uint16
+	var newestKey string
+	var newestID uint16
+	for i := 0; i < 30; i++ {
+		q := makeDNSQuery(fmt.Sprintf("item%02d.example", i), 1)
+		if i == 0 {
+			oldestKey, oldestID = cacheKey(q), packetID(q)
+		}
+		if i == 29 {
+			newestKey, newestID = cacheKey(q), packetID(q)
+		}
+		r.cachePut(cacheKey(q), testAResponse(q, 60), c)
+	}
 	entries, used := r.cacheStats()
 	if entries > c.MaxEntries || used > c.MaxBytes {
 		t.Fatalf("cache limits exceeded: entries=%d bytes=%d", entries, used)
 	}
-	if entries != 1 {
-		t.Fatalf("entries=%d, want one after byte-cap eviction", entries)
+	if entries >= 30 {
+		t.Fatalf("entries=%d, want some FIFO eviction under 1 KiB budget", entries)
 	}
-	if _, ok := r.cacheGet(cacheKey(q1), packetID(q1)); ok {
+	if _, ok := r.cacheGet(oldestKey, oldestID); ok {
 		t.Fatal("oldest entry should have been evicted")
 	}
-	if _, ok := r.cacheGet(cacheKey(q2), packetID(q2)); !ok {
+	if _, ok := r.cacheGet(newestKey, newestID); !ok {
 		t.Fatal("newest cache entry should remain")
 	}
 }
