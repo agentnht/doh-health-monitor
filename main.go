@@ -434,8 +434,13 @@ func validateConfig(c Config) error {
 			return fmt.Errorf("invalid bootstrap resolver IP %q", ip)
 		}
 	}
+	normalizedHosts := map[string]bool{}
 	for host, entry := range c.LocalHosts {
 		normalized := normalizeDomain(host)
+		if normalizedHosts[normalized] {
+			return fmt.Errorf("duplicate local_hosts hostname after normalization: %q", host)
+		}
+		normalizedHosts[normalized] = true
 		if !validDNSHostname(normalized) {
 			return fmt.Errorf("invalid local_hosts hostname %q", host)
 		}
@@ -1132,7 +1137,9 @@ const localHostsTTL uint32 = 60
 // SVCB and HTTPS RR types. A nil/empty map leaves normal DoH processing untouched.
 func localHostsResponse(query []byte, host string, qtype uint16, hosts map[string]LocalHost) ([]byte, bool) {
 	entry, ok := hosts[normalizeDomain(host)]
-	if !ok || (qtype != 1 && qtype != 28 && qtype != 64 && qtype != 65) {
+	_, _, questionEnd, questionErr := parseQuestion(query)
+	if !ok || questionErr != nil || questionEnd < 2 || binary.BigEndian.Uint16(query[questionEnd-2:questionEnd]) != 1 ||
+		(qtype != 1 && qtype != 28 && qtype != 64 && qtype != 65) {
 		return nil, false
 	}
 	_, _, questionEnd, err := parseQuestion(query)
