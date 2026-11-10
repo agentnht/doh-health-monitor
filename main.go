@@ -35,7 +35,7 @@ const (
 )
 
 type Config struct {
-	LocalHosts             map[string]LocalHost `json:"local_hosts,omitempty"`
+	LocalHosts             map[string]LocalHost `json:"local_hosts"`
 	DNSListenUDP           string          `json:"dns_listen_udp"`
 	DNSListenTCP           string          `json:"dns_listen_tcp"`
 	HTTPListen             string          `json:"http_listen"`
