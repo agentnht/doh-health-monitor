@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -400,5 +402,99 @@ func TestRemoveSocketIfSameRefusesReplacement(t *testing.T) {
 	}
 	if b, err := os.ReadFile(path); err != nil || string(b) != "do not remove" {
 		t.Fatalf("replacement file was changed: data=%q err=%v", b, err)
+	}
+}
+
+
+func TestLocalHostsOptionalAndFamilySpecificAnswers(t *testing.T) {
+	if got, matched := localHostsResponse(makeDNSQuery("local.example", 1), "local.example", 1, nil); matched || got != nil {
+		t.Fatal("empty local_hosts must not intercept DNS")
+	}
+	hosts := map[string]LocalHost{
+		"local.example": {IPv4: []string{"192.0.2.10"}, IPv6: []string{"2001:db8::10"}},
+		"v4-only.example": {IPv4: []string{"192.0.2.20"}},
+	}
+	for _, tc := range []struct {
+		name string
+		qtype uint16
+		wantAnswers uint16
+		wantAuthority uint16
+	}{
+		{"local.example", 1, 1, 0},
+		{"local.example", 28, 1, 0},
+		{"v4-only.example", 1, 1, 0},
+		{"v4-only.example", 28, 0, 1},
+		{"local.example", 64, 0, 1},
+		{"local.example", 65, 0, 1},
+	} {
+		t.Run(tc.name+"/"+fmt.Sprint(tc.qtype), func(t *testing.T) {
+			q := makeDNSQuery(tc.name, tc.qtype)
+			// Ask for authenticated data; locally synthesized answers must never assert AD.
+			binary.BigEndian.PutUint16(q[2:4], 0x0130)
+			got, matched := localHostsResponse(q, tc.name, tc.qtype, hosts)
+			if !matched { t.Fatal("expected local_hosts match") }
+			if dnsRCode(got) != 0 { t.Fatalf("rcode=%d", dnsRCode(got)) }
+			if binary.BigEndian.Uint16(got[2:4])&0x0020 != 0 { t.Fatal("AD flag must be clear") }
+			if binary.BigEndian.Uint16(got[6:8]) != tc.wantAnswers { t.Fatalf("answers=%d", binary.BigEndian.Uint16(got[6:8])) }
+			if binary.BigEndian.Uint16(got[8:10]) != tc.wantAuthority { t.Fatalf("authority=%d", binary.BigEndian.Uint16(got[8:10])) }
+			positions, err := rrTTLPositions(got)
+			if err != nil { t.Fatal(err) }
+			if len(positions) == 0 { t.Fatal("expected answer or SOA TTL") }
+			for _, pos := range positions {
+				if ttl := binary.BigEndian.Uint32(got[pos:pos+4]); ttl != localHostsTTL { t.Fatalf("TTL=%d, want %d", ttl, localHostsTTL) }
+			}
+		})
+	}
+}
+
+func TestLocalHostsDoesNotInterceptOtherTypesOrNames(t *testing.T) {
+	hosts := map[string]LocalHost{"local.example": {IPv4: []string{"192.0.2.1"}}}
+	for _, tc := range []struct{name string; qtype uint16}{
+		{"local.example", 16}, // TXT continues through DoH
+		{"other.example", 1},
+	} {
+		if _, matched := localHostsResponse(makeDNSQuery(tc.name, tc.qtype), tc.name, tc.qtype, hosts); matched {
+			t.Fatalf("unexpected local interception for %s type %d", tc.name, tc.qtype)
+		}
+	}
+}
+
+func TestLocalHostsConfigValidation(t *testing.T) {
+	c := defaultConfig()
+	c.LocalHosts = map[string]LocalHost{"LOCAL.example.": {IPv4: []string{"192.0.2.1"}, IPv6: []string{"2001:db8::1"}}}
+	if err := validateConfig(c); err != nil { t.Fatalf("valid local_hosts rejected: %v", err) }
+	c.LocalHosts = map[string]LocalHost{"bad.example": {IPv4: []string{"2001:db8::1"}}}
+	if err := validateConfig(c); err == nil { t.Fatal("expected IPv4 family validation error") }
+	c.LocalHosts = map[string]LocalHost{"bad..example": {IPv4: []string{"192.0.2.1"}}}
+	if err := validateConfig(c); err == nil { t.Fatal("expected hostname validation error") }
+}
+
+
+func TestLocalHostsPreservesEDNSOPTAndDoesNotOverrideNonIN(t *testing.T) {
+	hosts := map[string]LocalHost{"local.example": {IPv4: []string{"192.0.2.1"}}}
+	q := makeDNSQuery("local.example", 1)
+	q = append(q, 0, 0, 41, 4, 208, 0, 0, 0, 0, 0, 0) // OPT, UDP payload 1232, empty options
+	binary.BigEndian.PutUint16(q[10:12], 1)
+	got, matched := localHostsResponse(q, "local.example", 1, hosts)
+	if !matched { t.Fatal("expected local host match") }
+	if binary.BigEndian.Uint16(got[10:12]) != 1 { t.Fatalf("additional count=%d, want 1", binary.BigEndian.Uint16(got[10:12])) }
+	if !bytes.Contains(got, []byte{0, 0, 41, 4, 208}) { t.Fatal("EDNS OPT record was not echoed") }
+
+	nonIN := makeDNSQuery("local.example", 1)
+	nonIN[len(nonIN)-2] = 0
+	nonIN[len(nonIN)-1] = 3
+	if _, matched := localHostsResponse(nonIN, "local.example", 1, hosts); matched {
+		t.Fatal("non-IN query must not be intercepted")
+	}
+}
+
+func TestLocalHostsRejectsDuplicateNormalizedNames(t *testing.T) {
+	c := defaultConfig()
+	c.LocalHosts = map[string]LocalHost{
+		"LOCAL.example": {IPv4: []string{"192.0.2.1"}},
+		"local.example.": {IPv4: []string{"192.0.2.2"}},
+	}
+	if err := validateConfig(c); err == nil {
+		t.Fatal("expected duplicate normalized hostname to be rejected")
 	}
 }
