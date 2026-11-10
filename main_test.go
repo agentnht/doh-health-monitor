@@ -145,11 +145,14 @@ func TestDefaultConfigUsesProxyDNSProvidersOnly(t *testing.T) {
 		t.Errorf("Gemini check URL = %q", google.Checks[0].HTTPURL)
 	}
 	wantGoogleChecks := []string{
-		"gemini.google.com", "accounts.google.com",
 		"aistudio.google.com", "alkalimakersuite-pa.clients6.google.com", "apis.google.com",
 		"www.googletagmanager.com", "waa-pa.clients6.google.com", "console.cloud.google.com",
 		"people-pa.clients6.google.com", "ln3.googleusercontent.com", "www.google-analytics.com",
-		"content-autofill.googleapis.com", "play.google.com", "ssl.gstatic.com", "www.googleapis.com",
+		"content-autofill.googleapis.com", "play.google.com", "google.com", "googleapis.com",
+		"gstatic.com", "googleusercontent.com", "google.org", "googleadservices.com",
+		"google-analytics.com", "gemini.google.com", "generativelanguage.googleapis.com",
+		"clients6.google.com", "jnn-pa.googleapis.com", "accounts.google.com",
+		"ssl.gstatic.com", "www.googleapis.com",
 	}
 	gotGoogleChecks := make([]string, 0, len(google.Checks))
 	for _, check := range google.Checks {
