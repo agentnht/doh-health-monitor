@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -466,4 +467,34 @@ func TestLocalHostsConfigValidation(t *testing.T) {
 	if err := validateConfig(c); err == nil { t.Fatal("expected IPv4 family validation error") }
 	c.LocalHosts = map[string]LocalHost{"bad..example": {IPv4: []string{"192.0.2.1"}}}
 	if err := validateConfig(c); err == nil { t.Fatal("expected hostname validation error") }
+}
+
+
+func TestLocalHostsPreservesEDNSOPTAndDoesNotOverrideNonIN(t *testing.T) {
+	hosts := map[string]LocalHost{"local.example": {IPv4: []string{"192.0.2.1"}}}
+	q := makeDNSQuery("local.example", 1)
+	q = append(q, 0, 0, 41, 4, 208, 0, 0, 0, 0, 0, 0) // OPT, UDP payload 1232, empty options
+	binary.BigEndian.PutUint16(q[10:12], 1)
+	got, matched := localHostsResponse(q, "local.example", 1, hosts)
+	if !matched { t.Fatal("expected local host match") }
+	if binary.BigEndian.Uint16(got[10:12]) != 1 { t.Fatalf("additional count=%d, want 1", binary.BigEndian.Uint16(got[10:12])) }
+	if !bytes.Contains(got, []byte{0, 0, 41, 4, 208}) { t.Fatal("EDNS OPT record was not echoed") }
+
+	nonIN := makeDNSQuery("local.example", 1)
+	nonIN[len(nonIN)-2] = 0
+	nonIN[len(nonIN)-1] = 3
+	if _, matched := localHostsResponse(nonIN, "local.example", 1, hosts); matched {
+		t.Fatal("non-IN query must not be intercepted")
+	}
+}
+
+func TestLocalHostsRejectsDuplicateNormalizedNames(t *testing.T) {
+	c := defaultConfig()
+	c.LocalHosts = map[string]LocalHost{
+		"LOCAL.example": {IPv4: []string{"192.0.2.1"}},
+		"local.example.": {IPv4: []string{"192.0.2.2"}},
+	}
+	if err := validateConfig(c); err == nil {
+		t.Fatal("expected duplicate normalized hostname to be rejected")
+	}
 }
