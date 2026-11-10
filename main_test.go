@@ -209,6 +209,130 @@ func TestPinnedHTTPClientKeepsTLSVerificationAndBoundsIdleConnections(t *testing
 	client.CloseIdleConnections()
 }
 
+func TestUDPWorkerPoolBoundsQueueUnderLoad(t *testing.T) {
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		q, err := io.ReadAll(req.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/dns-message")
+		_, _ = w.Write(testAResponse(q, 60))
+	}))
+	defer upstreamServer.Close()
+
+	upstream := &UpstreamRuntime{
+		cfg: Upstream{ID: "slow", URL: upstreamServer.URL},
+		client: upstreamServer.Client(),
+	}
+	s := &Snapshot{
+		cfg: Config{DNSMaxConcurrent: 1, DNSQueryTimeoutSeconds: 3, Cache: CacheConfig{Enabled: false}},
+		groups: map[string]Group{"google": {ID: "google", Upstreams: []string{"slow"}}},
+		upstreams: map[string]*UpstreamRuntime{"slow": upstream},
+	}
+	r := &Runtime{
+		dnsSem: make(chan struct{}, 1),
+		health: map[string]map[string]HealthEntry{},
+		active: map[string]string{"google": "slow"},
+		cache: map[string]cacheItem{},
+	}
+	r.snapshot.Store(s)
+
+	serverConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		r.serveUDP(ctx, serverConn)
+		close(done)
+	}()
+	clientConn, err := net.DialUDP("udp", nil, serverConn.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		cancel()
+		_ = serverConn.Close()
+		t.Fatal(err)
+	}
+	defer clientConn.Close()
+
+	for i := 0; i < 400; i++ {
+		q := makeDNSQuery(fmt.Sprintf("load-%03d.example", i), 1)
+		binary.BigEndian.PutUint16(q[:2], uint16(i+1))
+		if _, err := clientConn.Write(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for r.udpDropped.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if dropped := r.udpDropped.Load(); dropped == 0 {
+		t.Fatal("expected bounded UDP queue to drop excess burst packets")
+	}
+	if active := r.activeUDP.Load(); active > 1 {
+		t.Fatalf("active UDP workers=%d, want at most 1 from config", active)
+	}
+	if queued := r.udpQueueDepth.Load(); queued > udpQueueCapacity {
+		t.Fatalf("UDP queue depth=%d, capacity=%d", queued, udpQueueCapacity)
+	}
+
+	cancel()
+	_ = serverConn.Close()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("UDP server did not stop after cancellation")
+	}
+}
+
+func TestTCPConnectionLimitUnderLoad(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &Runtime{}
+	done := make(chan struct{})
+	go func() {
+		r.serveTCP(ctx, ln)
+		close(done)
+	}()
+
+	connections := make([]net.Conn, 0, maxTCPConnections+16)
+	defer func() {
+		cancel()
+		_ = ln.Close()
+		for _, conn := range connections {
+			_ = conn.Close()
+		}
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("TCP server did not stop after cancellation")
+		}
+	}()
+
+	for i := 0; i < maxTCPConnections+16; i++ {
+		conn, dialErr := net.DialTimeout("tcp", ln.Addr().String(), time.Second)
+		if dialErr != nil {
+			t.Fatalf("dial connection %d: %v", i+1, dialErr)
+		}
+		connections = append(connections, conn)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for r.tcpRejected.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if active := r.activeTCP.Load(); active > maxTCPConnections {
+		t.Fatalf("active TCP connections=%d, limit=%d", active, maxTCPConnections)
+	}
+	if rejected := r.tcpRejected.Load(); rejected == 0 {
+		t.Fatal("expected excess TCP connections to be rejected")
+	}
+}
+
 func BenchmarkCacheHit(b *testing.B) {
 	q := makeDNSQuery("benchmark.example", 1)
 	resp := testAResponse(q, 60)
