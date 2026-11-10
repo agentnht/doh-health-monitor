@@ -86,23 +86,6 @@
       ],
       "checks": [
         {
-          "domain": "gemini.google.com",
-          "http_url": "https://gemini.google.com/robots.txt",
-          "required": true,
-          "expected_status": [
-            200
-          ]
-        },
-        {
-          "domain": "accounts.google.com",
-          "http_url": "https://accounts.google.com/.well-known/openid-configuration",
-          "required": true,
-          "expected_status": [
-            200
-          ],
-          "verify_oidc": true
-        },
-        {
           "domain": "aistudio.google.com",
           "required": false
         },
@@ -145,6 +128,63 @@
         {
           "domain": "play.google.com",
           "required": false
+        },
+        {
+          "domain": "google.com",
+          "required": false
+        },
+        {
+          "domain": "googleapis.com",
+          "required": false
+        },
+        {
+          "domain": "gstatic.com",
+          "required": false
+        },
+        {
+          "domain": "googleusercontent.com",
+          "required": false
+        },
+        {
+          "domain": "google.org",
+          "required": false
+        },
+        {
+          "domain": "googleadservices.com",
+          "required": false
+        },
+        {
+          "domain": "google-analytics.com",
+          "required": false
+        },
+        {
+          "domain": "gemini.google.com",
+          "http_url": "https://gemini.google.com/robots.txt",
+          "required": true,
+          "expected_status": [
+            200
+          ]
+        },
+        {
+          "domain": "generativelanguage.googleapis.com",
+          "required": false
+        },
+        {
+          "domain": "clients6.google.com",
+          "required": false
+        },
+        {
+          "domain": "jnn-pa.googleapis.com",
+          "required": false
+        },
+        {
+          "domain": "accounts.google.com",
+          "http_url": "https://accounts.google.com/.well-known/openid-configuration",
+          "required": true,
+          "expected_status": [
+            200
+          ],
+          "verify_oidc": true
         },
         {
           "domain": "ssl.gstatic.com",
