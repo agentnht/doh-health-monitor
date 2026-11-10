@@ -123,6 +123,80 @@ func TestErrorResponse(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigUsesProxyDNSProvidersOnly(t *testing.T) {
+	want := []string{
+		"eu.geohide.ru",
+		"doh.dagami.ru",
+		"dns.comss.one",
+		"dns.bezmezhau.com",
+		"dns.zapret.moe",
+	}
+	c := defaultConfig()
+	got := make([]string, 0, len(c.Upstreams))
+	for _, u := range c.Upstreams {
+		got = append(got, u.ID)
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("default upstreams = %v, want %v", got, want)
+	}
+	for _, g := range c.Groups {
+		if strings.Join(g.Upstreams, ",") != strings.Join(want, ",") {
+			t.Errorf("group %s upstreams = %v, want %v", g.ID, g.Upstreams, want)
+		}
+	}
+	google := c.Groups[1]
+	if google.Checks[0].HTTPURL != "https://gemini.google.com/robots.txt" {
+		t.Errorf("Gemini check URL = %q", google.Checks[0].HTTPURL)
+	}
+	if google.Checks[2].Domain != "connectivitycheck.gstatic.com" ||
+		google.Checks[2].HTTPURL != "https://connectivitycheck.gstatic.com/generate_204" ||
+		strings.Join(intsToStrings(google.Checks[2].ExpectedStatus), ",") != "204" {
+		t.Errorf("Google connectivity check is not using the known-good 204 endpoint: %+v", google.Checks[2])
+	}
+	for _, g := range c.Groups {
+		switch g.ID {
+		case "openai":
+			if g.Checks[0].HTTPURL != "https://chatgpt.com/robots.txt" {
+				t.Errorf("OpenAI check URL = %q", g.Checks[0].HTTPURL)
+			}
+		case "youtube":
+			if g.Checks[0].HTTPURL != "https://www.youtube.com/robots.txt" {
+				t.Errorf("YouTube check URL = %q", g.Checks[0].HTTPURL)
+			}
+		}
+	}
+}
+
+func intsToStrings(values []int) []string {
+	out := make([]string, len(values))
+	for i, value := range values {
+		out[i] = fmt.Sprint(value)
+	}
+	return out
+}
+
+func TestLoadDoHListCreatesProxyProviderDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "doh-servers.txt")
+	urls, err := loadDoHList(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}
+	if len(urls) != len(want) {
+		t.Fatalf("default DoH URL count = %d, want %d: %#v", len(urls), len(want), urls)
+	}
+	for _, host := range want {
+		if urls[host] == "" {
+			t.Errorf("default DoH URL missing %s", host)
+		}
+	}
+	for _, excluded := range []string{"free.shecan.ir", "dns.google", "cloudflare-dns.com", "dns.quad9.net"} {
+		if _, ok := urls[excluded]; ok {
+			t.Errorf("excluded non-default provider %s is present", excluded)
+		}
+	}
+}
+
 func TestDefaultConfigUsesAutomaticBootstrap(t *testing.T) {
 	c := defaultConfig()
 	if len(c.BootstrapResolvers) == 0 {
@@ -331,7 +405,7 @@ func TestRFC8484DoHRoundTrip(t *testing.T) {
 
 func TestDoHListOneURLPerLine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "doh-servers.txt")
-	content := "# primary\nhttps://dns.google/dns-query\n\nhttps://cloudflare-dns.com/dns-query\n"
+	content := "# proxy providers\nhttps://eu.geohide.ru/dns-query\n\nhttps://doh.dagami.ru/dns-query\n"
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -339,11 +413,11 @@ func TestDoHListOneURLPerLine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if urls["dns.google"] != "https://dns.google/dns-query" {
-		t.Fatalf("google URL: %q", urls["dns.google"])
+	if urls["eu.geohide.ru"] != "https://eu.geohide.ru/dns-query" {
+		t.Fatalf("GeoHide URL: %q", urls["eu.geohide.ru"])
 	}
-	if urls["cloudflare-dns.com"] != "https://cloudflare-dns.com/dns-query" {
-		t.Fatalf("cloudflare URL: %q", urls["cloudflare-dns.com"])
+	if urls["doh.dagami.ru"] != "https://doh.dagami.ru/dns-query" {
+		t.Fatalf("Dagami URL: %q", urls["doh.dagami.ru"])
 	}
 }
 
