@@ -7,17 +7,18 @@
   "doh_timeout_seconds": 10,
   "dns_max_concurrent": 256,
   "health": {
-    "interval_seconds": 45,
+    "interval_seconds": 1500,
     "timeout_seconds": 5,
     "failure_threshold": 3,
-    "success_threshold": 5
+    "success_threshold": 1
   },
   "cache": {
     "enabled": true,
     "min_ttl_seconds": 5,
     "max_ttl_seconds": 300,
     "negative_ttl_seconds": 15,
-    "max_entries": 8192
+    "max_entries": 8192,
+    "max_bytes": 8388608
   },
   "upstreams": [
     {
