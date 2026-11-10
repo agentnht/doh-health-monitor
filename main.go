@@ -1630,7 +1630,8 @@ func (r *Runtime) cachePut(key string, packet []byte, c CacheConfig) {
 	if ttl == 0 {
 		return
 	}
-	cost := len(key) + len(packet)
+	const cacheItemOverheadEstimate = 128
+	cost := len(key) + len(packet) + cacheItemOverheadEstimate
 	if cost > c.MaxBytes {
 		return
 	}
@@ -2014,6 +2015,24 @@ func geminiAuthOrQuotaError(err error) bool {
 func (r *Runtime) updateHealth(gid, uid string, ok bool, lat time.Duration, lastErr string, httpStatus int, gemState string, checks []ProbeStatus, h HealthConfig) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// A health cycle may finish after a hot reload. Do not recreate removed
+	// groups/upstreams from a snapshot that is no longer current.
+	if s := r.currentSnapshot(); s != nil {
+		g, exists := s.groups[gid]
+		if !exists {
+			return
+		}
+		found := false
+		for _, configuredID := range g.Upstreams {
+			if configuredID == uid {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return
+		}
+	}
 	if r.health[gid] == nil {
 		r.health[gid] = map[string]HealthEntry{}
 	}
@@ -2043,9 +2062,12 @@ func (r *Runtime) updateHealth(gid, uid string, ok bool, lat time.Duration, last
 	r.health[gid][uid] = e
 }
 func (r *Runtime) publishHealthState() {
-	s := r.currentSnapshot()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	s := r.currentSnapshot()
+	if s == nil {
+		return
+	}
 	for gid, g := range s.groups {
 		chosen := ""
 		for _, uid := range g.Upstreams {
