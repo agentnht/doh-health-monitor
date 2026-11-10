@@ -74,7 +74,8 @@
         "generativelanguage.googleapis.com",
         "clients6.google.com",
         "jnn-pa.googleapis.com",
-        "waa-pa.clients6.google.com"
+        "waa-pa.clients6.google.com",
+        "google-analytics.com"
       ],
       "upstreams": [
         "eu.geohide.ru",
@@ -110,6 +111,50 @@
           ]
         },
         {
+          "domain": "aistudio.google.com",
+          "required": false
+        },
+        {
+          "domain": "alkalimakersuite-pa.clients6.google.com",
+          "required": false
+        },
+        {
+          "domain": "apis.google.com",
+          "required": false
+        },
+        {
+          "domain": "www.googletagmanager.com",
+          "required": false
+        },
+        {
+          "domain": "waa-pa.clients6.google.com",
+          "required": false
+        },
+        {
+          "domain": "console.cloud.google.com",
+          "required": false
+        },
+        {
+          "domain": "people-pa.clients6.google.com",
+          "required": false
+        },
+        {
+          "domain": "ln3.googleusercontent.com",
+          "required": false
+        },
+        {
+          "domain": "www.google-analytics.com",
+          "required": false
+        },
+        {
+          "domain": "content-autofill.googleapis.com",
+          "required": false
+        },
+        {
+          "domain": "play.google.com",
+          "required": false
+        },
+        {
           "domain": "ssl.gstatic.com",
           "http_url": "https://ssl.gstatic.com/",
           "required": false,
@@ -121,18 +166,6 @@
           ]
         },
         {
-          "domain": "fonts.googleapis.com",
-          "http_url": "https://fonts.googleapis.com/css2?family=Roboto",
-          "required": false,
-          "expected_status": [
-            200
-          ]
-        },
-        {
-          "domain": "fonts.gstatic.com",
-          "required": false
-        },
-        {
           "domain": "www.googleapis.com",
           "http_url": "https://www.googleapis.com/",
           "required": false,
@@ -142,18 +175,6 @@
             302,
             403
           ]
-        },
-        {
-          "domain": "apis.google.com",
-          "required": false
-        },
-        {
-          "domain": "jnn-pa.googleapis.com",
-          "required": false
-        },
-        {
-          "domain": "waa-pa.clients6.google.com",
-          "required": false
         }
       ]
     },
