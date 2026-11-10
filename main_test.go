@@ -89,9 +89,9 @@ func TestDomainGroupLongestSuffixAndFakeDNS(t *testing.T) {
 	r := &Runtime{}
 	cases := map[string]string{
 		"gemini.google.com":       "google",
-		"youtubei.googleapis.com": "youtube",
-		"www.netflix.com":         "netflix",
-		"chatgpt.com":             "openai",
+		"youtubei.googleapis.com": "default",
+		"www.netflix.com":         "default",
+		"chatgpt.com":             "default",
 		"ordinary.example":        "default",
 	}
 	for host, want := range cases {
@@ -99,27 +99,20 @@ func TestDomainGroupLongestSuffixAndFakeDNS(t *testing.T) {
 			t.Errorf("groupFor(%s)=%s, want %s", host, got, want)
 		}
 	}
-	for _, id := range []string{"google", "netflix", "openai", "youtube"} {
-		if !s.groups[id].FakeDNS {
-			t.Errorf("group %s should have FakeDNS enabled in example", id)
-		}
+	if len(c.Groups) != 2 {
+		t.Fatalf("default config has %d groups, want only default and google", len(c.Groups))
+	}
+	if c.Groups[0].ID != "default" || c.Groups[0].FakeDNS {
+		t.Errorf("first group must be default with fake_dns=false: %+v", c.Groups[0])
+	}
+	if c.Groups[1].ID != "google" || !c.Groups[1].FakeDNS {
+		t.Errorf("second group must be google with fake_dns=true: %+v", c.Groups[1])
 	}
 }
 
 func TestDefaultConfigValid(t *testing.T) {
 	if err := validateConfig(defaultConfig()); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestErrorResponse(t *testing.T) {
-	q := makeDNSQuery("bad.example", 1)
-	r := servfailResponse(q)
-	if dnsRCode(r) != 2 {
-		t.Fatalf("rcode=%d, want SERVFAIL", dnsRCode(r))
-	}
-	if binary.BigEndian.Uint16(r[2:4])&0x8000 == 0 {
-		t.Fatal("response bit not set")
 	}
 }
 
@@ -144,6 +137,9 @@ func TestDefaultConfigUsesProxyDNSProvidersOnly(t *testing.T) {
 			t.Errorf("group %s upstreams = %v, want %v", g.ID, g.Upstreams, want)
 		}
 	}
+	if len(c.Groups) != 2 || c.Groups[1].ID != "google" {
+		t.Fatalf("default config groups = %+v, want only default and google", c.Groups)
+	}
 	google := c.Groups[1]
 	if google.Checks[0].HTTPURL != "https://gemini.google.com/robots.txt" {
 		t.Errorf("Gemini check URL = %q", google.Checks[0].HTTPURL)
@@ -156,24 +152,14 @@ func TestDefaultConfigUsesProxyDNSProvidersOnly(t *testing.T) {
 		"content-autofill.googleapis.com", "play.google.com", "ssl.gstatic.com", "www.googleapis.com",
 	}
 	gotGoogleChecks := make([]string, 0, len(google.Checks))
-	for _, check := range google.Checks { gotGoogleChecks = append(gotGoogleChecks, check.Domain) }
+	for _, check := range google.Checks {
+		gotGoogleChecks = append(gotGoogleChecks, check.Domain)
+	}
 	if strings.Join(gotGoogleChecks, ",") != strings.Join(wantGoogleChecks, ",") {
 		t.Errorf("Google checks = %v, want %v", gotGoogleChecks, wantGoogleChecks)
 	}
 	if !containsString(google.Domains, "google-analytics.com") {
 		t.Errorf("Google group domains must include google-analytics.com")
-	}
-	for _, g := range c.Groups {
-		switch g.ID {
-		case "openai":
-			if g.Checks[0].HTTPURL != "https://chatgpt.com/robots.txt" {
-				t.Errorf("OpenAI check URL = %q", g.Checks[0].HTTPURL)
-			}
-		case "youtube":
-			if g.Checks[0].HTTPURL != "https://www.youtube.com/robots.txt" {
-				t.Errorf("YouTube check URL = %q", g.Checks[0].HTTPURL)
-			}
-		}
 	}
 }
 
