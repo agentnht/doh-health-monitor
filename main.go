@@ -35,6 +35,7 @@ const (
 )
 
 type Config struct {
+	LocalHosts             map[string]LocalHost `json:"local_hosts,omitempty"`
 	DNSListenUDP           string          `json:"dns_listen_udp"`
 	DNSListenTCP           string          `json:"dns_listen_tcp"`
 	HTTPListen             string          `json:"http_listen"`
@@ -48,6 +49,10 @@ type Config struct {
 	BootstrapResolvers     []string        `json:"bootstrap_resolvers,omitempty"`
 	Groups                 []Group         `json:"groups"`
 	GeminiAPI              GeminiAPIConfig `json:"gemini_api"`
+}
+type LocalHost struct {
+	IPv4 []string `json:"ipv4"`
+	IPv6 []string `json:"ipv6"`
 }
 type HealthConfig struct {
 	IntervalSeconds  int `json:"interval_seconds"`
@@ -96,6 +101,7 @@ type GeminiAPIConfig struct {
 
 type Snapshot struct {
 	cfg       Config
+	localHosts map[string]LocalHost
 	upstreams map[string]*UpstreamRuntime
 	groups    map[string]Group
 	byDomain  []domainBinding
@@ -372,6 +378,7 @@ func defaultConfig() Config {
 		DNSQueryTimeoutSeconds: 15, DoHTimeoutSeconds: 10, DNSMaxConcurrent: 256,
 		Health: HealthConfig{IntervalSeconds: 45, TimeoutSeconds: 5, FailureThreshold: 3, SuccessThreshold: 5},
 		Cache:  CacheConfig{Enabled: true, MinTTL: 5, MaxTTL: 300, NegativeTTL: 15, MaxEntries: 8192},
+		LocalHosts: map[string]LocalHost{},
 		BootstrapResolvers: []string{"1.1.1.1", "8.8.8.8"},
 		Upstreams: []Upstream{
 			{ID: "dns.google", Name: "Google Public DNS"},
@@ -425,6 +432,24 @@ func validateConfig(c Config) error {
 	for _, ip := range resolvers {
 		if net.ParseIP(ip) == nil {
 			return fmt.Errorf("invalid bootstrap resolver IP %q", ip)
+		}
+	}
+	for host, entry := range c.LocalHosts {
+		normalized := normalizeDomain(host)
+		if !validDNSHostname(normalized) {
+			return fmt.Errorf("invalid local_hosts hostname %q", host)
+		}
+		for _, raw := range entry.IPv4 {
+			ip := net.ParseIP(strings.TrimSpace(raw))
+			if ip == nil || ip.To4() == nil {
+				return fmt.Errorf("local_hosts %s has invalid IPv4 address %q", host, raw)
+			}
+		}
+		for _, raw := range entry.IPv6 {
+			ip := net.ParseIP(strings.TrimSpace(raw))
+			if ip == nil || ip.To4() != nil || ip.To16() == nil {
+				return fmt.Errorf("local_hosts %s has invalid IPv6 address %q", host, raw)
+			}
 		}
 	}
 	ids := map[string]bool{}
@@ -494,6 +519,22 @@ func validateConfig(c Config) error {
 	}
 	return nil
 }
+func validDNSHostname(host string) bool {
+	if host == "" || len(host) > 253 || net.ParseIP(host) != nil {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
 func validListen(s string) bool {
 	h, p, e := net.SplitHostPort(s)
 	return e == nil && h != "" && p != ""
@@ -546,7 +587,10 @@ func loadDoHList(path string, create bool) (map[string]string, error) {
 }
 
 func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
-	s := &Snapshot{cfg: c, upstreams: map[string]*UpstreamRuntime{}, groups: map[string]Group{}, loadedAt: time.Now().UTC()}
+	s := &Snapshot{cfg: c, upstreams: map[string]*UpstreamRuntime{}, groups: map[string]Group{}, localHosts: map[string]LocalHost{}, loadedAt: time.Now().UTC()}
+	for host, entry := range c.LocalHosts {
+		s.localHosts[normalizeDomain(host)] = entry
+	}
 	known := map[string]bool{}
 	for _, u := range c.Upstreams {
 		known[u.ID] = true
@@ -1054,11 +1098,14 @@ func (r *Runtime) handleDNS(packet []byte) []byte {
 		return servfailResponse(packet)
 	}
 	r.queries.Add(1)
-	name, _, _, e := parseQuestion(packet)
+	name, qtype, _, e := parseQuestion(packet)
 	if e != nil {
 		return formerrResponse(packet)
 	}
 	s := r.currentSnapshot()
+	if response, matched := localHostsResponse(packet, normalizeDomain(name), qtype, s.localHosts); matched {
+		return response
+	}
 	cacheKey := cacheKey(packet)
 	if s.cfg.Cache.Enabled {
 		if v, ok := r.cacheGet(cacheKey, packetID(packet)); ok {
@@ -1078,6 +1125,136 @@ func (r *Runtime) handleDNS(packet []byte) []byte {
 	logLine("DEBUG", "DNS answer domain=%s group=%s upstream=%s", name, r.groupFor(name, s), uid)
 	return resp
 }
+
+const localHostsTTL uint32 = 60
+
+// localHostsResponse handles only explicitly configured hosts and the A, AAAA,
+// SVCB and HTTPS RR types. A nil/empty map leaves normal DoH processing untouched.
+func localHostsResponse(query []byte, host string, qtype uint16, hosts map[string]LocalHost) ([]byte, bool) {
+	entry, ok := hosts[normalizeDomain(host)]
+	if !ok || (qtype != 1 && qtype != 28 && qtype != 64 && qtype != 65) {
+		return nil, false
+	}
+	_, _, questionEnd, err := parseQuestion(query)
+	if err != nil || questionEnd > len(query) {
+		return nil, false
+	}
+	opt := extractEDNSOPT(query)
+	flags := binary.BigEndian.Uint16(query[2:4])
+	responseFlags := (flags & 0x7900) | 0x8080 // preserve opcode/RD; set QR and RA; AD is deliberately clear
+	response := make([]byte, 12)
+	copy(response[:2], query[:2])
+	binary.BigEndian.PutUint16(response[2:4], responseFlags)
+	binary.BigEndian.PutUint16(response[4:6], 1)
+	response = append(response, query[12:questionEnd]...)
+	answers := 0
+	if qtype == 1 {
+		for _, raw := range entry.IPv4 {
+			ip := net.ParseIP(strings.TrimSpace(raw)).To4()
+			if ip == nil {
+				continue
+			}
+			response = appendLocalHostRR(response, qtype, ip)
+			answers++
+		}
+	} else if qtype == 28 {
+		for _, raw := range entry.IPv6 {
+			ip := net.ParseIP(strings.TrimSpace(raw)).To16()
+			if ip == nil || net.ParseIP(strings.TrimSpace(raw)).To4() != nil {
+				continue
+			}
+			response = appendLocalHostRR(response, qtype, ip)
+			answers++
+		}
+	}
+	binary.BigEndian.PutUint16(response[6:8], uint16(answers))
+	if answers == 0 {
+		response = appendLocalHostSOA(response)
+		binary.BigEndian.PutUint16(response[8:10], 1)
+	}
+	if len(opt) > 0 {
+		response = append(response, opt...)
+		binary.BigEndian.PutUint16(response[10:12], 1)
+	}
+	return response, true
+}
+
+func appendLocalHostRR(packet []byte, qtype uint16, ip []byte) []byte {
+	packet = append(packet, 0xc0, 0x0c) // owner name points to QNAME
+	packet = append(packet, byte(qtype>>8), byte(qtype), 0, 1)
+	var ttl [4]byte
+	binary.BigEndian.PutUint32(ttl[:], localHostsTTL)
+	packet = append(packet, ttl[:]...)
+	packet = append(packet, byte(len(ip)>>8), byte(len(ip)))
+	return append(packet, ip...)
+}
+
+func appendLocalHostSOA(packet []byte) []byte {
+	packet = append(packet, 0xc0, 0x0c) // SOA owner name
+	packet = append(packet, 0, 6, 0, 1)
+	var ttl [4]byte
+	binary.BigEndian.PutUint32(ttl[:], localHostsTTL)
+	packet = append(packet, ttl[:]...)
+	soa := make([]byte, 0, 64)
+	soa = appendDNSName(soa, "ns.local-hosts.invalid")
+	soa = appendDNSName(soa, "hostmaster.local-hosts.invalid")
+	for _, value := range []uint32{1, localHostsTTL, localHostsTTL, localHostsTTL, localHostsTTL} {
+		var raw [4]byte
+		binary.BigEndian.PutUint32(raw[:], value)
+		soa = append(soa, raw[:]...)
+	}
+	packet = append(packet, byte(len(soa)>>8), byte(len(soa)))
+	return append(packet, soa...)
+}
+
+func appendDNSName(packet []byte, name string) []byte {
+	for _, label := range strings.Split(name, ".") {
+		packet = append(packet, byte(len(label)))
+		packet = append(packet, label...)
+	}
+	return append(packet, 0)
+}
+
+// extractEDNSOPT returns the first OPT RR from the additional section, if any.
+func extractEDNSOPT(query []byte) []byte {
+	if len(query) < 12 {
+		return nil
+	}
+	off := 12
+	qd := int(binary.BigEndian.Uint16(query[4:6]))
+	counts := []int{
+		int(binary.BigEndian.Uint16(query[6:8])),
+		int(binary.BigEndian.Uint16(query[8:10])),
+		int(binary.BigEndian.Uint16(query[10:12])),
+	}
+	for i := 0; i < qd; i++ {
+		n, err := skipName(query, off)
+		if err != nil || n+4 > len(query) {
+			return nil
+		}
+		off = n + 4
+	}
+	for section, count := range counts {
+		for i := 0; i < count; i++ {
+			start := off
+			n, err := skipName(query, off)
+			if err != nil || n+10 > len(query) {
+				return nil
+			}
+			typ := binary.BigEndian.Uint16(query[n:n+2])
+			rdlen := int(binary.BigEndian.Uint16(query[n+8:n+10]))
+			off = n + 10 + rdlen
+			if off > len(query) {
+				return nil
+			}
+			if section == 2 && typ == 41 {
+				return append([]byte(nil), query[start:off]...)
+			}
+		}
+	}
+	return nil
+}
+
 func (r *Runtime) cacheGet(key string, id uint16) ([]byte, bool) {
 	r.cacheMu.Lock()
 	defer r.cacheMu.Unlock()
