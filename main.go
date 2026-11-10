@@ -30,6 +30,9 @@ import (
 const (
 	pluginID      = "doh-health-monitor"
 	pluginVersion = "1.7.1"
+	systemDNSUpstreamID = "system-dns"
+	systemResolvConfPath = "/etc/resolv.conf"
+	systemDNSPerServerTimeout = 2 * time.Second
 	maxDNSMessage        = 65535
 	maxHTTPBody          = 2 << 20
 	defaultCacheMaxBytes = 8 << 20
@@ -78,6 +81,7 @@ type CacheConfig struct {
 type Upstream struct {
 	ID           string   `json:"id"`
 	Name         string   `json:"name"`
+	Type         string   `json:"type,omitempty"`
 	URL          string   `json:"-"`
 	BootstrapIPs []string `json:"bootstrap_ips"`
 }
@@ -122,6 +126,11 @@ type UpstreamRuntime struct {
 	cfg       Upstream
 	client    *http.Client
 	bootstrap *bootstrapResolver
+	systemDNS *systemDNSResolver
+}
+
+type systemDNSResolver struct {
+	resolvConfPath string
 }
 
 type bootstrapResolver struct {
@@ -226,8 +235,10 @@ type Status struct {
 	Config       string                          `json:"config"`
 	Cache        CacheStatus                     `json:"cache"`
 	Groups       map[string]GroupStatus          `json:"groups"`
-	DoHBootstrap map[string]DoHBootstrapStatus   `json:"doh_bootstrap,omitempty"`
-	GeminiAPI    string                          `json:"gemini_api"`
+	DoHBootstrap       map[string]DoHBootstrapStatus `json:"doh_bootstrap,omitempty"`
+	SystemDNSServers    []string                      `json:"system_dns_servers,omitempty"`
+	SystemDNSError      string                        `json:"system_dns_error,omitempty"`
+	GeminiAPI           string                        `json:"gemini_api"`
 	Queries      uint64                          `json:"queries"`
 	CacheHits      uint64                          `json:"cache_hits"`
 	Failures       uint64                          `json:"failures"`
@@ -472,6 +483,7 @@ func defaultConfig() Config {
 		LocalHosts: map[string]LocalHost{},
 		BootstrapResolvers: []string{"1.1.1.1", "8.8.8.8"},
 		Upstreams: []Upstream{
+			{ID: systemDNSUpstreamID, Name: "System DNS (VPS)", Type: "system"},
 			{ID: "eu.geohide.ru", Name: "GeoHide EU"},
 			{ID: "doh.dagami.ru", Name: "Dagami"},
 			{ID: "dns.comss.one", Name: "Comss.one"},
@@ -479,7 +491,7 @@ func defaultConfig() Config {
 			{ID: "dns.zapret.moe", Name: "Zapret"},
 		},
 		Groups: []Group{
-			{ID: "google", Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{
+			{ID: "google", Upstreams: []string{systemDNSUpstreamID, "eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{
 				{Domain: "aistudio.google.com", Required: false},
 				{Domain: "alkalimakersuite-pa.clients6.google.com", Required: false},
 				{Domain: "apis.google.com", Required: false},
@@ -516,10 +528,46 @@ func normalizeConfigGroups(c Config) (Config, error) {
 	for _, g := range c.Groups {
 		if g.ID == "google" {
 			c.Groups = []Group{g}
-			return c, nil
+			return ensureSystemDNSFirst(c)
 		}
 	}
 	return Config{}, errors.New("configuration has no group with id 'google'")
+}
+
+func ensureSystemDNSFirst(c Config) (Config, error) {
+	var system Upstream
+	found := false
+	remaining := make([]Upstream, 0, len(c.Upstreams)+1)
+	for _, u := range c.Upstreams {
+		if u.ID == systemDNSUpstreamID {
+			if found {
+				return Config{}, fmt.Errorf("duplicate upstream id %q", systemDNSUpstreamID)
+			}
+			if u.Type != "system" {
+				return Config{}, fmt.Errorf("upstream %q is reserved for type system", systemDNSUpstreamID)
+			}
+			system = u
+			found = true
+			continue
+		}
+		remaining = append(remaining, u)
+	}
+	if !found {
+		system = Upstream{ID: systemDNSUpstreamID, Name: "System DNS (VPS)", Type: "system"}
+	}
+	c.Upstreams = append([]Upstream{system}, remaining...)
+
+	group := c.Groups[0]
+	ordered := make([]string, 0, len(group.Upstreams)+1)
+	ordered = append(ordered, systemDNSUpstreamID)
+	for _, id := range group.Upstreams {
+		if id != systemDNSUpstreamID {
+			ordered = append(ordered, id)
+		}
+	}
+	group.Upstreams = ordered
+	c.Groups[0] = group
+	return c, nil
 }
 
 func normalizeCacheConfig(c Config) Config {
@@ -585,6 +633,7 @@ func validateConfig(c Config) error {
 		}
 	}
 	ids := map[string]bool{}
+	systemDNSCount := 0
 	for _, u := range c.Upstreams {
 		if u.ID == "" || ids[u.ID] {
 			return fmt.Errorf("upstream id empty or duplicate: %q", u.ID)
@@ -593,11 +642,34 @@ func validateConfig(c Config) error {
 		if strings.ContainsAny(u.ID, "/:@ \t") {
 			return fmt.Errorf("upstream id must be a hostname: %s", u.ID)
 		}
+		switch u.Type {
+		case "":
+			if u.ID == systemDNSUpstreamID {
+				return fmt.Errorf("upstream %q must have type system", systemDNSUpstreamID)
+			}
+		case "system":
+			systemDNSCount++
+			if u.ID != systemDNSUpstreamID {
+				return fmt.Errorf("system DNS upstream must use id %q", systemDNSUpstreamID)
+			}
+			if len(u.BootstrapIPs) != 0 {
+				return errors.New("system DNS upstream must not define bootstrap_ips")
+			}
+		case "doh":
+			if u.ID == systemDNSUpstreamID {
+				return fmt.Errorf("upstream id %q is reserved for system DNS", systemDNSUpstreamID)
+			}
+		default:
+			return fmt.Errorf("unsupported upstream type %q for %s", u.Type, u.ID)
+		}
 		for _, ip := range u.BootstrapIPs {
 			if net.ParseIP(ip) == nil {
 				return fmt.Errorf("invalid bootstrap IP %q in %s", ip, u.ID)
 			}
 		}
+	}
+	if systemDNSCount != 1 {
+		return fmt.Errorf("exactly one system DNS upstream is required; got %d", systemDNSCount)
 	}
 	groups := map[string]bool{}
 	for _, g := range c.Groups {
@@ -734,12 +806,24 @@ func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
 		if !known[id] {
 			return nil, fmt.Errorf("DoH server %s in doh-servers.txt has no upstream/bootstrap entry in config.json", id)
 		}
+		for _, configured := range c.Upstreams {
+			if configured.ID == id && configured.Type == "system" {
+				return nil, fmt.Errorf("system DNS upstream %s must not have a DoH URL", id)
+			}
+		}
 	}
 	resolvers := c.BootstrapResolvers
 	if len(resolvers) == 0 {
 		resolvers = defaultBootstrapResolvers()
 	}
 	for _, u := range c.Upstreams {
+		if u.Type == "system" {
+			s.upstreams[u.ID] = &UpstreamRuntime{
+				cfg: u,
+				systemDNS: &systemDNSResolver{resolvConfPath: systemResolvConfPath},
+			}
+			continue
+		}
 		urlValue, ok := dohURLs[u.ID]
 		if !ok {
 			continue
@@ -1171,7 +1255,7 @@ func (r *Runtime) query(ctx context.Context, packet []byte) ([]byte, string, err
 		if u == nil {
 			continue
 		}
-		resp, e := sendDoH(ctx, u, packet)
+		resp, e := sendUpstreamDNS(ctx, u, packet)
 		if e == nil {
 			if dnsRCode(resp) == 2 || dnsRCode(resp) == 5 {
 				e = fmt.Errorf("upstream returned DNS RCODE %d", dnsRCode(resp))
@@ -1186,6 +1270,13 @@ func (r *Runtime) query(ctx context.Context, packet []byte) ([]byte, string, err
 	r.failures.Add(1)
 	return nil, "", fmt.Errorf("all upstreams failed for %s (%s)", name, strings.Join(errs, "; "))
 }
+func sendUpstreamDNS(ctx context.Context, u *UpstreamRuntime, packet []byte) ([]byte, error) {
+	if u != nil && u.systemDNS != nil {
+		return u.systemDNS.query(ctx, packet)
+	}
+	return sendDoH(ctx, u, packet)
+}
+
 func sendDoH(ctx context.Context, u *UpstreamRuntime, packet []byte) ([]byte, error) {
 	req, e := http.NewRequestWithContext(ctx, http.MethodPost, u.cfg.URL, bytes.NewReader(packet))
 	if e != nil {
@@ -1794,9 +1885,201 @@ func (r *Runtime) runChecks(ctx context.Context) {
 }
 
 func (r *Runtime) queryVia(ctx context.Context, u *UpstreamRuntime, q []byte) ([]byte, string, error) {
-	resp, e := sendDoH(ctx, u, q)
+	resp, e := sendUpstreamDNS(ctx, u, q)
 	return resp, u.cfg.ID, e
 }
+
+func parseSystemDNSServers(contents string) []string {
+	servers := make([]string, 0, 2)
+	seen := make(map[string]bool)
+	for _, raw := range strings.Split(contents, "\n") {
+		fields := strings.Fields(raw)
+		if len(fields) < 2 || fields[0] != "nameserver" {
+			continue
+		}
+		value := strings.TrimSpace(fields[1])
+		host, zone, hasZone := strings.Cut(value, "%")
+		ip := net.ParseIP(host)
+		if ip == nil {
+			continue
+		}
+		normalized := ip.String()
+		if hasZone && zone != "" {
+			normalized += "%" + zone
+		}
+		if !seen[normalized] {
+			seen[normalized] = true
+			servers = append(servers, normalized)
+		}
+	}
+	return servers
+}
+
+func readSystemDNSServers(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read system resolver config %s: %w", path, err)
+	}
+	servers := parseSystemDNSServers(string(data))
+	if len(servers) == 0 {
+		return nil, fmt.Errorf("no valid nameserver entries in %s", path)
+	}
+	return servers, nil
+}
+
+func (r *systemDNSResolver) query(ctx context.Context, packet []byte) ([]byte, error) {
+	path := r.resolvConfPath
+	if path == "" {
+		path = systemResolvConfPath
+	}
+	servers, err := readSystemDNSServers(path)
+	if err != nil {
+		return nil, err
+	}
+	var failures []string
+	for _, server := range servers {
+		perServer := systemDNSPerServerTimeout
+		if deadline, ok := ctx.Deadline(); ok {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				break
+			}
+			if perServer > remaining {
+				perServer = remaining
+			}
+		}
+		serverCtx, cancel := context.WithTimeout(ctx, perServer)
+		response, queryErr := exchangeSystemDNS(serverCtx, net.JoinHostPort(server, "53"), packet)
+		cancel()
+		if queryErr == nil {
+			rcode := dnsRCode(response)
+			if rcode != 2 && rcode != 5 {
+				return response, nil
+			}
+			queryErr = fmt.Errorf("system resolver %s returned DNS RCODE %d", server, rcode)
+		}
+		failures = append(failures, server+": "+queryErr.Error())
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	if len(failures) == 0 && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if len(failures) == 0 {
+		return nil, errors.New("system DNS has no responsive nameserver")
+	}
+	return nil, fmt.Errorf("all system DNS resolvers failed: %s", strings.Join(failures, "; "))
+}
+
+func exchangeSystemDNS(ctx context.Context, address string, packet []byte) ([]byte, error) {
+	if len(packet) < 12 || len(packet) > maxDNSMessage {
+		return nil, errors.New("invalid DNS query size for system resolver")
+	}
+	response, err := exchangeSystemDNSNetwork(ctx, address, "udp", packet)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateSystemDNSResponse(packet, response); err != nil {
+		return nil, err
+	}
+	if dnsTruncated(response) {
+		response, err = exchangeSystemDNSNetwork(ctx, address, "tcp", packet)
+		if err != nil {
+			return nil, fmt.Errorf("retry truncated system DNS response over TCP: %w", err)
+		}
+		if err := validateSystemDNSResponse(packet, response); err != nil {
+			return nil, err
+		}
+		if dnsTruncated(response) {
+			return nil, errors.New("system DNS response remains truncated over TCP")
+		}
+	}
+	return response, nil
+}
+
+func exchangeSystemDNSNetwork(ctx context.Context, address, network string, packet []byte) ([]byte, error) {
+	conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	deadline := time.Now().Add(systemDNSPerServerTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok {
+		deadline = ctxDeadline
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		return nil, err
+	}
+	if network == "udp" {
+		if _, err := conn.Write(packet); err != nil {
+			return nil, err
+		}
+		buf := make([]byte, maxDNSMessage+1)
+		n, err := conn.Read(buf)
+		if err != nil {
+			return nil, err
+		}
+		if n > maxDNSMessage {
+			return nil, errors.New("system DNS UDP response exceeds maximum DNS message size")
+		}
+		return append([]byte(nil), buf[:n]...), nil
+	}
+	if network != "tcp" {
+		return nil, fmt.Errorf("unsupported system DNS network %q", network)
+	}
+	frame := make([]byte, len(packet)+2)
+	binary.BigEndian.PutUint16(frame[:2], uint16(len(packet)))
+	copy(frame[2:], packet)
+	for len(frame) > 0 {
+		n, writeErr := conn.Write(frame)
+		if writeErr != nil {
+			return nil, writeErr
+		}
+		if n == 0 {
+			return nil, io.ErrShortWrite
+		}
+		frame = frame[n:]
+	}
+	var header [2]byte
+	if _, err := io.ReadFull(conn, header[:]); err != nil {
+		return nil, err
+	}
+	responseLen := int(binary.BigEndian.Uint16(header[:]))
+	if responseLen < 12 || responseLen > maxDNSMessage {
+		return nil, fmt.Errorf("invalid system DNS TCP response size %d", responseLen)
+	}
+	response := make([]byte, responseLen)
+	if _, err := io.ReadFull(conn, response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+func validateSystemDNSResponse(query, response []byte) error {
+	if len(response) < 12 || len(response) > maxDNSMessage {
+		return errors.New("invalid system DNS response size")
+	}
+	if binary.BigEndian.Uint16(response[:2]) != packetID(query) {
+		return errors.New("system DNS response transaction ID does not match query")
+	}
+	if binary.BigEndian.Uint16(response[2:4])&0x8000 == 0 {
+		return errors.New("system DNS returned a packet without QR response flag")
+	}
+	queryName, queryType, _, err := parseQuestion(query)
+	if err != nil {
+		return fmt.Errorf("invalid original DNS query: %w", err)
+	}
+	responseName, responseType, _, err := parseQuestion(response)
+	if err != nil {
+		return fmt.Errorf("invalid system DNS response question: %w", err)
+	}
+	if !strings.EqualFold(normalizeDomain(queryName), normalizeDomain(responseName)) || queryType != responseType {
+		return errors.New("system DNS response question does not match query")
+	}
+	return nil
+}
+
 func readHTTPProbeBody(body io.Reader) ([]byte, error) {
 	data, err := io.ReadAll(io.LimitReader(body, maxHTTPBody+1))
 	if err != nil {
@@ -2282,6 +2565,11 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 		if upstream.bootstrap != nil {
 			out.DoHBootstrap[uid] = upstream.bootstrap.status()
 		}
+	}
+	if servers, err := readSystemDNSServers(systemResolvConfPath); err != nil {
+		out.SystemDNSError = err.Error()
+	} else {
+		out.SystemDNSServers = servers
 	}
 	if s.cfg.GeminiAPI.Enabled {
 		out.GeminiAPI = "enabled"
