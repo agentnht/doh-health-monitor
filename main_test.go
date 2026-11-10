@@ -358,6 +358,50 @@ func BenchmarkCacheHit(b *testing.B) {
 	}
 }
 
+func TestHTTPProbeBodyLimitUsesTwoMiBAndRejectsOversize(t *testing.T) {
+	large := bytes.Repeat([]byte("x"), 900<<10)
+	got, err := readHTTPProbeBody(bytes.NewReader(large))
+	if err != nil {
+		t.Fatalf("900 KiB Gemini HTML rejected: %v", err)
+	}
+	if len(got) != len(large) {
+		t.Fatalf("read %d bytes, want %d", len(got), len(large))
+	}
+
+	tooLarge := bytes.Repeat([]byte("x"), maxHTTPBody+1)
+	if _, err := readHTTPProbeBody(bytes.NewReader(tooLarge)); err == nil {
+		t.Fatal("expected response larger than 2 MiB to be rejected")
+	}
+}
+
+func TestGeminiRedirectValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   int
+		location string
+		want     bool
+	}{
+		{"consent redirect", http.StatusFound, "https://consent.google.com/save", true},
+		{"sign-in redirect", http.StatusTemporaryRedirect, "https://accounts.google.com/signin", true},
+		{"same-host redirect", http.StatusMovedPermanently, "https://gemini.google.com/app", true},
+		{"external redirect", http.StatusFound, "https://example.org/", false},
+		{"sorry redirect", http.StatusFound, "https://www.google.com/sorry/index", false},
+		{"missing location", http.StatusFound, "", false},
+		{"not a redirect", http.StatusOK, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &http.Response{StatusCode: tt.status, Header: make(http.Header)}
+			if tt.location != "" {
+				resp.Header.Set("Location", tt.location)
+			}
+			if got := geminiRedirectAllowed(resp); got != tt.want {
+				t.Fatalf("geminiRedirectAllowed()=%t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGeminiRegionBlockDetection(t *testing.T) {
 	blocked := [][]byte{
 		[]byte("Gemini is not available in your country"),
