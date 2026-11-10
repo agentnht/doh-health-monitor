@@ -29,7 +29,7 @@ import (
 
 const (
 	pluginID      = "doh-health-monitor"
-	pluginVersion = "1.6.0"
+	pluginVersion = "1.7.0"
 	maxDNSMessage = 65535
 	maxHTTPBody   = 2 << 20
 )
