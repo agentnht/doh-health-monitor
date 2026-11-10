@@ -394,6 +394,7 @@ curl -s http://127.0.0.1:18765/status | jq .
 - `queries`, `cache_hits`, `failures`;
 - `active_udp`, `udp_queue_depth`, `udp_dropped`, `active_tcp`, `tcp_rejected` — текущая нагрузка и отказы при переполнении ограниченных очередей/соединений;
 - `goroutines`, `heap_alloc_bytes`, `heap_inuse_bytes`, `heap_sys_bytes` — показатели runtime Go;
+- `cpu_user_ns`, `cpu_system_ns` — накопленное CPU-время процесса в user/system mode; разница между двумя замерами за интервал позволяет оценить использование CPU;
 - `cache.bytes` и `cache.max_bytes` — фактический размер и предел DNS-кэша.
 - `gemini_api` — состояние необязательной Gemini API проверки.
 
