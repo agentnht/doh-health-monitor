@@ -277,7 +277,7 @@ https://dns.zapret.moe/dns-query
   "checks": [
     {
       "domain": "gemini.google.com",
-      "http_url": "https://gemini.google.com/robots.txt",
+      "http_url": "https://gemini.google.com/",
       "required": true,
       "expected_status": [200]
     }
@@ -297,7 +297,7 @@ https://dns.zapret.moe/dns-query
 
 В стандартной конфигурации содержится 25 уникальных контрольных доменов Google. Две проверки обязательны:
 
-- `gemini.google.com` — HTTPS запрос к `/robots.txt`, ожидается HTTP 200.
+- `gemini.google.com` — HTTPS запрос к главной странице Gemini; проверяется HTTP-ответ и явные признаки регионального ограничения в теле ответа.
 - `accounts.google.com` — OIDC discovery endpoint, ожидается HTTP 200 и проверяется значение `issuer`.
 
 Остальные контрольные точки диагностические (`required:false`): их ошибки видны в `/status`, но сами по себе не переводят upstream в состояние `down`.
