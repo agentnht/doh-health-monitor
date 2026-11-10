@@ -29,7 +29,7 @@ import (
 
 const (
 	pluginID      = "doh-health-monitor"
-	pluginVersion = "1.7.0"
+	pluginVersion = "1.7.1"
 	maxDNSMessage = 65535
 	maxHTTPBody   = 2 << 20
 )
@@ -459,9 +459,6 @@ func defaultConfig() Config {
 				{Domain: "ssl.gstatic.com", HTTPURL: "https://ssl.gstatic.com/", Required: false, ExpectedStatus: []int{200, 301, 302, 403}},
 				{Domain: "www.googleapis.com", HTTPURL: "https://www.googleapis.com/", Required: false, ExpectedStatus: []int{200, 301, 302, 403}},
 			}},
-			{ID: "netflix", FakeDNS: true, Domains: []string{"netflix.com", "nflxvideo.net", "nflximg.net", "nflxso.net", "nflxext.com", "netflix.net"}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{{Domain: "www.netflix.com", HTTPURL: "https://www.netflix.com/", Required: true, ExpectedStatus: []int{200, 301, 302, 403}}}},
-			{ID: "openai", FakeDNS: true, Domains: []string{"openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com"}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{{Domain: "chatgpt.com", HTTPURL: "https://chatgpt.com/robots.txt", Required: true, ExpectedStatus: []int{200}}}},
-			{ID: "youtube", FakeDNS: true, Domains: []string{"youtube.com", "youtubei.googleapis.com", "googlevideo.com", "ytimg.com", "youtu.be", "youtube-nocookie.com"}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{{Domain: "www.youtube.com", HTTPURL: "https://www.youtube.com/robots.txt", Required: true, ExpectedStatus: []int{200}}}},
 		},
 		GeminiAPI: GeminiAPIConfig{Enabled: false, RequiredForGroup: false, GroupID: "google", Model: "gemini-3.8-flash", IntervalSeconds: 1800, KeyFile: "gemini_api_key", Prompt: "Reply with exactly OK.", MaxOutputTokens: 8},
 	}
