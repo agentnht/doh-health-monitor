@@ -57,7 +57,7 @@ outbound protocol=dns (dns-out)
                                +------------------------+-------------------+
                                |                        |                   |
                                v                        v                   v
-                           Google DoH              Cloudflare DoH        Quad9 DoH
+                         GeoHide EU DoH             Dagami DoH           Comss.one DoH
                                ^                        ^                   ^
                                +---------- Health Monitor -----------------+
 ```
@@ -196,9 +196,11 @@ level=INFO READY DNS=127.0.0.1:5355/127.0.0.1:5355 HTTP=127.0.0.1:18765
 ```json
 "bootstrap_resolvers": ["1.1.1.1", "8.8.8.8"],
 "upstreams": [
-  { "id": "dns.google", "name": "Google Public DNS" },
-  { "id": "cloudflare-dns.com", "name": "Cloudflare" },
-  { "id": "dns.quad9.net", "name": "Quad9" }
+  { "id": "eu.geohide.ru", "name": "GeoHide EU" },
+  { "id": "doh.dagami.ru", "name": "Dagami" },
+  { "id": "dns.comss.one", "name": "Comss.one" },
+  { "id": "dns.bezmezhau.com", "name": "Bezmezhau" },
+  { "id": "dns.zapret.moe", "name": "Zapret" }
 ]
 ```
 
@@ -231,11 +233,17 @@ curl -sS http://127.0.0.1:18765/status | jq '.doh_bootstrap'
 Один HTTPS DoH URL на строку. Пустые строки и строки, начинающиеся с `#`, игнорируются.
 
 ```text
-# Один HTTPS DoH URL на строку
-https://dns.google/dns-query
-https://cloudflare-dns.com/dns-query
-https://dns.quad9.net/dns-query
+# Основные DoH proxy providers
+https://eu.geohide.ru/dns-query
+https://doh.dagami.ru/dns-query
+https://dns.comss.one/dns-query
+https://dns.bezmezhau.com/dns-query
+https://dns.zapret.moe/dns-query
 ```
+
+Пять DoH proxy upstream по умолчанию (в указанном порядке): GeoHide EU, Dagami, Comss.one, Bezmezhau и Zapret. Shecan не включён: на проверке с VPS его TLS-сертификат оказался просрочен. Google Public DNS, Cloudflare и Quad9 также не входят в список proxy upstream и не используются как резервные DoH-серверы плагина.
+
+`bootstrap_resolvers` — отдельный механизм: IP `1.1.1.1` и `8.8.8.8` используются только для получения A/AAAA адресов самих DoH hostname через обычный DNS, чтобы не создавать DNS-петлю. Они не являются DoH upstream и не обрабатывают пользовательские запросы вместо выбранных proxy-серверов.
 
 Путь URL может быть другим, если провайдер его требует, но схема должна быть `https://`. Для каждого hostname должен быть соответствующий объект в `upstreams`.
 
@@ -266,16 +274,18 @@ https://dns.quad9.net/dns-query
     "gemini.google.com"
   ],
   "upstreams": [
-    "dns.google",
-    "cloudflare-dns.com",
-    "dns.quad9.net"
+    "eu.geohide.ru",
+    "doh.dagami.ru",
+    "dns.comss.one",
+    "dns.bezmezhau.com",
+    "dns.zapret.moe"
   ],
   "checks": [
     {
       "domain": "gemini.google.com",
-      "http_url": "https://gemini.google.com/",
+      "http_url": "https://gemini.google.com/robots.txt",
       "required": true,
-      "expected_status": [200, 301, 302, 403]
+      "expected_status": [200]
     }
   ]
 }
