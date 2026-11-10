@@ -195,6 +195,76 @@ func TestBootstrapSelectsFastestDoHIP(t *testing.T) {
 	}
 }
 
+func TestBootstrapFastestIPDetailedReportsEveryCandidate(t *testing.T) {
+	b := &bootstrapResolver{
+		host: "doh.example",
+		endpoint: "https://doh.example/dns-query",
+		probe: func(ctx context.Context, endpoint, ip string, timeout time.Duration) (time.Duration, error) {
+			switch ip {
+			case "192.0.2.10":
+				return 45 * time.Millisecond, nil
+			case "192.0.2.20":
+				return 8 * time.Millisecond, nil
+			case "192.0.2.30":
+				return 3 * time.Millisecond, errors.New("TLS handshake failed")
+			default:
+				return 0, errors.New("unexpected test IP")
+			}
+		},
+	}
+
+	got, latency, results, err := b.fastestIPDetailed(context.Background(),
+		[]string{"192.0.2.10", "192.0.2.20", "192.0.2.30"}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "192.0.2.20" || latency != 8*time.Millisecond {
+		t.Fatalf("winner = %s at %s, want 192.0.2.20 at 8ms", got, latency)
+	}
+	if len(results) != 3 {
+		t.Fatalf("got %d probe results, want 3", len(results))
+	}
+	if results[0].IP != "192.0.2.10" || results[0].Result != "ok" || results[0].ResponseMS != 45 {
+		t.Errorf("unexpected first probe result: %+v", results[0])
+	}
+	if results[1].IP != "192.0.2.20" || results[1].Result != "ok" || results[1].ResponseMS != 8 {
+		t.Errorf("unexpected second probe result: %+v", results[1])
+	}
+	if results[2].IP != "192.0.2.30" || results[2].Result != "error" || !strings.Contains(results[2].Error, "TLS handshake failed") {
+		t.Errorf("unexpected third probe result: %+v", results[2])
+	}
+}
+
+func TestBootstrapStatusReturnsDiagnosticSnapshot(t *testing.T) {
+	probes := []DoHIPProbeStatus{
+		{IP: "192.0.2.10", Source: "dns", Result: "ok", ResponseMS: 12},
+	}
+	b := &bootstrapResolver{
+		host: "doh.example",
+		ips: []string{"192.0.2.10", "2001:db8::10"},
+		resolvedBy: "1.1.1.1",
+		refreshed: time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC),
+		selectedIP: "192.0.2.10",
+		selectedTil: time.Date(2026, 11, 10, 18, 0, 0, 0, time.UTC),
+		lastCandidates: []string{"192.0.2.10", "2001:db8::10"},
+		lastCandidateSource: "dns",
+		lastProbeAt: time.Date(2026, 11, 10, 12, 1, 0, 0, time.UTC),
+		lastProbe: probes,
+	}
+	status := b.status()
+	if status.Hostname != "doh.example" || status.ResolvedBy != "1.1.1.1" || status.SelectedIP != "192.0.2.10" {
+		t.Fatalf("unexpected bootstrap status: %+v", status)
+	}
+	if len(status.ResolvedIPs) != 2 || len(status.CandidateIPs) != 2 || len(status.LastProbe) != 1 {
+		t.Fatalf("diagnostic lists not preserved: %+v", status)
+	}
+	status.ResolvedIPs[0] = "changed"
+	status.LastProbe[0].IP = "changed"
+	if b.ips[0] != "192.0.2.10" || b.lastProbe[0].IP != "192.0.2.10" {
+		t.Fatal("status snapshot must not alias internal slices")
+	}
+}
+
 func TestBootstrapFastestIPReportsAllFailures(t *testing.T) {
 	b := &bootstrapResolver{
 		host: "doh.example",
