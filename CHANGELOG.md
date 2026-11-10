@@ -4,6 +4,7 @@
 
 ### Reliability
 - Resolve DoH endpoint A/AAAA records automatically through independent bootstrap DNS resolvers.
+- Benchmark all resolved DoH IPs concurrently using a real DoH query and pin traffic to the fastest responsive address.
 - Refresh bootstrap addresses every six hours and after connection failures, retaining the last working IP list during temporary DNS failures.
 - Keep TLS hostname verification and SNI while dialing resolved IP addresses.
 - Preserve legacy bootstrap_ips as optional fallback addresses.

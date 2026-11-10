@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -144,6 +145,64 @@ func TestLegacyBootstrapIPsRemainValidAsFallback(t *testing.T) {
 	c.Upstreams[0].BootstrapIPs = []string{"203.0.113.53"}
 	if err := validateConfig(c); err != nil {
 		t.Fatalf("legacy bootstrap_ips fallback rejected: %v", err)
+	}
+}
+
+func TestLoadConfigCreatesAutomaticBootstrapDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	c, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.BootstrapResolvers) == 0 {
+		t.Fatal("generated config has no bootstrap_resolvers")
+	}
+	for _, upstream := range c.Upstreams {
+		if len(upstream.BootstrapIPs) != 0 {
+			t.Errorf("generated upstream %s unexpectedly has static bootstrap_ips", upstream.ID)
+		}
+	}
+}
+
+func TestBootstrapSelectsFastestDoHIP(t *testing.T) {
+	b := &bootstrapResolver{
+		host: "doh.example",
+		endpoint: "https://doh.example/dns-query",
+		probe: func(ctx context.Context, endpoint, ip string, timeout time.Duration) (time.Duration, error) {
+			switch ip {
+			case "192.0.2.10":
+				return 45 * time.Millisecond, nil
+			case "192.0.2.20":
+				return 8 * time.Millisecond, nil
+			case "192.0.2.30":
+				return 0, errors.New("unreachable")
+			default:
+				return 0, errors.New("unexpected test IP")
+			}
+		},
+	}
+	got, latency, err := b.fastestIP(context.Background(), []string{"192.0.2.10", "192.0.2.20", "192.0.2.30"}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "192.0.2.20" {
+		t.Fatalf("fastest IP = %s, want 192.0.2.20", got)
+	}
+	if latency != 8*time.Millisecond {
+		t.Fatalf("fastest latency = %s, want 8ms", latency)
+	}
+}
+
+func TestBootstrapFastestIPReportsAllFailures(t *testing.T) {
+	b := &bootstrapResolver{
+		host: "doh.example",
+		endpoint: "https://doh.example/dns-query",
+		probe: func(ctx context.Context, endpoint, ip string, timeout time.Duration) (time.Duration, error) {
+			return 0, errors.New("probe failed")
+		},
+	}
+	if _, _, err := b.fastestIP(context.Background(), []string{"192.0.2.1", "192.0.2.2"}, time.Second); err == nil {
+		t.Fatal("expected all probes to fail")
 	}
 }
 
