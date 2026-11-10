@@ -407,7 +407,7 @@ func loadConfig(path string) (Config, error) {
 		if e = os.WriteFile(path, append(b, '\n'), 0600); e != nil {
 			return Config{}, fmt.Errorf("create default config: %w", e)
 		}
-		logLine("WARN", "CONFIG_TEMPLATE_CREATED path=%s; review domain groups and bootstrap_resolvers", path)
+		logLine("WARN", "CONFIG_TEMPLATE_CREATED path=%s; review Google checks and bootstrap_resolvers", path)
 	}
 	b, e := os.ReadFile(path)
 	if e != nil {
