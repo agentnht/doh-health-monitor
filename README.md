@@ -1,6 +1,6 @@
 # DoH DNS Proxy & Health Monitor для LucX-UI
 
-**Версия:** 1.4.0  
+**Версия:** 1.5.0  
 **Платформа:** Linux x86-64 (`amd64`), статический Go-бинарник  
 **Тип:** LucX-UI sidecar, `apiVersion: 1`  
 **Режим Gemini API:** необязательный, управляется параметром `gemini_api.enabled`
@@ -14,7 +14,7 @@
 ### Что умеет
 
 - UDP DNS и TCP DNS на `127.0.0.1:5355`.
-- DoH upstream с отдельными bootstrap IP: для подключения к DoH не нужен системный DNS, поэтому не возникает DNS-петли.
+- Автоматическое разрешение A/AAAA адресов DoH upstream через независимые bootstrap DNS-серверы по IP — без зависимости от системного DNS и DNS-петли.
 - Несколько независимых доменных групп: `google`, `netflix`, `openai`, `youtube`, `default` и пользовательские группы.
 - Отдельный список upstream и порядок fallback для каждой группы.
 - Проверка DNS-записей A/AAAA и по желанию HTTPS endpoint для каждого upstream и группы.
@@ -68,15 +68,14 @@ outbound protocol=dns (dns-out)
 
 ## 3. Состав пакета и расположение файлов
 
-Установочный ZIP содержит:
+Установочный ZIP содержит только необходимые для установки файлы:
 
 ```text
 manifest.json
-README.md
 bin/doh-health-monitor
-examples/config.example.json
-examples/doh-servers.example.txt
 ```
+
+`README.md` и каталог `examples/` остаются в GitHub-репозитории, но в установочный ZIP не включаются. Автоматического обновления плагина нет: новую версию устанавливают повторно через менеджер плагинов.
 
 После первого запуска в приватной папке `$LUCX_PLUGIN_DATA` автоматически создаются:
 
@@ -96,36 +95,20 @@ $LUCX_PLUGIN_DATA/gemini_api_key
 
 ## 4. Установка в LucX-UI
 
-1. Скачайте `doh-health-monitor-v1.4.0.zip`.
+1. Скачайте `doh-health-monitor-v1.5.0.zip`.
 2. В LucX-UI откройте менеджер плагинов и установите ZIP.
 3. Запустите плагин из панели.
 4. После первого запуска панель создаст приватную папку данных; плагин создаст в ней `config.json` и `doh-servers.txt`.
 5. Посмотрите журнал плагина. Нормальный старт содержит строки примерно такого вида:
 
 ```text
-level=INFO START id=doh-health-monitor version=1.4.0 arch=amd64 data=...
+level=INFO START id=doh-health-monitor version=1.5.0 arch=amd64 data=...
 level=INFO CONFIG loaded ... gemini_api=false
 level=INFO EVENT_SOCKET listening ...
 level=INFO READY DNS=127.0.0.1:5355/127.0.0.1:5355 HTTP=127.0.0.1:18765
 ```
 
 6. Откройте файлы в `$LUCX_PLUGIN_DATA` и настройте их перед подключением клиентов к новому DNS-пути.
-
-### Важно: запись в LUCX_PLUGIN_DATA и ProtectSystem
-
-LucX-UI запускает изолированный sidecar с `ProtectSystem=strict`. Для работы плагина systemd transient unit должен разрешать запись **только** в его каталог данных:
-
-```text
-ReadWritePaths=<абсолютный путь из LUCX_PLUGIN_DATA>
-```
-
-Если в `plugin.log` появляется `read-only file system` при создании `config.json`, это не исправляется `chmod 777`. Исправьте runner LucX-UI: передайте `dataDir` в `ReadWritePaths` для transient unit, сохранив `ProtectSystem=strict`. Пример логической настройки в Go-коде runner:
-
-```go
-"ReadWritePaths=" + dataDir,
-```
-
-Каталог бинарника не должен открываться на запись. Плагину достаточно `LUCX_PLUGIN_DATA`.
 
 ### Требования по архитектуре и сети
 
@@ -138,9 +121,9 @@ ReadWritePaths=<абсолютный путь из LUCX_PLUGIN_DATA>
 
 ### 5.1 `config.json`
 
-Это основной файл настроек. Все группы доменов, upstream IDs, bootstrap IP, тайминги, пороги, кэш, listener-ы и флаг Gemini API находятся здесь.
+Это основной файл настроек. Все группы доменов, upstream IDs, bootstrap DNS resolvers, резервные IP, тайминги, пороги, кэш, listener-ы и флаг Gemini API находятся здесь.
 
-`config.example.json` в ZIP — образец. При первом старте плагин создаёт реальный `config.json` из встроенного шаблона. Обычно достаточно редактировать созданный файл.
+Образец `examples/config.example.json` доступен в GitHub-репозитории, но не входит в ZIP. При первом старте плагин создаёт реальный `config.json` из встроенного шаблона. Обычно достаточно редактировать созданный файл.
 
 #### Listener-ы и общие параметры
 
@@ -206,30 +189,27 @@ ReadWritePaths=<абсолютный путь из LUCX_PLUGIN_DATA>
 
 При смене конфигурации кэш очищается. Кэш хранится в памяти и не сохраняется после перезапуска плагина.
 
-### 5.4 DoH upstream definitions
+### 5.4 DoH upstream и автоматический bootstrap
 
-В `config.json` находится список upstream metadata и bootstrap IP:
+Для каждого DoH hostname плагин автоматически получает A и AAAA через независимые DNS-resolvers, указанные IP-адресами. По умолчанию используются:
 
 ```json
+"bootstrap_resolvers": ["1.1.1.1", "8.8.8.8"],
 "upstreams": [
-  {
-    "id": "dns.google",
-    "name": "Google Public DNS",
-    "bootstrap_ips": ["8.8.8.8", "8.8.4.4"]
-  },
-  {
-    "id": "cloudflare-dns.com",
-    "name": "Cloudflare",
-    "bootstrap_ips": ["1.1.1.1", "1.0.0.1"]
-  }
+  { "id": "dns.google", "name": "Google Public DNS" },
+  { "id": "cloudflare-dns.com", "name": "Cloudflare" },
+  { "id": "dns.quad9.net", "name": "Quad9" }
 ]
 ```
 
-- `id` — строго hostname DoH endpoint. Должен совпадать с hostname URL в `doh-servers.txt`.
-- `name` — человекочитаемая подпись.
-- `bootstrap_ips` — IP адреса, к которым Go подключается напрямую, сохраняя TLS SNI и проверку сертификата. Не указывайте здесь URL или hostname.
+- `bootstrap_resolvers` — IP-адреса независимых DNS-resolvers. Они используются напрямую по UDP/TCP port 53, поэтому системный DNS и сам DoH-прокси не участвуют в разрешении DoH hostname.
+- `upstreams[].id` — hostname DoH endpoint; должен совпадать с hostname URL в `doh-servers.txt`.
+- `upstreams[].name` — человекочитаемое имя.
+- `upstreams[].bootstrap_ips` — необязательный резервный список IP. Он используется только если автоматическое разрешение не удалось и ещё нет сохранённого рабочего списка.
 
-Bootstrap IP обязательны: это предотвращает рекурсивное разрешение hostname самого DoH-сервера через DNS proxy, который в этот момент и выполняет запрос.
+Плагин параллельно измеряет время полного DoH-запроса к каждому найденному IP (включая TLS handshake и проверку сертификата) и выбирает один самый быстрый адрес. Выбранный IP кэшируется на 6 часов. При проблеме с подключением выполняется принудительное DNS-разрешение и повторный замер; если независимый DNS временно недоступен, используется последний сохранённый список IP и выбирается лучший из доступных. В журнале появляется `DoH IP selected` с выбранным адресом и временем ответа. TLS SNI и проверка сертификата всегда выполняются по hostname DoH endpoint.
+
+Старый формат конфигурации с обязательными `bootstrap_ips` продолжает поддерживаться: эти адреса становятся резервом, а не отключают автоматическое обновление. Для нового upstream достаточно добавить объект с `id` и `name`, URL в `doh-servers.txt` и приоритет в `groups[].upstreams`.
 
 ### 5.5 `doh-servers.txt`
 
@@ -242,14 +222,14 @@ https://cloudflare-dns.com/dns-query
 https://dns.quad9.net/dns-query
 ```
 
-Путь URL может быть другим, если провайдер его требует, но схема должна быть `https://`. Для каждого hostname должен быть соответствующий объект в `upstreams` с bootstrap IP.
+Путь URL может быть другим, если провайдер его требует, но схема должна быть `https://`. Для каждого hostname должен быть соответствующий объект в `upstreams`.
 
 **Приоритет попыток задаётся в `groups[].upstreams`**, а не порядком строк файла. `doh-servers.txt` лишь задаёт URL для upstream ID. Изменение файла применяется автоматически за `reload_interval_seconds`.
 
 Чтобы добавить провайдера:
 
 1. Добавьте его HTTPS URL отдельной строкой в `doh-servers.txt`.
-2. Добавьте в `config.json` объект `upstreams` с `id`, `name`, `bootstrap_ips`.
+2. Добавьте в `config.json` объект `upstreams` с `id` и `name` (резервные `bootstrap_ips` необязательны).
 3. В `groups[].upstreams` добавьте этот ID в нужное место приоритетного списка.
 4. Дождитесь `CONFIG reloaded` в журнале и проверьте `/status`.
 
@@ -616,11 +596,10 @@ dig +tcp @127.0.0.1 -p 5355 example.com A +time=5 +tries=1
 
 | Сообщение/симптом | Причина / действие |
 |---|---|
-| `read-only file system` при создании `config.json` | Исправить `ReadWritePaths=<LUCX_PLUGIN_DATA>` для transient unit LucX-UI; не использовать `chmod 777`, не отключать `ProtectSystem=strict` |
 | `address already in use` | Порт UDP/TCP 5355 или HTTP 18765 занят; выберите свободные loopback порты в config и обновите outbound/manifest health target соответственно |
-| `DoH server ... has no upstream/bootstrap entry` | Для нового hostname добавьте объект `upstreams` с `bootstrap_ips` |
+| `DoH server ... has no upstream/bootstrap entry` | Для нового hostname добавьте объект `upstreams` с `id` и `name` |
 | `group ... references DoH server ... missing from doh-servers.txt` | Убедитесь, что URL с таким hostname есть в `doh-servers.txt` |
-| `all upstreams failed` | Проверьте DNS/HTTPS egress VPS, bootstrap IP, URL/путь DoH, TLS и доступность провайдера |
+| `all upstreams failed` | Проверьте доступность `bootstrap_resolvers` по UDP/TCP 53, HTTPS egress VPS, резервные `bootstrap_ips` (если заданы), URL/путь DoH, TLS и доступность провайдера |
 | HTTP `401/403` на контрольном URL | Может быть блокировка/авторизация; задайте правильный `expected_status` или `required:false`, если это не индикатор полного отказа |
 | `/healthz` OK, но DNS не отвечает | Смотрите `/status`, `plugin.log`, занят ли порт, совпадает ли `rewritePort` Xray с `dns_listen_udp/tcp` |
 | DNS через Xray возвращает пустой ответ для TXT/MX/HTTPS | Проверьте наличие последнего `{ "action": "direct" }` в `dns-out.settings.rules` |
@@ -647,12 +626,15 @@ dig +tcp @127.0.0.1 -p 5355 example.com A +time=5 +tries=1
 3. Проверьте итоговый Xray конфиг и примените его через LucX-UI.
 4. Только после проверки остановите/удалите sidecar.
 
-### Удаление плагина
+### Удаление и повторная установка
 
 1. Сначала восстановите или подтвердите рабочую DNS конфигурацию Xray без sidecar.
 2. Остановите плагин в LucX-UI.
 3. Удалите плагин через менеджер плагинов.
-4. Если требуется полностью удалить настройки, сначала определите точный путь `LUCX_PLUGIN_DATA` в настройках/журнале панели. Сохраните нужные `config.json`, `doh-servers.txt` и `gemini_api_key`, затем удалите **только каталог данных этого экземпляра плагина**. Каталог установки бинарника и каталог данных — разные места; удаление данных необратимо. Не удаляйте общий каталог плагинов или родительские каталоги.
+
+При удалении плагина LucX-UI удаляет и его каталог данных `LUCX_PLUGIN_DATA`, включая `config.json`, `doh-servers.txt` и `gemini_api_key`. Это означает, что повторная установка начинается с чистого состояния: при первом запуске создаются новый `config.json` со встроенными настройками (автоматический bootstrap включён по умолчанию) и новый `doh-servers.txt`. Пользовательские настройки и ключ Gemini не сохраняются автоматически.
+
+Перед удалением сохраните копии файлов, которые понадобятся после переустановки. Восстанавливая старый `config.json`, помните, что его `bootstrap_ips` останутся совместимыми и будут использоваться как резервные адреса, а автоматическое разрешение через `bootstrap_resolvers` продолжит работать.
 
 ## 11. Сборка из исходников
 

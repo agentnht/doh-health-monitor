@@ -29,7 +29,7 @@ import (
 
 const (
 	pluginID      = "doh-health-monitor"
-	pluginVersion = "1.4.0"
+	pluginVersion = "1.5.0"
 	maxDNSMessage = 65535
 	maxHTTPBody   = 2 << 20
 )
@@ -45,6 +45,7 @@ type Config struct {
 	Health                 HealthConfig    `json:"health"`
 	Cache                  CacheConfig     `json:"cache"`
 	Upstreams              []Upstream      `json:"upstreams"`
+	BootstrapResolvers     []string        `json:"bootstrap_resolvers,omitempty"`
 	Groups                 []Group         `json:"groups"`
 	GeminiAPI              GeminiAPIConfig `json:"gemini_api"`
 }
@@ -104,8 +105,25 @@ type Snapshot struct {
 	configSum string
 }
 type UpstreamRuntime struct {
-	cfg    Upstream
-	client *http.Client
+	cfg       Upstream
+	client    *http.Client
+	bootstrap *bootstrapResolver
+}
+
+type bootstrapResolver struct {
+	host        string
+	endpoint    string
+	resolvers   []string
+	fallback    []string
+	mu          sync.Mutex
+	selectMu    sync.Mutex
+	ips         []string
+	refreshed   time.Time
+	lastAttempt time.Time
+	refreshFor  time.Duration
+	selectedIP  string
+	selectedTil time.Time
+	probe       func(context.Context, string, string, time.Duration) (time.Duration, error)
 }
 type domainBinding struct{ suffix, groupID string }
 type ProbeStatus struct {
@@ -331,7 +349,7 @@ func loadConfig(path string) (Config, error) {
 		if e = os.WriteFile(path, append(b, '\n'), 0600); e != nil {
 			return Config{}, fmt.Errorf("create default config: %w", e)
 		}
-		logLine("WARN", "CONFIG_TEMPLATE_CREATED path=%s; review domain groups and bootstrap IPs", path)
+		logLine("WARN", "CONFIG_TEMPLATE_CREATED path=%s; review domain groups and bootstrap_resolvers", path)
 	}
 	b, e := os.ReadFile(path)
 	if e != nil {
@@ -354,10 +372,11 @@ func defaultConfig() Config {
 		DNSQueryTimeoutSeconds: 15, DoHTimeoutSeconds: 10, DNSMaxConcurrent: 256,
 		Health: HealthConfig{IntervalSeconds: 45, TimeoutSeconds: 5, FailureThreshold: 3, SuccessThreshold: 5},
 		Cache:  CacheConfig{Enabled: true, MinTTL: 5, MaxTTL: 300, NegativeTTL: 15, MaxEntries: 8192},
+		BootstrapResolvers: []string{"1.1.1.1", "8.8.8.8"},
 		Upstreams: []Upstream{
-			{ID: "dns.google", Name: "Google Public DNS", BootstrapIPs: []string{"8.8.8.8", "8.8.4.4"}},
-			{ID: "cloudflare-dns.com", Name: "Cloudflare", BootstrapIPs: []string{"1.1.1.1", "1.0.0.1"}},
-			{ID: "dns.quad9.net", Name: "Quad9", BootstrapIPs: []string{"9.9.9.9", "149.112.112.112"}},
+			{ID: "dns.google", Name: "Google Public DNS"},
+			{ID: "cloudflare-dns.com", Name: "Cloudflare"},
+			{ID: "dns.quad9.net", Name: "Quad9"},
 		},
 		Groups: []Group{
 			{ID: "default", Domains: []string{}, Upstreams: []string{"dns.google", "cloudflare-dns.com", "dns.quad9.net"}, Checks: []Check{{Domain: "example.com", Required: true}}},
@@ -399,6 +418,15 @@ func validateConfig(c Config) error {
 	if len(c.Upstreams) == 0 {
 		return errors.New("at least one upstream is required")
 	}
+	resolvers := c.BootstrapResolvers
+	if len(resolvers) == 0 {
+		resolvers = defaultBootstrapResolvers()
+	}
+	for _, ip := range resolvers {
+		if net.ParseIP(ip) == nil {
+			return fmt.Errorf("invalid bootstrap resolver IP %q", ip)
+		}
+	}
 	ids := map[string]bool{}
 	for _, u := range c.Upstreams {
 		if u.ID == "" || ids[u.ID] {
@@ -407,9 +435,6 @@ func validateConfig(c Config) error {
 		ids[u.ID] = true
 		if strings.ContainsAny(u.ID, "/:@ \t") {
 			return fmt.Errorf("upstream id must be a hostname: %s", u.ID)
-		}
-		if len(u.BootstrapIPs) == 0 {
-			return fmt.Errorf("upstream %s needs bootstrap_ips to prevent DNS loops", u.ID)
 		}
 		for _, ip := range u.BootstrapIPs {
 			if net.ParseIP(ip) == nil {
@@ -531,17 +556,21 @@ func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
 			return nil, fmt.Errorf("DoH server %s in doh-servers.txt has no upstream/bootstrap entry in config.json", id)
 		}
 	}
+	resolvers := c.BootstrapResolvers
+	if len(resolvers) == 0 {
+		resolvers = defaultBootstrapResolvers()
+	}
 	for _, u := range c.Upstreams {
 		urlValue, ok := dohURLs[u.ID]
 		if !ok {
 			continue
 		}
 		u.URL = urlValue
-		client, e := newDoHClient(u, time.Duration(c.DoHTimeoutSeconds)*time.Second)
+		client, bootstrap, e := newDoHClient(u, resolvers, time.Duration(c.DoHTimeoutSeconds)*time.Second)
 		if e != nil {
 			return nil, e
 		}
-		s.upstreams[u.ID] = &UpstreamRuntime{cfg: u, client: client}
+		s.upstreams[u.ID] = &UpstreamRuntime{cfg: u, client: client, bootstrap: bootstrap}
 	}
 	for _, g := range c.Groups {
 		for _, uid := range g.Upstreams {
@@ -560,32 +589,261 @@ func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
 	sort.Slice(s.byDomain, func(i, j int) bool { return len(s.byDomain[i].suffix) > len(s.byDomain[j].suffix) })
 	return s, nil
 }
-func newDoHClient(u Upstream, timeout time.Duration) (*http.Client, error) {
-	pu, _ := url.Parse(u.URL)
-	var idx atomic.Uint64
-	boots := append([]string(nil), u.BootstrapIPs...)
-	tr := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: pu.Hostname()}, ForceAttemptHTTP2: true, MaxIdleConns: 16, MaxIdleConnsPerHost: 8, IdleConnTimeout: 60 * time.Second, ResponseHeaderTimeout: 10 * time.Second, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-		port := pu.Port()
-		if port == "" {
-			port = "443"
-		}
-		start := idx.Add(1) - 1
-		var errs []string
-		for n := 0; n < len(boots); n++ {
-			ip := boots[(start+uint64(n))%uint64(len(boots))]
-			conn, err := (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip, port))
-			if err == nil {
+func defaultBootstrapResolvers() []string { return []string{"1.1.1.1", "8.8.8.8"} }
+
+func newDoHClient(u Upstream, resolvers []string, timeout time.Duration) (*http.Client, *bootstrapResolver, error) {
+	pu, err := url.Parse(u.URL)
+	if err != nil || pu.Scheme != "https" || pu.Hostname() == "" {
+		return nil, nil, fmt.Errorf("invalid DoH URL for %s", u.ID)
+	}
+	bootstrap := &bootstrapResolver{
+		host: pu.Hostname(), endpoint: u.URL, resolvers: append([]string(nil), resolvers...),
+		fallback: append([]string(nil), u.BootstrapIPs...), refreshFor: 6 * time.Hour,
+	}
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: pu.Hostname()},
+		ForceAttemptHTTP2: true, MaxIdleConns: 16, MaxIdleConnsPerHost: 8,
+		IdleConnTimeout: 60 * time.Second, ResponseHeaderTimeout: 10 * time.Second,
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			port := pu.Port()
+			if port == "" {
+				port = "443"
+			}
+			ip, err := bootstrap.bestIP(ctx, false, timeout)
+			if err != nil {
+				return nil, fmt.Errorf("select DoH IP for %s: %w", pu.Hostname(), err)
+			}
+			conn, dialErr := (&net.Dialer{Timeout: minDuration(timeout, 5*time.Second), KeepAlive: 30 * time.Second}).
+				DialContext(ctx, network, net.JoinHostPort(ip, port))
+			if dialErr == nil {
 				return conn, nil
 			}
-			errs = append(errs, ip+": "+err.Error())
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
+
+			refreshedIP, refreshErr := bootstrap.bestIP(ctx, true, timeout)
+			if refreshErr == nil && refreshedIP != ip {
+				retryConn, retryErr := (&net.Dialer{Timeout: minDuration(timeout, 5*time.Second), KeepAlive: 30 * time.Second}).
+					DialContext(ctx, network, net.JoinHostPort(refreshedIP, port))
+				if retryErr == nil {
+					return retryConn, nil
+				}
+				return nil, fmt.Errorf("selected IP %s failed (%v); refreshed fastest IP %s failed: %w", ip, dialErr, refreshedIP, retryErr)
+			}
+			if refreshErr != nil {
+				return nil, fmt.Errorf("selected IP %s failed: %v; bootstrap refresh failed: %w", ip, dialErr, refreshErr)
+			}
+			return nil, fmt.Errorf("selected IP %s failed: %w", ip, dialErr)
+		},
+	}
+	client := &http.Client{
+		Transport: tr, Timeout: timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	return client, bootstrap, nil
+}
+
+func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !force && len(b.ips) > 0 && time.Since(b.refreshed) < b.refreshFor {
+		return append([]string(nil), b.ips...), nil
+	}
+	if !force && time.Since(b.lastAttempt) < time.Minute {
+		if len(b.ips) > 0 {
+			return append([]string(nil), b.ips...), nil
+		}
+		if len(b.fallback) > 0 {
+			return append([]string(nil), b.fallback...), nil
+		}
+	}
+	b.lastAttempt = time.Now()
+	ips := make([]string, 0, 8)
+	seen := map[string]bool{}
+	var err error
+	for _, server := range b.resolvers {
+		lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		resolver := &net.Resolver{
+			PreferGo: true, StrictErrors: false,
+			Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{Timeout: 1500 * time.Millisecond}).DialContext(ctx, network, net.JoinHostPort(server, "53"))
+			},
+		}
+		found, lookupErr := resolver.LookupNetIP(lookupCtx, "ip", b.host)
+		cancel()
+		if len(found) > 0 {
+			for _, ip := range found {
+				v := ip.String()
+				if net.ParseIP(v) != nil && !seen[v] {
+					seen[v] = true
+					ips = append(ips, v)
+				}
+			}
+			if len(ips) > 0 {
+				err = nil
+				break
 			}
 		}
-		return nil, fmt.Errorf("all bootstrap IPs failed: %s", strings.Join(errs, "; "))
-	}}
-	return &http.Client{Transport: tr, Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
+		err = lookupErr
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+	}
+	if len(b.resolvers) == 0 {
+		err = errors.New("no bootstrap DNS resolvers configured")
+	}
+	if len(ips) > 0 {
+		b.ips = ips
+		b.refreshed = time.Now()
+		return append([]string(nil), ips...), nil
+	}
+	if err == nil {
+		err = errors.New("DNS lookup returned no A or AAAA records")
+	}
+	if len(b.ips) > 0 {
+		return append([]string(nil), b.ips...), fmt.Errorf("DNS refresh failed; using cached IPs: %w", err)
+	}
+	if len(b.fallback) > 0 {
+		return append([]string(nil), b.fallback...), fmt.Errorf("DNS lookup failed; using configured bootstrap_ips: %w", err)
+	}
+	return nil, err
 }
+
+func (b *bootstrapResolver) bestIP(ctx context.Context, force bool, timeout time.Duration) (string, error) {
+	b.selectMu.Lock()
+	defer b.selectMu.Unlock()
+
+	b.mu.Lock()
+	if !force && b.selectedIP != "" && time.Now().Before(b.selectedTil) {
+		ip := b.selectedIP
+		b.mu.Unlock()
+		return ip, nil
+	}
+	b.mu.Unlock()
+
+	ips, resolveErr := b.addresses(ctx, force)
+	if len(ips) == 0 {
+		if resolveErr == nil {
+			resolveErr = errors.New("no bootstrap IPs available")
+		}
+		return "", resolveErr
+	}
+	b.mu.Lock()
+	usingFallback := resolveErr != nil && len(b.ips) == 0 && len(b.fallback) > 0
+	b.mu.Unlock()
+	ip, latency, probeErr := b.fastestIP(ctx, ips, timeout)
+	if probeErr != nil && len(b.fallback) > 0 && !usingFallback {
+		fallbackIP, fallbackLatency, fallbackErr := b.fastestIP(ctx, b.fallback, timeout)
+		if fallbackErr == nil {
+			ip, latency, probeErr, usingFallback = fallbackIP, fallbackLatency, nil, true
+		}
+	}
+	if probeErr != nil {
+		if resolveErr != nil {
+			return "", fmt.Errorf("no responsive DoH address: %v (DNS resolution: %w)", probeErr, resolveErr)
+		}
+		return "", fmt.Errorf("no responsive DoH address: %w", probeErr)
+	}
+
+	b.mu.Lock()
+	b.selectedIP = ip
+	refreshUntil := b.refreshed.Add(b.refreshFor)
+	if !usingFallback && !b.refreshed.IsZero() && time.Now().Before(refreshUntil) {
+		b.selectedTil = refreshUntil
+	} else {
+		// Retry DNS resolution periodically while temporarily relying on cached/fallback IPs.
+		b.selectedTil = time.Now().Add(time.Minute)
+	}
+	b.mu.Unlock()
+
+	logLine("INFO", "DoH IP selected hostname=%s ip=%s response_ms=%d candidates=%d fallback=%t", b.host, ip, latency.Milliseconds(), len(ips), usingFallback)
+	return ip, nil
+}
+
+func (b *bootstrapResolver) fastestIP(ctx context.Context, ips []string, timeout time.Duration) (string, time.Duration, error) {
+	type result struct {
+		ip      string
+		latency time.Duration
+		err     error
+	}
+	probe := b.probe
+	if probe == nil {
+		probe = probeDoHIP
+	}
+	results := make(chan result, len(ips))
+	for _, candidate := range ips {
+		ip := candidate
+		go func() {
+			probeTimeout := minDuration(timeout, 5*time.Second)
+			probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+			defer cancel()
+			latency, err := probe(probeCtx, b.endpoint, ip, probeTimeout)
+			results <- result{ip: ip, latency: latency, err: err}
+		}()
+	}
+
+	var bestIP string
+	var bestLatency time.Duration
+	var failures []string
+	for range ips {
+		select {
+		case <-ctx.Done():
+			return "", 0, ctx.Err()
+		case res := <-results:
+			if res.err != nil {
+				failures = append(failures, res.ip+": "+res.err.Error())
+				continue
+			}
+			if bestIP == "" || res.latency < bestLatency {
+				bestIP, bestLatency = res.ip, res.latency
+			}
+		}
+	}
+	if bestIP == "" {
+		return "", 0, fmt.Errorf("all DoH IP probes failed: %s", strings.Join(failures, "; "))
+	}
+	return bestIP, bestLatency, nil
+}
+
+func probeDoHIP(ctx context.Context, endpoint, ip string, timeout time.Duration) (time.Duration, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
+		return 0, errors.New("invalid DoH endpoint URL")
+	}
+	port := parsed.Port()
+	if port == "" {
+		port = "443"
+	}
+	start := time.Now()
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: parsed.Hostname()},
+		ForceAttemptHTTP2: true, DisableKeepAlives: true,
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{Timeout: minDuration(timeout, 5*time.Second)}).
+				DialContext(ctx, network, net.JoinHostPort(ip, port))
+		},
+	}
+	client := &http.Client{
+		Transport: transport, Timeout: timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	defer transport.CloseIdleConnections()
+
+	probe := &UpstreamRuntime{
+		cfg: Upstream{ID: parsed.Hostname(), URL: endpoint},
+		client: client,
+	}
+	if _, err := sendDoH(ctx, probe, makeDNSQuery("example.com", 1)); err != nil {
+		return time.Since(start), err
+	}
+	return time.Since(start), nil
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a <= 0 || a > b {
+		return b
+	}
+	return a
+}
+
 func (r *Runtime) initHealth(s *Snapshot) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

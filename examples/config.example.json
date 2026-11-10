@@ -22,27 +22,15 @@
   "upstreams": [
     {
       "id": "dns.google",
-      "name": "Google Public DNS",
-      "bootstrap_ips": [
-        "8.8.8.8",
-        "8.8.4.4"
-      ]
+      "name": "Google Public DNS"
     },
     {
       "id": "cloudflare-dns.com",
-      "name": "Cloudflare",
-      "bootstrap_ips": [
-        "1.1.1.1",
-        "1.0.0.1"
-      ]
+      "name": "Cloudflare"
     },
     {
       "id": "dns.quad9.net",
-      "name": "Quad9",
-      "bootstrap_ips": [
-        "9.9.9.9",
-        "149.112.112.112"
-      ]
+      "name": "Quad9"
     }
   ],
   "groups": [
@@ -261,5 +249,9 @@
     "key_file": "gemini_api_key",
     "prompt": "Reply with exactly OK.",
     "max_output_tokens": 8
-  }
+  },
+  "bootstrap_resolvers": [
+    "1.1.1.1",
+    "8.8.8.8"
+  ]
 }

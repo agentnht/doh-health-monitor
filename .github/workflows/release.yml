@@ -1,4 +1,4 @@
-﻿name: Release
+name: Release
 
 on:
   push:
@@ -37,10 +37,9 @@ jobs:
         run: |
           id=$(jq -r .id manifest.json)
           version="${GITHUB_REF_NAME#v}"
-          mkdir -p stage/bin stage/examples
+          mkdir -p stage/bin
           go build -trimpath -ldflags "-s -w" -o "stage/bin/$id" .
-          cp manifest.json README.md stage/
-          cp examples/* stage/examples/
+          cp manifest.json stage/
           (cd stage && zip -r "../$id-v$version.zip" .)
           sha256sum "$id-v$version.zip" > "$id-v$version.zip.sha256"
 

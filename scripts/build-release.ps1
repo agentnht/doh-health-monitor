@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
@@ -20,15 +20,14 @@ if ($LASTEXITCODE) { throw 'go test failed' }
 
 $stage = Join-Path $root "dist/stage"
 if (Test-Path $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
-New-Item -ItemType Directory -Force "$stage/bin", "$stage/examples" | Out-Null
+New-Item -ItemType Directory -Force "$stage/bin" | Out-Null
 
 $env:GOOS = 'linux'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
 go build -trimpath -ldflags '-s -w' -o "$stage/bin/$id" .
 if ($LASTEXITCODE) { throw 'go build failed' }
 Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED
 
-Copy-Item manifest.json, README.md $stage
-Copy-Item examples/* "$stage/examples"
+Copy-Item manifest.json $stage
 
 $zip = Join-Path $root "dist/$id-v$version.zip"
 if (Test-Path $zip) { Remove-Item -LiteralPath $zip -Force }
