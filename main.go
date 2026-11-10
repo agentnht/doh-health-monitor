@@ -117,19 +117,71 @@ type UpstreamRuntime struct {
 }
 
 type bootstrapResolver struct {
-	host        string
-	endpoint    string
-	resolvers   []string
-	fallback    []string
-	mu          sync.Mutex
-	selectMu    sync.Mutex
-	ips         []string
-	refreshed   time.Time
-	lastAttempt time.Time
-	refreshFor  time.Duration
-	selectedIP  string
-	selectedTil time.Time
-	probe       func(context.Context, string, string, time.Duration) (time.Duration, error)
+	host                string
+	endpoint            string
+	resolvers           []string
+	fallback            []string
+	mu                  sync.Mutex
+	selectMu            sync.Mutex
+	ips                 []string
+	resolvedBy          string
+	refreshed           time.Time
+	lastAttempt         time.Time
+	refreshFor          time.Duration
+	selectedIP          string
+	selectedTil         time.Time
+	lastCandidates      []string
+	lastCandidateSource string
+	lastProbeAt         time.Time
+	lastProbe           []DoHIPProbeStatus
+	probe               func(context.Context, string, string, time.Duration) (time.Duration, error)
+}
+
+type DoHIPProbeStatus struct {
+	IP         string `json:"ip"`
+	Source     string `json:"source"`
+	Result     string `json:"result"`
+	ResponseMS int64  `json:"response_ms"`
+	Error      string `json:"error,omitempty"`
+}
+
+type DoHBootstrapStatus struct {
+	Hostname        string             `json:"hostname"`
+	ResolvedIPs     []string           `json:"resolved_ips,omitempty"`
+	ResolvedBy      string             `json:"resolved_by,omitempty"`
+	ResolvedAt      time.Time          `json:"resolved_at,omitempty"`
+	CandidateIPs    []string           `json:"candidate_ips,omitempty"`
+	CandidateSource string             `json:"candidate_source,omitempty"`
+	SelectedIP      string             `json:"selected_ip,omitempty"`
+	SelectedUntil   time.Time          `json:"selected_until,omitempty"`
+	LastProbeAt     time.Time          `json:"last_probe_at,omitempty"`
+	LastProbe       []DoHIPProbeStatus `json:"last_probe,omitempty"`
+}
+
+func (b *bootstrapResolver) status() DoHBootstrapStatus {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return DoHBootstrapStatus{
+		Hostname:        b.host,
+		ResolvedIPs:     append([]string(nil), b.ips...),
+		ResolvedBy:      b.resolvedBy,
+		ResolvedAt:      b.refreshed,
+		CandidateIPs:    append([]string(nil), b.lastCandidates...),
+		CandidateSource: b.lastCandidateSource,
+		SelectedIP:      b.selectedIP,
+		SelectedUntil:   b.selectedTil,
+		LastProbeAt:     b.lastProbeAt,
+		LastProbe:       append([]DoHIPProbeStatus(nil), b.lastProbe...),
+	}
+}
+
+func (b *bootstrapResolver) recordProbeSnapshot(candidates []string, source string, probes []DoHIPProbeStatus) {
+	b.mu.Lock()
+	b.lastCandidates = append([]string(nil), candidates...)
+	b.lastCandidateSource = source
+	b.lastProbeAt = time.Now().UTC()
+	b.lastProbe = append([]DoHIPProbeStatus(nil), probes...)
+	b.mu.Unlock()
 }
 type domainBinding struct{ suffix, groupID string }
 type ProbeStatus struct {
@@ -157,22 +209,23 @@ type GroupStatus struct {
 	Upstreams      map[string]HealthEntry `json:"upstreams"`
 }
 type Status struct {
-	ID         string                 `json:"id"`
-	Version    string                 `json:"version"`
-	StartedAt  time.Time              `json:"started_at"`
-	UpdatedAt  time.Time              `json:"updated_at"`
-	DNSUDP     string                 `json:"dns_udp"`
-	DNSTCP     string                 `json:"dns_tcp"`
-	HTTP       string                 `json:"http"`
-	Config     string                 `json:"config"`
-	Cache      CacheStatus            `json:"cache"`
-	Groups     map[string]GroupStatus `json:"groups"`
-	GeminiAPI  string                 `json:"gemini_api"`
-	Queries    uint64                 `json:"queries"`
-	CacheHits  uint64                 `json:"cache_hits"`
-	Failures   uint64                 `json:"failures"`
-	LastReload time.Time              `json:"last_reload,omitempty"`
-	LastError  string                 `json:"last_error,omitempty"`
+	ID           string                          `json:"id"`
+	Version      string                          `json:"version"`
+	StartedAt    time.Time                       `json:"started_at"`
+	UpdatedAt    time.Time                       `json:"updated_at"`
+	DNSUDP       string                          `json:"dns_udp"`
+	DNSTCP       string                          `json:"dns_tcp"`
+	HTTP         string                          `json:"http"`
+	Config       string                          `json:"config"`
+	Cache        CacheStatus                     `json:"cache"`
+	Groups       map[string]GroupStatus          `json:"groups"`
+	DoHBootstrap map[string]DoHBootstrapStatus   `json:"doh_bootstrap,omitempty"`
+	GeminiAPI    string                          `json:"gemini_api"`
+	Queries      uint64                          `json:"queries"`
+	CacheHits    uint64                          `json:"cache_hits"`
+	Failures     uint64                          `json:"failures"`
+	LastReload   time.Time                       `json:"last_reload,omitempty"`
+	LastError    string                          `json:"last_error,omitempty"`
 }
 type CacheStatus struct {
 	Enabled    bool `json:"enabled"`
@@ -741,6 +794,7 @@ func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string
 	}
 	if len(ips) > 0 {
 		b.ips = ips
+		b.resolvedBy = server
 		b.refreshed = time.Now()
 		return append([]string(nil), ips...), nil
 	}
@@ -766,6 +820,7 @@ func (b *bootstrapResolver) bestIP(ctx context.Context, force bool, timeout time
 		b.mu.Unlock()
 		return ip, nil
 	}
+	previousRefresh := b.refreshed
 	b.mu.Unlock()
 
 	ips, resolveErr := b.addresses(ctx, force)
@@ -777,14 +832,45 @@ func (b *bootstrapResolver) bestIP(ctx context.Context, force bool, timeout time
 	}
 	b.mu.Lock()
 	usingFallback := resolveErr != nil && len(b.ips) == 0 && len(b.fallback) > 0
+	source := "dns"
+	if usingFallback {
+		source = "configured_fallback"
+	} else if !b.refreshed.IsZero() && b.refreshed.Equal(previousRefresh) {
+		source = "cache"
+	}
 	b.mu.Unlock()
-	ip, latency, probeErr := b.fastestIP(ctx, ips, timeout)
+
+	allCandidates := append([]string(nil), ips...)
+	ip, latency, probes, probeErr := b.fastestIPDetailed(ctx, ips, timeout)
+	for i := range probes {
+		probes[i].Source = source
+	}
+
 	if probeErr != nil && len(b.fallback) > 0 && !usingFallback {
-		fallbackIP, fallbackLatency, fallbackErr := b.fastestIP(ctx, b.fallback, timeout)
+		fallbackIP, fallbackLatency, fallbackProbes, fallbackErr := b.fastestIPDetailed(ctx, b.fallback, timeout)
+		for i := range fallbackProbes {
+			fallbackProbes[i].Source = "configured_fallback"
+		}
+		probes = append(probes, fallbackProbes...)
+		for _, fallbackCandidate := range b.fallback {
+			allCandidates = appendUniqueString(allCandidates, fallbackCandidate)
+		}
 		if fallbackErr == nil {
 			ip, latency, probeErr, usingFallback = fallbackIP, fallbackLatency, nil, true
+			source += "+configured_fallback"
 		}
 	}
+
+	b.recordProbeSnapshot(allCandidates, source, probes)
+	for _, result := range probes {
+		level := "INFO"
+		if result.Result != "ok" {
+			level = "WARN"
+		}
+		logLine(level, "DoH IP probe hostname=%s ip=%s source=%s result=%s response_ms=%d error=%s",
+			b.host, result.IP, result.Source, result.Result, result.ResponseMS, safeLog(result.Error))
+	}
+
 	if probeErr != nil {
 		if resolveErr != nil {
 			return "", fmt.Errorf("no responsive DoH address: %v (DNS resolution: %w)", probeErr, resolveErr)
@@ -801,13 +887,29 @@ func (b *bootstrapResolver) bestIP(ctx context.Context, force bool, timeout time
 		// Retry DNS resolution periodically while temporarily relying on cached/fallback IPs.
 		b.selectedTil = time.Now().Add(time.Minute)
 	}
+	selectedUntil := b.selectedTil
 	b.mu.Unlock()
 
-	logLine("INFO", "DoH IP selected hostname=%s ip=%s response_ms=%d candidates=%d fallback=%t", b.host, ip, latency.Milliseconds(), len(ips), usingFallback)
+	logLine("INFO", "DoH IP selected hostname=%s ip=%s response_ms=%d candidates=%d fallback=%t selected_until=%s",
+		b.host, ip, latency.Milliseconds(), len(allCandidates), usingFallback, selectedUntil.UTC().Format(time.RFC3339))
 	return ip, nil
 }
 
+func appendUniqueString(items []string, value string) []string {
+	for _, item := range items {
+		if item == value {
+			return items
+		}
+	}
+	return append(items, value)
+}
+
 func (b *bootstrapResolver) fastestIP(ctx context.Context, ips []string, timeout time.Duration) (string, time.Duration, error) {
+	bestIP, bestLatency, _, err := b.fastestIPDetailed(ctx, ips, timeout)
+	return bestIP, bestLatency, err
+}
+
+func (b *bootstrapResolver) fastestIPDetailed(ctx context.Context, ips []string, timeout time.Duration) (string, time.Duration, []DoHIPProbeStatus, error) {
 	type result struct {
 		ip      string
 		latency time.Duration
@@ -832,24 +934,30 @@ func (b *bootstrapResolver) fastestIP(ctx context.Context, ips []string, timeout
 	var bestIP string
 	var bestLatency time.Duration
 	var failures []string
+	probeResults := make([]DoHIPProbeStatus, 0, len(ips))
 	for range ips {
 		select {
 		case <-ctx.Done():
-			return "", 0, ctx.Err()
+			return "", 0, probeResults, ctx.Err()
 		case res := <-results:
-			if res.err != nil {
-				failures = append(failures, res.ip+": "+res.err.Error())
-				continue
+			entry := DoHIPProbeStatus{
+				IP: res.ip, ResponseMS: res.latency.Milliseconds(), Result: "ok",
 			}
-			if bestIP == "" || res.latency < bestLatency {
+			if res.err != nil {
+				entry.Result = "error"
+				entry.Error = safeLog(res.err.Error())
+				failures = append(failures, res.ip+": "+res.err.Error())
+			} else if bestIP == "" || res.latency < bestLatency {
 				bestIP, bestLatency = res.ip, res.latency
 			}
+			probeResults = append(probeResults, entry)
 		}
 	}
+	sort.Slice(probeResults, func(i, j int) bool { return probeResults[i].IP < probeResults[j].IP })
 	if bestIP == "" {
-		return "", 0, fmt.Errorf("all DoH IP probes failed: %s", strings.Join(failures, "; "))
+		return "", 0, probeResults, fmt.Errorf("all DoH IP probes failed: %s", strings.Join(failures, "; "))
 	}
-	return bestIP, bestLatency, nil
+	return bestIP, bestLatency, probeResults, nil
 }
 
 func probeDoHIP(ctx context.Context, endpoint, ip string, timeout time.Duration) (time.Duration, error) {
@@ -1807,7 +1915,7 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	s := r.currentSnapshot()
-	out := Status{ID: envOr("LUCX_PLUGIN_ID", pluginID), Version: envOr("LUCX_PLUGIN_VERSION", pluginVersion), StartedAt: startedAt, UpdatedAt: time.Now().UTC(), DNSUDP: s.cfg.DNSListenUDP, DNSTCP: s.cfg.DNSListenTCP, HTTP: s.cfg.HTTPListen, Config: r.configPath, Cache: CacheStatus{Enabled: s.cfg.Cache.Enabled, Entries: r.cacheLen(), MaxEntries: s.cfg.Cache.MaxEntries}, Groups: map[string]GroupStatus{}, Queries: r.queries.Load(), CacheHits: r.cacheHits.Load(), Failures: r.failures.Load(), GeminiAPI: "disabled"}
+	out := Status{ID: envOr("LUCX_PLUGIN_ID", pluginID), Version: envOr("LUCX_PLUGIN_VERSION", pluginVersion), StartedAt: startedAt, UpdatedAt: time.Now().UTC(), DNSUDP: s.cfg.DNSListenUDP, DNSTCP: s.cfg.DNSListenTCP, HTTP: s.cfg.HTTPListen, Config: r.configPath, Cache: CacheStatus{Enabled: s.cfg.Cache.Enabled, Entries: r.cacheLen(), MaxEntries: s.cfg.Cache.MaxEntries}, Groups: map[string]GroupStatus{}, DoHBootstrap: map[string]DoHBootstrapStatus{}, Queries: r.queries.Load(), CacheHits: r.cacheHits.Load(), Failures: r.failures.Load(), GeminiAPI: "disabled"}
 	r.mu.RLock()
 	for gid, g := range s.groups {
 		gs := GroupStatus{ActiveUpstream: r.active[gid], Upstreams: map[string]HealthEntry{}}
@@ -1817,6 +1925,11 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 		out.Groups[gid] = gs
 	}
 	r.mu.RUnlock()
+	for uid, upstream := range s.upstreams {
+		if upstream.bootstrap != nil {
+			out.DoHBootstrap[uid] = upstream.bootstrap.status()
+		}
+	}
 	if s.cfg.GeminiAPI.Enabled {
 		out.GeminiAPI = "enabled"
 	}
