@@ -102,47 +102,97 @@ func TestDefaultConfigUsesProxyDNSProvidersOnly(t *testing.T) {
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("default upstreams = %v, want %v", got, want)
 	}
-	for _, g := range c.Groups {
-		if strings.Join(g.Upstreams, ",") != strings.Join(want, ",") {
-			t.Errorf("group %s upstreams = %v, want %v", g.ID, g.Upstreams, want)
+	if len(c.Groups) != 1 || c.Groups[0].ID != "google" {
+		t.Fatalf("default config groups = %+v, want only google", c.Groups)
+	}
+	google := c.Groups[0]
+	for _, upstream := range google.Upstreams {
+		if !containsString(want, upstream) {
+			t.Errorf("unexpected Google upstream %q", upstream)
 		}
 	}
-	if len(c.Groups) != 2 || c.Groups[1].ID != "google" {
-		t.Fatalf("default config groups = %+v, want only default and google", c.Groups)
+	if strings.Join(google.Upstreams, ",") != strings.Join(want, ",") {
+		t.Errorf("Google upstreams = %v, want %v", google.Upstreams, want)
 	}
-	google := c.Groups[1]
-	var geminiCheck *Check
+	if len(google.Checks) != 25 {
+		t.Fatalf("Google checks = %d, want 25", len(google.Checks))
+	}
+	var geminiCheck, accountsCheck *Check
 	for i := range google.Checks {
-		if google.Checks[i].Domain == "gemini.google.com" {
+		switch google.Checks[i].Domain {
+		case "gemini.google.com":
 			geminiCheck = &google.Checks[i]
-			break
+		case "accounts.google.com":
+			accountsCheck = &google.Checks[i]
 		}
 	}
-	if geminiCheck == nil {
-		t.Fatal("Gemini control check is missing")
+	if geminiCheck == nil || geminiCheck.HTTPURL != "https://gemini.google.com/robots.txt" || !geminiCheck.Required {
+		t.Errorf("Gemini check = %+v; want required HTTP check for robots.txt", geminiCheck)
 	}
-	if geminiCheck.HTTPURL != "https://gemini.google.com/robots.txt" || !geminiCheck.Required {
-		t.Errorf("Gemini check = %+v; want required HTTP check for robots.txt", *geminiCheck)
+	if accountsCheck == nil || accountsCheck.HTTPURL != "https://accounts.google.com/.well-known/openid-configuration" || !accountsCheck.Required || !accountsCheck.VerifyOIDC {
+		t.Errorf("Accounts check = %+v; want required OIDC discovery check", accountsCheck)
 	}
-	wantGoogleChecks := []string{
-		"aistudio.google.com", "alkalimakersuite-pa.clients6.google.com", "apis.google.com",
-		"www.googletagmanager.com", "waa-pa.clients6.google.com", "console.cloud.google.com",
-		"people-pa.clients6.google.com", "ln3.googleusercontent.com", "www.google-analytics.com",
-		"content-autofill.googleapis.com", "play.google.com", "google.com", "googleapis.com",
-		"gstatic.com", "googleusercontent.com", "google.org", "googleadservices.com",
-		"google-analytics.com", "gemini.google.com", "generativelanguage.googleapis.com",
-		"clients6.google.com", "jnn-pa.googleapis.com", "accounts.google.com",
-		"ssl.gstatic.com", "www.googleapis.com",
+}
+
+func TestNormalizeConfigKeepsOnlyGoogleProfile(t *testing.T) {
+	c := defaultConfig()
+	google := c.Groups[0]
+	c.Groups = append([]Group{{ID: "default", Upstreams: append([]string(nil), google.Upstreams...)}}, google)
+	normalized, err := normalizeConfigGroups(c)
+	if err != nil {
+		t.Fatal(err)
 	}
-	gotGoogleChecks := make([]string, 0, len(google.Checks))
-	for _, check := range google.Checks {
-		gotGoogleChecks = append(gotGoogleChecks, check.Domain)
+	if len(normalized.Groups) != 1 || normalized.Groups[0].ID != "google" {
+		t.Fatalf("normalized groups = %+v, want only google", normalized.Groups)
 	}
-	if strings.Join(gotGoogleChecks, ",") != strings.Join(wantGoogleChecks, ",") {
-		t.Errorf("Google checks = %v, want %v", gotGoogleChecks, wantGoogleChecks)
+}
+
+func TestDNSGatewaySendsArbitraryQNAMEThroughGoogleProfile(t *testing.T) {
+	var gotName string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		gotName, _, _, err = parseQuestion(body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/dns-message")
+		_, _ = w.Write(testAResponse(body, 45))
+	}))
+	defer srv.Close()
+
+	query := makeDNSQuery("completely-unrelated.example", 1)
+	upstream := &UpstreamRuntime{
+		cfg: Upstream{ID: "selected-google-doh", URL: srv.URL},
+		client: srv.Client(),
 	}
-	if !containsString(google.Domains, "google-analytics.com") {
-		t.Errorf("Google group domains must include google-analytics.com")
+	snapshot := &Snapshot{
+		groups: map[string]Group{
+			"google": {ID: "google", Upstreams: []string{"selected-google-doh"}},
+		},
+		upstreams: map[string]*UpstreamRuntime{"selected-google-doh": upstream},
+	}
+	rt := &Runtime{
+		active: map[string]string{"google": "selected-google-doh"},
+	}
+	rt.snapshot.Store(snapshot)
+
+	response, selected, err := rt.query(context.Background(), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != "selected-google-doh" {
+		t.Fatalf("selected upstream = %q", selected)
+	}
+	if gotName != "completely-unrelated.example" {
+		t.Fatalf("DoH received QNAME %q; want arbitrary QNAME unchanged", gotName)
+	}
+	if dnsRCode(response) != 0 || dnsAnswerCount(response) != 1 {
+		t.Fatalf("unexpected DNS response rcode=%d answers=%d", dnsRCode(response), dnsAnswerCount(response))
 	}
 }
 
@@ -496,14 +546,14 @@ func TestReadGeminiAPIKeySecurity(t *testing.T) {
 }
 
 func TestPublishHealthStateClearsUnavailableUpstream(t *testing.T) {
-	s := &Snapshot{groups: map[string]Group{"default": {ID: "default", Upstreams: []string{"u1"}}}}
+	s := &Snapshot{groups: map[string]Group{"google": {ID: "google", Upstreams: []string{"u1"}}}}
 	r := &Runtime{
-		health: map[string]map[string]HealthEntry{"default": {"u1": {State: "down"}}},
-		active: map[string]string{"default": "u1"},
+		health: map[string]map[string]HealthEntry{"google": {"u1": {State: "down"}}},
+		active: map[string]string{"google": "u1"},
 	}
 	r.snapshot.Store(s)
 	r.publishHealthState()
-	if got := r.active["default"]; got != "" {
+	if got := r.active["google"]; got != "" {
 		t.Fatalf("active upstream = %q, want cleared", got)
 	}
 }
