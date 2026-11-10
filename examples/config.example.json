@@ -22,6 +22,11 @@
   },
   "upstreams": [
     {
+      "id": "system-dns",
+      "name": "System DNS (VPS)",
+      "type": "system"
+    },
+    {
       "id": "eu.geohide.ru",
       "name": "GeoHide EU"
     },
@@ -46,6 +51,7 @@
     {
       "id": "google",
       "upstreams": [
+        "system-dns",
         "eu.geohide.ru",
         "doh.dagami.ru",
         "dns.comss.one",
