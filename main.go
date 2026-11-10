@@ -1797,6 +1797,35 @@ func (r *Runtime) queryVia(ctx context.Context, u *UpstreamRuntime, q []byte) ([
 	resp, e := sendDoH(ctx, u, q)
 	return resp, u.cfg.ID, e
 }
+func readHTTPProbeBody(body io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maxHTTPBody+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxHTTPBody {
+		return nil, fmt.Errorf("HTTP probe response exceeds %d bytes", maxHTTPBody)
+	}
+	return data, nil
+}
+
+func geminiRedirectAllowed(resp *http.Response) bool {
+	if resp == nil || resp.StatusCode < 300 || resp.StatusCode >= 400 {
+		return false
+	}
+	target, err := resp.Location()
+	if err != nil || target.Scheme != "https" || target.User != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+	switch host {
+	case "gemini.google.com", "accounts.google.com", "consent.google.com", "google.com", "www.google.com":
+	default:
+		return false
+	}
+	path := strings.ToLower(target.EscapedPath())
+	return !strings.Contains(path, "sorry") && !strings.Contains(path, "unsupported")
+}
+
 func geminiRegionBlocked(body []byte) bool {
 	text := strings.ToLower(string(body))
 	indicators := []string{
@@ -1842,12 +1871,13 @@ func (r *Runtime) httpProbe(ctx context.Context, u *UpstreamRuntime, ch Check) (
 		return 0, e
 	}
 	defer resp.Body.Close()
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, (256<<10)+1))
+	body, readErr := readHTTPProbeBody(resp.Body)
 	if readErr != nil {
 		return resp.StatusCode, fmt.Errorf("read HTTP probe response: %w", readErr)
 	}
-	if len(body) > 256<<10 {
-		return resp.StatusCode, errors.New("HTTP probe response exceeds 256 KiB")
+	isGemini := strings.EqualFold(ch.Domain, "gemini.google.com")
+	if isGemini && geminiRegionBlocked(body) {
+		return resp.StatusCode, errors.New("Gemini regional restriction detected in response body")
 	}
 	ok := len(ch.ExpectedStatus) == 0 && resp.StatusCode >= 200 && resp.StatusCode < 400
 	for _, s := range ch.ExpectedStatus {
@@ -1855,8 +1885,17 @@ func (r *Runtime) httpProbe(ctx context.Context, u *UpstreamRuntime, ch Check) (
 			ok = true
 		}
 	}
-	if ch.Domain == "gemini.google.com" && geminiRegionBlocked(body) {
-		return resp.StatusCode, errors.New("Gemini regional restriction detected in response body")
+	if isGemini {
+		// A Google-owned HTTPS redirect can be a normal sign-in or consent flow.
+		// Do not follow it with this IP-pinned client; validate and report its target.
+		ok = (resp.StatusCode >= 200 && resp.StatusCode < 300) || geminiRedirectAllowed(resp)
+		if !ok && resp.StatusCode >= 300 && resp.StatusCode < 400 {
+			location := ""
+			if target, err := resp.Location(); err == nil {
+				location = target.String()
+			}
+			return resp.StatusCode, fmt.Errorf("unexpected Gemini redirect to %q", location)
+		}
 	}
 	if !ok {
 		return resp.StatusCode, fmt.Errorf("unexpected HTTP status %d", resp.StatusCode)
