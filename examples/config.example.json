@@ -127,7 +127,7 @@
         },
         {
           "domain": "gemini.google.com",
-          "http_url": "https://gemini.google.com/robots.txt",
+          "http_url": "https://gemini.google.com/",
           "required": true,
           "expected_status": [
             200
