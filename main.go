@@ -498,7 +498,7 @@ func defaultConfig() Config {
 				{Domain: "google.org", Required: false},
 				{Domain: "googleadservices.com", Required: false},
 				{Domain: "google-analytics.com", Required: false},
-				{Domain: "gemini.google.com", HTTPURL: "https://gemini.google.com/robots.txt", Required: true, ExpectedStatus: []int{200}},
+				{Domain: "gemini.google.com", HTTPURL: "https://gemini.google.com/", Required: true, ExpectedStatus: []int{200}},
 				{Domain: "generativelanguage.googleapis.com", Required: false},
 				{Domain: "clients6.google.com", Required: false},
 				{Domain: "jnn-pa.googleapis.com", Required: false},
@@ -1797,6 +1797,27 @@ func (r *Runtime) queryVia(ctx context.Context, u *UpstreamRuntime, q []byte) ([
 	resp, e := sendDoH(ctx, u, q)
 	return resp, u.cfg.ID, e
 }
+func geminiRegionBlocked(body []byte) bool {
+	text := strings.ToLower(string(body))
+	indicators := []string{
+		"not available in your country",
+		"not available in your region",
+		"not available in your location",
+		"not supported in your country",
+		"not supported in your region",
+		"not supported in your location",
+		"isn't available in your country",
+		"is not available where you are",
+		"error code 1060",
+	}
+	for _, indicator := range indicators {
+		if strings.Contains(text, indicator) {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *Runtime) httpProbe(ctx context.Context, u *UpstreamRuntime, ch Check) (int, error) {
 	pu, e := url.Parse(ch.HTTPURL)
 	if e != nil {
@@ -1833,6 +1854,9 @@ func (r *Runtime) httpProbe(ctx context.Context, u *UpstreamRuntime, ch Check) (
 		if s == resp.StatusCode {
 			ok = true
 		}
+	}
+	if ch.Domain == "gemini.google.com" && geminiRegionBlocked(body) {
+		return resp.StatusCode, errors.New("Gemini regional restriction detected in response body")
 	}
 	if !ok {
 		return resp.StatusCode, fmt.Errorf("unexpected HTTP status %d", resp.StatusCode)
