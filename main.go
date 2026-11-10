@@ -434,16 +434,18 @@ func defaultConfig() Config {
 		LocalHosts: map[string]LocalHost{},
 		BootstrapResolvers: []string{"1.1.1.1", "8.8.8.8"},
 		Upstreams: []Upstream{
-			{ID: "dns.google", Name: "Google Public DNS"},
-			{ID: "cloudflare-dns.com", Name: "Cloudflare"},
-			{ID: "dns.quad9.net", Name: "Quad9"},
+			{ID: "eu.geohide.ru", Name: "GeoHide EU"},
+			{ID: "doh.dagami.ru", Name: "Dagami"},
+			{ID: "dns.comss.one", Name: "Comss.one"},
+			{ID: "dns.bezmezhau.com", Name: "Bezmezhau"},
+			{ID: "dns.zapret.moe", Name: "Zapret"},
 		},
 		Groups: []Group{
-			{ID: "default", Domains: []string{}, Upstreams: []string{"dns.google", "cloudflare-dns.com", "dns.quad9.net"}, Checks: []Check{{Domain: "example.com", Required: true}}},
-			{ID: "google", FakeDNS: true, Domains: []string{"google.com", "googleapis.com", "gstatic.com", "googleusercontent.com", "google.org", "googleadservices.com", "gemini.google.com", "generativelanguage.googleapis.com", "clients6.google.com", "jnn-pa.googleapis.com", "waa-pa.clients6.google.com"}, Upstreams: []string{"dns.google", "cloudflare-dns.com", "dns.quad9.net"}, Checks: []Check{
-				{Domain: "gemini.google.com", HTTPURL: "https://gemini.google.com/", Required: true, ExpectedStatus: []int{200, 301, 302, 403}},
+			{ID: "default", Domains: []string{}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{{Domain: "example.com", Required: true}}},
+			{ID: "google", FakeDNS: true, Domains: []string{"google.com", "googleapis.com", "gstatic.com", "googleusercontent.com", "google.org", "googleadservices.com", "gemini.google.com", "generativelanguage.googleapis.com", "clients6.google.com", "jnn-pa.googleapis.com", "waa-pa.clients6.google.com"}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{
+				{Domain: "gemini.google.com", HTTPURL: "https://gemini.google.com/robots.txt", Required: true, ExpectedStatus: []int{200}},
 				{Domain: "accounts.google.com", HTTPURL: "https://accounts.google.com/.well-known/openid-configuration", Required: true, ExpectedStatus: []int{200}, VerifyOIDC: true},
-				{Domain: "www.gstatic.com", HTTPURL: "https://www.gstatic.com/", Required: true, ExpectedStatus: []int{200, 301, 302, 403}},
+				{Domain: "connectivitycheck.gstatic.com", HTTPURL: "https://connectivitycheck.gstatic.com/generate_204", Required: true, ExpectedStatus: []int{204}},
 				{Domain: "ssl.gstatic.com", HTTPURL: "https://ssl.gstatic.com/", Required: false, ExpectedStatus: []int{200, 301, 302, 403}},
 				{Domain: "fonts.googleapis.com", HTTPURL: "https://fonts.googleapis.com/css2?family=Roboto", Required: false, ExpectedStatus: []int{200}},
 				{Domain: "fonts.gstatic.com", Required: false},
@@ -452,9 +454,9 @@ func defaultConfig() Config {
 				{Domain: "jnn-pa.googleapis.com", Required: false},
 				{Domain: "waa-pa.clients6.google.com", Required: false},
 			}},
-			{ID: "netflix", FakeDNS: true, Domains: []string{"netflix.com", "nflxvideo.net", "nflximg.net", "nflxso.net", "nflxext.com", "netflix.net"}, Upstreams: []string{"cloudflare-dns.com", "dns.google", "dns.quad9.net"}, Checks: []Check{{Domain: "www.netflix.com", HTTPURL: "https://www.netflix.com/", Required: true, ExpectedStatus: []int{200, 301, 302, 403}}}},
-			{ID: "openai", FakeDNS: true, Domains: []string{"openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com"}, Upstreams: []string{"cloudflare-dns.com", "dns.google", "dns.quad9.net"}, Checks: []Check{{Domain: "chatgpt.com", HTTPURL: "https://chatgpt.com/", Required: true, ExpectedStatus: []int{200, 301, 302, 403}}}},
-			{ID: "youtube", FakeDNS: true, Domains: []string{"youtube.com", "youtubei.googleapis.com", "googlevideo.com", "ytimg.com", "youtu.be", "youtube-nocookie.com"}, Upstreams: []string{"dns.google", "cloudflare-dns.com", "dns.quad9.net"}, Checks: []Check{{Domain: "www.youtube.com", HTTPURL: "https://www.youtube.com/", Required: true, ExpectedStatus: []int{200, 301, 302, 403}}}},
+			{ID: "netflix", FakeDNS: true, Domains: []string{"netflix.com", "nflxvideo.net", "nflximg.net", "nflxso.net", "nflxext.com", "netflix.net"}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{{Domain: "www.netflix.com", HTTPURL: "https://www.netflix.com/", Required: true, ExpectedStatus: []int{200, 301, 302, 403}}}},
+			{ID: "openai", FakeDNS: true, Domains: []string{"openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com"}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{{Domain: "chatgpt.com", HTTPURL: "https://chatgpt.com/robots.txt", Required: true, ExpectedStatus: []int{200}}}},
+			{ID: "youtube", FakeDNS: true, Domains: []string{"youtube.com", "youtubei.googleapis.com", "googlevideo.com", "ytimg.com", "youtu.be", "youtube-nocookie.com"}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{{Domain: "www.youtube.com", HTTPURL: "https://www.youtube.com/robots.txt", Required: true, ExpectedStatus: []int{200}}}},
 		},
 		GeminiAPI: GeminiAPIConfig{Enabled: false, RequiredForGroup: false, GroupID: "google", Model: "gemini-3.8-flash", IntervalSeconds: 1800, KeyFile: "gemini_api_key", Prompt: "Reply with exactly OK.", MaxOutputTokens: 8},
 	}
@@ -611,7 +613,13 @@ func loadDoHList(path string, create bool) (map[string]string, error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) && create {
 		var lines []string
-		for _, u := range []string{"https://dns.google/dns-query", "https://cloudflare-dns.com/dns-query", "https://dns.quad9.net/dns-query"} {
+		for _, u := range []string{
+			"https://eu.geohide.ru/dns-query",
+			"https://doh.dagami.ru/dns-query",
+			"https://dns.comss.one/dns-query",
+			"https://dns.bezmezhau.com/dns-query",
+			"https://dns.zapret.moe/dns-query",
+		} {
 			lines = append(lines, u)
 		}
 		if err = os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {
