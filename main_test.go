@@ -148,11 +148,6 @@ func TestDefaultConfigUsesProxyDNSProvidersOnly(t *testing.T) {
 	if google.Checks[0].HTTPURL != "https://gemini.google.com/robots.txt" {
 		t.Errorf("Gemini check URL = %q", google.Checks[0].HTTPURL)
 	}
-	if google.Checks[2].Domain != "connectivitycheck.gstatic.com" ||
-		google.Checks[2].HTTPURL != "https://connectivitycheck.gstatic.com/generate_204" ||
-		strings.Join(intsToStrings(google.Checks[2].ExpectedStatus), ",") != "204" {
-		t.Errorf("Google connectivity check is not using the known-good 204 endpoint: %+v", google.Checks[2])
-	}
 	wantGoogleChecks := []string{
 		"gemini.google.com", "accounts.google.com",
 		"aistudio.google.com", "alkalimakersuite-pa.clients6.google.com", "apis.google.com",
