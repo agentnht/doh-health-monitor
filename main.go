@@ -604,9 +604,11 @@ func normalizeDomain(s string) string {
 }
 func defaultDoHURLs() map[string]string {
 	return map[string]string{
-		"dns.google":         "https://dns.google/dns-query",
-		"cloudflare-dns.com": "https://cloudflare-dns.com/dns-query",
-		"dns.quad9.net":      "https://dns.quad9.net/dns-query",
+		"eu.geohide.ru":       "https://eu.geohide.ru/dns-query",
+		"doh.dagami.ru":        "https://doh.dagami.ru/dns-query",
+		"dns.comss.one":        "https://dns.comss.one/dns-query",
+		"dns.bezmezhau.com":    "https://dns.bezmezhau.com/dns-query",
+		"dns.zapret.moe":       "https://dns.zapret.moe/dns-query",
 	}
 }
 func loadDoHList(path string, create bool) (map[string]string, error) {
