@@ -641,8 +641,6 @@ func newDoHClient(u Upstream, resolvers []string, timeout time.Duration) (*http.
 	return client, bootstrap, nil
 }
 
-func defaultBootstrapResolvers() []string { return []string{"1.1.1.1", "8.8.8.8"} }
-
 func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
