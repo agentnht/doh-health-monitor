@@ -1,5 +1,12 @@
 ﻿# Changelog
 
+## [Unreleased]
+
+### DNS
+- Add optional exact-hostname `local_hosts` overrides for A/AAAA, with 60-second TTL and DNSSEC AD cleared.
+- Return NOERROR/NODATA for missing address families and suppress HTTPS/SVCB records for configured hosts.
+- Keep empty `local_hosts` behavior identical to the normal DoH path.
+
 ## [1.6.0] - 2026-11-10
 
 ### Added
@@ -9,12 +16,6 @@
 - Russian documentation with configuration examples, address selection guidance, hot reload, and `dig` verification steps.
 
 
-## [Unreleased]
-
-### DNS
-- Add optional exact-hostname `local_hosts` overrides for A/AAAA, with 60-second TTL and DNSSEC AD cleared.
-- Return NOERROR/NODATA for missing address families and suppress HTTPS/SVCB records for configured hosts.
-- Keep empty `local_hosts` behavior identical to the normal DoH path.
 
 
 ## [1.5.0]
