@@ -75,8 +75,9 @@ type Upstream struct {
 }
 type Group struct {
 	ID        string   `json:"id"`
-	FakeDNS   bool     `json:"fake_dns"`
-	Domains   []string `json:"domains"`
+	// Deprecated legacy fields are accepted for config compatibility and ignored.
+	FakeDNS   bool     `json:"fake_dns,omitempty"`
+	Domains   []string `json:"domains,omitempty"`
 	Upstreams []string `json:"upstreams"`
 	Checks    []Check  `json:"checks,omitempty"`
 }
@@ -104,7 +105,6 @@ type Snapshot struct {
 	localHosts map[string]LocalHost
 	upstreams map[string]*UpstreamRuntime
 	groups    map[string]Group
-	byDomain  []domainBinding
 	loadedAt  time.Time
 	configMod time.Time
 	dohMod    time.Time
@@ -183,7 +183,6 @@ func (b *bootstrapResolver) recordProbeSnapshot(candidates []string, source stri
 	b.lastProbe = append([]DoHIPProbeStatus(nil), probes...)
 	b.mu.Unlock()
 }
-type domainBinding struct{ suffix, groupID string }
 type ProbeStatus struct {
 	Domain      string `json:"domain"`
 	Required    bool   `json:"required"`
@@ -420,6 +419,8 @@ func loadConfig(path string) (Config, error) {
 	if e = dec.Decode(&c); e != nil {
 		return Config{}, fmt.Errorf("decode config: %w", e)
 	}
+	c, e = normalizeConfigGroups(c)
+	if e != nil { return Config{}, e }
 	if e = validateConfig(c); e != nil {
 		return Config{}, e
 	}
@@ -441,8 +442,7 @@ func defaultConfig() Config {
 			{ID: "dns.zapret.moe", Name: "Zapret"},
 		},
 		Groups: []Group{
-			{ID: "default", Domains: []string{}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{{Domain: "example.com", Required: true}}},
-			{ID: "google", FakeDNS: true, Domains: []string{"google.com", "googleapis.com", "gstatic.com", "googleusercontent.com", "google.org", "googleadservices.com", "google-analytics.com", "gemini.google.com", "generativelanguage.googleapis.com", "clients6.google.com", "jnn-pa.googleapis.com", "waa-pa.clients6.google.com"}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{
+			{ID: "google", Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{
 				{Domain: "aistudio.google.com", Required: false},
 				{Domain: "alkalimakersuite-pa.clients6.google.com", Required: false},
 				{Domain: "apis.google.com", Required: false},
@@ -473,6 +473,18 @@ func defaultConfig() Config {
 		GeminiAPI: GeminiAPIConfig{Enabled: false, RequiredForGroup: false, GroupID: "google", Model: "gemini-3.8-flash", IntervalSeconds: 1800, KeyFile: "gemini_api_key", Prompt: "Reply with exactly OK.", MaxOutputTokens: 8},
 	}
 }
+func normalizeConfigGroups(c Config) (Config, error) {
+	// Older installations may still have multiple groups. Keep only the Google
+	// suitability profile; the DNS gateway never routes by queried domain.
+	for _, g := range c.Groups {
+		if g.ID == "google" {
+			c.Groups = []Group{g}
+			return c, nil
+		}
+	}
+	return Config{}, errors.New("configuration has no group with id 'google'")
+}
+
 func validateConfig(c Config) error {
 	if !validListen(c.DNSListenUDP) || !validListen(c.DNSListenTCP) || !validListen(c.HTTPListen) {
 		return errors.New("dns_listen_udp, dns_listen_tcp and http_listen must be host:port")
@@ -553,11 +565,6 @@ func validateConfig(c Config) error {
 				return fmt.Errorf("group %s references unknown upstream %s", g.ID, u)
 			}
 		}
-		for _, d := range g.Domains {
-			if normalizeDomain(d) == "" {
-				return fmt.Errorf("invalid domain in group %s", g.ID)
-			}
-		}
 		for _, ch := range g.Checks {
 			if strings.TrimSpace(ch.Domain) == "" {
 				return fmt.Errorf("empty check domain in group %s", g.ID)
@@ -575,8 +582,8 @@ func validateConfig(c Config) error {
 			}
 		}
 	}
-	if !groups["default"] {
-		return errors.New("a group with id 'default' is required")
+	if len(c.Groups) != 1 || !groups["google"] {
+		return errors.New("exactly one group with id 'google' is required")
 	}
 	if c.GeminiAPI.Enabled {
 		if filepath.IsAbs(c.GeminiAPI.KeyFile) || strings.HasPrefix(filepath.Clean(c.GeminiAPI.KeyFile), "..") {
@@ -703,14 +710,7 @@ func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
 			}
 		}
 		s.groups[g.ID] = g
-		for _, d := range g.Domains {
-			d = normalizeDomain(d)
-			if d != "" {
-				s.byDomain = append(s.byDomain, domainBinding{d, g.ID})
-			}
-		}
 	}
-	sort.Slice(s.byDomain, func(i, j int) bool { return len(s.byDomain[i].suffix) > len(s.byDomain[j].suffix) })
 	return s, nil
 }
 func defaultBootstrapResolvers() []string { return []string{"1.1.1.1", "8.8.8.8"} }
@@ -1043,19 +1043,10 @@ func (r *Runtime) initHealth(s *Snapshot) {
 	}
 }
 func (r *Runtime) currentSnapshot() *Snapshot { return r.snapshot.Load() }
-func (r *Runtime) groupFor(domain string, s *Snapshot) string {
-	domain = normalizeDomain(domain)
-	for _, b := range s.byDomain {
-		if domain == b.suffix || strings.HasSuffix(domain, "."+b.suffix) {
-			return b.groupID
-		}
-	}
-	return "default"
-}
 func (r *Runtime) orderedUpstreams(gid string, s *Snapshot) []string {
 	g, ok := s.groups[gid]
 	if !ok {
-		g = s.groups["default"]
+		g = s.groups["google"]
 	}
 	r.mu.RLock()
 	active := r.active[gid]
@@ -1082,7 +1073,8 @@ func (r *Runtime) query(ctx context.Context, packet []byte) ([]byte, string, err
 		return nil, "", e
 	}
 	s := r.currentSnapshot()
-	gid := r.groupFor(name, s)
+	// Every DNS question received by this listener uses the single Google-qualified gateway.
+	const gid = "google"
 	order := r.orderedUpstreams(gid, s)
 	var errs []string
 	for _, uid := range order {
@@ -1259,7 +1251,7 @@ func (r *Runtime) handleDNS(packet []byte) []byte {
 	if s.cfg.Cache.Enabled {
 		r.cachePut(cacheKey, resp, s.cfg.Cache)
 	}
-	logLine("DEBUG", "DNS answer domain=%s group=%s upstream=%s", name, r.groupFor(name, s), uid)
+	logLine("DEBUG", "DNS answer domain=%s profile=google upstream=%s", name, uid)
 	return resp
 }
 
@@ -1927,6 +1919,8 @@ func loadConfigNoCreate(path string) (Config, error) {
 	if e = d.Decode(&c); e != nil {
 		return Config{}, e
 	}
+	c, e = normalizeConfigGroups(c)
+	if e != nil { return Config{}, e }
 	if e = validateConfig(c); e != nil {
 		return Config{}, e
 	}
