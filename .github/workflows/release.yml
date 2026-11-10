@@ -1,0 +1,59 @@
+﻿name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Verify versions match tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          manifest=$(jq -r .version manifest.json)
+          source=$(sed -n 's/.*pluginVersion *= *"\([^"]*\)".*/\1/p' main.go)
+          [ "$manifest" = "$version" ] || { echo "manifest.json=$manifest, tag=$version"; exit 1; }
+          [ "$source" = "$version" ] || { echo "main.go=$source, tag=$version"; exit 1; }
+          grep -q "^## \[$version\]" CHANGELOG.md || { echo "CHANGELOG.md has no [$version]"; exit 1; }
+
+      - run: go vet ./...
+      - run: go test ./...
+
+      - name: Build package
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          id=$(jq -r .id manifest.json)
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p stage/bin stage/examples
+          go build -trimpath -ldflags "-s -w" -o "stage/bin/$id" .
+          cp manifest.json README.md stage/
+          cp examples/* stage/examples/
+          (cd stage && zip -r "../$id-v$version.zip" .)
+          sha256sum "$id-v$version.zip" > "$id-v$version.zip.sha256"
+
+      - name: Extract release notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md > notes.md
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            *.zip *.zip.sha256
