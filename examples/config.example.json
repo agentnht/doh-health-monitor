@@ -21,16 +21,24 @@
   },
   "upstreams": [
     {
-      "id": "dns.google",
-      "name": "Google Public DNS"
+      "id": "eu.geohide.ru",
+      "name": "GeoHide EU"
     },
     {
-      "id": "cloudflare-dns.com",
-      "name": "Cloudflare"
+      "id": "doh.dagami.ru",
+      "name": "Dagami"
     },
     {
-      "id": "dns.quad9.net",
-      "name": "Quad9"
+      "id": "dns.comss.one",
+      "name": "Comss.one"
+    },
+    {
+      "id": "dns.bezmezhau.com",
+      "name": "Bezmezhau"
+    },
+    {
+      "id": "dns.zapret.moe",
+      "name": "Zapret"
     }
   ],
   "groups": [
@@ -39,9 +47,11 @@
       "fake_dns": false,
       "domains": [],
       "upstreams": [
-        "dns.google",
-        "cloudflare-dns.com",
-        "dns.quad9.net"
+        "eu.geohide.ru",
+        "doh.dagami.ru",
+        "dns.comss.one",
+        "dns.bezmezhau.com",
+        "dns.zapret.moe"
       ],
       "checks": [
         {
@@ -67,20 +77,19 @@
         "waa-pa.clients6.google.com"
       ],
       "upstreams": [
-        "dns.google",
-        "cloudflare-dns.com",
-        "dns.quad9.net"
+        "eu.geohide.ru",
+        "doh.dagami.ru",
+        "dns.comss.one",
+        "dns.bezmezhau.com",
+        "dns.zapret.moe"
       ],
       "checks": [
         {
           "domain": "gemini.google.com",
-          "http_url": "https://gemini.google.com/",
+          "http_url": "https://gemini.google.com/robots.txt",
           "required": true,
           "expected_status": [
-            200,
-            301,
-            302,
-            403
+            200
           ]
         },
         {
@@ -93,14 +102,11 @@
           "verify_oidc": true
         },
         {
-          "domain": "www.gstatic.com",
-          "http_url": "https://www.gstatic.com/",
+          "domain": "connectivitycheck.gstatic.com",
+          "http_url": "https://connectivitycheck.gstatic.com/generate_204",
           "required": true,
           "expected_status": [
-            200,
-            301,
-            302,
-            403
+            204
           ]
         },
         {
@@ -163,9 +169,11 @@
         "netflix.net"
       ],
       "upstreams": [
-        "cloudflare-dns.com",
-        "dns.google",
-        "dns.quad9.net"
+        "eu.geohide.ru",
+        "doh.dagami.ru",
+        "dns.comss.one",
+        "dns.bezmezhau.com",
+        "dns.zapret.moe"
       ],
       "checks": [
         {
@@ -191,20 +199,19 @@
         "oaiusercontent.com"
       ],
       "upstreams": [
-        "cloudflare-dns.com",
-        "dns.google",
-        "dns.quad9.net"
+        "eu.geohide.ru",
+        "doh.dagami.ru",
+        "dns.comss.one",
+        "dns.bezmezhau.com",
+        "dns.zapret.moe"
       ],
       "checks": [
         {
           "domain": "chatgpt.com",
-          "http_url": "https://chatgpt.com/",
+          "http_url": "https://chatgpt.com/robots.txt",
           "required": true,
           "expected_status": [
-            200,
-            301,
-            302,
-            403
+            200
           ]
         }
       ]
@@ -221,20 +228,19 @@
         "youtube-nocookie.com"
       ],
       "upstreams": [
-        "dns.google",
-        "cloudflare-dns.com",
-        "dns.quad9.net"
+        "eu.geohide.ru",
+        "doh.dagami.ru",
+        "dns.comss.one",
+        "dns.bezmezhau.com",
+        "dns.zapret.moe"
       ],
       "checks": [
         {
           "domain": "www.youtube.com",
-          "http_url": "https://www.youtube.com/",
+          "http_url": "https://www.youtube.com/robots.txt",
           "required": true,
           "expected_status": [
-            200,
-            301,
-            302,
-            403
+            200
           ]
         }
       ]
