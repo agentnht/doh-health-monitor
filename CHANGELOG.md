@@ -1,5 +1,14 @@
 ﻿# Changelog
 
+## [1.6.0] - 2026-11-10
+
+### Added
+- Optional `local_hosts` overrides for exact DNS hostnames.
+- Local A/AAAA answers with 60-second TTL, NOERROR/NODATA for missing address families, and AD cleared.
+- Empty HTTPS/SVCB answers for configured local hostnames.
+- Russian documentation with configuration examples, address selection guidance, hot reload, and `dig` verification steps.
+
+
 ## [Unreleased]
 
 ### DNS
