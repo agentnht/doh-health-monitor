@@ -203,3 +203,125 @@ func TestBuildSnapshotRequiresBootstrapEntryForDohHost(t *testing.T) {
 		t.Fatal("expected unknown host to be rejected")
 	}
 }
+
+func TestVerifyOIDCIssuerExactMatch(t *testing.T) {
+	discovery := "https://accounts.example/.well-known/openid-configuration"
+	valid := []byte(`{"issuer":"https://accounts.example"}`)
+	if err := verifyOIDCIssuer(valid, discovery); err != nil {
+		t.Fatalf("valid issuer rejected: %v", err)
+	}
+	cases := []struct {
+		name string
+		body []byte
+		url  string
+	}{
+		{name: "wrong issuer host", body: []byte(`{"issuer":"https://evil.example"}`), url: discovery},
+		{name: "issuer path mismatch", body: []byte(`{"issuer":"https://accounts.example/other"}`), url: discovery},
+		{name: "userinfo", body: valid, url: "https://user@accounts.example/.well-known/openid-configuration"},
+		{name: "query", body: valid, url: discovery + "?x=1"},
+		{name: "http", body: valid, url: "http://accounts.example/.well-known/openid-configuration"},
+		{name: "wrong discovery path", body: valid, url: "https://accounts.example/config"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := verifyOIDCIssuer(tc.body, tc.url); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+}
+
+func TestReadGeminiAPIKeySecurity(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gemini_api_key")
+	if err := os.WriteFile(path, []byte("test-key"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readGeminiAPIKey(dir, "gemini_api_key")
+	if err != nil || string(got) != "test-key" {
+		t.Fatalf("read key: %q, %v", got, err)
+	}
+	if err := os.Chmod(path, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readGeminiAPIKey(dir, "gemini_api_key"); err == nil {
+		t.Fatal("expected unsafe permissions to be rejected")
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, make([]byte, (8<<10)+1), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readGeminiAPIKey(dir, "gemini_api_key"); err == nil {
+		t.Fatal("expected oversized key file to be rejected")
+	}
+	if _, err := readGeminiAPIKey(dir, "../outside"); err == nil {
+		t.Fatal("expected path traversal to be rejected")
+	}
+}
+
+func TestPublishHealthStateClearsUnavailableUpstream(t *testing.T) {
+	s := &Snapshot{groups: map[string]Group{"default": {ID: "default", Upstreams: []string{"u1"}}}}
+	r := &Runtime{
+		health: map[string]map[string]HealthEntry{"default": {"u1": {State: "down"}}},
+		active: map[string]string{"default": "u1"},
+	}
+	r.snapshot.Store(s)
+	r.publishHealthState()
+	if got := r.active["default"]; got != "" {
+		t.Fatalf("active upstream = %q, want cleared", got)
+	}
+}
+
+func TestRemoveSocketIfSame(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unixLn := ln.(*net.UnixListener)
+	unixLn.SetUnlinkOnClose(false)
+	expected, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeSocketIfSame(path, expected); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("socket path still exists or cannot be checked: %v", err)
+	}
+}
+
+func TestRemoveSocketIfSameRefusesReplacement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unixLn := ln.(*net.UnixListener)
+	unixLn.SetUnlinkOnClose(false)
+	expected, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("do not remove"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeSocketIfSame(path, expected); err == nil {
+		t.Fatal("expected replacement path to be rejected")
+	}
+	if b, err := os.ReadFile(path); err != nil || string(b) != "do not remove" {
+		t.Fatalf("replacement file was changed: data=%q err=%v", b, err)
+	}
+}
