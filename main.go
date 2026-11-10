@@ -1470,12 +1470,12 @@ func startEventSocket(path string) (net.Listener, *http.Server, error) {
 	if e != nil {
 		return nil, nil, e
 	}
-	if unixLn, ok := ln.(*net.UnixListener); ok {
-		unixLn.SetUnlinkOnClose(false)
-	}
 	if e = os.Chmod(path, 0600); e != nil {
 		_ = ln.Close()
 		return nil, nil, e
+	}
+	if unixLn, ok := ln.(*net.UnixListener); ok {
+		unixLn.SetUnlinkOnClose(false)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/_lucx/events", func(w http.ResponseWriter, r *http.Request) { // Respond quickly; body is deliberately bounded.
