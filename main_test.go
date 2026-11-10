@@ -153,6 +153,21 @@ func TestDefaultConfigUsesProxyDNSProvidersOnly(t *testing.T) {
 		strings.Join(intsToStrings(google.Checks[2].ExpectedStatus), ",") != "204" {
 		t.Errorf("Google connectivity check is not using the known-good 204 endpoint: %+v", google.Checks[2])
 	}
+	wantGoogleChecks := []string{
+		"gemini.google.com", "accounts.google.com", "connectivitycheck.gstatic.com",
+		"aistudio.google.com", "alkalimakersuite-pa.clients6.google.com", "apis.google.com",
+		"www.googletagmanager.com", "waa-pa.clients6.google.com", "console.cloud.google.com",
+		"people-pa.clients6.google.com", "ln3.googleusercontent.com", "www.google-analytics.com",
+		"content-autofill.googleapis.com", "play.google.com", "ssl.gstatic.com", "www.googleapis.com",
+	}
+	gotGoogleChecks := make([]string, 0, len(google.Checks))
+	for _, check := range google.Checks { gotGoogleChecks = append(gotGoogleChecks, check.Domain) }
+	if strings.Join(gotGoogleChecks, ",") != strings.Join(wantGoogleChecks, ",") {
+		t.Errorf("Google checks = %v, want %v", gotGoogleChecks, wantGoogleChecks)
+	}
+	if !containsString(google.Domains, "google-analytics.com") {
+		t.Errorf("Google group domains must include google-analytics.com")
+	}
 	for _, g := range c.Groups {
 		switch g.ID {
 		case "openai":
@@ -642,4 +657,9 @@ func TestLocalHostsRejectsDuplicateNormalizedNames(t *testing.T) {
 	if err := validateConfig(c); err == nil {
 		t.Fatal("expected duplicate normalized hostname to be rejected")
 	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values { if value == want { return true } }
+	return false
 }
