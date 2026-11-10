@@ -165,6 +165,22 @@ func TestInitHealthPrunesRemovedUpstreams(t *testing.T) {
 	}
 }
 
+func TestStaleHealthResultIgnoredAfterReload(t *testing.T) {
+	s := &Snapshot{groups: map[string]Group{
+		"google": {ID: "google", Upstreams: []string{"current"}},
+	}}
+	r := &Runtime{health: map[string]map[string]HealthEntry{
+		"google": {"current": {State: "up"}},
+	}}
+	r.snapshot.Store(s)
+	r.updateHealth("google", "removed", true, time.Millisecond, "", 200, "", nil, HealthConfig{
+		SuccessThreshold: 1, FailureThreshold: 3,
+	})
+	if _, ok := r.health["google"]["removed"]; ok {
+		t.Fatal("stale health result recreated a removed upstream")
+	}
+}
+
 func TestOneSuccessIsEnoughToQualifyUpstream(t *testing.T) {
 	r := &Runtime{health: map[string]map[string]HealthEntry{}}
 	r.updateHealth("google", "u1", true, time.Millisecond, "", 200, "", nil, HealthConfig{
