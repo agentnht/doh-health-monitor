@@ -14,6 +14,13 @@
 - Проверки IP по-прежнему выполняются параллельно; TLS SNI и проверка сертификата используют hostname DoH endpoint.
 - Сохранены шестичасовой pin выбранного IP, принудительное обновление после ошибки подключения и резервный механизм `bootstrap_ips`.
 
+### DoH proxy providers по умолчанию
+- Стандартный список upstream заменён на GeoHide EU (`eu.geohide.ru`), Dagami (`doh.dagami.ru`), Comss.one (`dns.comss.one`), Bezmezhau (`dns.bezmezhau.com`) и Zapret (`dns.zapret.moe`).
+- Все пять провайдеров добавлены в стандартный приоритет всех доменных групп и в автоматически создаваемый `doh-servers.txt`.
+- Shecan исключён до обновления TLS-сертификата. Google Public DNS, Cloudflare и Quad9 исключены из списка DoH upstream и не являются резервными proxy-серверами.
+- Независимые bootstrap DNS IP (`1.1.1.1`, `8.8.8.8`) сохранены только для разрешения адресов самих DoH hostname; они не используются как upstream для пользовательских запросов.
+- Health-check Google, OpenAI и YouTube переведены на лёгкие контрольные URL, проверенные с VPS.
+
 ### Проверки
 - Добавлены тесты на сбор подробных результатов параллельной проверки IP и безопасный снимок bootstrap-статуса.
 
