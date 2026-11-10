@@ -1,0 +1,265 @@
+{
+  "dns_listen_udp": "127.0.0.1:5355",
+  "dns_listen_tcp": "127.0.0.1:5355",
+  "http_listen": "127.0.0.1:18765",
+  "reload_interval_seconds": 5,
+  "dns_query_timeout_seconds": 15,
+  "doh_timeout_seconds": 10,
+  "dns_max_concurrent": 256,
+  "health": {
+    "interval_seconds": 45,
+    "timeout_seconds": 5,
+    "failure_threshold": 3,
+    "success_threshold": 5
+  },
+  "cache": {
+    "enabled": true,
+    "min_ttl_seconds": 5,
+    "max_ttl_seconds": 300,
+    "negative_ttl_seconds": 15,
+    "max_entries": 8192
+  },
+  "upstreams": [
+    {
+      "id": "dns.google",
+      "name": "Google Public DNS",
+      "bootstrap_ips": [
+        "8.8.8.8",
+        "8.8.4.4"
+      ]
+    },
+    {
+      "id": "cloudflare-dns.com",
+      "name": "Cloudflare",
+      "bootstrap_ips": [
+        "1.1.1.1",
+        "1.0.0.1"
+      ]
+    },
+    {
+      "id": "dns.quad9.net",
+      "name": "Quad9",
+      "bootstrap_ips": [
+        "9.9.9.9",
+        "149.112.112.112"
+      ]
+    }
+  ],
+  "groups": [
+    {
+      "id": "default",
+      "fake_dns": false,
+      "domains": [],
+      "upstreams": [
+        "dns.google",
+        "cloudflare-dns.com",
+        "dns.quad9.net"
+      ],
+      "checks": [
+        {
+          "domain": "example.com",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "google",
+      "fake_dns": true,
+      "domains": [
+        "google.com",
+        "googleapis.com",
+        "gstatic.com",
+        "googleusercontent.com",
+        "google.org",
+        "googleadservices.com",
+        "gemini.google.com",
+        "generativelanguage.googleapis.com",
+        "clients6.google.com",
+        "jnn-pa.googleapis.com",
+        "waa-pa.clients6.google.com"
+      ],
+      "upstreams": [
+        "dns.google",
+        "cloudflare-dns.com",
+        "dns.quad9.net"
+      ],
+      "checks": [
+        {
+          "domain": "gemini.google.com",
+          "http_url": "https://gemini.google.com/",
+          "required": true,
+          "expected_status": [
+            200,
+            301,
+            302,
+            403
+          ]
+        },
+        {
+          "domain": "accounts.google.com",
+          "http_url": "https://accounts.google.com/.well-known/openid-configuration",
+          "required": true,
+          "expected_status": [
+            200
+          ],
+          "verify_oidc": true
+        },
+        {
+          "domain": "www.gstatic.com",
+          "http_url": "https://www.gstatic.com/",
+          "required": true,
+          "expected_status": [
+            200,
+            301,
+            302,
+            403
+          ]
+        },
+        {
+          "domain": "ssl.gstatic.com",
+          "http_url": "https://ssl.gstatic.com/",
+          "required": false,
+          "expected_status": [
+            200,
+            301,
+            302,
+            403
+          ]
+        },
+        {
+          "domain": "fonts.googleapis.com",
+          "http_url": "https://fonts.googleapis.com/css2?family=Roboto",
+          "required": false,
+          "expected_status": [
+            200
+          ]
+        },
+        {
+          "domain": "fonts.gstatic.com",
+          "required": false
+        },
+        {
+          "domain": "www.googleapis.com",
+          "http_url": "https://www.googleapis.com/",
+          "required": false,
+          "expected_status": [
+            200,
+            301,
+            302,
+            403
+          ]
+        },
+        {
+          "domain": "apis.google.com",
+          "required": false
+        },
+        {
+          "domain": "jnn-pa.googleapis.com",
+          "required": false
+        },
+        {
+          "domain": "waa-pa.clients6.google.com",
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "netflix",
+      "fake_dns": true,
+      "domains": [
+        "netflix.com",
+        "nflxvideo.net",
+        "nflximg.net",
+        "nflxso.net",
+        "nflxext.com",
+        "netflix.net"
+      ],
+      "upstreams": [
+        "cloudflare-dns.com",
+        "dns.google",
+        "dns.quad9.net"
+      ],
+      "checks": [
+        {
+          "domain": "www.netflix.com",
+          "http_url": "https://www.netflix.com/",
+          "required": true,
+          "expected_status": [
+            200,
+            301,
+            302,
+            403
+          ]
+        }
+      ]
+    },
+    {
+      "id": "openai",
+      "fake_dns": true,
+      "domains": [
+        "openai.com",
+        "chatgpt.com",
+        "oaistatic.com",
+        "oaiusercontent.com"
+      ],
+      "upstreams": [
+        "cloudflare-dns.com",
+        "dns.google",
+        "dns.quad9.net"
+      ],
+      "checks": [
+        {
+          "domain": "chatgpt.com",
+          "http_url": "https://chatgpt.com/",
+          "required": true,
+          "expected_status": [
+            200,
+            301,
+            302,
+            403
+          ]
+        }
+      ]
+    },
+    {
+      "id": "youtube",
+      "fake_dns": true,
+      "domains": [
+        "youtube.com",
+        "youtubei.googleapis.com",
+        "googlevideo.com",
+        "ytimg.com",
+        "youtu.be",
+        "youtube-nocookie.com"
+      ],
+      "upstreams": [
+        "dns.google",
+        "cloudflare-dns.com",
+        "dns.quad9.net"
+      ],
+      "checks": [
+        {
+          "domain": "www.youtube.com",
+          "http_url": "https://www.youtube.com/",
+          "required": true,
+          "expected_status": [
+            200,
+            301,
+            302,
+            403
+          ]
+        }
+      ]
+    }
+  ],
+  "gemini_api": {
+    "enabled": false,
+    "required_for_group": false,
+    "group_id": "google",
+    "model": "gemini-3.8-flash",
+    "interval_seconds": 1800,
+    "key_file": "gemini_api_key",
+    "prompt": "Reply with exactly OK.",
+    "max_output_tokens": 8
+  }
+}
