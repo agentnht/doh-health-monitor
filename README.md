@@ -1,6 +1,6 @@
 # DoH DNS Proxy & Health Monitor для LucX-UI
 
-**Версия:** 1.6.0  
+**Версия:** 1.7.0  
 **Платформа:** Linux x86-64 (`amd64`), статический Go-бинарник  
 **Тип:** LucX-UI sidecar, `apiVersion: 1`  
 **Режим Gemini API:** необязательный, управляется параметром `gemini_api.enabled`
@@ -57,7 +57,7 @@ outbound protocol=dns (dns-out)
                                +------------------------+-------------------+
                                |                        |                   |
                                v                        v                   v
-                           Google DoH              Cloudflare DoH        Quad9 DoH
+                         GeoHide EU DoH             Dagami DoH           Comss.one DoH
                                ^                        ^                   ^
                                +---------- Health Monitor -----------------+
 ```
@@ -95,14 +95,14 @@ $LUCX_PLUGIN_DATA/gemini_api_key
 
 ## 4. Установка в LucX-UI
 
-1. Скачайте `doh-health-monitor-v1.6.0.zip`.
+1. Скачайте `doh-health-monitor-v1.7.0.zip`.
 2. В LucX-UI откройте менеджер плагинов и установите ZIP.
 3. Запустите плагин из панели.
 4. После первого запуска панель создаст приватную папку данных; плагин создаст в ней `config.json` и `doh-servers.txt`.
 5. Посмотрите журнал плагина. Нормальный старт содержит строки примерно такого вида:
 
 ```text
-level=INFO START id=doh-health-monitor version=1.6.0 arch=amd64 data=...
+level=INFO START id=doh-health-monitor version=1.7.0 arch=amd64 data=...
 level=INFO CONFIG loaded ... gemini_api=false
 level=INFO EVENT_SOCKET listening ...
 level=INFO READY DNS=127.0.0.1:5355/127.0.0.1:5355 HTTP=127.0.0.1:18765
@@ -196,9 +196,11 @@ level=INFO READY DNS=127.0.0.1:5355/127.0.0.1:5355 HTTP=127.0.0.1:18765
 ```json
 "bootstrap_resolvers": ["1.1.1.1", "8.8.8.8"],
 "upstreams": [
-  { "id": "dns.google", "name": "Google Public DNS" },
-  { "id": "cloudflare-dns.com", "name": "Cloudflare" },
-  { "id": "dns.quad9.net", "name": "Quad9" }
+  { "id": "eu.geohide.ru", "name": "GeoHide EU" },
+  { "id": "doh.dagami.ru", "name": "Dagami" },
+  { "id": "dns.comss.one", "name": "Comss.one" },
+  { "id": "dns.bezmezhau.com", "name": "Bezmezhau" },
+  { "id": "dns.zapret.moe", "name": "Zapret" }
 ]
 ```
 
@@ -207,7 +209,22 @@ level=INFO READY DNS=127.0.0.1:5355/127.0.0.1:5355 HTTP=127.0.0.1:18765
 - `upstreams[].name` — человекочитаемое имя.
 - `upstreams[].bootstrap_ips` — необязательный резервный список IP. Он используется только если автоматическое разрешение не удалось и ещё нет сохранённого рабочего списка.
 
-Плагин параллельно измеряет время полного DoH-запроса к каждому найденному IP (включая TLS handshake и проверку сертификата) и выбирает один самый быстрый адрес. Выбранный IP кэшируется на 6 часов. При проблеме с подключением выполняется принудительное DNS-разрешение и повторный замер; если независимый DNS временно недоступен, используется последний сохранённый список IP и выбирается лучший из доступных. В журнале появляется `DoH IP selected` с выбранным адресом и временем ответа. TLS SNI и проверка сертификата всегда выполняются по hostname DoH endpoint.
+Плагин параллельно измеряет время полного DoH-запроса к каждому найденному IP (включая TLS handshake и проверку сертификата) и выбирает один самый быстрый адрес. Выбранный IP кэшируется на 6 часов. При проблеме с подключением выполняется принудительное DNS-разрешение и повторный замер; если независимый DNS временно недоступен, используется последний сохранённый список IP и выбирается лучший из доступных. В журнале появляется `DoH IP selected` с выбранным адресом и временем ответа. При новом выборе также записывается отдельная строка `DoH IP probe` для каждого проверенного IP: `source` (DNS, кэш или статический fallback), `result` (ok/error), `response_ms` и текст ошибки. Проверки выполняются параллельно, поэтому строки не отражают последовательный перебор. При повторном использовании закреплённого IP новые probe-строки не появляются до следующего выбора/обновления.
+
+Текущее состояние bootstrap теперь доступно в локальном `/status` в поле `doh_bootstrap`:
+
+```bash
+curl -sS http://127.0.0.1:18765/status | jq '.doh_bootstrap'
+```
+
+Для каждого hostname там указаны:
+- `resolved_ips` — последний список IP, полученный через bootstrap DNS;
+- `resolved_by` — какой bootstrap resolver (например, `1.1.1.1` или `8.8.8.8`) вернул этот список;
+- `candidate_ips` и `candidate_source` — адреса, участвовавшие в последнем выборе, и источник адресов;
+- `last_probe` — результат, задержка и ошибка проверки каждого кандидата;
+- `selected_ip` и `selected_until` — закреплённый адрес и время окончания его pin-периода.
+
+`resolved_ips` показывает DNS-кандидаты, а `candidate_ips` включает также статические fallback IP, если они понадобились. Bootstrap обращается к resolver-ам по очереди и использует первый, который вернул непустой набор A/AAAA; уже полученные кандидаты затем проверяются параллельно. TLS SNI и проверка сертификата всегда выполняются по исходному hostname DoH endpoint.
 
 Старый формат конфигурации с обязательными `bootstrap_ips` продолжает поддерживаться: эти адреса становятся резервом, а не отключают автоматическое обновление. Для нового upstream достаточно добавить объект с `id` и `name`, URL в `doh-servers.txt` и приоритет в `groups[].upstreams`.
 
@@ -216,13 +233,21 @@ level=INFO READY DNS=127.0.0.1:5355/127.0.0.1:5355 HTTP=127.0.0.1:18765
 Один HTTPS DoH URL на строку. Пустые строки и строки, начинающиеся с `#`, игнорируются.
 
 ```text
-# Один HTTPS DoH URL на строку
-https://dns.google/dns-query
-https://cloudflare-dns.com/dns-query
-https://dns.quad9.net/dns-query
+# Основные DoH proxy providers
+https://eu.geohide.ru/dns-query
+https://doh.dagami.ru/dns-query
+https://dns.comss.one/dns-query
+https://dns.bezmezhau.com/dns-query
+https://dns.zapret.moe/dns-query
 ```
 
+Пять DoH proxy upstream по умолчанию (в указанном порядке): GeoHide EU, Dagami, Comss.one, Bezmezhau и Zapret. Shecan не включён: на проверке с VPS его TLS-сертификат оказался просрочен. Google Public DNS, Cloudflare и Quad9 также не входят в список proxy upstream и не используются как резервные DoH-серверы плагина.
+
+`bootstrap_resolvers` — отдельный механизм: IP `1.1.1.1` и `8.8.8.8` используются только для получения A/AAAA адресов самих DoH hostname через обычный DNS, чтобы не создавать DNS-петлю. Они не являются DoH upstream и не обрабатывают пользовательские запросы вместо выбранных proxy-серверов.
+
 Путь URL может быть другим, если провайдер его требует, но схема должна быть `https://`. Для каждого hostname должен быть соответствующий объект в `upstreams`.
+
+При обновлении уже установленного плагина существующие `config.json` и `doh-servers.txt` сохраняются: новые значения по умолчанию автоматически применяются только при создании файлов. Для существующей установки нужно отдельно обновить оба файла, указав новые upstream ID во всех `groups[].upstreams`.
 
 **Приоритет попыток задаётся в `groups[].upstreams`**, а не порядком строк файла. `doh-servers.txt` лишь задаёт URL для upstream ID. Изменение файла применяется автоматически за `reload_interval_seconds`.
 
@@ -251,16 +276,18 @@ https://dns.quad9.net/dns-query
     "gemini.google.com"
   ],
   "upstreams": [
-    "dns.google",
-    "cloudflare-dns.com",
-    "dns.quad9.net"
+    "eu.geohide.ru",
+    "doh.dagami.ru",
+    "dns.comss.one",
+    "dns.bezmezhau.com",
+    "dns.zapret.moe"
   ],
   "checks": [
     {
       "domain": "gemini.google.com",
-      "http_url": "https://gemini.google.com/",
+      "http_url": "https://gemini.google.com/robots.txt",
       "required": true,
-      "expected_status": [200, 301, 302, 403]
+      "expected_status": [200]
     }
   ]
 }
@@ -302,6 +329,8 @@ https://dns.quad9.net/dns-query
 ```
 
 Для Gemini Web можно использовать `https://gemini.google.com/`; ожидаемые коды зависят от региона/редиректов. Статус `403` иногда говорит о сетевой достижимости при блокировке конкретного автоматического клиента, поэтому принимайте его только если это соответствует вашей цели. Набор доменов Google/Gemini меняется; редактируйте контрольный список под фактически используемый клиент.
+
+В стандартной группе `google` также выполняются диагностические проверки дополнительных точек: `aistudio.google.com`, `alkalimakersuite-pa.clients6.google.com`, `apis.google.com`, `www.googletagmanager.com`, `waa-pa.clients6.google.com`, `console.cloud.google.com`, `people-pa.clients6.google.com`, `ln3.googleusercontent.com`, `www.google-analytics.com` (официальное написание Google Analytics), `content-autofill.googleapis.com`, `play.google.com`, `ssl.gstatic.com` и `www.googleapis.com`. Все они относятся к одной группе `google` и имеют `required:false`: первые 11 дополнительных точек проверяются по DNS, а `ssl.gstatic.com` и `www.googleapis.com` — также по HTTP. Эти проверки сами по себе не переводят upstream в состояние `down`.
 
 ### 5.8 Необязательная проверка Gemini API
 
@@ -360,14 +389,11 @@ https://dns.quad9.net/dns-query
 
 ### 6.2 Встроенный DNS Xray
 
-Пример `dns` для FakeDNS whitelist и локального DoH fallback самого Xray (для внутренних разрешений имён Xray):
+Пример `dns` для FakeDNS whitelist и локального DNS fallback через sidecar (для внутренних разрешений имён Xray):
 
 ```json
 "dns": {
   "tag": "dns_inbound",
-  "hosts": {
-    "dns.google": ["8.8.8.8", "8.8.4.4"]
-  },
   "servers": [
     {
       "address": "fakedns",
@@ -402,7 +428,7 @@ https://dns.quad9.net/dns-query
       ],
       "skipFallback": true
     },
-    "https+local://dns.google/dns-query"
+    "tcp://127.0.0.1:5355"
   ],
   "queryStrategy": "UseIP",
   "disableCache": false,
@@ -415,7 +441,7 @@ https://dns.quad9.net/dns-query
 
 Список доменов в `fakedns` должен отражать только те группы, у которых `fake_dns:true`. Если меняете `fake_dns` или `domains` в `config.json`, синхронно обновите этот список и `dns-out.settings.rules` в Xray, затем один раз перезапустите Xray. Это изменение политики FakeDNS, не обычное переключение DoH.
 
-Fallback `https+local://dns.google/dns-query` — встроенный DNS upstream Xray для его собственных разрешений; он не выбирается монитором. `hosts` для `dns.google` задан, чтобы bootstrap hostname Xray DoH не зависел от того же DNS-запроса.
+Последний сервер `tcp://127.0.0.1:5355` направляет внутренние DNS-запросы Xray в локальный sidecar. Это не отдельный резервный DNS-провайдер: sidecar сам использует выбранные DoH proxy upstream. Его bootstrap-адреса разрешаются напрямую через IP из `bootstrap_resolvers`, поэтому DNS-петля не возникает. Схема `tcp://host:port` означает DNS-over-TCP в Xray; подробности — в [официальной документации Xray](https://xtls.github.io/ru/config/dns.html).
 
 ### 6.3 DNS outbound Xray
 

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -122,6 +123,90 @@ func TestErrorResponse(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigUsesProxyDNSProvidersOnly(t *testing.T) {
+	want := []string{
+		"eu.geohide.ru",
+		"doh.dagami.ru",
+		"dns.comss.one",
+		"dns.bezmezhau.com",
+		"dns.zapret.moe",
+	}
+	c := defaultConfig()
+	got := make([]string, 0, len(c.Upstreams))
+	for _, u := range c.Upstreams {
+		got = append(got, u.ID)
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("default upstreams = %v, want %v", got, want)
+	}
+	for _, g := range c.Groups {
+		if strings.Join(g.Upstreams, ",") != strings.Join(want, ",") {
+			t.Errorf("group %s upstreams = %v, want %v", g.ID, g.Upstreams, want)
+		}
+	}
+	google := c.Groups[1]
+	if google.Checks[0].HTTPURL != "https://gemini.google.com/robots.txt" {
+		t.Errorf("Gemini check URL = %q", google.Checks[0].HTTPURL)
+	}
+	wantGoogleChecks := []string{
+		"gemini.google.com", "accounts.google.com",
+		"aistudio.google.com", "alkalimakersuite-pa.clients6.google.com", "apis.google.com",
+		"www.googletagmanager.com", "waa-pa.clients6.google.com", "console.cloud.google.com",
+		"people-pa.clients6.google.com", "ln3.googleusercontent.com", "www.google-analytics.com",
+		"content-autofill.googleapis.com", "play.google.com", "ssl.gstatic.com", "www.googleapis.com",
+	}
+	gotGoogleChecks := make([]string, 0, len(google.Checks))
+	for _, check := range google.Checks { gotGoogleChecks = append(gotGoogleChecks, check.Domain) }
+	if strings.Join(gotGoogleChecks, ",") != strings.Join(wantGoogleChecks, ",") {
+		t.Errorf("Google checks = %v, want %v", gotGoogleChecks, wantGoogleChecks)
+	}
+	if !containsString(google.Domains, "google-analytics.com") {
+		t.Errorf("Google group domains must include google-analytics.com")
+	}
+	for _, g := range c.Groups {
+		switch g.ID {
+		case "openai":
+			if g.Checks[0].HTTPURL != "https://chatgpt.com/robots.txt" {
+				t.Errorf("OpenAI check URL = %q", g.Checks[0].HTTPURL)
+			}
+		case "youtube":
+			if g.Checks[0].HTTPURL != "https://www.youtube.com/robots.txt" {
+				t.Errorf("YouTube check URL = %q", g.Checks[0].HTTPURL)
+			}
+		}
+	}
+}
+
+func intsToStrings(values []int) []string {
+	out := make([]string, len(values))
+	for i, value := range values {
+		out[i] = fmt.Sprint(value)
+	}
+	return out
+}
+
+func TestLoadDoHListCreatesProxyProviderDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "doh-servers.txt")
+	urls, err := loadDoHList(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}
+	if len(urls) != len(want) {
+		t.Fatalf("default DoH URL count = %d, want %d: %#v", len(urls), len(want), urls)
+	}
+	for _, host := range want {
+		if urls[host] == "" {
+			t.Errorf("default DoH URL missing %s", host)
+		}
+	}
+	for _, excluded := range []string{"free.shecan.ir", "dns.google", "cloudflare-dns.com", "dns.quad9.net"} {
+		if _, ok := urls[excluded]; ok {
+			t.Errorf("excluded non-default provider %s is present", excluded)
+		}
+	}
+}
+
 func TestDefaultConfigUsesAutomaticBootstrap(t *testing.T) {
 	c := defaultConfig()
 	if len(c.BootstrapResolvers) == 0 {
@@ -195,6 +280,107 @@ func TestBootstrapSelectsFastestDoHIP(t *testing.T) {
 	}
 }
 
+func TestBootstrapFastestIPDetailedReportsEveryCandidate(t *testing.T) {
+	b := &bootstrapResolver{
+		host: "doh.example",
+		endpoint: "https://doh.example/dns-query",
+		probe: func(ctx context.Context, endpoint, ip string, timeout time.Duration) (time.Duration, error) {
+			switch ip {
+			case "192.0.2.10":
+				return 45 * time.Millisecond, nil
+			case "192.0.2.20":
+				return 8 * time.Millisecond, nil
+			case "192.0.2.30":
+				return 3 * time.Millisecond, errors.New("TLS handshake failed")
+			default:
+				return 0, errors.New("unexpected test IP")
+			}
+		},
+	}
+
+	got, latency, results, err := b.fastestIPDetailed(context.Background(),
+		[]string{"192.0.2.10", "192.0.2.20", "192.0.2.30"}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "192.0.2.20" || latency != 8*time.Millisecond {
+		t.Fatalf("winner = %s at %s, want 192.0.2.20 at 8ms", got, latency)
+	}
+	if len(results) != 3 {
+		t.Fatalf("got %d probe results, want 3", len(results))
+	}
+	if results[0].IP != "192.0.2.10" || results[0].Result != "ok" || results[0].ResponseMS != 45 {
+		t.Errorf("unexpected first probe result: %+v", results[0])
+	}
+	if results[1].IP != "192.0.2.20" || results[1].Result != "ok" || results[1].ResponseMS != 8 {
+		t.Errorf("unexpected second probe result: %+v", results[1])
+	}
+	if results[2].IP != "192.0.2.30" || results[2].Result != "error" || !strings.Contains(results[2].Error, "TLS handshake failed") {
+		t.Errorf("unexpected third probe result: %+v", results[2])
+	}
+}
+
+func TestBootstrapFallbackSourceIsReportedDuringRetryCooldown(t *testing.T) {
+	b := &bootstrapResolver{
+		host:        "doh.example",
+		endpoint:    "https://doh.example/dns-query",
+		fallback:    []string{"192.0.2.77"},
+		lastAttempt: time.Now(),
+		refreshFor:  6 * time.Hour,
+		probe: func(ctx context.Context, endpoint, ip string, timeout time.Duration) (time.Duration, error) {
+			if ip != "192.0.2.77" {
+				return 0, fmt.Errorf("unexpected probe IP %s", ip)
+			}
+			return 9 * time.Millisecond, nil
+		},
+	}
+
+	ip, err := b.bestIP(context.Background(), false, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ip != "192.0.2.77" {
+		t.Fatalf("selected IP = %s, want configured fallback", ip)
+	}
+	status := b.status()
+	if status.CandidateSource != "configured_fallback" {
+		t.Errorf("candidate source = %q, want configured_fallback", status.CandidateSource)
+	}
+	if len(status.LastProbe) != 1 || status.LastProbe[0].Source != "configured_fallback" {
+		t.Errorf("fallback probe source is not reported correctly: %+v", status.LastProbe)
+	}
+}
+
+func TestBootstrapStatusReturnsDiagnosticSnapshot(t *testing.T) {
+	probes := []DoHIPProbeStatus{
+		{IP: "192.0.2.10", Source: "dns", Result: "ok", ResponseMS: 12},
+	}
+	b := &bootstrapResolver{
+		host: "doh.example",
+		ips: []string{"192.0.2.10", "2001:db8::10"},
+		resolvedBy: "1.1.1.1",
+		refreshed: time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC),
+		selectedIP: "192.0.2.10",
+		selectedTil: time.Date(2026, 11, 10, 18, 0, 0, 0, time.UTC),
+		lastCandidates: []string{"192.0.2.10", "2001:db8::10"},
+		lastCandidateSource: "dns",
+		lastProbeAt: time.Date(2026, 11, 10, 12, 1, 0, 0, time.UTC),
+		lastProbe: probes,
+	}
+	status := b.status()
+	if status.Hostname != "doh.example" || status.ResolvedBy != "1.1.1.1" || status.SelectedIP != "192.0.2.10" {
+		t.Fatalf("unexpected bootstrap status: %+v", status)
+	}
+	if len(status.ResolvedIPs) != 2 || len(status.CandidateIPs) != 2 || len(status.LastProbe) != 1 {
+		t.Fatalf("diagnostic lists not preserved: %+v", status)
+	}
+	status.ResolvedIPs[0] = "changed"
+	status.LastProbe[0].IP = "changed"
+	if b.ips[0] != "192.0.2.10" || b.lastProbe[0].IP != "192.0.2.10" {
+		t.Fatal("status snapshot must not alias internal slices")
+	}
+}
+
 func TestBootstrapFastestIPReportsAllFailures(t *testing.T) {
 	b := &bootstrapResolver{
 		host: "doh.example",
@@ -260,7 +446,7 @@ func TestRFC8484DoHRoundTrip(t *testing.T) {
 
 func TestDoHListOneURLPerLine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "doh-servers.txt")
-	content := "# primary\nhttps://dns.google/dns-query\n\nhttps://cloudflare-dns.com/dns-query\n"
+	content := "# proxy providers\nhttps://eu.geohide.ru/dns-query\n\nhttps://doh.dagami.ru/dns-query\n"
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -268,11 +454,11 @@ func TestDoHListOneURLPerLine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if urls["dns.google"] != "https://dns.google/dns-query" {
-		t.Fatalf("google URL: %q", urls["dns.google"])
+	if urls["eu.geohide.ru"] != "https://eu.geohide.ru/dns-query" {
+		t.Fatalf("GeoHide URL: %q", urls["eu.geohide.ru"])
 	}
-	if urls["cloudflare-dns.com"] != "https://cloudflare-dns.com/dns-query" {
-		t.Fatalf("cloudflare URL: %q", urls["cloudflare-dns.com"])
+	if urls["doh.dagami.ru"] != "https://doh.dagami.ru/dns-query" {
+		t.Fatalf("Dagami URL: %q", urls["doh.dagami.ru"])
 	}
 }
 
@@ -497,4 +683,9 @@ func TestLocalHostsRejectsDuplicateNormalizedNames(t *testing.T) {
 	if err := validateConfig(c); err == nil {
 		t.Fatal("expected duplicate normalized hostname to be rejected")
 	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values { if value == want { return true } }
+	return false
 }

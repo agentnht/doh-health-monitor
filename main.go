@@ -29,7 +29,7 @@ import (
 
 const (
 	pluginID      = "doh-health-monitor"
-	pluginVersion = "1.6.0"
+	pluginVersion = "1.7.0"
 	maxDNSMessage = 65535
 	maxHTTPBody   = 2 << 20
 )
@@ -117,19 +117,71 @@ type UpstreamRuntime struct {
 }
 
 type bootstrapResolver struct {
-	host        string
-	endpoint    string
-	resolvers   []string
-	fallback    []string
-	mu          sync.Mutex
-	selectMu    sync.Mutex
-	ips         []string
-	refreshed   time.Time
-	lastAttempt time.Time
-	refreshFor  time.Duration
-	selectedIP  string
-	selectedTil time.Time
-	probe       func(context.Context, string, string, time.Duration) (time.Duration, error)
+	host                string
+	endpoint            string
+	resolvers           []string
+	fallback            []string
+	mu                  sync.Mutex
+	selectMu            sync.Mutex
+	ips                 []string
+	resolvedBy          string
+	refreshed           time.Time
+	lastAttempt         time.Time
+	refreshFor          time.Duration
+	selectedIP          string
+	selectedTil         time.Time
+	lastCandidates      []string
+	lastCandidateSource string
+	lastProbeAt         time.Time
+	lastProbe           []DoHIPProbeStatus
+	probe               func(context.Context, string, string, time.Duration) (time.Duration, error)
+}
+
+type DoHIPProbeStatus struct {
+	IP         string `json:"ip"`
+	Source     string `json:"source"`
+	Result     string `json:"result"`
+	ResponseMS int64  `json:"response_ms"`
+	Error      string `json:"error,omitempty"`
+}
+
+type DoHBootstrapStatus struct {
+	Hostname        string             `json:"hostname"`
+	ResolvedIPs     []string           `json:"resolved_ips,omitempty"`
+	ResolvedBy      string             `json:"resolved_by,omitempty"`
+	ResolvedAt      time.Time          `json:"resolved_at,omitempty"`
+	CandidateIPs    []string           `json:"candidate_ips,omitempty"`
+	CandidateSource string             `json:"candidate_source,omitempty"`
+	SelectedIP      string             `json:"selected_ip,omitempty"`
+	SelectedUntil   time.Time          `json:"selected_until,omitempty"`
+	LastProbeAt     time.Time          `json:"last_probe_at,omitempty"`
+	LastProbe       []DoHIPProbeStatus `json:"last_probe,omitempty"`
+}
+
+func (b *bootstrapResolver) status() DoHBootstrapStatus {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return DoHBootstrapStatus{
+		Hostname:        b.host,
+		ResolvedIPs:     append([]string(nil), b.ips...),
+		ResolvedBy:      b.resolvedBy,
+		ResolvedAt:      b.refreshed,
+		CandidateIPs:    append([]string(nil), b.lastCandidates...),
+		CandidateSource: b.lastCandidateSource,
+		SelectedIP:      b.selectedIP,
+		SelectedUntil:   b.selectedTil,
+		LastProbeAt:     b.lastProbeAt,
+		LastProbe:       append([]DoHIPProbeStatus(nil), b.lastProbe...),
+	}
+}
+
+func (b *bootstrapResolver) recordProbeSnapshot(candidates []string, source string, probes []DoHIPProbeStatus) {
+	b.mu.Lock()
+	b.lastCandidates = append([]string(nil), candidates...)
+	b.lastCandidateSource = source
+	b.lastProbeAt = time.Now().UTC()
+	b.lastProbe = append([]DoHIPProbeStatus(nil), probes...)
+	b.mu.Unlock()
 }
 type domainBinding struct{ suffix, groupID string }
 type ProbeStatus struct {
@@ -157,22 +209,23 @@ type GroupStatus struct {
 	Upstreams      map[string]HealthEntry `json:"upstreams"`
 }
 type Status struct {
-	ID         string                 `json:"id"`
-	Version    string                 `json:"version"`
-	StartedAt  time.Time              `json:"started_at"`
-	UpdatedAt  time.Time              `json:"updated_at"`
-	DNSUDP     string                 `json:"dns_udp"`
-	DNSTCP     string                 `json:"dns_tcp"`
-	HTTP       string                 `json:"http"`
-	Config     string                 `json:"config"`
-	Cache      CacheStatus            `json:"cache"`
-	Groups     map[string]GroupStatus `json:"groups"`
-	GeminiAPI  string                 `json:"gemini_api"`
-	Queries    uint64                 `json:"queries"`
-	CacheHits  uint64                 `json:"cache_hits"`
-	Failures   uint64                 `json:"failures"`
-	LastReload time.Time              `json:"last_reload,omitempty"`
-	LastError  string                 `json:"last_error,omitempty"`
+	ID           string                          `json:"id"`
+	Version      string                          `json:"version"`
+	StartedAt    time.Time                       `json:"started_at"`
+	UpdatedAt    time.Time                       `json:"updated_at"`
+	DNSUDP       string                          `json:"dns_udp"`
+	DNSTCP       string                          `json:"dns_tcp"`
+	HTTP         string                          `json:"http"`
+	Config       string                          `json:"config"`
+	Cache        CacheStatus                     `json:"cache"`
+	Groups       map[string]GroupStatus          `json:"groups"`
+	DoHBootstrap map[string]DoHBootstrapStatus   `json:"doh_bootstrap,omitempty"`
+	GeminiAPI    string                          `json:"gemini_api"`
+	Queries      uint64                          `json:"queries"`
+	CacheHits    uint64                          `json:"cache_hits"`
+	Failures     uint64                          `json:"failures"`
+	LastReload   time.Time                       `json:"last_reload,omitempty"`
+	LastError    string                          `json:"last_error,omitempty"`
 }
 type CacheStatus struct {
 	Enabled    bool `json:"enabled"`
@@ -381,27 +434,34 @@ func defaultConfig() Config {
 		LocalHosts: map[string]LocalHost{},
 		BootstrapResolvers: []string{"1.1.1.1", "8.8.8.8"},
 		Upstreams: []Upstream{
-			{ID: "dns.google", Name: "Google Public DNS"},
-			{ID: "cloudflare-dns.com", Name: "Cloudflare"},
-			{ID: "dns.quad9.net", Name: "Quad9"},
+			{ID: "eu.geohide.ru", Name: "GeoHide EU"},
+			{ID: "doh.dagami.ru", Name: "Dagami"},
+			{ID: "dns.comss.one", Name: "Comss.one"},
+			{ID: "dns.bezmezhau.com", Name: "Bezmezhau"},
+			{ID: "dns.zapret.moe", Name: "Zapret"},
 		},
 		Groups: []Group{
-			{ID: "default", Domains: []string{}, Upstreams: []string{"dns.google", "cloudflare-dns.com", "dns.quad9.net"}, Checks: []Check{{Domain: "example.com", Required: true}}},
-			{ID: "google", FakeDNS: true, Domains: []string{"google.com", "googleapis.com", "gstatic.com", "googleusercontent.com", "google.org", "googleadservices.com", "gemini.google.com", "generativelanguage.googleapis.com", "clients6.google.com", "jnn-pa.googleapis.com", "waa-pa.clients6.google.com"}, Upstreams: []string{"dns.google", "cloudflare-dns.com", "dns.quad9.net"}, Checks: []Check{
-				{Domain: "gemini.google.com", HTTPURL: "https://gemini.google.com/", Required: true, ExpectedStatus: []int{200, 301, 302, 403}},
+			{ID: "default", Domains: []string{}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{{Domain: "example.com", Required: true}}},
+			{ID: "google", FakeDNS: true, Domains: []string{"google.com", "googleapis.com", "gstatic.com", "googleusercontent.com", "google.org", "googleadservices.com", "google-analytics.com", "gemini.google.com", "generativelanguage.googleapis.com", "clients6.google.com", "jnn-pa.googleapis.com", "waa-pa.clients6.google.com"}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{
+				{Domain: "gemini.google.com", HTTPURL: "https://gemini.google.com/robots.txt", Required: true, ExpectedStatus: []int{200}},
 				{Domain: "accounts.google.com", HTTPURL: "https://accounts.google.com/.well-known/openid-configuration", Required: true, ExpectedStatus: []int{200}, VerifyOIDC: true},
-				{Domain: "www.gstatic.com", HTTPURL: "https://www.gstatic.com/", Required: true, ExpectedStatus: []int{200, 301, 302, 403}},
-				{Domain: "ssl.gstatic.com", HTTPURL: "https://ssl.gstatic.com/", Required: false, ExpectedStatus: []int{200, 301, 302, 403}},
-				{Domain: "fonts.googleapis.com", HTTPURL: "https://fonts.googleapis.com/css2?family=Roboto", Required: false, ExpectedStatus: []int{200}},
-				{Domain: "fonts.gstatic.com", Required: false},
-				{Domain: "www.googleapis.com", HTTPURL: "https://www.googleapis.com/", Required: false, ExpectedStatus: []int{200, 301, 302, 403}},
+				{Domain: "aistudio.google.com", Required: false},
+				{Domain: "alkalimakersuite-pa.clients6.google.com", Required: false},
 				{Domain: "apis.google.com", Required: false},
-				{Domain: "jnn-pa.googleapis.com", Required: false},
+				{Domain: "www.googletagmanager.com", Required: false},
 				{Domain: "waa-pa.clients6.google.com", Required: false},
+				{Domain: "console.cloud.google.com", Required: false},
+				{Domain: "people-pa.clients6.google.com", Required: false},
+				{Domain: "ln3.googleusercontent.com", Required: false},
+				{Domain: "www.google-analytics.com", Required: false},
+				{Domain: "content-autofill.googleapis.com", Required: false},
+				{Domain: "play.google.com", Required: false},
+				{Domain: "ssl.gstatic.com", HTTPURL: "https://ssl.gstatic.com/", Required: false, ExpectedStatus: []int{200, 301, 302, 403}},
+				{Domain: "www.googleapis.com", HTTPURL: "https://www.googleapis.com/", Required: false, ExpectedStatus: []int{200, 301, 302, 403}},
 			}},
-			{ID: "netflix", FakeDNS: true, Domains: []string{"netflix.com", "nflxvideo.net", "nflximg.net", "nflxso.net", "nflxext.com", "netflix.net"}, Upstreams: []string{"cloudflare-dns.com", "dns.google", "dns.quad9.net"}, Checks: []Check{{Domain: "www.netflix.com", HTTPURL: "https://www.netflix.com/", Required: true, ExpectedStatus: []int{200, 301, 302, 403}}}},
-			{ID: "openai", FakeDNS: true, Domains: []string{"openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com"}, Upstreams: []string{"cloudflare-dns.com", "dns.google", "dns.quad9.net"}, Checks: []Check{{Domain: "chatgpt.com", HTTPURL: "https://chatgpt.com/", Required: true, ExpectedStatus: []int{200, 301, 302, 403}}}},
-			{ID: "youtube", FakeDNS: true, Domains: []string{"youtube.com", "youtubei.googleapis.com", "googlevideo.com", "ytimg.com", "youtu.be", "youtube-nocookie.com"}, Upstreams: []string{"dns.google", "cloudflare-dns.com", "dns.quad9.net"}, Checks: []Check{{Domain: "www.youtube.com", HTTPURL: "https://www.youtube.com/", Required: true, ExpectedStatus: []int{200, 301, 302, 403}}}},
+			{ID: "netflix", FakeDNS: true, Domains: []string{"netflix.com", "nflxvideo.net", "nflximg.net", "nflxso.net", "nflxext.com", "netflix.net"}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{{Domain: "www.netflix.com", HTTPURL: "https://www.netflix.com/", Required: true, ExpectedStatus: []int{200, 301, 302, 403}}}},
+			{ID: "openai", FakeDNS: true, Domains: []string{"openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com"}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{{Domain: "chatgpt.com", HTTPURL: "https://chatgpt.com/robots.txt", Required: true, ExpectedStatus: []int{200}}}},
+			{ID: "youtube", FakeDNS: true, Domains: []string{"youtube.com", "youtubei.googleapis.com", "googlevideo.com", "ytimg.com", "youtu.be", "youtube-nocookie.com"}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{{Domain: "www.youtube.com", HTTPURL: "https://www.youtube.com/robots.txt", Required: true, ExpectedStatus: []int{200}}}},
 		},
 		GeminiAPI: GeminiAPIConfig{Enabled: false, RequiredForGroup: false, GroupID: "google", Model: "gemini-3.8-flash", IntervalSeconds: 1800, KeyFile: "gemini_api_key", Prompt: "Reply with exactly OK.", MaxOutputTokens: 8},
 	}
@@ -549,16 +609,24 @@ func normalizeDomain(s string) string {
 }
 func defaultDoHURLs() map[string]string {
 	return map[string]string{
-		"dns.google":         "https://dns.google/dns-query",
-		"cloudflare-dns.com": "https://cloudflare-dns.com/dns-query",
-		"dns.quad9.net":      "https://dns.quad9.net/dns-query",
+		"eu.geohide.ru":       "https://eu.geohide.ru/dns-query",
+		"doh.dagami.ru":        "https://doh.dagami.ru/dns-query",
+		"dns.comss.one":        "https://dns.comss.one/dns-query",
+		"dns.bezmezhau.com":    "https://dns.bezmezhau.com/dns-query",
+		"dns.zapret.moe":       "https://dns.zapret.moe/dns-query",
 	}
 }
 func loadDoHList(path string, create bool) (map[string]string, error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) && create {
 		var lines []string
-		for _, u := range []string{"https://dns.google/dns-query", "https://cloudflare-dns.com/dns-query", "https://dns.quad9.net/dns-query"} {
+		for _, u := range []string{
+			"https://eu.geohide.ru/dns-query",
+			"https://doh.dagami.ru/dns-query",
+			"https://dns.comss.one/dns-query",
+			"https://dns.bezmezhau.com/dns-query",
+			"https://dns.zapret.moe/dns-query",
+		} {
 			lines = append(lines, u)
 		}
 		if err = os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {
@@ -707,6 +775,7 @@ func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string
 	b.lastAttempt = time.Now()
 	ips := make([]string, 0, 8)
 	seen := map[string]bool{}
+	resolvedBy := ""
 	var err error
 	for _, server := range b.resolvers {
 		lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -728,6 +797,7 @@ func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string
 			}
 			if len(ips) > 0 {
 				err = nil
+				resolvedBy = server
 				break
 			}
 		}
@@ -741,6 +811,7 @@ func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string
 	}
 	if len(ips) > 0 {
 		b.ips = ips
+		b.resolvedBy = resolvedBy
 		b.refreshed = time.Now()
 		return append([]string(nil), ips...), nil
 	}
@@ -766,6 +837,7 @@ func (b *bootstrapResolver) bestIP(ctx context.Context, force bool, timeout time
 		b.mu.Unlock()
 		return ip, nil
 	}
+	previousRefresh := b.refreshed
 	b.mu.Unlock()
 
 	ips, resolveErr := b.addresses(ctx, force)
@@ -776,15 +848,46 @@ func (b *bootstrapResolver) bestIP(ctx context.Context, force bool, timeout time
 		return "", resolveErr
 	}
 	b.mu.Lock()
-	usingFallback := resolveErr != nil && len(b.ips) == 0 && len(b.fallback) > 0
+	usingFallback := len(b.ips) == 0 && len(b.fallback) > 0 && (resolveErr != nil || b.refreshed.IsZero())
+	source := "dns"
+	if usingFallback {
+		source = "configured_fallback"
+	} else if !b.refreshed.IsZero() && b.refreshed.Equal(previousRefresh) {
+		source = "cache"
+	}
 	b.mu.Unlock()
-	ip, latency, probeErr := b.fastestIP(ctx, ips, timeout)
+
+	allCandidates := append([]string(nil), ips...)
+	ip, latency, probes, probeErr := b.fastestIPDetailed(ctx, ips, timeout)
+	for i := range probes {
+		probes[i].Source = source
+	}
+
 	if probeErr != nil && len(b.fallback) > 0 && !usingFallback {
-		fallbackIP, fallbackLatency, fallbackErr := b.fastestIP(ctx, b.fallback, timeout)
+		fallbackIP, fallbackLatency, fallbackProbes, fallbackErr := b.fastestIPDetailed(ctx, b.fallback, timeout)
+		for i := range fallbackProbes {
+			fallbackProbes[i].Source = "configured_fallback"
+		}
+		probes = append(probes, fallbackProbes...)
+		for _, fallbackCandidate := range b.fallback {
+			allCandidates = appendUniqueString(allCandidates, fallbackCandidate)
+		}
 		if fallbackErr == nil {
 			ip, latency, probeErr, usingFallback = fallbackIP, fallbackLatency, nil, true
+			source += "+configured_fallback"
 		}
 	}
+
+	b.recordProbeSnapshot(allCandidates, source, probes)
+	for _, result := range probes {
+		level := "INFO"
+		if result.Result != "ok" {
+			level = "WARN"
+		}
+		logLine(level, "DoH IP probe hostname=%s ip=%s source=%s result=%s response_ms=%d error=%s",
+			b.host, result.IP, result.Source, result.Result, result.ResponseMS, safeLog(result.Error))
+	}
+
 	if probeErr != nil {
 		if resolveErr != nil {
 			return "", fmt.Errorf("no responsive DoH address: %v (DNS resolution: %w)", probeErr, resolveErr)
@@ -801,13 +904,29 @@ func (b *bootstrapResolver) bestIP(ctx context.Context, force bool, timeout time
 		// Retry DNS resolution periodically while temporarily relying on cached/fallback IPs.
 		b.selectedTil = time.Now().Add(time.Minute)
 	}
+	selectedUntil := b.selectedTil
 	b.mu.Unlock()
 
-	logLine("INFO", "DoH IP selected hostname=%s ip=%s response_ms=%d candidates=%d fallback=%t", b.host, ip, latency.Milliseconds(), len(ips), usingFallback)
+	logLine("INFO", "DoH IP selected hostname=%s ip=%s response_ms=%d candidates=%d fallback=%t selected_until=%s",
+		b.host, ip, latency.Milliseconds(), len(allCandidates), usingFallback, selectedUntil.UTC().Format(time.RFC3339))
 	return ip, nil
 }
 
+func appendUniqueString(items []string, value string) []string {
+	for _, item := range items {
+		if item == value {
+			return items
+		}
+	}
+	return append(items, value)
+}
+
 func (b *bootstrapResolver) fastestIP(ctx context.Context, ips []string, timeout time.Duration) (string, time.Duration, error) {
+	bestIP, bestLatency, _, err := b.fastestIPDetailed(ctx, ips, timeout)
+	return bestIP, bestLatency, err
+}
+
+func (b *bootstrapResolver) fastestIPDetailed(ctx context.Context, ips []string, timeout time.Duration) (string, time.Duration, []DoHIPProbeStatus, error) {
 	type result struct {
 		ip      string
 		latency time.Duration
@@ -832,24 +951,30 @@ func (b *bootstrapResolver) fastestIP(ctx context.Context, ips []string, timeout
 	var bestIP string
 	var bestLatency time.Duration
 	var failures []string
+	probeResults := make([]DoHIPProbeStatus, 0, len(ips))
 	for range ips {
 		select {
 		case <-ctx.Done():
-			return "", 0, ctx.Err()
+			return "", 0, probeResults, ctx.Err()
 		case res := <-results:
-			if res.err != nil {
-				failures = append(failures, res.ip+": "+res.err.Error())
-				continue
+			entry := DoHIPProbeStatus{
+				IP: res.ip, ResponseMS: res.latency.Milliseconds(), Result: "ok",
 			}
-			if bestIP == "" || res.latency < bestLatency {
+			if res.err != nil {
+				entry.Result = "error"
+				entry.Error = safeLog(res.err.Error())
+				failures = append(failures, res.ip+": "+res.err.Error())
+			} else if bestIP == "" || res.latency < bestLatency {
 				bestIP, bestLatency = res.ip, res.latency
 			}
+			probeResults = append(probeResults, entry)
 		}
 	}
+	sort.Slice(probeResults, func(i, j int) bool { return probeResults[i].IP < probeResults[j].IP })
 	if bestIP == "" {
-		return "", 0, fmt.Errorf("all DoH IP probes failed: %s", strings.Join(failures, "; "))
+		return "", 0, probeResults, fmt.Errorf("all DoH IP probes failed: %s", strings.Join(failures, "; "))
 	}
-	return bestIP, bestLatency, nil
+	return bestIP, bestLatency, probeResults, nil
 }
 
 func probeDoHIP(ctx context.Context, endpoint, ip string, timeout time.Duration) (time.Duration, error) {
@@ -1807,7 +1932,7 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	s := r.currentSnapshot()
-	out := Status{ID: envOr("LUCX_PLUGIN_ID", pluginID), Version: envOr("LUCX_PLUGIN_VERSION", pluginVersion), StartedAt: startedAt, UpdatedAt: time.Now().UTC(), DNSUDP: s.cfg.DNSListenUDP, DNSTCP: s.cfg.DNSListenTCP, HTTP: s.cfg.HTTPListen, Config: r.configPath, Cache: CacheStatus{Enabled: s.cfg.Cache.Enabled, Entries: r.cacheLen(), MaxEntries: s.cfg.Cache.MaxEntries}, Groups: map[string]GroupStatus{}, Queries: r.queries.Load(), CacheHits: r.cacheHits.Load(), Failures: r.failures.Load(), GeminiAPI: "disabled"}
+	out := Status{ID: envOr("LUCX_PLUGIN_ID", pluginID), Version: envOr("LUCX_PLUGIN_VERSION", pluginVersion), StartedAt: startedAt, UpdatedAt: time.Now().UTC(), DNSUDP: s.cfg.DNSListenUDP, DNSTCP: s.cfg.DNSListenTCP, HTTP: s.cfg.HTTPListen, Config: r.configPath, Cache: CacheStatus{Enabled: s.cfg.Cache.Enabled, Entries: r.cacheLen(), MaxEntries: s.cfg.Cache.MaxEntries}, Groups: map[string]GroupStatus{}, DoHBootstrap: map[string]DoHBootstrapStatus{}, Queries: r.queries.Load(), CacheHits: r.cacheHits.Load(), Failures: r.failures.Load(), GeminiAPI: "disabled"}
 	r.mu.RLock()
 	for gid, g := range s.groups {
 		gs := GroupStatus{ActiveUpstream: r.active[gid], Upstreams: map[string]HealthEntry{}}
@@ -1817,6 +1942,11 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 		out.Groups[gid] = gs
 	}
 	r.mu.RUnlock()
+	for uid, upstream := range s.upstreams {
+		if upstream.bootstrap != nil {
+			out.DoHBootstrap[uid] = upstream.bootstrap.status()
+		}
+	}
 	if s.cfg.GeminiAPI.Enabled {
 		out.GeminiAPI = "enabled"
 	}
