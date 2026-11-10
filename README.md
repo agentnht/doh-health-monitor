@@ -671,3 +671,31 @@ go vet ./...
 - [LucX-UI sidecar plugin contract](https://raw.githubusercontent.com/AlexeyLCP/lucx-ui/refs/heads/main/docs/plugin-sidecars.md)
 - [LucX-UI plugin manager](https://raw.githubusercontent.com/AlexeyLCP/lucx-ui/refs/heads/main/docs/plugin-manager.md)
 - [Google AI Studio API keys](https://aistudio.google.com/api-keys)
+
+
+## Local DNS overrides: `local_hosts`
+
+The optional `local_hosts` object is empty by default and does not change normal DoH behavior. Add exact hostnames to return local A/AAAA records without querying a DoH upstream:
+
+```json
+"local_hosts": {
+  "app.example.com": {
+    "ipv4": ["203.0.113.10"],
+    "ipv6": ["2001:db8::10"]
+  },
+  "v4-only.example.net": {
+    "ipv4": ["198.51.100.25"],
+    "ipv6": []
+  }
+}
+```
+
+- Hostnames are exact matches (case-insensitive; a trailing dot is ignored); wildcard entries are not supported.
+- A and AAAA return only the configured address family. If that family is empty, the plugin returns NOERROR/NODATA with an SOA record.
+- HTTPS (type 65) and SVCB (type 64) return NOERROR/NODATA for configured hosts, suppressing DNS-provided address hints and ECH configuration without disabling HTTPS/TLS itself.
+- Other record types and all non-listed hostnames continue through the normal DoH path.
+- Locally synthesized records use TTL 60 seconds and never set the AD flag.
+- Invalid hostnames or addresses reject the configuration reload; the last valid snapshot remains active.
+- Changes are applied by the existing configuration hot-reload loop.
+
+A client that independently validates DNSSEC may reject unsigned local overrides. Setting AD=0 does not disable DNSSEC validation on the client.
