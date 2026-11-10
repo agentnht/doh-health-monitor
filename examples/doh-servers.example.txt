@@ -1,3 +1,6 @@
-https://dns.google/dns-query
-https://cloudflare-dns.com/dns-query
-https://dns.quad9.net/dns-query
+# Recommended DoH proxy providers (Shecan excluded until TLS certificate is renewed)
+https://eu.geohide.ru/dns-query
+https://doh.dagami.ru/dns-query
+https://dns.comss.one/dns-query
+https://dns.bezmezhau.com/dns-query
+https://dns.zapret.moe/dns-query
