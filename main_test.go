@@ -790,7 +790,17 @@ func TestDefaultConfigUsesAutomaticBootstrap(t *testing.T) {
 
 func TestLegacyBootstrapIPsRemainValidAsFallback(t *testing.T) {
 	c := defaultConfig()
-	c.Upstreams[0].BootstrapIPs = []string{"203.0.113.53"}
+	var doh *Upstream
+	for i := range c.Upstreams {
+		if c.Upstreams[i].Type != "system" {
+			doh = &c.Upstreams[i]
+			break
+		}
+	}
+	if doh == nil {
+		t.Fatal("default config has no DoH upstream")
+	}
+	doh.BootstrapIPs = []string{"203.0.113.53"}
 	if err := validateConfig(c); err != nil {
 		t.Fatalf("legacy bootstrap_ips fallback rejected: %v", err)
 	}
