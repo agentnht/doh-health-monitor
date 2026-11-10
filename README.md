@@ -330,6 +330,8 @@ https://dns.zapret.moe/dns-query
 
 Для Gemini Web можно использовать `https://gemini.google.com/`; ожидаемые коды зависят от региона/редиректов. Статус `403` иногда говорит о сетевой достижимости при блокировке конкретного автоматического клиента, поэтому принимайте его только если это соответствует вашей цели. Набор доменов Google/Gemini меняется; редактируйте контрольный список под фактически используемый клиент.
 
+В стандартной группе `google` также выполняются DNS-проверки дополнительных точек: `aistudio.google.com`, `alkalimakersuite-pa.clients6.google.com`, `apis.google.com`, `www.googletagmanager.com`, `waa-pa.clients6.google.com`, `console.cloud.google.com`, `people-pa.clients6.google.com`, `ln3.googleusercontent.com`, `www.google-analytics.com` (официальное написание Google Analytics), `content-autofill.googleapis.com`, `play.google.com`, `ssl.gstatic.com` и `www.googleapis.com`. Все они относятся к одной группе `google`; дополнительные точки диагностические (`required:false`) и сами по себе не переводят upstream в состояние `down`.
+
 ### 5.8 Необязательная проверка Gemini API
 
 Встроенная проверка генерации полностью выключена по умолчанию:
