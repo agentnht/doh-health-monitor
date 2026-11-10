@@ -24,7 +24,8 @@
 - Мгновенный последовательный fallback на другой upstream при ошибке конкретного запроса.
 - Пороговые значения для устойчивого изменения статуса upstream.
 - DNS cache с TTL и ограничением числа записей.
-- Автоматическое разрешение bootstrap IP для DoH endpoint без зависимости от системного DNS.
+- Системный DNS VPS как первый полноценный upstream-кандидат; nameserver-ы читаются из `/etc/resolv.conf`.
+- Автоматическое разрешение bootstrap IP для DoH endpoint через независимые `bootstrap_resolvers`.
 - Автоперечитывание `config.json` и `doh-servers.txt`.
 - `/healthz` и `/status` на localhost.
 - Необязательная проверка Gemini API; по умолчанию выключена.
@@ -48,21 +49,20 @@
                   UDP и TCP
                          |
                          v
-                 DoH DNS Gateway
-                         |
+                 DNS Gateway
+                       |
              текущий выбранный upstream
-                         |
-           +-------------+-------------+
-           |             |             |
-           v             v             v
-       GeoHide EU      Dagami       Comss.one
-           ^             ^             ^
-           +------ Google health checks+
+                       |
+       +---------------+----------------+
+       |                                |
+       v                                v
+   System DNS                       DoH proxy
+   /etc/resolv.conf              GeoHide / Dagami / ...
 ```
 
-Контрольные запросы выполняются отдельно от пользовательских DNS-запросов. Результаты проверок определяют активный upstream. Сам DNS-шлюз не ограничивает QNAME контрольным списком: любой запрос, направленный на `127.0.0.1:5355`, отправляется через выбранный DoH.
+Контрольные запросы выполняются отдельно от пользовательских DNS-запросов. Результаты проверок определяют активный upstream. Системный DNS VPS и DoH-серверы проходят один и тот же профиль проверок; системный DNS имеет первый приоритет. Сам DNS-шлюз не ограничивает QNAME контрольным списком: любой запрос, направленный на `127.0.0.1:5355`, отправляется через выбранный upstream.
 
-Слушатель привязан к loopback и не должен публиковаться на внешнем интерфейсе. Bootstrap-resolvers используются только для разрешения hostname DoH endpoint, а не для пользовательских DNS-запросов.
+Слушатель привязан к loopback и не должен публиковаться на внешнем интерфейсе. Системный upstream пересылает исходные DNS-пакеты на nameserver-ы из `/etc/resolv.conf` в их порядке, с TCP-повтором при усечённом UDP-ответе. `bootstrap_resolvers` используются только для разрешения hostname DoH endpoint и не обрабатывают пользовательские DNS-запросы.
 
 ## 3. Состав пакета и расположение файлов
 
@@ -196,6 +196,7 @@ level=INFO READY DNS=127.0.0.1:5355/127.0.0.1:5355 HTTP=127.0.0.1:18765
 ```json
 "bootstrap_resolvers": ["1.1.1.1", "8.8.8.8"],
 "upstreams": [
+  { "id": "system-dns", "name": "System DNS (VPS)", "type": "system" },
   { "id": "eu.geohide.ru", "name": "GeoHide EU" },
   { "id": "doh.dagami.ru", "name": "Dagami" },
   { "id": "dns.comss.one", "name": "Comss.one" },
@@ -204,10 +205,11 @@ level=INFO READY DNS=127.0.0.1:5355/127.0.0.1:5355 HTTP=127.0.0.1:18765
 ]
 ```
 
-- `bootstrap_resolvers` — IP-адреса независимых DNS-resolvers. Они используются напрямую по UDP/TCP port 53, поэтому системный DNS и сам DoH-прокси не участвуют в разрешении DoH hostname.
-- `upstreams[].id` — hostname DoH endpoint; должен совпадать с hostname URL в `doh-servers.txt`.
+- `upstreams` начинается с `system-dns` (`type: "system"`). Это полноценный кандидат: программа читает nameserver-ы из `/etc/resolv.conf` и проверяет их теми же DNS, Gemini HTTPS и Accounts OIDC критериями. Для него не нужен URL в `doh-servers.txt` и не задаются `bootstrap_ips`.
+- `upstreams[].type` — `system` только для системного кандидата; для DoH поле можно опустить (или указать `doh`).
+- `upstreams[].id` у DoH — hostname endpoint, совпадающий с hostname URL в `doh-servers.txt`; системный ID зарезервирован как `system-dns`.
 - `upstreams[].name` — человекочитаемое имя.
-- `upstreams[].bootstrap_ips` — необязательный резервный список IP. Он используется только если автоматическое разрешение не удалось и ещё нет сохранённого рабочего списка.
+- `upstreams[].bootstrap_ips` — необязательный резервный список IP для DoH. Он используется только если автоматическое разрешение не удалось и ещё нет сохранённого рабочего списка.
 
 Плагин параллельно измеряет время полного DoH-запроса к каждому найденному IP (включая TLS handshake и проверку сертификата) и выбирает один самый быстрый адрес. Выбранный IP кэшируется на 6 часов. При проблеме с подключением выполняется принудительное DNS-разрешение и повторный замер; если независимый DNS временно недоступен, используется последний сохранённый список IP и выбирается лучший из доступных. В журнале появляется `DoH IP selected` с выбранным адресом и временем ответа. При новом выборе также записывается отдельная строка `DoH IP probe` для каждого проверенного IP: `source` (DNS, кэш или статический fallback), `result` (ok/error), `response_ms` и текст ошибки. Проверки выполняются параллельно, поэтому строки не отражают последовательный перебор. При повторном использовании закреплённого IP новые probe-строки не появляются до следующего выбора/обновления.
 
@@ -241,13 +243,13 @@ https://dns.bezmezhau.com/dns-query
 https://dns.zapret.moe/dns-query
 ```
 
-Пять DoH proxy upstream по умолчанию (в указанном порядке): GeoHide EU, Dagami, Comss.one, Bezmezhau и Zapret. Shecan не включён: на проверке с VPS его TLS-сертификат оказался просрочен. Google Public DNS, Cloudflare и Quad9 также не входят в список proxy upstream и не используются как резервные DoH-серверы плагина.
+В `doh-servers.txt` находятся пять DoH proxy upstream (в указанном порядке): GeoHide EU, Dagami, Comss.one, Bezmezhau и Zapret. Перед ними в списке кандидатов находится системный DNS VPS; он не является DoH и в `doh-servers.txt` не записывается. Shecan не включён: на проверке с VPS его TLS-сертификат оказался просрочен. Google Public DNS, Cloudflare и Quad9 не добавляются как отдельные DoH endpoints.
 
-`bootstrap_resolvers` — отдельный механизм: IP `1.1.1.1` и `8.8.8.8` используются только для получения A/AAAA адресов самих DoH hostname через обычный DNS, чтобы не создавать DNS-петлю. Они не являются DoH upstream и не обрабатывают пользовательские запросы вместо выбранных proxy-серверов.
+`bootstrap_resolvers` — отдельный механизм: IP `1.1.1.1` и `8.8.8.8` используются только для получения A/AAAA адресов самих DoH hostname через обычный DNS, чтобы не создавать DNS-петлю. Они не являются DoH upstream. Пользовательские DNS-запросы обслуживаются выбранным кандидатом: сначала системным DNS VPS, если он прошёл проверки, иначе DoH.
 
 Путь URL может быть другим, если провайдер его требует, но схема должна быть `https://`. Для каждого hostname должен быть соответствующий объект в `upstreams`.
 
-При обновлении уже установленного плагина существующие `config.json` и `doh-servers.txt` сохраняются: новые значения по умолчанию автоматически применяются только при создании файлов. Для существующей установки нужно отдельно обновить оба файла, указав новые upstream ID во всех `groups[google].upstreams`.
+При обновлении уже установленного плагина существующие `config.json` и `doh-servers.txt` сохраняются. При загрузке старого `config.json` нормализатор автоматически добавляет `system-dns` первым кандидатом в памяти; вручную добавлять его в `doh-servers.txt` не нужно.
 
 **Приоритет попыток задаётся в `groups[google].upstreams`**, а не порядком строк файла. `doh-servers.txt` лишь задаёт URL для upstream ID. Изменение файла применяется автоматически за `reload_interval_seconds`.
 
@@ -417,7 +419,7 @@ dig @127.0.0.1 -p 5355 example.com AAAA +time=5 +tries=1
 dig @127.0.0.1 -p 5355 google.com TXT +time=5 +tries=1
 ```
 
-Оба запроса — `example.com` и `google.com` — проходят через один и тот же выбранный DoH upstream. Имя запроса не меняет выбор сервера.
+Оба запроса — `example.com` и `google.com` — проходят через один и тот же выбранный upstream (системный DNS VPS или DoH). Имя запроса не меняет выбор сервера.
 
 ### 7.4 Проверка TCP DNS
 
@@ -455,7 +457,7 @@ dig +tcp @127.0.0.1 -p 5355 example.com A +time=5 +tries=1
 | `address already in use` | Порт UDP/TCP 5355 или HTTP 18765 занят; выберите свободные loopback порты в config и обновите outbound/manifest health target соответственно |
 | `DoH server ... has no upstream/bootstrap entry` | Для нового hostname добавьте объект `upstreams` с `id` и `name` |
 | `group ... references DoH server ... missing from doh-servers.txt` | Убедитесь, что URL с таким hostname есть в `doh-servers.txt` |
-| `all upstreams failed` | Проверьте доступность `bootstrap_resolvers` по UDP/TCP 53, HTTPS egress VPS, резервные `bootstrap_ips` (если заданы), URL/путь DoH, TLS и доступность провайдера |
+| `all upstreams failed` | Проверьте nameserver-ы из `/etc/resolv.conf` по UDP/TCP 53, `bootstrap_resolvers`, HTTPS egress VPS, резервные `bootstrap_ips` (если заданы), URL/путь DoH, TLS и доступность провайдера |
 | HTTP `401/403` на контрольном URL | Может быть блокировка/авторизация; задайте правильный `expected_status` или `required:false`, если это не индикатор полного отказа |
 | `/healthz` OK, но DNS не отвечает | Смотрите `/status`, `plugin.log`, занят ли порт, совпадает ли `rewritePort` Xray с `dns_listen_udp/tcp` |
 | DNS через Xray возвращает пустой ответ для TXT/MX/HTTPS | Проверьте наличие последнего `{ "action": "direct" }` в `dns-out.settings.rules` |
@@ -514,7 +516,7 @@ go vet ./...
 - HTTP health-check закрепляет запрос на один A IP, полученный через проверяемый DoH. Это диагностическая проба, а не полное эмулирование браузера.
 - Плагин не гарантирует доступность всех URL/функций Google по проверке нескольких контрольных точек.
 - Поля `domains` и `fake_dns` старых конфигураций больше не участвуют в выборе upstream; FakeDNS настраивается отдельно в Xray.
-- Переключение DoH upstream не требует перезапуска Xray.
+- Переключение активного upstream не требует перезапуска Xray.
 - Перед применением объединённых Xray JSON fragments всегда проверьте их на конкретной версии Xray-core и сохраните предыдущий конфиг.
 
 ## 13. Ссылки на документацию
