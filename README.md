@@ -1,6 +1,6 @@
 # DoH DNS Proxy & Health Monitor для LucX-UI
 
-**Версия:** 1.5.0  
+**Версия:** 1.6.0  
 **Платформа:** Linux x86-64 (`amd64`), статический Go-бинарник  
 **Тип:** LucX-UI sidecar, `apiVersion: 1`  
 **Режим Gemini API:** необязательный, управляется параметром `gemini_api.enabled`
@@ -95,14 +95,14 @@ $LUCX_PLUGIN_DATA/gemini_api_key
 
 ## 4. Установка в LucX-UI
 
-1. Скачайте `doh-health-monitor-v1.5.0.zip`.
+1. Скачайте `doh-health-monitor-v1.6.0.zip`.
 2. В LucX-UI откройте менеджер плагинов и установите ZIP.
 3. Запустите плагин из панели.
 4. После первого запуска панель создаст приватную папку данных; плагин создаст в ней `config.json` и `doh-servers.txt`.
 5. Посмотрите журнал плагина. Нормальный старт содержит строки примерно такого вида:
 
 ```text
-level=INFO START id=doh-health-monitor version=1.5.0 arch=amd64 data=...
+level=INFO START id=doh-health-monitor version=1.6.0 arch=amd64 data=...
 level=INFO CONFIG loaded ... gemini_api=false
 level=INFO EVENT_SOCKET listening ...
 level=INFO READY DNS=127.0.0.1:5355/127.0.0.1:5355 HTTP=127.0.0.1:18765
@@ -673,29 +673,118 @@ go vet ./...
 - [Google AI Studio API keys](https://aistudio.google.com/api-keys)
 
 
-## Local DNS overrides: `local_hosts`
+## 5.9 Локальные DNS-переопределения: `local_hosts`
 
-The optional `local_hosts` object is empty by default and does not change normal DoH behavior. Add exact hostnames to return local A/AAAA records without querying a DoH upstream:
+`local_hosts` — необязательный локальный аналог файла `hosts`. Он позволяет задать собственные IP-адреса для отдельных доменных имён. Такие записи обрабатываются самим плагином и **не отправляются на DoH upstream**.
+
+Функция отключена по умолчанию: в новом `config.json` уже есть пустой объект:
+
+```json
+"local_hosts": {}
+```
+
+Если оставить его пустым, обычная работа DNS через DoH не меняется. Заполнять `local_hosts` нужно только тогда, когда действительно требуется вручную закрепить адрес конкретного домена.
+
+### Формат записи
+
+Добавьте объект домена внутрь `local_hosts`. Для каждого домена можно указать один или несколько IPv4 и IPv6 адресов:
 
 ```json
 "local_hosts": {
-  "app.example.com": {
+  "panel.example.com": {
     "ipv4": ["203.0.113.10"],
     "ipv6": ["2001:db8::10"]
   },
-  "v4-only.example.net": {
-    "ipv4": ["198.51.100.25"],
+  "api.example.com": {
+    "ipv4": ["203.0.113.10"],
     "ipv6": []
   }
 }
 ```
 
-- Hostnames are exact matches (case-insensitive; a trailing dot is ignored); wildcard entries are not supported.
-- A and AAAA return only the configured address family. If that family is empty, the plugin returns NOERROR/NODATA with an SOA record.
-- HTTPS (type 65) and SVCB (type 64) return NOERROR/NODATA for configured hosts, suppressing DNS-provided address hints and ECH configuration without disabling HTTPS/TLS itself.
-- Other record types and all non-listed hostnames continue through the normal DoH path.
-- Locally synthesized records use TTL 60 seconds and never set the AD flag.
-- Invalid hostnames or addresses reject the configuration reload; the last valid snapshot remains active.
-- Changes are applied by the existing configuration hot-reload loop.
+Это фрагмент, а не весь файл: вставьте поле на верхнем уровне существующего `config.json`, рядом с `bootstrap_resolvers`, `groups` и другими основными параметрами. Если поле уже есть, отредактируйте его, не создавая второй ключ `local_hosts`.
 
-A client that independently validates DNSSEC may reject unsigned local overrides. Setting AD=0 does not disable DNSSEC validation on the client.
+- Ключ объекта — полное доменное имя, например `panel.example.com`.
+- `ipv4` — массив IPv4 адресов. Здесь допустимы только IPv4.
+- `ipv6` — массив IPv6 адресов. Здесь допустимы только IPv6.
+- Несколько адресов одного семейства допустимы.
+- Пустой массив означает, что адресов этого семейства нет.
+- Имена сравниваются без учёта регистра; завершающая точка DNS-имени игнорируется.
+- Подстановки и wildcard, например `*.example.com`, не поддерживаются. Если нужно переопределить `www.example.com` и `api.example.com`, добавьте оба имени отдельно.
+
+### Как выбрать IP-адрес
+
+В `local_hosts` указывайте адрес сервера, на который клиент должен фактически подключаться при обращении к этому имени.
+
+1. Если домен обслуживается вашим VPS, посмотрите публичный IP в панели VPS или в настройках сервера.
+2. Если домен должен вести на другой сервер, возьмите IP именно того сервера.
+3. Если перед сайтом стоит reverse proxy, CDN или балансировщик, указывайте адрес нужного входного узла, а не случайный IP одного из backend-серверов.
+4. Не копируйте автоматически адреса популярных CDN и крупных сайтов: такие адреса могут меняться, распределяться по регионам и зависеть от географии клиента. Для них обычно лучше оставить обычный DoH.
+
+На Linux посмотреть адреса сетевых интерфейсов можно командами:
+
+```bash
+ip -4 addr
+ip -6 addr
+```
+
+Эти команды показывают адреса, назначенные интерфейсам VPS; не каждый из них обязательно является публичным или подходящим для клиентского подключения. Если вы хотите узнать текущий DNS-ответ домена, используйте:
+
+```bash
+dig +short panel.example.com A
+dig +short panel.example.com AAAA
+```
+
+Ответ `dig` показывает текущие DNS-адреса, но не подтверждает, что именно этот адрес нужно закрепить. Выбор адреса зависит от того, куда должен вести трафик.
+
+### Как плагин отвечает на DNS-запросы
+
+Для домена, который присутствует в `local_hosts`, правила такие:
+
+| Запрос | Ответ плагина |
+|---|---|
+| `A` (IPv4) | Только адреса из `ipv4` |
+| `AAAA` (IPv6) | Только адреса из `ipv6` |
+| `AAAA`, если `ipv6: []` | `NOERROR`, пустой Answer (NODATA) |
+| `A`, если `ipv4: []` | `NOERROR`, пустой Answer (NODATA) |
+| `HTTPS` (тип 65) | `NOERROR`, пустой Answer |
+| `SVCB` (тип 64) | `NOERROR`, пустой Answer |
+| Другие типы, например TXT/MX | Обычный запрос через DoH |
+
+Для локальных A/AAAA TTL равен 60 секундам. Для отрицательных ответов NODATA добавляется SOA с TTL 60 секунд. Флаг DNS AD в локально сформированных ответах не устанавливается. HTTPS/SVCB-записи не передаются, поэтому DNS-подсказки IP (address hints) и ECH-конфигурация из этих записей не выдаются. Это **не отключает HTTPS или TLS** на самом сайте.
+
+Переопределение применяется только к точному имени из `local_hosts`. Все остальные домены продолжают использовать обычный выбор группы, health-check, fallback и DoH bootstrap.
+
+### Как добавить или изменить запись
+
+1. Откройте `config.json` в каталоге данных плагина `$LUCX_PLUGIN_DATA`.
+2. Найдите `local_hosts` в корне JSON.
+3. Добавьте домен и нужные IP либо отредактируйте существующие массивы.
+4. Сохраните файл, не удаляя запятые и остальные параметры JSON.
+5. Подождите несколько секунд (обычно до значения `reload_interval_seconds`, по умолчанию 5 секунд).
+6. Убедитесь в журнале, что конфигурация перечитана: появится сообщение `CONFIG reloaded`. Если запись некорректна, появится `CONFIG reload rejected`; плагин продолжит использовать последнюю рабочую конфигурацию.
+
+Перезапуск плагина для обычного изменения `local_hosts` не требуется. Изменения применяются существующим механизмом hot reload. Перед редактированием полезно сохранить копию `config.json`.
+
+### Проверка через dig
+
+После добавления примера выше выполните на VPS:
+
+```bash
+dig @127.0.0.1 -p 5355 panel.example.com A
+dig @127.0.0.1 -p 5355 panel.example.com AAAA
+dig @127.0.0.1 -p 5355 panel.example.com HTTPS
+dig @127.0.0.1 -p 5355 panel.example.com SVCB
+```
+
+В ответе A должен присутствовать заданный IPv4, в AAAA — заданный IPv6. Для `api.example.com AAAA`, поскольку массив `ipv6` пустой, ожидается `status: NOERROR` и отсутствие Answer-записей. HTTPS и SVCB для перечисленных имён также должны возвращать пустой Answer. Проверку можно повторить по TCP, добавив к команде `dig` параметр `+tcp`.
+
+Замените демонстрационные имена и адреса на свои реальные значения. Диапазоны `203.0.113.0/24`, `198.51.100.0/24` и `2001:db8::/32` зарезервированы для документации и не предназначены для реального подключения.
+
+### Важные ограничения
+
+- Если клиент использует собственный DNS-over-HTTPS или другой DNS-сервер напрямую, запрос может вообще не попасть в этот плагин. Для применения переопределения клиентский DNS должен проходить через него.
+- Клиент, который самостоятельно проверяет DNSSEC, может отклонить локальную неподписанную запись. AD=0 не отключает DNSSEC-проверку на стороне клиента.
+- Переопределение DNS само по себе не настраивает маршрутизацию Xray, firewall или прокси. Оно только меняет DNS-ответ.
+- Старые ответы, уже находящиеся в кэше приложения или ОС, могут использоваться до истечения их собственного TTL.
+- Неверный IP может сделать сервис недоступным; при проблеме удалите или исправьте соответствующую запись.
