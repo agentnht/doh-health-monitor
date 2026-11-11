@@ -103,11 +103,18 @@ restart/rollback plan.
   `EnsureDnsServerRouting` hook manages that rule from private DNS endpoints.
 - The API adapter refuses to save when the panel would also move/create its
   internal API route, rewrite an existing numeric DNS `qType: 0`, or remove or
-  reorder an existing routing rule during DNS allow-rule normalization. It
-  preserves `outboundTestUrl` metadata, prompts for a hidden Bearer token,
-  avoids secrets in output, and stores local before/after backups with mode
-  `0600`. Rollback is guarded by an exact read-back comparison so it cannot
-  overwrite later panel changes.
+  reorder an existing routing rule during DNS allow-rule normalization. Its
+  preflight models the panel's normalization using the proposed DNS endpoints,
+  including legacy allow rules that the panel might newly adopt. It preserves
+  `outboundTestUrl` metadata, prompts for a hidden Bearer token, avoids secrets
+  in output, and stores local before/after backups with mode `0600`. Rollback
+  is guarded by an exact read-back comparison so it cannot overwrite later
+  panel changes.
+- The `POST /panel/api/xray/` read handler is read-only for ordinary current
+  templates, but this LucX-UI source version also auto-heals a legacy wrapped
+  `xrayTemplateConfig` by calling `SaveXraySetting` during the read. The
+  adapter never writes SQLite itself; on such a legacy database, the panel may
+  perform that internal repair as part of its own API behavior.
 - DNS updates through `POST /panel/api/xray/update` may cause a full Xray
   process restart when the core is running. `apply` requires explicit restart
   approval; `check` and `plan` do not submit an update. The tool never writes
