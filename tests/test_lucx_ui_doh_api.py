@@ -9,6 +9,7 @@ import json
 import threading
 import tempfile
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
@@ -384,6 +385,47 @@ class ApplyBackupLifecycleTests(unittest.TestCase):
             backups = list(__import__("pathlib").Path(directory).iterdir())
             self.assertEqual(len(backups), 1)
             self.assertEqual(backups[0].stat().st_mode & 0o777, 0o600)
+
+
+class PluginPreflightTests(unittest.TestCase):
+    def test_detects_ipv4_and_ipv6_loopback_listeners(self):
+        self.assertTrue(api_tool.listener_output_has_loopback_port(
+            "LISTEN 0 128 127.0.0.1:5355 0.0.0.0:*", 5355
+        ))
+        self.assertTrue(api_tool.listener_output_has_loopback_port(
+            "UNCONN 0 0 [::1]:5355 [::]:*", 5355
+        ))
+
+    def test_rejects_non_loopback_listener(self):
+        self.assertFalse(api_tool.listener_output_has_loopback_port(
+            "LISTEN 0 128 0.0.0.0:5355 0.0.0.0:*", 5355
+        ))
+        self.assertFalse(api_tool.listener_output_has_loopback_port(
+            "LISTEN 0 128 127.0.0.1:5356 0.0.0.0:*", 5355
+        ))
+
+    def test_status_endpoint_requires_json_object(self):
+        self.assertEqual(api_tool.validate_plugin_status(b'{"ok":true}'), {"ok": True})
+        with self.assertRaises(api_tool.IntegrationError):
+            api_tool.validate_plugin_status(b"not-json")
+        with self.assertRaises(api_tool.IntegrationError):
+            api_tool.validate_plugin_status(b"[]")
+
+    def test_inactive_service_stops_before_status_api_or_panel_api(self):
+        completed = [
+            SimpleNamespace(returncode=0, stdout="loaded"),
+            SimpleNamespace(returncode=3, stdout=""),
+        ]
+        with patch.object(api_tool.shutil, "which", side_effect=lambda name: "/usr/bin/" + name), \
+             patch.object(api_tool.subprocess, "run", side_effect=completed), \
+             patch.object(api_tool, "urlopen") as urlopen:
+            with self.assertRaisesRegex(api_tool.IntegrationError, "installed but not active"):
+                api_tool.check_plugin_health(
+                    api_tool.DEFAULT_PLUGIN_SERVICE,
+                    api_tool.DEFAULT_PLUGIN_STATUS_URL,
+                    5355,
+                )
+            urlopen.assert_not_called()
 
 
 class PanelAPITests(unittest.TestCase):
