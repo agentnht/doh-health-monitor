@@ -93,7 +93,8 @@ class AdditivePlannerTests(unittest.TestCase):
         original["routing"]["rules"].insert(1, copy.deepcopy(api_tool.DNS_PORT_RULE))
         plan = api_tool.build_plan(original)
         self.assertEqual(plan.blockers, [])
-        self.assertEqual(plan.changes, ["ADD dns.servers entry 127.0.0.1:5355"])
+        self.assertIn("ADD dns.servers entry 127.0.0.1:5355", plan.changes)
+        self.assertTrue(any("PANEL-MANAGED" in item for item in plan.changes))
         self.assertEqual(
             len([x for x in plan.proposed["outbounds"] if x.get("tag") == "dns-out"]),
             1,
