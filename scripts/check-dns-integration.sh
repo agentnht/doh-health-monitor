@@ -36,7 +36,7 @@ fi
 status_file="$(mktemp)"
 if curl --fail --silent --show-error --max-time 3 "$DOH_STATUS_URL" -o "$status_file" 2>/dev/null &&
    jq -e . "$status_file" >/dev/null 2>&1; then
-  active="$(jq -r '.active_upstream // "не указан"' "$status_file")"
+  active="$(jq -r '.groups.google.active_upstream // .active_upstream // "не указан"' "$status_file")"
   pass "Status API отвечает корректным JSON (active_upstream: $active)"
 else
   error "Status API недоступен или вернул некорректный JSON: $DOH_STATUS_URL"
@@ -67,13 +67,28 @@ else
   fi
   if jq -e --arg port "$PLUGIN_PORT" '
     any(.routing.rules[]?;
-      .ruleTag == "xui-dns-allow" and
-      ((.ip // []) | index("127.0.0.1")) != null and
-      ((.port | tostring) == $port) and .outboundTag == "direct")
+      .enabled != false and
+      ((.network // "") | split(",") | sort) == ["tcp", "udp"] and
+      ((.port | tostring) == "53") and .outboundTag == "dns-out")
   ' "$XRAY_CONFIG" >/dev/null; then
-    pass "Правило xui-dns-allow разрешает 127.0.0.1:5355"
+    pass "Активное TCP/UDP правило порта 53 направляет DNS в dns-out"
   else
-    error "xui-dns-allow не соответствует порту 5355"
+    error "Не найдено активное TCP/UDP правило порта 53 -> dns-out"
+  fi
+
+  if jq -e --arg port "$PLUGIN_PORT" '
+    (.routing.rules // []) as $rules |
+    [$rules | to_entries[] | select(.value.ruleTag == "xui-dns-allow")] as $allow |
+    [$rules | to_entries[] | select(((.value.ip // []) | index("geoip:private")) != null)] as $private |
+    ($allow | length) == 1 and
+    ($allow[0].value.ip // [] | index("127.0.0.1")) != null and
+    (($allow[0].value.port | tostring) == $port) and
+    $allow[0].value.outboundTag == "direct" and
+    (($private | length) == 0 or $allow[0].key < $private[0].key)
+  ' "$XRAY_CONFIG" >/dev/null; then
+    pass "xui-dns-allow корректно разрешает localhost до блокировки private IP"
+  else
+    error "xui-dns-allow отсутствует, дублируется, неверно настроен или расположен после private-IP block"
   fi
 fi
 printf '\nИтог: %d OK, %d WARN, %d FAIL\n' "$ok" "$warn" "$fail"
