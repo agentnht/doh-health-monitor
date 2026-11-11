@@ -93,7 +93,7 @@ $LUCX_PLUGIN_DATA/gemini_api_key
 
 ## 4. Установка в LucX-UI
 
-1. Скачайте `doh-health-monitor-v1.7.0.zip`.
+1. На странице Releases скачайте `doh-health-monitor-vX.Y.Z.zip`, где `X.Y.Z` совпадает с версией в `manifest.json` выбранного релиза.
 2. В LucX-UI откройте менеджер плагинов и установите ZIP.
 3. Запустите плагин из панели.
 4. После первого запуска панель создаст приватную папку данных; плагин создаст в ней `config.json` и `doh-servers.txt`.
