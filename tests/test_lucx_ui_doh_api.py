@@ -7,6 +7,7 @@ import copy
 import importlib.util
 import json
 import threading
+import tempfile
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
@@ -312,6 +313,20 @@ class XrayVersionTests(unittest.TestCase):
         self.assertFalse(api_tool.panel_api_is_local("https://panel.example.com"))
         self.assertTrue(api_tool.panel_api_is_local("http://127.0.0.1:2053/base"))
         self.assertTrue(api_tool.panel_api_is_local("http://localhost:2053"))
+
+
+class BackupCleanupTests(unittest.TestCase):
+    def test_verified_backup_cleanup_removes_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            backup = __import__("pathlib").Path(directory) / "backup.json"
+            backup.write_text("private snapshot", encoding="utf-8")
+            self.assertTrue(api_tool.remove_verified_backup(backup))
+            self.assertFalse(backup.exists())
+
+    def test_verified_backup_cleanup_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            backup = __import__("pathlib").Path(directory) / "already-removed.json"
+            self.assertFalse(api_tool.remove_verified_backup(backup))
 
 
 class PanelAPITests(unittest.TestCase):
