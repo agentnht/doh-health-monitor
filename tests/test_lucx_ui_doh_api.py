@@ -393,6 +393,115 @@ class ApplyBackupLifecycleTests(unittest.TestCase):
             self.assertEqual(backups[0].stat().st_mode & 0o777, 0o600)
 
 
+class RollbackLifecycleTests(unittest.TestCase):
+    def _make_applied_backup(self, directory, before, after):
+        path = api_tool.create_backup(
+            {
+                "xraySetting": copy.deepcopy(before),
+                "outboundTestUrl": "https://example.invalid/204",
+            },
+            __import__("pathlib").Path(directory),
+        )
+        saved = api_tool.load_backup(path)
+        saved["after"] = {
+            "xraySetting": copy.deepcopy(after),
+            "outboundTestUrl": "https://example.invalid/204",
+        }
+        saved["state"] = "applied-and-verified"
+        api_tool._write_private_json(path, saved)
+        return path
+
+    def test_delayed_rollback_restores_before_snapshot_and_removes_backup(self):
+        before = base_config()
+        after = api_tool.build_plan(before).expected_saved
+
+        class FakeClient:
+            def __init__(self):
+                self.config = copy.deepcopy(after)
+                self.update_calls = 0
+
+            def get_snapshot(self):
+                return {
+                    "xraySetting": copy.deepcopy(self.config),
+                    "outboundTestUrl": "https://example.invalid/204",
+                }
+
+            def update(self, config, _test_url):
+                self.update_calls += 1
+                self.config = copy.deepcopy(config)
+
+        with tempfile.TemporaryDirectory() as directory:
+            backup = self._make_applied_backup(directory, before, after)
+            client = FakeClient()
+            args = SimpleNamespace(backup=str(backup), approve_restart=True)
+            self.assertEqual(api_tool.command_rollback(args, client), 0)
+            self.assertEqual(client.update_calls, 1)
+            self.assertEqual(
+                api_tool.canonical(client.config),
+                api_tool.canonical(api_tool.panel_normalize_dns_allow_rules(before)),
+            )
+            self.assertFalse(backup.exists())
+
+    def test_rollback_refuses_later_panel_changes_and_keeps_backup(self):
+        before = base_config()
+        after = api_tool.build_plan(before).expected_saved
+
+        class FakeClient:
+            def __init__(self):
+                self.config = copy.deepcopy(after)
+                self.config["log"]["loglevel"] = "debug"
+                self.update_calls = 0
+
+            def get_snapshot(self):
+                return {
+                    "xraySetting": copy.deepcopy(self.config),
+                    "outboundTestUrl": "https://example.invalid/204",
+                }
+
+            def update(self, _config, _test_url):
+                self.update_calls += 1
+
+        with tempfile.TemporaryDirectory() as directory:
+            backup = self._make_applied_backup(directory, before, after)
+            client = FakeClient()
+            args = SimpleNamespace(backup=str(backup), approve_restart=True)
+            with self.assertRaisesRegex(
+                api_tool.IntegrationError, "differ from the backup after-snapshot"
+            ):
+                api_tool.command_rollback(args, client)
+            self.assertEqual(client.update_calls, 0)
+            self.assertTrue(backup.exists())
+
+    def test_rollback_keeps_backup_when_readback_verification_fails(self):
+        before = base_config()
+        after = api_tool.build_plan(before).expected_saved
+
+        class FakeClient:
+            def __init__(self):
+                self.config = copy.deepcopy(after)
+                self.update_calls = 0
+                self.reads = 0
+
+            def get_snapshot(self):
+                self.reads += 1
+                config = after if self.reads == 1 else {"unexpected": True}
+                return {
+                    "xraySetting": copy.deepcopy(config),
+                    "outboundTestUrl": "https://example.invalid/204",
+                }
+
+            def update(self, _config, _test_url):
+                self.update_calls += 1
+
+        with tempfile.TemporaryDirectory() as directory:
+            backup = self._make_applied_backup(directory, before, after)
+            client = FakeClient()
+            args = SimpleNamespace(backup=str(backup), approve_restart=True)
+            self.assertEqual(api_tool.command_rollback(args, client), 2)
+            self.assertEqual(client.update_calls, 1)
+            self.assertTrue(backup.exists())
+
+
 class PluginPreflightTests(unittest.TestCase):
     def test_detects_ipv4_and_ipv6_loopback_listeners(self):
         self.assertTrue(api_tool.listener_output_has_loopback_port(
