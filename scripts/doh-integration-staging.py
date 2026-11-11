@@ -265,7 +265,7 @@ def action_apply(stage: Path, transform) -> int:
 def action_rollback(stage: Path) -> int:
     backup = Path(str(stage) + ".before")
     restore_from_backup(backup, stage)
-    print(f"PASStage database restored from {backup}")
+    print(f"PASS: staging database restored from {backup}")
     print("The live panel database was not touched.")
     return 0
 
