@@ -859,6 +859,19 @@ def command_check_or_plan(args, client: PanelAPI) -> int:
     return 2 if plan.blockers else 0
 
 
+def remove_verified_backup(path: Path) -> bool:
+    """Delete a backup only after the caller has verified apply or rollback."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        raise IntegrationError(
+            "Verified operation completed, but its private backup could not be deleted; remove it manually"
+        ) from None
+    return True
+
+
 def command_apply(args, client: PanelAPI) -> int:
     snapshot = client.get_snapshot()
     plan = build_plan(snapshot["xraySetting"])
@@ -914,7 +927,12 @@ def command_apply(args, client: PanelAPI) -> int:
 
     print("PASS: panel API read-back matches the predicted additive configuration.")
     print("Existing outbounds, DNS entries, and user routing rules were preserved by the predicted transformation.")
-    print("Backup:", backup_path)
+    try:
+        remove_verified_backup(backup_path)
+        print("Temporary pre-update backup deleted after successful verification.")
+    except IntegrationError as exc:
+        print("WARNING:", exc)
+        print("Backup retained at:", backup_path)
     print("Check Xray status in LucX-UI; a running core may have been fully restarted by the panel.")
     return 0
 
@@ -947,10 +965,13 @@ def command_rollback(args, client: PanelAPI) -> int:
         print("No further update was sent. Backup:", backup_path)
         return 2
 
-    backup_data["state"] = "rolled-back"
-    backup_data["rollback_snapshot"] = restored
-    _write_private_json(backup_path, backup_data)
     print("PASS: guarded rollback verified through the panel API.")
+    try:
+        remove_verified_backup(backup_path)
+        print("Temporary rollback backup deleted after successful restoration.")
+    except IntegrationError as exc:
+        print("WARNING:", exc)
+        print("Backup retained at:", backup_path)
     print("The panel may have fully restarted Xray while restoring DNS settings.")
     return 0
 
