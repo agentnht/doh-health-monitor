@@ -29,7 +29,10 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
+DEFAULT_PLUGIN_SERVICE = "lucx-plugin-doh-health-monitor"
+DEFAULT_PLUGIN_STATUS_URL = "http://127.0.0.1:18765/status"
+DEFAULT_PLUGIN_PORT = 5355
 # Add only Xray versions that passed staging validation. Empty means warn on all.
 VERIFIED_XRAY_VERSIONS: frozenset[str] = frozenset()
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
@@ -157,6 +160,84 @@ def detect_panel_version() -> str | None:
         if match:
             return match.group(1)
     return None
+
+
+def listener_output_has_loopback_port(output: str, port: int) -> bool:
+    """Recognize a listener bound specifically to IPv4/IPv6 loopback."""
+    pattern = re.compile(
+        rf"(?:127\\.0\\.0\\.1|\\[?::1\\]?):{port}(?:\\s|$)"
+    )
+    return any(pattern.search(line) for line in output.splitlines())
+
+
+def validate_plugin_status(body: bytes) -> dict:
+    if len(body) > 1024 * 1024:
+        raise IntegrationError("DoH Health Monitor status response exceeded the size limit")
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise IntegrationError("DoH Health Monitor status endpoint returned invalid JSON") from None
+    if not isinstance(payload, dict):
+        raise IntegrationError("DoH Health Monitor status endpoint did not return a JSON object")
+    return payload
+
+
+def check_plugin_health(service: str, status_url: str, port: int) -> None:
+    """Fail closed unless the installed plugin service, status API and both listeners work."""
+    if not service or not re.fullmatch(r"[A-Za-z0-9_.@-]+", service):
+        raise IntegrationError("Invalid systemd service name for DoH Health Monitor")
+    if not panel_api_is_local(status_url):
+        raise IntegrationError("DoH Health Monitor status URL must use localhost/loopback")
+    systemctl = shutil.which("systemctl")
+    ss = shutil.which("ss")
+    if not systemctl or not ss:
+        raise IntegrationError("Required preflight tools systemctl and ss were not found")
+    try:
+        active = subprocess.run(
+            [systemctl, "is-active", "--quiet", service],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise IntegrationError("Could not verify the DoH Health Monitor systemd service") from None
+    if active.returncode != 0:
+        raise IntegrationError(
+            f"DoH Health Monitor service '{service}' is not active; no panel API operation was attempted"
+        )
+    print(f"PASS: DoH Health Monitor service '{service}' is active")
+
+    for proto, flag in (("TCP", "-ltn"), ("UDP", "-lun")):
+        try:
+            result = subprocess.run(
+                [ss, "-H", *flag.split()],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            raise IntegrationError(f"Could not inspect the DoH listener ({proto})") from None
+        if result.returncode != 0 or not listener_output_has_loopback_port(result.stdout or "", port):
+            raise IntegrationError(
+                f"DoH Health Monitor loopback listener {port}/{proto} is not active; no panel API operation was attempted"
+            )
+        print(f"PASS: DoH Health Monitor loopback listener {port}/{proto} is active")
+
+    request = Request(status_url, headers={"Accept": "application/json"})
+    try:
+        with urlopen(request, timeout=3) as response:
+            body = response.read(1024 * 1024 + 1)
+    except (HTTPError, URLError, TimeoutError, OSError):
+        raise IntegrationError(
+            "DoH Health Monitor status API is unavailable; no panel API operation was attempted"
+        ) from None
+    validate_plugin_status(body)
+    print("PASS: DoH Health Monitor status API returns a JSON object")
 
 
 def read_tty_confirmation(prompt: str) -> str:
@@ -853,6 +934,9 @@ def command_check_or_plan(args, client: PanelAPI) -> int:
     snapshot = client.get_snapshot()
     plan = build_plan(snapshot["xraySetting"])
     print("Source: LucX-UI panel API")
+    print("API capability: Xray settings read endpoint and response schema are supported.")
+    print("API capability: xraySetting and outboundTestUrl metadata were decoded.")
+    print("API update endpoint: not probed by a write in read-only mode; validate on staging before production apply.")
     print("Mode: CHECK / READ-ONLY FROM ADAPTER")
     print("SQLite and runtime Xray files are not opened.")
     print_plan(plan)
@@ -982,6 +1066,12 @@ def main() -> int:
     )
     parser.add_argument("--base-url", required=True, help="Panel origin plus any web base path; do not append /panel/api")
     parser.add_argument("--timeout", type=float, default=15.0)
+    parser.add_argument("--plugin-service", default=DEFAULT_PLUGIN_SERVICE,
+                        help="systemd unit for DoH Health Monitor")
+    parser.add_argument("--plugin-status-url", default=DEFAULT_PLUGIN_STATUS_URL,
+                        help="local DoH Health Monitor status endpoint")
+    parser.add_argument("--plugin-port", type=int, default=DEFAULT_PLUGIN_PORT,
+                        help="local DoH Health Monitor TCP/UDP listener port")
     parser.add_argument("--xray-bin", help="Path to local Xray executable (auto-detected when omitted)")
     parser.add_argument(
         "--allow-untested-xray",
@@ -1011,6 +1101,7 @@ def main() -> int:
             raise IntegrationError("Run this tool as root directly on the LucX-UI VPS")
         if not panel_api_is_local(args.base_url):
             raise IntegrationError("Panel API URL must use localhost/loopback; run the adapter on the target VPS")
+        check_plugin_health(args.plugin_service, args.plugin_status_url, args.plugin_port)
         check_xray_compatibility(args.xray_bin, args.allow_untested_xray)
         token = getpass.getpass("LucX-UI Bearer API token (hidden): ").strip()
         if not token:
