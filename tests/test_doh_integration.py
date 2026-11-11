@@ -335,9 +335,27 @@ class StagingLifecycleTests(unittest.TestCase):
             self.assertIn("set dns-out.settings.rewritePort", post_rollback)
             self.assertEqual(read_db_config(source)["outbounds"][0]["settings"]["rewritePort"], 5355)
 
+            cleanup_output = self.run_cli(
+                "--action", "cleanup", "--staging-db", stage_db,
+            )
+            self.assertIn("Removed temporary staging artifact", cleanup_output)
+            self.assertFalse(stage_db.exists())
+            self.assertFalse(Path(str(stage_db) + ".before").exists())
+            self.assertTrue(source.is_file())
+
     def test_refuses_staging_inside_etc_xui(self):
         with self.assertRaises(RuntimeError):
             staging.resolve_stage_path("/etc/x-ui/not-a-staging-file.db")
+
+    def test_refuses_staging_symlink(self):
+        with tempfile.TemporaryDirectory(prefix="doh-stage-link-") as td:
+            root = Path(td)
+            target = root / "target.db"
+            link = root / "stage.db"
+            target.touch()
+            link.symlink_to(target)
+            with self.assertRaises(RuntimeError):
+                staging.resolve_stage_path(str(link))
 
     def test_refuses_source_and_stage_same_path(self):
         with tempfile.TemporaryDirectory(prefix="doh-same-path-") as td:
