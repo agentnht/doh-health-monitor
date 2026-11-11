@@ -67,7 +67,10 @@ def get_template(con: sqlite3.Connection) -> str:
 
 
 def resolve_stage_path(path_text: str) -> Path:
-    path = Path(path_text).expanduser().resolve()
+    candidate = Path(path_text).expanduser()
+    if candidate.is_symlink():
+        raise RuntimeError("Refusing staging path that is a symbolic link")
+    path = candidate.resolve()
     try:
         path.relative_to(Path("/etc/x-ui").resolve())
     except ValueError:
@@ -270,13 +273,41 @@ def action_rollback(stage: Path) -> int:
     return 0
 
 
+def action_cleanup(stage: Path) -> int:
+    """Remove only the explicitly named staging DB and its pre-write snapshot."""
+    backup = Path(str(stage) + ".before")
+    targets = (stage, backup)
+    for target in targets:
+        if target.is_symlink():
+            raise RuntimeError(f"Refusing to remove symbolic link: {target}")
+        if target.exists() and not target.is_file():
+            raise RuntimeError(f"Refusing to remove non-file staging artifact: {target}")
+        if target.resolve() == LIVE_DB:
+            raise RuntimeError("Refusing to remove the live panel database")
+
+    removed = []
+    for target in targets:
+        try:
+            target.unlink()
+            removed.append(target)
+        except FileNotFoundError:
+            pass
+    if removed:
+        for target in removed:
+            print(f"Removed temporary staging artifact: {target}")
+    else:
+        print("No temporary staging artifacts were present.")
+    print("The live panel database was not touched.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Staging-only writer; never writes the live LucX-UI database."
     )
     parser.add_argument(
         "--action", required=True,
-        choices=("clone", "dry-run", "verify", "apply", "rollback"),
+        choices=("clone", "dry-run", "verify", "apply", "rollback", "cleanup"),
     )
     parser.add_argument("--staging-db", required=True)
     parser.add_argument("--source-db", default=DEFAULT_SOURCE)
@@ -300,6 +331,9 @@ def main() -> int:
         else:
             if not stage.is_file():
                 raise RuntimeError(f"Staging DB not found: {stage}; clone it first")
+
+        if args.action == "cleanup":
+            return action_cleanup(stage)
 
         transform = load_transform(Path(args.helper).expanduser().resolve())
 
