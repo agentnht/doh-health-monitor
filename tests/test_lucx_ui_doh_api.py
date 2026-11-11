@@ -9,6 +9,7 @@ import json
 import threading
 import tempfile
 import unittest
+from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
@@ -327,6 +328,62 @@ class BackupCleanupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             backup = __import__("pathlib").Path(directory) / "already-removed.json"
             self.assertFalse(api_tool.remove_verified_backup(backup))
+
+
+class ApplyBackupLifecycleTests(unittest.TestCase):
+    def test_apply_deletes_snapshot_only_after_verified_readback(self):
+        initial = base_config()
+        plan = api_tool.build_plan(initial)
+
+        class FakeClient:
+            def __init__(self):
+                self.config = copy.deepcopy(initial)
+
+            def get_snapshot(self):
+                return {
+                    "xraySetting": copy.deepcopy(self.config),
+                    "outboundTestUrl": "https://example.invalid/204",
+                }
+
+            def update(self, config, _test_url):
+                self.config = copy.deepcopy(plan.expected_saved)
+
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(
+                approve_restart=True,
+                backup_dir=directory,
+            )
+            self.assertEqual(api_tool.command_apply(args, FakeClient()), 0)
+            self.assertEqual(list(__import__("pathlib").Path(directory).iterdir()), [])
+
+    def test_apply_retains_snapshot_when_readback_does_not_match(self):
+        initial = base_config()
+        plan = api_tool.build_plan(initial)
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = 0
+
+            def get_snapshot(self):
+                self.calls += 1
+                config = initial if self.calls == 1 else {"unexpected": True}
+                return {
+                    "xraySetting": copy.deepcopy(config),
+                    "outboundTestUrl": "https://example.invalid/204",
+                }
+
+            def update(self, _config, _test_url):
+                return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(
+                approve_restart=True,
+                backup_dir=directory,
+            )
+            self.assertEqual(api_tool.command_apply(args, FakeClient()), 2)
+            backups = list(__import__("pathlib").Path(directory).iterdir())
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].stat().st_mode & 0o777, 0o600)
 
 
 class PanelAPITests(unittest.TestCase):
