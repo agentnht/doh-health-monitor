@@ -76,14 +76,30 @@ For the inspected source version:
   (inbounds, outbounds, routing rules/balancers). DNS changes are not among
   those hot-reload sections and can require a full Xray process restart.
 
+Before asking for the panel API token or reading Xray settings, the production
+adapter performs a mandatory DoH Health Monitor preflight: it verifies that the
+configured systemd unit is installed and active, checks TCP and UDP loopback
+listeners on port 5355, and requires the local `/status` endpoint to return a
+JSON object. Defaults match the plugin deployment; alternate service, status
+URL and listener port can be supplied explicitly. A missing/stopped plugin or
+failed listener/status check stops the adapter before any panel API request.
+
 The production adapter calls the panel API only after explicit operator
 approval; it never opens or writes the live SQLite database and never writes
 the runtime Xray config. Before use, it detects the version of the local Xray
 core executable. A version not yet verified against a staging panel is shown
 as a warning and requires explicit operator acknowledgement. The LucX-UI
 version is displayed for context only and is not a hard compatibility gate.
-An unrecognized API response or configuration structure remains a hard stop,
-because the adapter cannot safely predict the panel's save behavior.
+Compatibility is detected by API behavior and response shape, not by a
+hard-coded LucX-UI version allowlist: the adapter must successfully read the
+Xray settings endpoint, decode `xraySetting`, preserve `outboundTestUrl`, and
+validate the configuration structure understood by its planner. Unknown or
+missing fields are a hard stop. The write/update endpoint cannot be safely
+probed without changing panel state; therefore read-only `check`/`plan` reports
+that write capability is unverified, and the update contract must first be
+validated on a separate staging panel. An unrecognized API response or
+configuration structure remains a hard stop, because the adapter cannot
+safely predict the panel's save behavior.
 
 ## Tooling in this PR
 
