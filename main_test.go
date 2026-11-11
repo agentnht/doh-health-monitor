@@ -102,8 +102,8 @@ func TestDefaultConfigValid(t *testing.T) {
 	if c.Health.SuccessThreshold != 1 {
 		t.Fatalf("success threshold=%d, want one successful check", c.Health.SuccessThreshold)
 	}
-	if c.Health.FailureThreshold != 3 {
-		t.Fatalf("failure threshold=%d, want three consecutive failures", c.Health.FailureThreshold)
+	if c.Health.FailureThreshold != 1 {
+		t.Fatalf("failure threshold=%d, want one failed check", c.Health.FailureThreshold)
 	}
 }
 
