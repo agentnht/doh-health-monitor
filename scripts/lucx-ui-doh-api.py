@@ -121,16 +121,28 @@ def _is_api_rule(rule: dict) -> bool:
 
 
 def _global_port53_rule(rule: dict) -> bool:
-    if rule.get("enabled") is False or not _port_contains(rule.get("port"), 53):
+    port = rule.get("port")
+    if rule.get("enabled") is False:
         return False
+    if isinstance(port, bool):
+        return False
+    if isinstance(port, int):
+        if port != 53:
+            return False
+    elif isinstance(port, str):
+        if port.strip() != "53":
+            return False
+    else:
+        return False
+
     networks = _as_tokens(rule.get("network"))
-    if networks and not {"tcp", "udp"}.issubset(networks):
+    if networks and networks != {"tcp", "udp"}:
         return False
-    # These keys constrain a rule to a subset of connections. A port-53
-    # redirect intended for every tunnel must not have any such selector.
+    # Any inboundTag, domain, IP, protocol, source, or balancer selector
+    # would narrow/alter the intended all-tunnel TCP+UDP interception.
     allowed = {
         "type", "ruleTag", "enabled", "network", "port",
-        "outboundTag", "balancerTag", "remarks", "comment",
+        "outboundTag", "remarks", "comment",
     }
     if any(key not in allowed for key in rule):
         return False
@@ -412,9 +424,9 @@ def build_plan(original: dict) -> Plan:
     # Verify that the panel's own DNS-rule synchronization would not remove,
     # reorder, or rewrite an existing routing rule before this tool submits.
     try:
-        before_normalized = panel_normalize_dns_allow_rules(original)
+        after_normalized = panel_normalize_dns_allow_rules(cfg)
         before_rules = original.get("routing", {}).get("rules", []) if isinstance(original.get("routing"), dict) else []
-        after_before_rules = before_normalized.get("routing", {}).get("rules", []) if isinstance(before_normalized.get("routing"), dict) else []
+        after_before_rules = after_normalized.get("routing", {}).get("rules", []) if isinstance(after_normalized.get("routing"), dict) else []
         cursor = 0
         for old_rule in before_rules:
             while cursor < len(after_before_rules) and canonical(after_before_rules[cursor]) != canonical(old_rule):
