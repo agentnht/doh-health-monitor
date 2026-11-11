@@ -4,7 +4,7 @@ set -uo pipefail
 DOH_SERVICE="${DOH_SERVICE:-lucx-plugin-doh-health-monitor}"
 DOH_STATUS_URL="${DOH_STATUS_URL:-http://127.0.0.1:18765/status}"
 XRAY_CONFIG="${XRAY_CONFIG:-/usr/local/x-ui/bin/config.json}"
-PLUGIN_PORT="5355"
+PLUGIN_PORT=5355
 ok=0; warn=0; fail=0
 pass() { printf '[OK]   %s\n' "$*"; ok=$((ok + 1)); }
 warning() { printf '[WARN] %s\n' "$*"; warn=$((warn + 1)); }
@@ -22,10 +22,12 @@ else
 fi
 if command -v ss >/dev/null 2>&1; then
   for proto in tcp udp; do
-    if ss -H -l "$\{proto}" 2>/dev/null | grep -Eq "127\\.0\\.0\\.1:5355([[:space:]]|$)"; then
-      pass "Порт 5355/$\{proto} слушается"
+    flag="-t"
+    [[ "$proto" == "udp" ]] && flag="-u"
+    if ss -H -l "$flag" 2>/dev/null | grep -Eq "127\\.0\\.0\\.1:5355([[:space:]]|$)"; then
+      pass "Порт 5355/${proto} слушается"
     else
-      error "Порт 5355/$\{proto} не слушается"
+      error "Порт 5355/${proto} не слушается"
     fi
   done
 else
@@ -45,28 +47,29 @@ if [[ ! -r "$XRAY_CONFIG" ]]; then
   error "Не найден доступный для чтения Xray config: $XRAY_CONFIG"
 else
   pass "Xray config доступен: $XRAY_CONFIG"
-  if jq -e --argjson port "$PLUGIN_PORT" '
+  if jq -e --arg port "$PLUGIN_PORT" '
     any(.outbounds[]?;
       .tag == "dns-out" and .protocol == "dns" and
-      .settings.rewriteAddress == "127.0.0.1" and .settings.rewritePort == $port)
+      .settings.rewriteAddress == "127.0.0.1" and
+      (.settings.rewritePort | tostring) == $port)
   ' "$XRAY_CONFIG" >/dev/null; then
     pass "dns-out направляет DNS на 127.0.0.1:5355"
   else
     error "dns-out не направляет DNS на 127.0.0.1:5355"
   fi
-  if jq -e --argjson port "$PLUGIN_PORT" '
+  if jq -e --arg port "$PLUGIN_PORT" '
     any(.dns.servers[]?;
-      .address == "127.0.0.1" and .port == $port)
+      .address == "127.0.0.1" and (.port | tostring) == $port)
   ' "$XRAY_CONFIG" >/dev/null; then
     pass "В dns.servers найден 127.0.0.1:5355"
   else
     error "В dns.servers не найден сервер 127.0.0.1:5355"
   fi
-  if jq -e --argjson port "$PLUGIN_PORT" '
+  if jq -e --arg port "$PLUGIN_PORT" '
     any(.routing.rules[]?;
       .ruleTag == "xui-dns-allow" and
       ((.ip // []) | index("127.0.0.1")) != null and
-      ((.port | tostring) == ($port | tostring)) and .outboundTag == "direct")
+      ((.port | tostring) == $port) and .outboundTag == "direct")
   ' "$XRAY_CONFIG" >/dev/null; then
     pass "Правило xui-dns-allow разрешает 127.0.0.1:5355"
   else
