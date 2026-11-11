@@ -21,8 +21,8 @@ Observed deployment values:
 - LucX-UI SQLite database: `/etc/x-ui/x-ui.db`.
 - Xray template setting: `settings.xrayTemplateConfig`.
 
-The deployment was reported as passing the runtime integration checker with
-8 OK, 0 WARN, 0 FAIL. A health cycle was also observed with upstream checks
+An earlier revision of the runtime integration checker was reported as passing
+on the deployment with 8 OK, 0 WARN, 0 FAIL. A health cycle was also observed with upstream checks
 updated, API status updated, and no query failures during that sample. These
 are operator-reported host results, not CI assertions.
 
@@ -122,3 +122,15 @@ These are operator-reported manual results on staging/test copies, not a live
 production write. The automated suite independently exercises the same lifecycle
 on synthetic SQLite files. No live panel API update or Xray restart is performed
 by these tools.
+
+
+## Source references inspected
+
+The following links point to the LucX-UI source tag matching the reported panel
+version. They document the version-specific behavior summarized above; the
+installed VPS binary was not cryptographically matched to the tag.
+
+- [LucX-UI v3.11.0-lucx.357 source tag](https://github.com/AlexeyLCP/lucx-ui/tree/v3.11.0-lucx.357)
+- [Xray settings controller and API routes](https://github.com/AlexeyLCP/lucx-ui/blob/v3.11.0-lucx.357/internal/web/controller/xray_setting.go)
+- [Xray settings persistence and validation](https://github.com/AlexeyLCP/lucx-ui/blob/v3.11.0-lucx.357/internal/web/service/xray_setting.go)
+- [Xray hot-diff section support](https://github.com/AlexeyLCP/lucx-ui/blob/v3.11.0-lucx.357/internal/xray/hot_diff.go)
