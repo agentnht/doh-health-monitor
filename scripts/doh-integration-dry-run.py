@@ -219,7 +219,7 @@ def load_config(args: argparse.Namespace) -> dict[str, Any]:
     if args.config:
         config = json.loads(Path(args.config).read_text(encoding="utf-8"))
     else:
-        db_path = Path(args.db).expanduse().resolve()
+        db_path = Path(args.db).expanduser().resolve()
         uri = f"{db_path.as_uri()}?mode=ro"
         con = sqlite3.connect(uri, uri=True, timeout=10)
         try:
