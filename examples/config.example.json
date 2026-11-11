@@ -9,7 +9,7 @@
   "health": {
     "interval_seconds": 1500,
     "timeout_seconds": 5,
-    "failure_threshold": 3,
+    "failure_threshold": 1,
     "success_threshold": 1
   },
   "cache": {
