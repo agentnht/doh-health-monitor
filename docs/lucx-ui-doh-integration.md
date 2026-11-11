@@ -130,8 +130,9 @@ safely predict the panel's save behavior.
   including legacy allow rules that the panel might newly adopt. It preserves
   `outboundTestUrl` metadata, prompts for a hidden Bearer token and avoids secrets in output. Before
   applying, it creates a private pre-update API snapshot with mode `0600`.
-  After successful read-back verification (or a verified rollback), that
-  temporary snapshot is deleted. If verification fails or rollback cannot be
+  After successful read-back verification, the private snapshot is retained
+  for delayed rollback; it is not automatically deleted. A verified rollback
+  deletes that operation snapshot. If verification fails or rollback cannot be
   confirmed, the snapshot is retained for recovery. Rollback is guarded by an
   exact read-back comparison so it cannot overwrite later panel changes. The adapter requires root on the LucX-UI VPS and uses a
   localhost/loopback panel API URL. It detects the local Xray version (or
