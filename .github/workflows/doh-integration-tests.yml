@@ -6,7 +6,10 @@ on:
       - "scripts/check-dns-integration.sh"
       - "scripts/doh-integration-dry-run.py"
       - "scripts/doh-integration-staging.py"
+      - "scripts/lucx-ui-doh-api.py"
       - "tests/test_doh_integration.py"
+      - "tests/test_lucx_ui_doh_api.py"
+      - "docs/lucx-ui-doh-integration.md"
       - ".github/workflows/doh-integration-tests.yml"
   workflow_dispatch:
 
@@ -24,11 +27,13 @@ jobs:
         with:
           python-version: "3.x"
       - name: Compile Python tools and tests
-        run: |
-          python -m py_compile \
-            scripts/doh-integration-dry-run.py \
-            scripts/doh-integration-staging.py \
-            tests/test_doh_integration.py
+        run: >-
+          python -m py_compile
+          scripts/doh-integration-dry-run.py
+          scripts/doh-integration-staging.py
+          scripts/lucx-ui-doh-api.py
+          tests/test_doh_integration.py
+          tests/test_lucx_ui_doh_api.py
       - name: Run unit and synthetic SQLite lifecycle tests
         run: python -m unittest discover -s tests -v
       - name: Check shell syntax
