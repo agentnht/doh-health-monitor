@@ -16,6 +16,8 @@ SCRIPT = ROOT / "scripts" / "lucx-ui-doh-api.py"
 spec = importlib.util.spec_from_file_location("lucx_ui_doh_api", SCRIPT)
 api_tool = importlib.util.module_from_spec(spec)
 assert spec and spec.loader
+import sys
+sys.modules[spec.name] = api_tool
 spec.loader.exec_module(api_tool)
 
 
@@ -61,7 +63,8 @@ class AdditivePlannerTests(unittest.TestCase):
         plan = api_tool.build_plan(original)
 
         self.assertEqual(plan.blockers, [])
-        self.assertEqual(len(plan.changes), 3)
+        self.assertEqual(len(plan.changes), 4)
+        self.assertTrue(any("PANEL-MANAGED" in item for item in plan.changes))
         self.assertEqual(plan.proposed["outbounds"][-1], api_tool.DNS_OUT)
         self.assertEqual(plan.proposed["dns"]["servers"], [api_tool.DNS_SERVER])
         rules = plan.proposed["routing"]["rules"]
