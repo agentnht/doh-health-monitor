@@ -1024,12 +1024,9 @@ def command_apply(args, client: PanelAPI) -> int:
 
     print("PASS: panel API read-back matches the predicted additive configuration.")
     print("Existing outbounds, DNS entries, and user routing rules were preserved by the predicted transformation.")
-    try:
-        remove_verified_backup(backup_path)
-        print("Temporary pre-update backup deleted after successful verification.")
-    except IntegrationError as exc:
-        print("WARNING:", exc)
-        print("Backup retained at:", backup_path)
+    print("Persistent rollback snapshot retained (mode 0600):", backup_path)
+    print("Use the rollback action with this backup path to undo the integration later.")
+    print("Rollback is guarded: it will refuse if the current panel settings differ from the saved after-snapshot.")
     print("Check Xray status in LucX-UI; a running core may have been fully restarted by the panel.")
     return 0
 
