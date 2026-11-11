@@ -165,7 +165,7 @@ def detect_panel_version() -> str | None:
 def listener_output_has_loopback_port(output: str, port: int) -> bool:
     """Recognize a listener bound specifically to IPv4/IPv6 loopback."""
     pattern = re.compile(
-        rf"(?:127\\.0\\.0\\.1|\\[?::1\\]?):{port}(?:\\s|$)"
+        rf"(?:127\.0\.0\.1|\[?::1\]?):{port}(?:\s|$)"
     )
     return any(pattern.search(line) for line in output.splitlines())
 
@@ -193,6 +193,19 @@ def check_plugin_health(service: str, status_url: str, port: int) -> None:
     if not systemctl or not ss:
         raise IntegrationError("Required preflight tools systemctl and ss were not found")
     try:
+        load_state = subprocess.run(
+            [systemctl, "show", "--property=LoadState", "--value", service],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if load_state.returncode != 0 or (load_state.stdout or "").strip() != "loaded":
+            raise IntegrationError(
+                f"DoH Health Monitor service '{service}' is not installed/loaded; no panel API operation was attempted"
+            )
         active = subprocess.run(
             [systemctl, "is-active", "--quiet", service],
             stdin=subprocess.DEVNULL,
@@ -205,9 +218,9 @@ def check_plugin_health(service: str, status_url: str, port: int) -> None:
         raise IntegrationError("Could not verify the DoH Health Monitor systemd service") from None
     if active.returncode != 0:
         raise IntegrationError(
-            f"DoH Health Monitor service '{service}' is not active; no panel API operation was attempted"
+            f"DoH Health Monitor service '{service}' is installed but not active; no panel API operation was attempted"
         )
-    print(f"PASS: DoH Health Monitor service '{service}' is active")
+    print(f"PASS: DoH Health Monitor service '{service}' is installed and active")
 
     for proto, flag in (("TCP", "-ltn"), ("UDP", "-lun")):
         try:
