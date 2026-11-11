@@ -85,17 +85,36 @@ restart/rollback plan.
 
 - `scripts/check-dns-integration.sh`: read-only checks for the plugin service,
   TCP/UDP listener, status API, runtime Xray DNS outbound/server/rules.
-- `scripts/doh-integration-dry-run.py`: reads a JSON fixture or SQLite in
-  read-only mode, computes a proposed transformation in memory, and prints a
-  diff. It never writes.
+- `scripts/doh-integration-dry-run.py`: legacy offline planner. It reads a JSON
+  fixture or SQLite in read-only mode and shows how its staging transform would
+  add or correct target fields. It never writes and is not the production API
+  adapter.
 - `scripts/doh-integration-staging.py`: clones a source SQLite DB into a
   separate staging file, then supports dry-run, verify, apply and rollback
-  against that staging file only. It refuses staging paths under `/etc/x-ui`
-  and refuses using the live DB as the staging target.
-- `tests/test_doh_integration.py`: standard-library tests for transformation
-  invariants, fail-closed conflict handling, idempotency, and the full staging
-  clone/apply/verify/rollback lifecycle using synthetic SQLite databases.
-  Tests do not require a panel installation.
+  against that staging file only. It is for synthetic/staging validation, not
+  for the live panel database.
+- `scripts/lucx-ui-doh-api.py`: production-facing, additive-only adapter using
+  the LucX-UI panel API. It reads the current template, adds only missing
+  `dns-out`, `dns.servers: 127.0.0.1:5355`, and a global TCP/UDP port-53 rule.
+  Existing outbounds, DNS servers, and user routing rules are not edited or
+  removed. The port-53 rule is inserted immediately after the panel's internal
+  `api -> api` rule, so it applies to all inbound tunnels before user routing
+  rules. The adapter does not create `xui-dns-allow` itself: LucX-UI's
+  `EnsureDnsServerRouting` hook manages that rule from private DNS endpoints.
+- The API adapter refuses to save when the panel would also move/create its
+  internal API route, rewrite an existing numeric DNS `qType: 0`, or remove or
+  reorder an existing routing rule during DNS allow-rule normalization. It
+  preserves `outboundTestUrl` metadata, prompts for a hidden Bearer token,
+  avoids secrets in output, and stores local before/after backups with mode
+  `0600`. Rollback is guarded by an exact read-back comparison so it cannot
+  overwrite later panel changes.
+- DNS updates through `POST /panel/api/xray/update` may cause a full Xray
+  process restart when the core is running. `apply` requires explicit restart
+  approval; `check` and `plan` do not submit an update. The tool never writes
+  the panel SQLite DB or runtime Xray config directly.
+- `tests/test_doh_integration.py` and `tests/test_lucx_ui_doh_api.py` cover
+  transformations, conflict handling, preservation, API response decoding,
+  and mock-panel request/response behavior without requiring a live panel.
 
 A real panel database or full Xray config must not be committed as a fixture:
 those files can contain private panel settings, identifiers, credentials, or
