@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -59,7 +60,7 @@ func TestDNSQueryAndAResponse(t *testing.T) {
 func TestCacheTTLAndTransactionID(t *testing.T) {
 	q := makeDNSQuery("cache.example", 1)
 	resp := testAResponse(q, 90)
-	c := CacheConfig{Enabled: true, MinTTL: 1, MaxTTL: 120, NegativeTTL: 10, MaxEntries: 10}
+	c := CacheConfig{Enabled: true, MinTTL: 1, MaxTTL: 120, NegativeTTL: 10, MaxEntries: 10, MaxBytes: 4096}
 	r := &Runtime{cache: map[string]cacheItem{}}
 	key := cacheKey(q)
 	r.cachePut(key, resp, c)
@@ -80,51 +81,353 @@ func TestCacheTTLAndTransactionID(t *testing.T) {
 	}
 }
 
-func TestDomainGroupLongestSuffixAndFakeDNS(t *testing.T) {
-	c := defaultConfig()
-	s, err := buildSnapshot(c, defaultDoHURLs())
-	if err != nil {
-		t.Fatal(err)
+func TestTimevalNanoseconds(t *testing.T) {
+	got := timevalNanoseconds(syscall.Timeval{Sec: 2, Usec: 250000})
+	if want := uint64(2250000000); got != want {
+		t.Fatalf("nanoseconds=%d, want %d", got, want)
 	}
-	r := &Runtime{}
-	cases := map[string]string{
-		"gemini.google.com":       "google",
-		"youtubei.googleapis.com": "youtube",
-		"www.netflix.com":         "netflix",
-		"chatgpt.com":             "openai",
-		"ordinary.example":        "default",
-	}
-	for host, want := range cases {
-		if got := r.groupFor(host, s); got != want {
-			t.Errorf("groupFor(%s)=%s, want %s", host, got, want)
-		}
-	}
-	for _, id := range []string{"google", "netflix", "openai", "youtube"} {
-		if !s.groups[id].FakeDNS {
-			t.Errorf("group %s should have FakeDNS enabled in example", id)
-		}
+	if got := timevalNanoseconds(syscall.Timeval{Sec: -1, Usec: 0}); got != 0 {
+		t.Fatalf("negative timeval should return 0, got %d", got)
 	}
 }
 
 func TestDefaultConfigValid(t *testing.T) {
-	if err := validateConfig(defaultConfig()); err != nil {
+	c := defaultConfig()
+	if err := validateConfig(c); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func TestErrorResponse(t *testing.T) {
-	q := makeDNSQuery("bad.example", 1)
-	r := servfailResponse(q)
-	if dnsRCode(r) != 2 {
-		t.Fatalf("rcode=%d, want SERVFAIL", dnsRCode(r))
+	if c.Health.IntervalSeconds != 25*60 {
+		t.Fatalf("health interval=%d, want 1500 seconds", c.Health.IntervalSeconds)
 	}
-	if binary.BigEndian.Uint16(r[2:4])&0x8000 == 0 {
-		t.Fatal("response bit not set")
+	if c.Health.SuccessThreshold != 1 {
+		t.Fatalf("success threshold=%d, want one successful check", c.Health.SuccessThreshold)
+	}
+	if c.Health.FailureThreshold != 1 {
+		t.Fatalf("failure threshold=%d, want one failed check", c.Health.FailureThreshold)
 	}
 }
 
-func TestDefaultConfigUsesProxyDNSProvidersOnly(t *testing.T) {
+
+func TestCacheRejectsZeroEntryLimitWhenEnabled(t *testing.T) {
+	c := defaultConfig()
+	c.Cache.MaxEntries = 0
+	if err := validateConfig(c); err == nil {
+		t.Fatal("enabled cache with max_entries=0 must be rejected")
+	}
+}
+
+func TestCacheFIFOAndByteLimit(t *testing.T) {
+	c := CacheConfig{Enabled: true, MinTTL: 1, MaxTTL: 120, NegativeTTL: 10, MaxEntries: 50, MaxBytes: 1024}
+	r := &Runtime{cache: map[string]cacheItem{}}
+	var oldestKey string
+	var oldestID uint16
+	var newestKey string
+	var newestID uint16
+	for i := 0; i < 30; i++ {
+		q := makeDNSQuery(fmt.Sprintf("item%02d.example", i), 1)
+		if i == 0 {
+			oldestKey, oldestID = cacheKey(q), packetID(q)
+		}
+		if i == 29 {
+			newestKey, newestID = cacheKey(q), packetID(q)
+		}
+		r.cachePut(cacheKey(q), testAResponse(q, 60), c)
+	}
+	entries, used := r.cacheStats()
+	if entries > c.MaxEntries || used > c.MaxBytes {
+		t.Fatalf("cache limits exceeded: entries=%d bytes=%d", entries, used)
+	}
+	if entries >= 30 {
+		t.Fatalf("entries=%d, want some FIFO eviction under 1 KiB budget", entries)
+	}
+	if _, ok := r.cacheGet(oldestKey, oldestID); ok {
+		t.Fatal("oldest entry should have been evicted")
+	}
+	if _, ok := r.cacheGet(newestKey, newestID); !ok {
+		t.Fatal("newest cache entry should remain")
+	}
+}
+
+func TestInitHealthPrunesRemovedUpstreams(t *testing.T) {
+	s := &Snapshot{
+		groups: map[string]Group{"google": {ID: "google", Upstreams: []string{"current"}}},
+		upstreams: map[string]*UpstreamRuntime{"current": {}},
+	}
+	r := &Runtime{
+		health: map[string]map[string]HealthEntry{
+			"google": {"current": {State: "up"}, "removed": {State: "down"}},
+			"old-group": {"stale": {State: "down"}},
+		},
+		active: map[string]string{"google": "current", "old-group": "stale"},
+		lastGemini: map[string]time.Time{"current": time.Now(), "removed": time.Now()},
+	}
+	r.initHealth(s)
+	if _, ok := r.health["google"]["removed"]; ok {
+		t.Fatal("removed upstream health entry was not pruned")
+	}
+	if _, ok := r.health["old-group"]; ok {
+		t.Fatal("removed group health state was not pruned")
+	}
+	if _, ok := r.lastGemini["removed"]; ok {
+		t.Fatal("removed upstream Gemini timestamp was not pruned")
+	}
+	if r.active["google"] != "current" {
+		t.Fatalf("active=%q, want current", r.active["google"])
+	}
+}
+
+func TestStaleHealthResultIgnoredAfterReload(t *testing.T) {
+	s := &Snapshot{groups: map[string]Group{
+		"google": {ID: "google", Upstreams: []string{"current"}},
+	}}
+	r := &Runtime{health: map[string]map[string]HealthEntry{
+		"google": {"current": {State: "up"}},
+	}}
+	r.snapshot.Store(s)
+	r.updateHealth("google", "removed", true, time.Millisecond, "", 200, "", nil, HealthConfig{
+		SuccessThreshold: 1, FailureThreshold: 3,
+	})
+	if _, ok := r.health["google"]["removed"]; ok {
+		t.Fatal("stale health result recreated a removed upstream")
+	}
+}
+
+func TestOneSuccessIsEnoughToQualifyUpstream(t *testing.T) {
+	r := &Runtime{health: map[string]map[string]HealthEntry{}}
+	r.updateHealth("google", "u1", true, time.Millisecond, "", 200, "", nil, HealthConfig{
+		SuccessThreshold: 1, FailureThreshold: 3,
+	})
+	if got := r.health["google"]["u1"].State; got != "up" {
+		t.Fatalf("state=%q, want up after one successful check", got)
+	}
+}
+
+func TestPinnedHTTPClientKeepsTLSVerificationAndBoundsIdleConnections(t *testing.T) {
+	client := newPinnedHTTPClient("192.0.2.1", "resolver.example", time.Second)
+	tr, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("expected an HTTP transport")
+	}
+	if tr.TLSClientConfig == nil || tr.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("TLS certificate verification must remain enabled")
+	}
+	if tr.TLSClientConfig.MinVersion < 0x0303 {
+		t.Fatalf("TLS minimum=%d, want TLS 1.2 or newer", tr.TLSClientConfig.MinVersion)
+	}
+	if tr.MaxIdleConnsPerHost != 1 || tr.IdleConnTimeout <= 0 {
+		t.Fatalf("idle transport limits missing: per-host=%d timeout=%s", tr.MaxIdleConnsPerHost, tr.IdleConnTimeout)
+	}
+	client.CloseIdleConnections()
+}
+
+func TestUDPWorkerPoolBoundsQueueUnderLoad(t *testing.T) {
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		q, err := io.ReadAll(req.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/dns-message")
+		_, _ = w.Write(testAResponse(q, 60))
+	}))
+	defer upstreamServer.Close()
+
+	upstream := &UpstreamRuntime{
+		cfg: Upstream{ID: "slow", URL: upstreamServer.URL},
+		client: upstreamServer.Client(),
+	}
+	s := &Snapshot{
+		cfg: Config{DNSMaxConcurrent: 1, DNSQueryTimeoutSeconds: 3, Cache: CacheConfig{Enabled: false}},
+		groups: map[string]Group{"google": {ID: "google", Upstreams: []string{"slow"}}},
+		upstreams: map[string]*UpstreamRuntime{"slow": upstream},
+	}
+	r := &Runtime{
+		dnsSem: make(chan struct{}, 1),
+		health: map[string]map[string]HealthEntry{},
+		active: map[string]string{"google": "slow"},
+		cache: map[string]cacheItem{},
+	}
+	r.snapshot.Store(s)
+
+	serverConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		r.serveUDP(ctx, serverConn)
+		close(done)
+	}()
+	clientConn, err := net.DialUDP("udp", nil, serverConn.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		cancel()
+		_ = serverConn.Close()
+		t.Fatal(err)
+	}
+	defer clientConn.Close()
+
+	for i := 0; i < 400; i++ {
+		q := makeDNSQuery(fmt.Sprintf("load-%03d.example", i), 1)
+		binary.BigEndian.PutUint16(q[:2], uint16(i+1))
+		if _, err := clientConn.Write(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for r.udpDropped.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if dropped := r.udpDropped.Load(); dropped == 0 {
+		t.Fatal("expected bounded UDP queue to drop excess burst packets")
+	}
+	if active := r.activeUDP.Load(); active > 1 {
+		t.Fatalf("active UDP workers=%d, want at most 1 from config", active)
+	}
+	if queued := r.udpQueueDepth.Load(); queued > udpQueueCapacity {
+		t.Fatalf("UDP queue depth=%d, capacity=%d", queued, udpQueueCapacity)
+	}
+
+	cancel()
+	_ = serverConn.Close()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("UDP server did not stop after cancellation")
+	}
+}
+
+func TestTCPConnectionLimitUnderLoad(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &Runtime{}
+	done := make(chan struct{})
+	go func() {
+		r.serveTCP(ctx, ln)
+		close(done)
+	}()
+
+	connections := make([]net.Conn, 0, maxTCPConnections+16)
+	defer func() {
+		cancel()
+		_ = ln.Close()
+		for _, conn := range connections {
+			_ = conn.Close()
+		}
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("TCP server did not stop after cancellation")
+		}
+	}()
+
+	for i := 0; i < maxTCPConnections+16; i++ {
+		conn, dialErr := net.DialTimeout("tcp", ln.Addr().String(), time.Second)
+		if dialErr != nil {
+			t.Fatalf("dial connection %d: %v", i+1, dialErr)
+		}
+		connections = append(connections, conn)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for r.tcpRejected.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if active := r.activeTCP.Load(); active > maxTCPConnections {
+		t.Fatalf("active TCP connections=%d, limit=%d", active, maxTCPConnections)
+	}
+	if rejected := r.tcpRejected.Load(); rejected == 0 {
+		t.Fatal("expected excess TCP connections to be rejected")
+	}
+}
+
+func BenchmarkCacheHit(b *testing.B) {
+	q := makeDNSQuery("benchmark.example", 1)
+	resp := testAResponse(q, 60)
+	cfg := CacheConfig{Enabled: true, MinTTL: 1, MaxTTL: 120, NegativeTTL: 10, MaxEntries: 1000, MaxBytes: 1 << 20}
+	r := &Runtime{cache: map[string]cacheItem{}}
+	key := cacheKey(q)
+	r.cachePut(key, resp, cfg)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		r.cacheGet(key, uint16(i))
+	}
+}
+
+func TestHTTPProbeBodyLimitUsesTwoMiBAndRejectsOversize(t *testing.T) {
+	large := bytes.Repeat([]byte("x"), 900<<10)
+	got, err := readHTTPProbeBody(bytes.NewReader(large))
+	if err != nil {
+		t.Fatalf("900 KiB Gemini HTML rejected: %v", err)
+	}
+	if len(got) != len(large) {
+		t.Fatalf("read %d bytes, want %d", len(got), len(large))
+	}
+
+	tooLarge := bytes.Repeat([]byte("x"), maxHTTPBody+1)
+	if _, err := readHTTPProbeBody(bytes.NewReader(tooLarge)); err == nil {
+		t.Fatal("expected response larger than 2 MiB to be rejected")
+	}
+}
+
+func TestGeminiRedirectValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   int
+		location string
+		want     bool
+	}{
+		{"consent redirect", http.StatusFound, "https://consent.google.com/save", true},
+		{"sign-in redirect", http.StatusTemporaryRedirect, "https://accounts.google.com/signin", true},
+		{"same-host redirect", http.StatusMovedPermanently, "https://gemini.google.com/app", true},
+		{"external redirect", http.StatusFound, "https://example.org/", false},
+		{"sorry redirect", http.StatusFound, "https://www.google.com/sorry/index", false},
+		{"missing location", http.StatusFound, "", false},
+		{"not a redirect", http.StatusOK, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &http.Response{StatusCode: tt.status, Header: make(http.Header)}
+			if tt.location != "" {
+				resp.Header.Set("Location", tt.location)
+			}
+			if got := geminiRedirectAllowed(resp); got != tt.want {
+				t.Fatalf("geminiRedirectAllowed()=%t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGeminiRegionBlockDetection(t *testing.T) {
+	blocked := [][]byte{
+		[]byte("Gemini is not available in your country"),
+		[]byte("<html>Service not supported in your location</html>"),
+		[]byte("Error code 1060"),
+	}
+	for _, body := range blocked {
+		if !geminiRegionBlocked(body) {
+			t.Errorf("expected regional restriction to be detected in %q", body)
+		}
+	}
+	allowed := [][]byte{
+		[]byte("<html><title>Gemini</title><body>Welcome</body></html>"),
+		[]byte("This service is temporarily unavailable"),
+		[]byte("Please sign in to continue"),
+	}
+	for _, body := range allowed {
+		if geminiRegionBlocked(body) {
+			t.Errorf("unexpected regional restriction detected in %q", body)
+		}
+	}
+}
+
+func TestDefaultConfigUsesSystemDNSFirstAndDoHProviders(t *testing.T) {
 	want := []string{
+		systemDNSUpstreamID,
 		"eu.geohide.ru",
 		"doh.dagami.ru",
 		"dns.comss.one",
@@ -139,41 +442,299 @@ func TestDefaultConfigUsesProxyDNSProvidersOnly(t *testing.T) {
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("default upstreams = %v, want %v", got, want)
 	}
-	for _, g := range c.Groups {
-		if strings.Join(g.Upstreams, ",") != strings.Join(want, ",") {
-			t.Errorf("group %s upstreams = %v, want %v", g.ID, g.Upstreams, want)
+	if c.Upstreams[0].Type != "system" {
+		t.Fatalf("first upstream type = %q, want system", c.Upstreams[0].Type)
+	}
+	if len(c.Groups) != 1 || c.Groups[0].ID != "google" {
+		t.Fatalf("default config groups = %+v, want only google", c.Groups)
+	}
+	google := c.Groups[0]
+	for _, upstream := range google.Upstreams {
+		if !containsString(want, upstream) {
+			t.Errorf("unexpected Google upstream %q", upstream)
 		}
 	}
-	google := c.Groups[1]
-	if google.Checks[0].HTTPURL != "https://gemini.google.com/robots.txt" {
-		t.Errorf("Gemini check URL = %q", google.Checks[0].HTTPURL)
+	if strings.Join(google.Upstreams, ",") != strings.Join(want, ",") {
+		t.Errorf("Google upstreams = %v, want %v", google.Upstreams, want)
 	}
-	wantGoogleChecks := []string{
-		"gemini.google.com", "accounts.google.com",
-		"aistudio.google.com", "alkalimakersuite-pa.clients6.google.com", "apis.google.com",
-		"www.googletagmanager.com", "waa-pa.clients6.google.com", "console.cloud.google.com",
-		"people-pa.clients6.google.com", "ln3.googleusercontent.com", "www.google-analytics.com",
-		"content-autofill.googleapis.com", "play.google.com", "ssl.gstatic.com", "www.googleapis.com",
+	if len(google.Checks) != 25 {
+		t.Fatalf("Google checks = %d, want 25", len(google.Checks))
 	}
-	gotGoogleChecks := make([]string, 0, len(google.Checks))
-	for _, check := range google.Checks { gotGoogleChecks = append(gotGoogleChecks, check.Domain) }
-	if strings.Join(gotGoogleChecks, ",") != strings.Join(wantGoogleChecks, ",") {
-		t.Errorf("Google checks = %v, want %v", gotGoogleChecks, wantGoogleChecks)
-	}
-	if !containsString(google.Domains, "google-analytics.com") {
-		t.Errorf("Google group domains must include google-analytics.com")
-	}
-	for _, g := range c.Groups {
-		switch g.ID {
-		case "openai":
-			if g.Checks[0].HTTPURL != "https://chatgpt.com/robots.txt" {
-				t.Errorf("OpenAI check URL = %q", g.Checks[0].HTTPURL)
-			}
-		case "youtube":
-			if g.Checks[0].HTTPURL != "https://www.youtube.com/robots.txt" {
-				t.Errorf("YouTube check URL = %q", g.Checks[0].HTTPURL)
-			}
+	var geminiCheck, accountsCheck *Check
+	for i := range google.Checks {
+		switch google.Checks[i].Domain {
+		case "gemini.google.com":
+			geminiCheck = &google.Checks[i]
+		case "accounts.google.com":
+			accountsCheck = &google.Checks[i]
 		}
+	}
+	if geminiCheck == nil || geminiCheck.HTTPURL != "https://gemini.google.com/" || !geminiCheck.Required {
+		t.Errorf("Gemini check = %+v; want required HTTP check for Gemini homepage", geminiCheck)
+	}
+	if accountsCheck == nil || accountsCheck.HTTPURL != "https://accounts.google.com/.well-known/openid-configuration" || !accountsCheck.Required || !accountsCheck.VerifyOIDC {
+		t.Errorf("Accounts check = %+v; want required OIDC discovery check", accountsCheck)
+	}
+}
+
+func TestNormalizeConfigAddsSystemDNSFirstToLegacyConfig(t *testing.T) {
+	c := defaultConfig()
+	filtered := c.Upstreams[:0]
+	for _, upstream := range c.Upstreams {
+		if upstream.ID != systemDNSUpstreamID {
+			filtered = append(filtered, upstream)
+		}
+	}
+	c.Upstreams = filtered
+	group := c.Groups[0]
+	group.Upstreams = group.Upstreams[1:]
+	c.Groups[0] = group
+
+	normalized, err := normalizeConfigGroups(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(normalized.Upstreams) != len(c.Upstreams)+1 {
+		t.Fatalf("upstream count = %d, want %d", len(normalized.Upstreams), len(c.Upstreams)+1)
+	}
+	if normalized.Upstreams[0].ID != systemDNSUpstreamID || normalized.Upstreams[0].Type != "system" {
+		t.Fatalf("first normalized upstream = %+v, want system DNS", normalized.Upstreams[0])
+	}
+	if normalized.Groups[0].Upstreams[0] != systemDNSUpstreamID {
+		t.Fatalf("first group upstream = %q, want %q", normalized.Groups[0].Upstreams[0], systemDNSUpstreamID)
+	}
+}
+
+func TestNormalizeConfigMovesExistingSystemDNSFirst(t *testing.T) {
+	c := defaultConfig()
+	c.Upstreams[0], c.Upstreams[1] = c.Upstreams[1], c.Upstreams[0]
+	c.Groups[0].Upstreams[0], c.Groups[0].Upstreams[1] = c.Groups[0].Upstreams[1], c.Groups[0].Upstreams[0]
+
+	normalized, err := normalizeConfigGroups(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalized.Upstreams[0].ID != systemDNSUpstreamID || normalized.Groups[0].Upstreams[0] != systemDNSUpstreamID {
+		t.Fatalf("system DNS was not moved to first priority: upstreams=%v group=%v", normalized.Upstreams, normalized.Groups[0].Upstreams)
+	}
+}
+
+func TestBuildSnapshotIncludesSystemDNSWithoutDoHURL(t *testing.T) {
+	c := defaultConfig()
+	urls := map[string]string{}
+	for _, id := range []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"} {
+		urls[id] = "https://" + id + "/dns-query"
+	}
+	snapshot, err := buildSnapshot(c, urls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	system := snapshot.upstreams[systemDNSUpstreamID]
+	if system == nil || system.systemDNS == nil {
+		t.Fatal("system DNS runtime was not created")
+	}
+	if system.client != nil || system.bootstrap != nil {
+		t.Fatal("system DNS must not use a DoH HTTP client or bootstrap resolver")
+	}
+	for _, id := range []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"} {
+		if u := snapshot.upstreams[id]; u == nil || u.client == nil || u.bootstrap == nil {
+			t.Errorf("DoH runtime %s was not built", id)
+		}
+	}
+}
+
+func TestBuildSnapshotRejectsDoHURLForSystemDNS(t *testing.T) {
+	c := defaultConfig()
+	urls := map[string]string{systemDNSUpstreamID: "https://system-dns/dns-query"}
+	if _, err := buildSnapshot(c, urls); err == nil {
+		t.Fatal("expected system DNS URL in doh-servers.txt to be rejected")
+	}
+}
+
+func TestParseSystemDNSServersPreservesOrderAndDeduplicates(t *testing.T) {
+	got := parseSystemDNSServers("# resolv.conf\nnameserver 8.8.8.8\nnameserver 2001:4860:4860::8888\nnameserver 8.8.8.8 # duplicate\nsearch example.test\n")
+	want := []string{"8.8.8.8", "2001:4860:4860::8888"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("system DNS servers = %v, want %v", got, want)
+	}
+}
+
+func TestReadSystemDNSServersRejectsEmptyResolverList(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(path, []byte("search example.test\nnameserver not-an-ip\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readSystemDNSServers(path); err == nil {
+		t.Fatal("expected invalid resolver file to be rejected")
+	}
+}
+
+func TestExchangeSystemDNSUDP(t *testing.T) {
+	server, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	done := make(chan error, 1)
+	go func() {
+		buf := make([]byte, maxDNSMessage)
+		n, addr, readErr := server.ReadFromUDP(buf)
+		if readErr != nil {
+			done <- readErr
+			return
+		}
+		_, writeErr := server.WriteToUDP(testAResponse(buf[:n], 45), addr)
+		done <- writeErr
+	}()
+
+	query := makeDNSQuery("system.example", 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	response, err := exchangeSystemDNS(ctx, server.LocalAddr().String(), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dnsRCode(response) != 0 || dnsAnswerCount(response) != 1 {
+		t.Fatalf("unexpected system DNS response: rcode=%d answers=%d", dnsRCode(response), dnsAnswerCount(response))
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExchangeSystemDNSTCPFallbackWhenUDPTruncated(t *testing.T) {
+	tcpListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcpListener.Close()
+	port := tcpListener.Addr().(*net.TCPAddr).Port
+	udpServer, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpServer.Close()
+
+	udpDone := make(chan error, 1)
+	go func() {
+		buf := make([]byte, maxDNSMessage)
+		n, addr, readErr := udpServer.ReadFromUDP(buf)
+		if readErr != nil {
+			udpDone <- readErr
+			return
+		}
+		truncated := testAResponse(buf[:n], 45)
+		flags := binary.BigEndian.Uint16(truncated[2:4]) | 0x0200
+		binary.BigEndian.PutUint16(truncated[2:4], flags)
+		_, writeErr := udpServer.WriteToUDP(truncated, addr)
+		udpDone <- writeErr
+	}()
+
+	tcpDone := make(chan error, 1)
+	go func() {
+		conn, acceptErr := tcpListener.Accept()
+		if acceptErr != nil {
+			tcpDone <- acceptErr
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+		var header [2]byte
+		if _, readErr := io.ReadFull(conn, header[:]); readErr != nil {
+			tcpDone <- readErr
+			return
+		}
+		length := int(binary.BigEndian.Uint16(header[:]))
+		query := make([]byte, length)
+		if _, readErr := io.ReadFull(conn, query); readErr != nil {
+			tcpDone <- readErr
+			return
+		}
+		response := testAResponse(query, 45)
+		frame := make([]byte, len(response)+2)
+		binary.BigEndian.PutUint16(frame[:2], uint16(len(response)))
+		copy(frame[2:], response)
+		_, writeErr := conn.Write(frame)
+		tcpDone <- writeErr
+	}()
+
+	query := makeDNSQuery("large-system-response.example", 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	response, err := exchangeSystemDNS(ctx, net.JoinHostPort("127.0.0.1", fmt.Sprint(port)), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dnsTruncated(response) || dnsAnswerCount(response) != 1 {
+		t.Fatalf("TCP fallback response is still truncated or empty: truncated=%t answers=%d", dnsTruncated(response), dnsAnswerCount(response))
+	}
+	if err := <-udpDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-tcpDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNormalizeConfigKeepsOnlyGoogleProfile(t *testing.T) {
+	c := defaultConfig()
+	google := c.Groups[0]
+	c.Groups = append([]Group{{ID: "default", Upstreams: append([]string(nil), google.Upstreams...)}}, google)
+	normalized, err := normalizeConfigGroups(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(normalized.Groups) != 1 || normalized.Groups[0].ID != "google" {
+		t.Fatalf("normalized groups = %+v, want only google", normalized.Groups)
+	}
+}
+
+func TestDNSGatewaySendsArbitraryQNAMEThroughGoogleProfile(t *testing.T) {
+	var gotName string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		gotName, _, _, err = parseQuestion(body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/dns-message")
+		_, _ = w.Write(testAResponse(body, 45))
+	}))
+	defer srv.Close()
+
+	query := makeDNSQuery("completely-unrelated.example", 1)
+	upstream := &UpstreamRuntime{
+		cfg: Upstream{ID: "selected-google-doh", URL: srv.URL},
+		client: srv.Client(),
+	}
+	snapshot := &Snapshot{
+		groups: map[string]Group{
+			"google": {ID: "google", Upstreams: []string{"selected-google-doh"}},
+		},
+		upstreams: map[string]*UpstreamRuntime{"selected-google-doh": upstream},
+	}
+	rt := &Runtime{
+		active: map[string]string{"google": "selected-google-doh"},
+	}
+	rt.snapshot.Store(snapshot)
+
+	response, selected, err := rt.query(context.Background(), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != "selected-google-doh" {
+		t.Fatalf("selected upstream = %q", selected)
+	}
+	if gotName != "completely-unrelated.example" {
+		t.Fatalf("DoH received QNAME %q; want arbitrary QNAME unchanged", gotName)
+	}
+	if dnsRCode(response) != 0 || dnsAnswerCount(response) != 1 {
+		t.Fatalf("unexpected DNS response rcode=%d answers=%d", dnsRCode(response), dnsAnswerCount(response))
 	}
 }
 
@@ -229,7 +790,17 @@ func TestDefaultConfigUsesAutomaticBootstrap(t *testing.T) {
 
 func TestLegacyBootstrapIPsRemainValidAsFallback(t *testing.T) {
 	c := defaultConfig()
-	c.Upstreams[0].BootstrapIPs = []string{"203.0.113.53"}
+	var doh *Upstream
+	for i := range c.Upstreams {
+		if c.Upstreams[i].Type != "system" {
+			doh = &c.Upstreams[i]
+			break
+		}
+	}
+	if doh == nil {
+		t.Fatal("default config has no DoH upstream")
+	}
+	doh.BootstrapIPs = []string{"203.0.113.53"}
 	if err := validateConfig(c); err != nil {
 		t.Fatalf("legacy bootstrap_ips fallback rejected: %v", err)
 	}
@@ -527,14 +1098,14 @@ func TestReadGeminiAPIKeySecurity(t *testing.T) {
 }
 
 func TestPublishHealthStateClearsUnavailableUpstream(t *testing.T) {
-	s := &Snapshot{groups: map[string]Group{"default": {ID: "default", Upstreams: []string{"u1"}}}}
+	s := &Snapshot{groups: map[string]Group{"google": {ID: "google", Upstreams: []string{"u1"}}}}
 	r := &Runtime{
-		health: map[string]map[string]HealthEntry{"default": {"u1": {State: "down"}}},
-		active: map[string]string{"default": "u1"},
+		health: map[string]map[string]HealthEntry{"google": {"u1": {State: "down"}}},
+		active: map[string]string{"google": "u1"},
 	}
 	r.snapshot.Store(s)
 	r.publishHealthState()
-	if got := r.active["default"]; got != "" {
+	if got := r.active["google"]; got != "" {
 		t.Fatalf("active upstream = %q, want cleared", got)
 	}
 }

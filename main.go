@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,9 +29,19 @@ import (
 
 const (
 	pluginID      = "doh-health-monitor"
-	pluginVersion = "1.7.0"
-	maxDNSMessage = 65535
-	maxHTTPBody   = 2 << 20
+	pluginVersion = "2.0.0"
+	systemDNSUpstreamID = "system-dns"
+	systemResolvConfPath = "/etc/resolv.conf"
+	systemDNSPerServerTimeout = 2 * time.Second
+	maxDNSMessage        = 65535
+	maxHTTPBody          = 2 << 20
+	defaultCacheMaxBytes = 8 << 20
+	maxCacheMaxBytes     = 256 << 20
+	maxUDPWorkers        = 64
+	udpQueueCapacity     = 128
+	maxTCPConnections    = 128
+	tcpIdleTimeout       = 30 * time.Second
+	tcpWriteTimeout      = 10 * time.Second
 )
 
 type Config struct {
@@ -66,17 +76,20 @@ type CacheConfig struct {
 	MaxTTL      int  `json:"max_ttl_seconds"`
 	NegativeTTL int  `json:"negative_ttl_seconds"`
 	MaxEntries  int  `json:"max_entries"`
+	MaxBytes    int  `json:"max_bytes"`
 }
 type Upstream struct {
 	ID           string   `json:"id"`
 	Name         string   `json:"name"`
+	Type         string   `json:"type,omitempty"`
 	URL          string   `json:"-"`
 	BootstrapIPs []string `json:"bootstrap_ips"`
 }
 type Group struct {
 	ID        string   `json:"id"`
-	FakeDNS   bool     `json:"fake_dns"`
-	Domains   []string `json:"domains"`
+	// Deprecated legacy fields are accepted for config compatibility and ignored.
+	FakeDNS   bool     `json:"fake_dns,omitempty"`
+	Domains   []string `json:"domains,omitempty"`
 	Upstreams []string `json:"upstreams"`
 	Checks    []Check  `json:"checks,omitempty"`
 }
@@ -104,7 +117,6 @@ type Snapshot struct {
 	localHosts map[string]LocalHost
 	upstreams map[string]*UpstreamRuntime
 	groups    map[string]Group
-	byDomain  []domainBinding
 	loadedAt  time.Time
 	configMod time.Time
 	dohMod    time.Time
@@ -114,6 +126,11 @@ type UpstreamRuntime struct {
 	cfg       Upstream
 	client    *http.Client
 	bootstrap *bootstrapResolver
+	systemDNS *systemDNSResolver
+}
+
+type systemDNSResolver struct {
+	resolvConfPath string
 }
 
 type bootstrapResolver struct {
@@ -183,7 +200,6 @@ func (b *bootstrapResolver) recordProbeSnapshot(candidates []string, source stri
 	b.lastProbe = append([]DoHIPProbeStatus(nil), probes...)
 	b.mu.Unlock()
 }
-type domainBinding struct{ suffix, groupID string }
 type ProbeStatus struct {
 	Domain      string `json:"domain"`
 	Required    bool   `json:"required"`
@@ -219,11 +235,24 @@ type Status struct {
 	Config       string                          `json:"config"`
 	Cache        CacheStatus                     `json:"cache"`
 	Groups       map[string]GroupStatus          `json:"groups"`
-	DoHBootstrap map[string]DoHBootstrapStatus   `json:"doh_bootstrap,omitempty"`
-	GeminiAPI    string                          `json:"gemini_api"`
+	DoHBootstrap       map[string]DoHBootstrapStatus `json:"doh_bootstrap,omitempty"`
+	SystemDNSServers    []string                      `json:"system_dns_servers,omitempty"`
+	SystemDNSError      string                        `json:"system_dns_error,omitempty"`
+	GeminiAPI           string                        `json:"gemini_api"`
 	Queries      uint64                          `json:"queries"`
-	CacheHits    uint64                          `json:"cache_hits"`
-	Failures     uint64                          `json:"failures"`
+	CacheHits      uint64                          `json:"cache_hits"`
+	Failures       uint64                          `json:"failures"`
+	ActiveUDP      int64                           `json:"active_udp"`
+	UDPQueueDepth  int64                           `json:"udp_queue_depth"`
+	UDPDropped     uint64                          `json:"udp_dropped"`
+	ActiveTCP      int64                           `json:"active_tcp"`
+	TCPRejected    uint64                          `json:"tcp_rejected"`
+	Goroutines     int                             `json:"goroutines"`
+	HeapAllocBytes uint64                          `json:"heap_alloc_bytes"`
+	HeapInuseBytes uint64                          `json:"heap_inuse_bytes"`
+	HeapSysBytes   uint64                          `json:"heap_sys_bytes"`
+	CPUUserNS      uint64                          `json:"cpu_user_ns"`
+	CPUSystemNS    uint64                          `json:"cpu_system_ns"`
 	LastReload   time.Time                       `json:"last_reload,omitempty"`
 	LastError    string                          `json:"last_error,omitempty"`
 }
@@ -231,6 +260,8 @@ type CacheStatus struct {
 	Enabled    bool `json:"enabled"`
 	Entries    int  `json:"entries"`
 	MaxEntries int  `json:"max_entries"`
+	Bytes      int  `json:"bytes"`
+	MaxBytes   int  `json:"max_bytes"`
 }
 type GeminiHTTPError struct{ Status int }
 
@@ -244,9 +275,15 @@ type Event struct {
 	Data   json.RawMessage `json:"data"`
 }
 type cacheItem struct {
-	packet   []byte
-	expires  time.Time
-	inserted time.Time
+	packet     []byte
+	expires    time.Time
+	inserted   time.Time
+	size       int
+	generation uint64
+}
+type cacheOrderEntry struct {
+	key        string
+	generation uint64
 }
 type Runtime struct {
 	dnsSem     chan struct{}
@@ -257,9 +294,18 @@ type Runtime struct {
 	mu         sync.RWMutex
 	health     map[string]map[string]HealthEntry
 	active     map[string]string
-	cacheMu    sync.Mutex
-	cache      map[string]cacheItem
-	cacheHits  atomic.Uint64
+	cacheMu        sync.Mutex
+	cache          map[string]cacheItem
+	cacheOrder     []cacheOrderEntry
+	cacheOrderHead int
+	cacheBytes     int
+	cacheSeq       uint64
+	cacheHits      atomic.Uint64
+	activeUDP      atomic.Int64
+	udpQueueDepth  atomic.Int64
+	udpDropped     atomic.Uint64
+	activeTCP      atomic.Int64
+	tcpRejected    atomic.Uint64
 	queries    atomic.Uint64
 	failures   atomic.Uint64
 	lastGemini map[string]time.Time
@@ -408,7 +454,7 @@ func loadConfig(path string) (Config, error) {
 		if e = os.WriteFile(path, append(b, '\n'), 0600); e != nil {
 			return Config{}, fmt.Errorf("create default config: %w", e)
 		}
-		logLine("WARN", "CONFIG_TEMPLATE_CREATED path=%s; review domain groups and bootstrap_resolvers", path)
+		logLine("WARN", "CONFIG_TEMPLATE_CREATED path=%s; review Google checks and bootstrap_resolvers", path)
 	}
 	b, e := os.ReadFile(path)
 	if e != nil {
@@ -420,6 +466,9 @@ func loadConfig(path string) (Config, error) {
 	if e = dec.Decode(&c); e != nil {
 		return Config{}, fmt.Errorf("decode config: %w", e)
 	}
+	c, e = normalizeConfigGroups(c)
+	if e != nil { return Config{}, e }
+	c = normalizeCacheConfig(c)
 	if e = validateConfig(c); e != nil {
 		return Config{}, e
 	}
@@ -429,11 +478,12 @@ func defaultConfig() Config {
 	return Config{
 		DNSListenUDP: "127.0.0.1:5355", DNSListenTCP: "127.0.0.1:5355", HTTPListen: "127.0.0.1:18765", ReloadSecs: 5,
 		DNSQueryTimeoutSeconds: 15, DoHTimeoutSeconds: 10, DNSMaxConcurrent: 256,
-		Health: HealthConfig{IntervalSeconds: 45, TimeoutSeconds: 5, FailureThreshold: 3, SuccessThreshold: 5},
-		Cache:  CacheConfig{Enabled: true, MinTTL: 5, MaxTTL: 300, NegativeTTL: 15, MaxEntries: 8192},
+		Health: HealthConfig{IntervalSeconds: 25 * 60, TimeoutSeconds: 5, FailureThreshold: 1, SuccessThreshold: 1},
+		Cache:  CacheConfig{Enabled: true, MinTTL: 5, MaxTTL: 300, NegativeTTL: 15, MaxEntries: 8192, MaxBytes: defaultCacheMaxBytes},
 		LocalHosts: map[string]LocalHost{},
 		BootstrapResolvers: []string{"1.1.1.1", "8.8.8.8"},
 		Upstreams: []Upstream{
+			{ID: systemDNSUpstreamID, Name: "System DNS (VPS)", Type: "system"},
 			{ID: "eu.geohide.ru", Name: "GeoHide EU"},
 			{ID: "doh.dagami.ru", Name: "Dagami"},
 			{ID: "dns.comss.one", Name: "Comss.one"},
@@ -441,10 +491,7 @@ func defaultConfig() Config {
 			{ID: "dns.zapret.moe", Name: "Zapret"},
 		},
 		Groups: []Group{
-			{ID: "default", Domains: []string{}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{{Domain: "example.com", Required: true}}},
-			{ID: "google", FakeDNS: true, Domains: []string{"google.com", "googleapis.com", "gstatic.com", "googleusercontent.com", "google.org", "googleadservices.com", "google-analytics.com", "gemini.google.com", "generativelanguage.googleapis.com", "clients6.google.com", "jnn-pa.googleapis.com", "waa-pa.clients6.google.com"}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{
-				{Domain: "gemini.google.com", HTTPURL: "https://gemini.google.com/robots.txt", Required: true, ExpectedStatus: []int{200}},
-				{Domain: "accounts.google.com", HTTPURL: "https://accounts.google.com/.well-known/openid-configuration", Required: true, ExpectedStatus: []int{200}, VerifyOIDC: true},
+			{ID: "google", Upstreams: []string{systemDNSUpstreamID, "eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{
 				{Domain: "aistudio.google.com", Required: false},
 				{Domain: "alkalimakersuite-pa.clients6.google.com", Required: false},
 				{Domain: "apis.google.com", Required: false},
@@ -456,16 +503,81 @@ func defaultConfig() Config {
 				{Domain: "www.google-analytics.com", Required: false},
 				{Domain: "content-autofill.googleapis.com", Required: false},
 				{Domain: "play.google.com", Required: false},
+				{Domain: "google.com", Required: false},
+				{Domain: "googleapis.com", Required: false},
+				{Domain: "gstatic.com", Required: false},
+				{Domain: "googleusercontent.com", Required: false},
+				{Domain: "google.org", Required: false},
+				{Domain: "googleadservices.com", Required: false},
+				{Domain: "google-analytics.com", Required: false},
+				{Domain: "gemini.google.com", HTTPURL: "https://gemini.google.com/", Required: true, ExpectedStatus: []int{200}},
+				{Domain: "generativelanguage.googleapis.com", Required: false},
+				{Domain: "clients6.google.com", Required: false},
+				{Domain: "jnn-pa.googleapis.com", Required: false},
+				{Domain: "accounts.google.com", HTTPURL: "https://accounts.google.com/.well-known/openid-configuration", Required: true, ExpectedStatus: []int{200}, VerifyOIDC: true},
 				{Domain: "ssl.gstatic.com", HTTPURL: "https://ssl.gstatic.com/", Required: false, ExpectedStatus: []int{200, 301, 302, 403}},
 				{Domain: "www.googleapis.com", HTTPURL: "https://www.googleapis.com/", Required: false, ExpectedStatus: []int{200, 301, 302, 403}},
 			}},
-			{ID: "netflix", FakeDNS: true, Domains: []string{"netflix.com", "nflxvideo.net", "nflximg.net", "nflxso.net", "nflxext.com", "netflix.net"}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{{Domain: "www.netflix.com", HTTPURL: "https://www.netflix.com/", Required: true, ExpectedStatus: []int{200, 301, 302, 403}}}},
-			{ID: "openai", FakeDNS: true, Domains: []string{"openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com"}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{{Domain: "chatgpt.com", HTTPURL: "https://chatgpt.com/robots.txt", Required: true, ExpectedStatus: []int{200}}}},
-			{ID: "youtube", FakeDNS: true, Domains: []string{"youtube.com", "youtubei.googleapis.com", "googlevideo.com", "ytimg.com", "youtu.be", "youtube-nocookie.com"}, Upstreams: []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{{Domain: "www.youtube.com", HTTPURL: "https://www.youtube.com/robots.txt", Required: true, ExpectedStatus: []int{200}}}},
 		},
 		GeminiAPI: GeminiAPIConfig{Enabled: false, RequiredForGroup: false, GroupID: "google", Model: "gemini-3.8-flash", IntervalSeconds: 1800, KeyFile: "gemini_api_key", Prompt: "Reply with exactly OK.", MaxOutputTokens: 8},
 	}
 }
+func normalizeConfigGroups(c Config) (Config, error) {
+	// Older installations may still have multiple groups. Keep only the Google
+	// suitability profile; the DNS gateway never routes by queried domain.
+	for _, g := range c.Groups {
+		if g.ID == "google" {
+			c.Groups = []Group{g}
+			return ensureSystemDNSFirst(c)
+		}
+	}
+	return Config{}, errors.New("configuration has no group with id 'google'")
+}
+
+func ensureSystemDNSFirst(c Config) (Config, error) {
+	var system Upstream
+	found := false
+	remaining := make([]Upstream, 0, len(c.Upstreams)+1)
+	for _, u := range c.Upstreams {
+		if u.ID == systemDNSUpstreamID {
+			if found {
+				return Config{}, fmt.Errorf("duplicate upstream id %q", systemDNSUpstreamID)
+			}
+			if u.Type != "system" {
+				return Config{}, fmt.Errorf("upstream %q is reserved for type system", systemDNSUpstreamID)
+			}
+			system = u
+			found = true
+			continue
+		}
+		remaining = append(remaining, u)
+	}
+	if !found {
+		system = Upstream{ID: systemDNSUpstreamID, Name: "System DNS (VPS)", Type: "system"}
+	}
+	c.Upstreams = append([]Upstream{system}, remaining...)
+
+	group := c.Groups[0]
+	ordered := make([]string, 0, len(group.Upstreams)+1)
+	ordered = append(ordered, systemDNSUpstreamID)
+	for _, id := range group.Upstreams {
+		if id != systemDNSUpstreamID {
+			ordered = append(ordered, id)
+		}
+	}
+	group.Upstreams = ordered
+	c.Groups[0] = group
+	return c, nil
+}
+
+func normalizeCacheConfig(c Config) Config {
+	// Older config files predate max_bytes; give them a bounded default.
+	if c.Cache.MaxBytes == 0 {
+		c.Cache.MaxBytes = defaultCacheMaxBytes
+	}
+	return c
+}
+
 func validateConfig(c Config) error {
 	if !validListen(c.DNSListenUDP) || !validListen(c.DNSListenTCP) || !validListen(c.HTTPListen) {
 		return errors.New("dns_listen_udp, dns_listen_tcp and http_listen must be host:port")
@@ -479,8 +591,11 @@ func validateConfig(c Config) error {
 	if c.Health.IntervalSeconds < 5 || c.Health.IntervalSeconds > 3600 || c.Health.TimeoutSeconds < 1 || c.Health.TimeoutSeconds > 60 || c.Health.FailureThreshold < 1 || c.Health.FailureThreshold > 20 || c.Health.SuccessThreshold < 1 || c.Health.SuccessThreshold > 50 {
 		return errors.New("invalid health settings")
 	}
-	if c.Cache.MinTTL < 0 || c.Cache.MaxTTL < 1 || c.Cache.MaxTTL < c.Cache.MinTTL || c.Cache.NegativeTTL < 0 || c.Cache.MaxEntries < 0 {
+	if c.Cache.MinTTL < 0 || c.Cache.MaxTTL < 1 || c.Cache.MaxTTL < c.Cache.MinTTL || c.Cache.NegativeTTL < 0 || c.Cache.MaxEntries < 0 || c.Cache.MaxBytes < 0 {
 		return errors.New("invalid cache settings")
+	}
+	if c.Cache.Enabled && (c.Cache.MaxEntries < 1 || c.Cache.MaxEntries > 100000 || c.Cache.MaxBytes < 1024 || c.Cache.MaxBytes > maxCacheMaxBytes) {
+		return fmt.Errorf("enabled cache limits must be max_entries=1..100000 and max_bytes=1024..%d", maxCacheMaxBytes)
 	}
 	if len(c.Upstreams) == 0 {
 		return errors.New("at least one upstream is required")
@@ -518,6 +633,7 @@ func validateConfig(c Config) error {
 		}
 	}
 	ids := map[string]bool{}
+	systemDNSCount := 0
 	for _, u := range c.Upstreams {
 		if u.ID == "" || ids[u.ID] {
 			return fmt.Errorf("upstream id empty or duplicate: %q", u.ID)
@@ -526,11 +642,34 @@ func validateConfig(c Config) error {
 		if strings.ContainsAny(u.ID, "/:@ \t") {
 			return fmt.Errorf("upstream id must be a hostname: %s", u.ID)
 		}
+		switch u.Type {
+		case "":
+			if u.ID == systemDNSUpstreamID {
+				return fmt.Errorf("upstream %q must have type system", systemDNSUpstreamID)
+			}
+		case "system":
+			systemDNSCount++
+			if u.ID != systemDNSUpstreamID {
+				return fmt.Errorf("system DNS upstream must use id %q", systemDNSUpstreamID)
+			}
+			if len(u.BootstrapIPs) != 0 {
+				return errors.New("system DNS upstream must not define bootstrap_ips")
+			}
+		case "doh":
+			if u.ID == systemDNSUpstreamID {
+				return fmt.Errorf("upstream id %q is reserved for system DNS", systemDNSUpstreamID)
+			}
+		default:
+			return fmt.Errorf("unsupported upstream type %q for %s", u.Type, u.ID)
+		}
 		for _, ip := range u.BootstrapIPs {
 			if net.ParseIP(ip) == nil {
 				return fmt.Errorf("invalid bootstrap IP %q in %s", ip, u.ID)
 			}
 		}
+	}
+	if systemDNSCount != 1 {
+		return fmt.Errorf("exactly one system DNS upstream is required; got %d", systemDNSCount)
 	}
 	groups := map[string]bool{}
 	for _, g := range c.Groups {
@@ -544,11 +683,6 @@ func validateConfig(c Config) error {
 		for _, u := range g.Upstreams {
 			if !ids[u] {
 				return fmt.Errorf("group %s references unknown upstream %s", g.ID, u)
-			}
-		}
-		for _, d := range g.Domains {
-			if normalizeDomain(d) == "" {
-				return fmt.Errorf("invalid domain in group %s", g.ID)
 			}
 		}
 		for _, ch := range g.Checks {
@@ -568,8 +702,8 @@ func validateConfig(c Config) error {
 			}
 		}
 	}
-	if !groups["default"] {
-		return errors.New("a group with id 'default' is required")
+	if len(c.Groups) != 1 || !groups["google"] {
+		return errors.New("exactly one group with id 'google' is required")
 	}
 	if c.GeminiAPI.Enabled {
 		if filepath.IsAbs(c.GeminiAPI.KeyFile) || strings.HasPrefix(filepath.Clean(c.GeminiAPI.KeyFile), "..") {
@@ -672,12 +806,24 @@ func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
 		if !known[id] {
 			return nil, fmt.Errorf("DoH server %s in doh-servers.txt has no upstream/bootstrap entry in config.json", id)
 		}
+		for _, configured := range c.Upstreams {
+			if configured.ID == id && configured.Type == "system" {
+				return nil, fmt.Errorf("system DNS upstream %s must not have a DoH URL", id)
+			}
+		}
 	}
 	resolvers := c.BootstrapResolvers
 	if len(resolvers) == 0 {
 		resolvers = defaultBootstrapResolvers()
 	}
 	for _, u := range c.Upstreams {
+		if u.Type == "system" {
+			s.upstreams[u.ID] = &UpstreamRuntime{
+				cfg: u,
+				systemDNS: &systemDNSResolver{resolvConfPath: systemResolvConfPath},
+			}
+			continue
+		}
 		urlValue, ok := dohURLs[u.ID]
 		if !ok {
 			continue
@@ -696,14 +842,7 @@ func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
 			}
 		}
 		s.groups[g.ID] = g
-		for _, d := range g.Domains {
-			d = normalizeDomain(d)
-			if d != "" {
-				s.byDomain = append(s.byDomain, domainBinding{d, g.ID})
-			}
-		}
 	}
-	sort.Slice(s.byDomain, func(i, j int) bool { return len(s.byDomain[i].suffix) > len(s.byDomain[j].suffix) })
 	return s, nil
 }
 func defaultBootstrapResolvers() []string { return []string{"1.1.1.1", "8.8.8.8"} }
@@ -1021,34 +1160,66 @@ func minDuration(a, b time.Duration) time.Duration {
 func (r *Runtime) initHealth(s *Snapshot) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.health == nil {
+		r.health = map[string]map[string]HealthEntry{}
+	}
+	if r.active == nil {
+		r.active = map[string]string{}
+	}
+
+	validGroups := make(map[string]map[string]struct{}, len(s.groups))
+	validUpstreams := make(map[string]struct{}, len(s.upstreams))
+	for uid := range s.upstreams {
+		validUpstreams[uid] = struct{}{}
+	}
 	for gid, g := range s.groups {
+		valid := make(map[string]struct{}, len(g.Upstreams))
+		for _, uid := range g.Upstreams {
+			valid[uid] = struct{}{}
+		}
+		validGroups[gid] = valid
 		if r.health[gid] == nil {
 			r.health[gid] = map[string]HealthEntry{}
+		}
+		for uid := range r.health[gid] {
+			if _, ok := valid[uid]; !ok {
+				delete(r.health[gid], uid)
+			}
 		}
 		for _, uid := range g.Upstreams {
 			if _, ok := r.health[gid][uid]; !ok {
 				r.health[gid][uid] = HealthEntry{State: "unknown", GeminiState: "not_checked"}
 			}
 		}
-		if r.active[gid] == "" && len(g.Upstreams) > 0 {
-			r.active[gid] = g.Upstreams[0]
+		if _, ok := valid[r.active[gid]]; !ok {
+			if len(g.Upstreams) > 0 {
+				r.active[gid] = g.Upstreams[0]
+			} else {
+				delete(r.active, gid)
+			}
+		}
+	}
+	for gid := range r.health {
+		if _, ok := validGroups[gid]; !ok {
+			delete(r.health, gid)
+		}
+	}
+	for gid := range r.active {
+		if _, ok := validGroups[gid]; !ok {
+			delete(r.active, gid)
+		}
+	}
+	for uid := range r.lastGemini {
+		if _, ok := validUpstreams[uid]; !ok {
+			delete(r.lastGemini, uid)
 		}
 	}
 }
 func (r *Runtime) currentSnapshot() *Snapshot { return r.snapshot.Load() }
-func (r *Runtime) groupFor(domain string, s *Snapshot) string {
-	domain = normalizeDomain(domain)
-	for _, b := range s.byDomain {
-		if domain == b.suffix || strings.HasSuffix(domain, "."+b.suffix) {
-			return b.groupID
-		}
-	}
-	return "default"
-}
 func (r *Runtime) orderedUpstreams(gid string, s *Snapshot) []string {
 	g, ok := s.groups[gid]
 	if !ok {
-		g = s.groups["default"]
+		g = s.groups["google"]
 	}
 	r.mu.RLock()
 	active := r.active[gid]
@@ -1075,7 +1246,8 @@ func (r *Runtime) query(ctx context.Context, packet []byte) ([]byte, string, err
 		return nil, "", e
 	}
 	s := r.currentSnapshot()
-	gid := r.groupFor(name, s)
+	// Every DNS question received by this listener uses the single Google-qualified gateway.
+	const gid = "google"
 	order := r.orderedUpstreams(gid, s)
 	var errs []string
 	for _, uid := range order {
@@ -1083,7 +1255,7 @@ func (r *Runtime) query(ctx context.Context, packet []byte) ([]byte, string, err
 		if u == nil {
 			continue
 		}
-		resp, e := sendDoH(ctx, u, packet)
+		resp, e := sendUpstreamDNS(ctx, u, packet)
 		if e == nil {
 			if dnsRCode(resp) == 2 || dnsRCode(resp) == 5 {
 				e = fmt.Errorf("upstream returned DNS RCODE %d", dnsRCode(resp))
@@ -1098,6 +1270,13 @@ func (r *Runtime) query(ctx context.Context, packet []byte) ([]byte, string, err
 	r.failures.Add(1)
 	return nil, "", fmt.Errorf("all upstreams failed for %s (%s)", name, strings.Join(errs, "; "))
 }
+func sendUpstreamDNS(ctx context.Context, u *UpstreamRuntime, packet []byte) ([]byte, error) {
+	if u != nil && u.systemDNS != nil {
+		return u.systemDNS.query(ctx, packet)
+	}
+	return sendDoH(ctx, u, packet)
+}
+
 func sendDoH(ctx context.Context, u *UpstreamRuntime, packet []byte) ([]byte, error) {
 	req, e := http.NewRequestWithContext(ctx, http.MethodPost, u.cfg.URL, bytes.NewReader(packet))
 	if e != nil {
@@ -1135,63 +1314,145 @@ func sendDoH(ctx context.Context, u *UpstreamRuntime, packet []byte) ([]byte, er
 	return b, nil
 }
 func (r *Runtime) serveUDP(ctx context.Context, c *net.UDPConn) {
+	type udpJob struct {
+		addr   *net.UDPAddr
+		packet []byte
+	}
+	jobs := make(chan udpJob, udpQueueCapacity)
+	workers := maxUDPWorkers
+	if snap := r.currentSnapshot(); snap != nil && snap.cfg.DNSMaxConcurrent < workers {
+		workers = snap.cfg.DNSMaxConcurrent
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case job, ok := <-jobs:
+					if !ok {
+						return
+					}
+					r.udpQueueDepth.Add(-1)
+					r.activeUDP.Add(1)
+					resp := r.handleDNS(job.packet)
+					r.activeUDP.Add(-1)
+					if len(resp) > 4096 {
+						resp = resp[:4096]
+					}
+					_, _ = c.WriteToUDP(resp, job.addr)
+				}
+			}
+		}()
+	}
+	defer func() {
+		close(jobs)
+		wg.Wait()
+		r.udpQueueDepth.Store(0)
+	}()
+
 	buf := make([]byte, maxDNSMessage)
 	for {
 		_ = c.SetReadDeadline(time.Now().Add(time.Second))
-		n, addr, e := c.ReadFromUDP(buf)
-		if e != nil {
-			if ne, ok := e.(net.Error); ok && ne.Timeout() {
-				select {
-				case <-ctx.Done():
+		n, addr, err := c.ReadFromUDP(buf)
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				if ctx.Err() != nil {
 					return
-				default:
-					continue
 				}
+				continue
 			}
 			if ctx.Err() != nil {
 				return
 			}
-			logLine("WARN", "DNS UDP read: %v", e)
+			logLine("WARN", "DNS UDP read: %v", err)
 			continue
 		}
 		q := append([]byte(nil), buf[:n]...)
-		go func(a *net.UDPAddr, p []byte) {
-			resp := r.handleDNS(p)
-			if len(resp) > 4096 {
-				resp = resp[:4096]
-			}
-			_, _ = c.WriteToUDP(resp, a)
-		}(addr, q)
+		r.udpQueueDepth.Add(1)
+		select {
+		case jobs <- udpJob{addr: addr, packet: q}:
+		case <-ctx.Done():
+			r.udpQueueDepth.Add(-1)
+			return
+		default:
+			r.udpQueueDepth.Add(-1)
+			r.udpDropped.Add(1)
+			_, _ = c.WriteToUDP(servfailResponse(q), addr)
+		}
 	}
 }
 func (r *Runtime) serveTCP(ctx context.Context, ln net.Listener) {
+	sem := make(chan struct{}, maxTCPConnections)
+	var connections sync.Map
+	var wg sync.WaitGroup
+	defer func() {
+		connections.Range(func(key, _ any) bool {
+			if conn, ok := key.(net.Conn); ok {
+				_ = conn.Close()
+			}
+			return true
+		})
+		wg.Wait()
+	}()
+
 	for {
-		_ = ln.(*net.TCPListener).SetDeadline(time.Now().Add(time.Second))
-		conn, e := ln.Accept()
-		if e != nil {
-			if ne, ok := e.(net.Error); ok && ne.Timeout() {
-				select {
-				case <-ctx.Done():
+		if tl, ok := ln.(*net.TCPListener); ok {
+			_ = tl.SetDeadline(time.Now().Add(time.Second))
+		}
+		conn, err := ln.Accept()
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				if ctx.Err() != nil {
 					return
-				default:
-					continue
 				}
+				continue
 			}
 			if ctx.Err() != nil {
 				return
 			}
-			logLine("WARN", "DNS TCP accept: %v", e)
+			logLine("WARN", "DNS TCP accept: %v", err)
 			continue
 		}
-		go r.handleTCPConn(ctx, conn)
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			_ = conn.Close()
+			return
+		default:
+			r.tcpRejected.Add(1)
+			_ = conn.Close()
+			continue
+		}
+		connections.Store(conn, struct{}{})
+		r.activeTCP.Add(1)
+		wg.Add(1)
+		go func(c net.Conn) {
+			defer wg.Done()
+			defer func() {
+				r.activeTCP.Add(-1)
+				<-sem
+				connections.Delete(c)
+			}()
+			r.handleTCPConn(ctx, c)
+		}(conn)
 	}
 }
 func (r *Runtime) handleTCPConn(ctx context.Context, c net.Conn) {
 	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(120 * time.Second))
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+		_ = c.SetReadDeadline(time.Now().Add(tcpIdleTimeout))
 		var l [2]byte
-		if _, e := io.ReadFull(c, l[:]); e != nil {
+		if _, err := io.ReadFull(c, l[:]); err != nil {
 			return
 		}
 		n := int(binary.BigEndian.Uint16(l[:]))
@@ -1199,24 +1460,20 @@ func (r *Runtime) handleTCPConn(ctx context.Context, c net.Conn) {
 			return
 		}
 		q := make([]byte, n)
-		if _, e := io.ReadFull(c, q); e != nil {
+		if _, err := io.ReadFull(c, q); err != nil {
 			return
 		}
 		resp := r.handleDNS(q)
 		if len(resp) > maxDNSMessage {
 			return
 		}
+		_ = c.SetWriteDeadline(time.Now().Add(tcpWriteTimeout))
 		binary.BigEndian.PutUint16(l[:], uint16(len(resp)))
-		if _, e := c.Write(l[:]); e != nil {
+		if _, err := c.Write(l[:]); err != nil {
 			return
 		}
-		if _, e := c.Write(resp); e != nil {
+		if _, err := c.Write(resp); err != nil {
 			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		default:
 		}
 	}
 }
@@ -1252,7 +1509,7 @@ func (r *Runtime) handleDNS(packet []byte) []byte {
 	if s.cfg.Cache.Enabled {
 		r.cachePut(cacheKey, resp, s.cfg.Cache)
 	}
-	logLine("DEBUG", "DNS answer domain=%s group=%s upstream=%s", name, r.groupFor(name, s), uid)
+	_ = uid // avoid a log entry for every successful DNS query
 	return resp
 }
 
@@ -1387,6 +1644,16 @@ func extractEDNSOPT(query []byte) []byte {
 	return nil
 }
 
+func (r *Runtime) deleteCacheEntryLocked(key string, item cacheItem) {
+	if current, ok := r.cache[key]; ok && current.generation == item.generation {
+		delete(r.cache, key)
+		r.cacheBytes -= current.size
+		if r.cacheBytes < 0 {
+			r.cacheBytes = 0
+		}
+	}
+}
+
 func (r *Runtime) cacheGet(key string, id uint16) ([]byte, bool) {
 	r.cacheMu.Lock()
 	defer r.cacheMu.Unlock()
@@ -1394,8 +1661,8 @@ func (r *Runtime) cacheGet(key string, id uint16) ([]byte, bool) {
 	if !ok {
 		return nil, false
 	}
-	if time.Now().After(v.expires) {
-		delete(r.cache, key)
+	if !time.Now().Before(v.expires) {
+		r.deleteCacheEntryLocked(key, v)
 		return nil, false
 	}
 	b := append([]byte(nil), v.packet...)
@@ -1403,7 +1670,42 @@ func (r *Runtime) cacheGet(key string, id uint16) ([]byte, bool) {
 	decrementTTLs(b, uint32(time.Since(v.inserted).Seconds()))
 	return b, true
 }
+
+func (r *Runtime) evictOldestCacheLocked() bool {
+	for r.cacheOrderHead < len(r.cacheOrder) {
+		entry := r.cacheOrder[r.cacheOrderHead]
+		r.cacheOrderHead++
+		if current, ok := r.cache[entry.key]; ok && current.generation == entry.generation {
+			delete(r.cache, entry.key)
+			r.cacheBytes -= current.size
+			if r.cacheBytes < 0 {
+				r.cacheBytes = 0
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Runtime) compactCacheOrderLocked(maxEntries int) {
+	if len(r.cacheOrder) <= 2*maxEntries+1024 {
+		return
+	}
+	compact := make([]cacheOrderEntry, 0, len(r.cache))
+	for i := r.cacheOrderHead; i < len(r.cacheOrder); i++ {
+		entry := r.cacheOrder[i]
+		if current, ok := r.cache[entry.key]; ok && current.generation == entry.generation {
+			compact = append(compact, entry)
+		}
+	}
+	r.cacheOrder = compact
+	r.cacheOrderHead = 0
+}
+
 func (r *Runtime) cachePut(key string, packet []byte, c CacheConfig) {
+	if !c.Enabled || c.MaxEntries < 1 || c.MaxBytes < 1024 {
+		return
+	}
 	ttl, ok := minResponseTTL(packet)
 	if !ok {
 		if dnsRCode(packet) == 3 {
@@ -1421,31 +1723,45 @@ func (r *Runtime) cachePut(key string, packet []byte, c CacheConfig) {
 	if ttl == 0 {
 		return
 	}
+	const cacheItemOverheadEstimate = 128
+	cost := len(key) + len(packet) + cacheItemOverheadEstimate
+	if cost > c.MaxBytes {
+		return
+	}
+
+	now := time.Now()
 	r.cacheMu.Lock()
 	defer r.cacheMu.Unlock()
-	if c.MaxEntries > 0 && len(r.cache) >= c.MaxEntries {
-		for k, v := range r.cache {
-			if time.Now().After(v.expires) {
-				delete(r.cache, k)
-			}
-		}
-		if len(r.cache) >= c.MaxEntries {
-			for k := range r.cache {
-				delete(r.cache, k)
-				break
-			}
+	if previous, exists := r.cache[key]; exists {
+		delete(r.cache, key)
+		r.cacheBytes -= previous.size
+	}
+	r.cacheSeq++
+	item := cacheItem{
+		packet: append([]byte(nil), packet...),
+		expires: now.Add(time.Duration(ttl) * time.Second),
+		inserted: now, size: cost, generation: r.cacheSeq,
+	}
+	r.cache[key] = item
+	r.cacheBytes += cost
+	r.cacheOrder = append(r.cacheOrder, cacheOrderEntry{key: key, generation: item.generation})
+
+	for len(r.cache) > c.MaxEntries || r.cacheBytes > c.MaxBytes {
+		if !r.evictOldestCacheLocked() {
+			break
 		}
 	}
-	b := append([]byte(nil), packet...)
-	r.cache[key] = cacheItem{packet: b, expires: time.Now().Add(time.Duration(ttl) * time.Second), inserted: time.Now()}
+	r.compactCacheOrderLocked(c.MaxEntries)
 }
+
 func cacheKey(p []byte) string {
 	b := append([]byte(nil), p...)
 	if len(b) >= 2 {
 		b[0] = 0
 		b[1] = 0
 	}
-	return hex.EncodeToString(b)
+	sum := sha256.Sum256(b)
+	return string(sum[:])
 }
 func packetID(p []byte) uint16 {
 	if len(p) < 2 {
@@ -1569,9 +1885,251 @@ func (r *Runtime) runChecks(ctx context.Context) {
 }
 
 func (r *Runtime) queryVia(ctx context.Context, u *UpstreamRuntime, q []byte) ([]byte, string, error) {
-	resp, e := sendDoH(ctx, u, q)
+	resp, e := sendUpstreamDNS(ctx, u, q)
 	return resp, u.cfg.ID, e
 }
+
+func parseSystemDNSServers(contents string) []string {
+	servers := make([]string, 0, 2)
+	seen := make(map[string]bool)
+	for _, raw := range strings.Split(contents, "\n") {
+		fields := strings.Fields(raw)
+		if len(fields) < 2 || fields[0] != "nameserver" {
+			continue
+		}
+		value := strings.TrimSpace(fields[1])
+		host, zone, hasZone := strings.Cut(value, "%")
+		ip := net.ParseIP(host)
+		if ip == nil {
+			continue
+		}
+		normalized := ip.String()
+		if hasZone && zone != "" {
+			normalized += "%" + zone
+		}
+		if !seen[normalized] {
+			seen[normalized] = true
+			servers = append(servers, normalized)
+		}
+	}
+	return servers
+}
+
+func readSystemDNSServers(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read system resolver config %s: %w", path, err)
+	}
+	servers := parseSystemDNSServers(string(data))
+	if len(servers) == 0 {
+		return nil, fmt.Errorf("no valid nameserver entries in %s", path)
+	}
+	return servers, nil
+}
+
+func (r *systemDNSResolver) query(ctx context.Context, packet []byte) ([]byte, error) {
+	path := r.resolvConfPath
+	if path == "" {
+		path = systemResolvConfPath
+	}
+	servers, err := readSystemDNSServers(path)
+	if err != nil {
+		return nil, err
+	}
+	var failures []string
+	for _, server := range servers {
+		perServer := systemDNSPerServerTimeout
+		if deadline, ok := ctx.Deadline(); ok {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				break
+			}
+			if perServer > remaining {
+				perServer = remaining
+			}
+		}
+		serverCtx, cancel := context.WithTimeout(ctx, perServer)
+		response, queryErr := exchangeSystemDNS(serverCtx, net.JoinHostPort(server, "53"), packet)
+		cancel()
+		if queryErr == nil {
+			rcode := dnsRCode(response)
+			if rcode != 2 && rcode != 5 {
+				return response, nil
+			}
+			queryErr = fmt.Errorf("system resolver %s returned DNS RCODE %d", server, rcode)
+		}
+		failures = append(failures, server+": "+queryErr.Error())
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	if len(failures) == 0 && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if len(failures) == 0 {
+		return nil, errors.New("system DNS has no responsive nameserver")
+	}
+	return nil, fmt.Errorf("all system DNS resolvers failed: %s", strings.Join(failures, "; "))
+}
+
+func exchangeSystemDNS(ctx context.Context, address string, packet []byte) ([]byte, error) {
+	if len(packet) < 12 || len(packet) > maxDNSMessage {
+		return nil, errors.New("invalid DNS query size for system resolver")
+	}
+	response, err := exchangeSystemDNSNetwork(ctx, address, "udp", packet)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateSystemDNSResponse(packet, response); err != nil {
+		return nil, err
+	}
+	if dnsTruncated(response) {
+		response, err = exchangeSystemDNSNetwork(ctx, address, "tcp", packet)
+		if err != nil {
+			return nil, fmt.Errorf("retry truncated system DNS response over TCP: %w", err)
+		}
+		if err := validateSystemDNSResponse(packet, response); err != nil {
+			return nil, err
+		}
+		if dnsTruncated(response) {
+			return nil, errors.New("system DNS response remains truncated over TCP")
+		}
+	}
+	return response, nil
+}
+
+func exchangeSystemDNSNetwork(ctx context.Context, address, network string, packet []byte) ([]byte, error) {
+	conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	deadline := time.Now().Add(systemDNSPerServerTimeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok {
+		deadline = ctxDeadline
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		return nil, err
+	}
+	if network == "udp" {
+		if _, err := conn.Write(packet); err != nil {
+			return nil, err
+		}
+		buf := make([]byte, maxDNSMessage+1)
+		n, err := conn.Read(buf)
+		if err != nil {
+			return nil, err
+		}
+		if n > maxDNSMessage {
+			return nil, errors.New("system DNS UDP response exceeds maximum DNS message size")
+		}
+		return append([]byte(nil), buf[:n]...), nil
+	}
+	if network != "tcp" {
+		return nil, fmt.Errorf("unsupported system DNS network %q", network)
+	}
+	frame := make([]byte, len(packet)+2)
+	binary.BigEndian.PutUint16(frame[:2], uint16(len(packet)))
+	copy(frame[2:], packet)
+	for len(frame) > 0 {
+		n, writeErr := conn.Write(frame)
+		if writeErr != nil {
+			return nil, writeErr
+		}
+		if n == 0 {
+			return nil, io.ErrShortWrite
+		}
+		frame = frame[n:]
+	}
+	var header [2]byte
+	if _, err := io.ReadFull(conn, header[:]); err != nil {
+		return nil, err
+	}
+	responseLen := int(binary.BigEndian.Uint16(header[:]))
+	if responseLen < 12 || responseLen > maxDNSMessage {
+		return nil, fmt.Errorf("invalid system DNS TCP response size %d", responseLen)
+	}
+	response := make([]byte, responseLen)
+	if _, err := io.ReadFull(conn, response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+func validateSystemDNSResponse(query, response []byte) error {
+	if len(response) < 12 || len(response) > maxDNSMessage {
+		return errors.New("invalid system DNS response size")
+	}
+	if binary.BigEndian.Uint16(response[:2]) != packetID(query) {
+		return errors.New("system DNS response transaction ID does not match query")
+	}
+	if binary.BigEndian.Uint16(response[2:4])&0x8000 == 0 {
+		return errors.New("system DNS returned a packet without QR response flag")
+	}
+	queryName, queryType, _, err := parseQuestion(query)
+	if err != nil {
+		return fmt.Errorf("invalid original DNS query: %w", err)
+	}
+	responseName, responseType, _, err := parseQuestion(response)
+	if err != nil {
+		return fmt.Errorf("invalid system DNS response question: %w", err)
+	}
+	if !strings.EqualFold(normalizeDomain(queryName), normalizeDomain(responseName)) || queryType != responseType {
+		return errors.New("system DNS response question does not match query")
+	}
+	return nil
+}
+
+func readHTTPProbeBody(body io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maxHTTPBody+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxHTTPBody {
+		return nil, fmt.Errorf("HTTP probe response exceeds %d bytes", maxHTTPBody)
+	}
+	return data, nil
+}
+
+func geminiRedirectAllowed(resp *http.Response) bool {
+	if resp == nil || resp.StatusCode < 300 || resp.StatusCode >= 400 {
+		return false
+	}
+	target, err := resp.Location()
+	if err != nil || target.Scheme != "https" || target.User != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+	switch host {
+	case "gemini.google.com", "accounts.google.com", "consent.google.com", "google.com", "www.google.com":
+	default:
+		return false
+	}
+	path := strings.ToLower(target.EscapedPath())
+	return !strings.Contains(path, "sorry") && !strings.Contains(path, "unsupported")
+}
+
+func geminiRegionBlocked(body []byte) bool {
+	text := strings.ToLower(string(body))
+	indicators := []string{
+		"not available in your country",
+		"not available in your region",
+		"not available in your location",
+		"not supported in your country",
+		"not supported in your region",
+		"not supported in your location",
+		"isn't available in your country",
+		"is not available where you are",
+		"error code 1060",
+	}
+	for _, indicator := range indicators {
+		if strings.Contains(text, indicator) {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *Runtime) httpProbe(ctx context.Context, u *UpstreamRuntime, ch Check) (int, error) {
 	pu, e := url.Parse(ch.HTTPURL)
 	if e != nil {
@@ -1585,6 +2143,7 @@ func (r *Runtime) httpProbe(ctx context.Context, u *UpstreamRuntime, ch Check) (
 		return 0, errors.New("no A records")
 	}
 	client := newPinnedHTTPClient(ips[0], pu.Hostname(), time.Duration(r.currentSnapshot().cfg.DoHTimeoutSeconds)*time.Second)
+	defer client.CloseIdleConnections()
 	req, e := http.NewRequestWithContext(ctx, http.MethodGet, ch.HTTPURL, nil)
 	if e != nil {
 		return 0, e
@@ -1595,17 +2154,30 @@ func (r *Runtime) httpProbe(ctx context.Context, u *UpstreamRuntime, ch Check) (
 		return 0, e
 	}
 	defer resp.Body.Close()
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, (256<<10)+1))
+	body, readErr := readHTTPProbeBody(resp.Body)
 	if readErr != nil {
 		return resp.StatusCode, fmt.Errorf("read HTTP probe response: %w", readErr)
 	}
-	if len(body) > 256<<10 {
-		return resp.StatusCode, errors.New("HTTP probe response exceeds 256 KiB")
+	isGemini := strings.EqualFold(ch.Domain, "gemini.google.com")
+	if isGemini && geminiRegionBlocked(body) {
+		return resp.StatusCode, errors.New("Gemini regional restriction detected in response body")
 	}
 	ok := len(ch.ExpectedStatus) == 0 && resp.StatusCode >= 200 && resp.StatusCode < 400
 	for _, s := range ch.ExpectedStatus {
 		if s == resp.StatusCode {
 			ok = true
+		}
+	}
+	if isGemini {
+		// A Google-owned HTTPS redirect can be a normal sign-in or consent flow.
+		// Do not follow it with this IP-pinned client; validate and report its target.
+		ok = (resp.StatusCode >= 200 && resp.StatusCode < 300) || geminiRedirectAllowed(resp)
+		if !ok && resp.StatusCode >= 300 && resp.StatusCode < 400 {
+			location := ""
+			if target, err := resp.Location(); err == nil {
+				location = target.String()
+			}
+			return resp.StatusCode, fmt.Errorf("unexpected Gemini redirect to %q", location)
 		}
 	}
 	if !ok {
@@ -1639,7 +2211,7 @@ func verifyOIDCIssuer(body []byte, discoveryURL string) error {
 }
 
 func newPinnedHTTPClient(ip, host string, timeout time.Duration) *http.Client {
-	tr := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: host}, ForceAttemptHTTP2: true, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+	tr := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: host}, ForceAttemptHTTP2: true, MaxIdleConns: 1, MaxIdleConnsPerHost: 1, IdleConnTimeout: 10 * time.Second, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 		_, port, e := net.SplitHostPort(address)
 		if e != nil {
 			port = "443"
@@ -1749,6 +2321,7 @@ func (r *Runtime) geminiProbe(ctx context.Context, u *UpstreamRuntime, c GeminiA
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-goog-api-key", key)
 	client := newPinnedHTTPClient(ips[0], host, time.Duration(r.currentSnapshot().cfg.DoHTimeoutSeconds)*time.Second)
+	defer client.CloseIdleConnections()
 	resp, e := client.Do(req)
 	if e != nil {
 		return "", e
@@ -1790,6 +2363,24 @@ func geminiAuthOrQuotaError(err error) bool {
 func (r *Runtime) updateHealth(gid, uid string, ok bool, lat time.Duration, lastErr string, httpStatus int, gemState string, checks []ProbeStatus, h HealthConfig) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// A health cycle may finish after a hot reload. Do not recreate removed
+	// groups/upstreams from a snapshot that is no longer current.
+	if s := r.currentSnapshot(); s != nil {
+		g, exists := s.groups[gid]
+		if !exists {
+			return
+		}
+		found := false
+		for _, configuredID := range g.Upstreams {
+			if configuredID == uid {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return
+		}
+	}
 	if r.health[gid] == nil {
 		r.health[gid] = map[string]HealthEntry{}
 	}
@@ -1819,9 +2410,12 @@ func (r *Runtime) updateHealth(gid, uid string, ok bool, lat time.Duration, last
 	r.health[gid][uid] = e
 }
 func (r *Runtime) publishHealthState() {
-	s := r.currentSnapshot()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	s := r.currentSnapshot()
+	if s == nil {
+		return
+	}
 	for gid, g := range s.groups {
 		chosen := ""
 		for _, uid := range g.Upstreams {
@@ -1900,6 +2494,9 @@ func (r *Runtime) reloadLoop(ctx context.Context) {
 		r.initHealth(ns)
 		r.cacheMu.Lock()
 		r.cache = map[string]cacheItem{}
+		r.cacheOrder = nil
+		r.cacheOrderHead = 0
+		r.cacheBytes = 0
 		r.cacheMu.Unlock()
 		r.mu.Lock()
 		r.lastReload = time.Now().UTC()
@@ -1920,6 +2517,9 @@ func loadConfigNoCreate(path string) (Config, error) {
 	if e = d.Decode(&c); e != nil {
 		return Config{}, e
 	}
+	c, e = normalizeConfigGroups(c)
+	if e != nil { return Config{}, e }
+	c = normalizeCacheConfig(c)
 	if e = validateConfig(c); e != nil {
 		return Config{}, e
 	}
@@ -1932,7 +2532,26 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	s := r.currentSnapshot()
-	out := Status{ID: envOr("LUCX_PLUGIN_ID", pluginID), Version: envOr("LUCX_PLUGIN_VERSION", pluginVersion), StartedAt: startedAt, UpdatedAt: time.Now().UTC(), DNSUDP: s.cfg.DNSListenUDP, DNSTCP: s.cfg.DNSListenTCP, HTTP: s.cfg.HTTPListen, Config: r.configPath, Cache: CacheStatus{Enabled: s.cfg.Cache.Enabled, Entries: r.cacheLen(), MaxEntries: s.cfg.Cache.MaxEntries}, Groups: map[string]GroupStatus{}, DoHBootstrap: map[string]DoHBootstrapStatus{}, Queries: r.queries.Load(), CacheHits: r.cacheHits.Load(), Failures: r.failures.Load(), GeminiAPI: "disabled"}
+	cacheEntries, cacheBytes := r.cacheStats()
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	out := Status{
+		ID: envOr("LUCX_PLUGIN_ID", pluginID), Version: envOr("LUCX_PLUGIN_VERSION", pluginVersion),
+		StartedAt: startedAt, UpdatedAt: time.Now().UTC(), DNSUDP: s.cfg.DNSListenUDP,
+		DNSTCP: s.cfg.DNSListenTCP, HTTP: s.cfg.HTTPListen, Config: r.configPath,
+		Cache: CacheStatus{Enabled: s.cfg.Cache.Enabled, Entries: cacheEntries, MaxEntries: s.cfg.Cache.MaxEntries, Bytes: cacheBytes, MaxBytes: s.cfg.Cache.MaxBytes},
+		Groups: map[string]GroupStatus{}, DoHBootstrap: map[string]DoHBootstrapStatus{},
+		Queries: r.queries.Load(), CacheHits: r.cacheHits.Load(), Failures: r.failures.Load(),
+		ActiveUDP: r.activeUDP.Load(), UDPQueueDepth: r.udpQueueDepth.Load(), UDPDropped: r.udpDropped.Load(),
+		ActiveTCP: r.activeTCP.Load(), TCPRejected: r.tcpRejected.Load(), Goroutines: runtime.NumGoroutine(),
+		HeapAllocBytes: mem.HeapAlloc, HeapInuseBytes: mem.HeapInuse, HeapSysBytes: mem.HeapSys,
+		GeminiAPI: "disabled",
+	}
+	var cpu syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &cpu); err == nil {
+		out.CPUUserNS = timevalNanoseconds(cpu.Utime)
+		out.CPUSystemNS = timevalNanoseconds(cpu.Stime)
+	}
 	r.mu.RLock()
 	for gid, g := range s.groups {
 		gs := GroupStatus{ActiveUpstream: r.active[gid], Upstreams: map[string]HealthEntry{}}
@@ -1946,6 +2565,11 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 		if upstream.bootstrap != nil {
 			out.DoHBootstrap[uid] = upstream.bootstrap.status()
 		}
+	}
+	if servers, err := readSystemDNSServers(systemResolvConfPath); err != nil {
+		out.SystemDNSError = err.Error()
+	} else {
+		out.SystemDNSServers = servers
 	}
 	if s.cfg.GeminiAPI.Enabled {
 		out.GeminiAPI = "enabled"
@@ -1962,7 +2586,22 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 
 var startedAt = time.Now().UTC()
 
-func (r *Runtime) cacheLen() int { r.cacheMu.Lock(); defer r.cacheMu.Unlock(); return len(r.cache) }
+func timevalNanoseconds(tv syscall.Timeval) uint64 {
+	if tv.Sec < 0 || tv.Usec < 0 {
+		return 0
+	}
+	return uint64(tv.Sec)*uint64(time.Second) + uint64(tv.Usec)*uint64(time.Microsecond)
+}
+
+func (r *Runtime) cacheStats() (int, int) {
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+	return len(r.cache), r.cacheBytes
+}
+func (r *Runtime) cacheLen() int {
+	entries, _ := r.cacheStats()
+	return entries
+}
 func (r *Runtime) serveEvent(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost || req.URL.Path != "/_lucx/events" {
 		w.WriteHeader(http.StatusNotFound)

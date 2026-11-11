@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -18,3 +18,23 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./...
       - run: go test ./...
+      - name: Build Linux amd64 test package
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          id=$(jq -r .id manifest.json)
+          mkdir -p stage/bin
+          go build -trimpath -ldflags "-s -w" -o "stage/bin/$id" .
+          cp manifest.json stage/
+          (cd stage && zip -r "../$id-pr-test.zip" .)
+          sha256sum "$id-pr-test.zip" > "$id-pr-test.zip.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: doh-health-monitor-pr-test
+          path: |
+            doh-health-monitor-pr-test.zip
+            doh-health-monitor-pr-test.zip.sha256
+          if-no-files-found: error
+          retention-days: 7
