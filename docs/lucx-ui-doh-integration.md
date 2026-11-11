@@ -110,10 +110,12 @@ because the adapter cannot safely predict the panel's save behavior.
   reorder an existing routing rule during DNS allow-rule normalization. Its
   preflight models the panel's normalization using the proposed DNS endpoints,
   including legacy allow rules that the panel might newly adopt. It preserves
-  `outboundTestUrl` metadata, prompts for a hidden Bearer token, avoids secrets
-  in output, and stores local before/after backups with mode `0600`. Rollback
-  is guarded by an exact read-back comparison so it cannot overwrite later
-  panel changes. The adapter requires root on the LucX-UI VPS and uses a
+  `outboundTestUrl` metadata, prompts for a hidden Bearer token and avoids secrets in output. Before
+  applying, it creates a private pre-update API snapshot with mode `0600`.
+  After successful read-back verification (or a verified rollback), that
+  temporary snapshot is deleted. If verification fails or rollback cannot be
+  confirmed, the snapshot is retained for recovery. Rollback is guarded by an
+  exact read-back comparison so it cannot overwrite later panel changes. The adapter requires root on the LucX-UI VPS and uses a
   localhost/loopback panel API URL. It detects the local Xray version (or
   accepts an explicit `--xray-bin` path). Versions absent from the verified
   list trigger a warning and require confirmation; the list remains empty
