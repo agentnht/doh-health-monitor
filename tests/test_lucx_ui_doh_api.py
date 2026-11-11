@@ -140,6 +140,36 @@ class AdditivePlannerTests(unittest.TestCase):
             1,
         )
 
+    def test_combined_port_range_is_not_mistaken_for_exact_port53_rule(self):
+        original = base_config()
+        original["routing"]["rules"].insert(
+            1,
+            {
+                "type": "field",
+                "network": "tcp,udp",
+                "port": "53,443",
+                "outboundTag": "proxy",
+            },
+        )
+        plan = api_tool.build_plan(original)
+        self.assertFalse(plan.blockers)
+        self.assertEqual(plan.proposed["routing"]["rules"][1], api_tool.DNS_PORT_RULE)
+        self.assertEqual(plan.proposed["routing"]["rules"][2], original["routing"]["rules"][1])
+
+    def test_existing_unmanaged_legacy_allow_rule_that_panel_would_adopt_is_blocked(self):
+        original = base_config()
+        original["routing"]["rules"].insert(
+            1,
+            {
+                "type": "field",
+                "ip": ["127.0.0.1"],
+                "port": "5355",
+                "outboundTag": "direct",
+            },
+        )
+        plan = api_tool.build_plan(original)
+        self.assertTrue(any("rewrite or remove an existing routing rule" in x for x in plan.blockers))
+
     def test_existing_global_port53_rule_below_user_rule_is_blocked(self):
         original = base_config()
         original["routing"]["rules"].insert(1, {"type": "field", "domain": ["example.net"], "outboundTag": "proxy"})
