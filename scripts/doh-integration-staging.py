@@ -196,7 +196,7 @@ def action_dry_run(stage: Path, transform, verify_only: bool = False) -> int:
 
 
 def action_apply(stage: Path, transform) -> int:
-    before_raw, before_config = read_config(gstage)
+    before_raw, before_config = read_config(stage)
     proposed, changes = transform(before_config)
     check_database(stage)
 
