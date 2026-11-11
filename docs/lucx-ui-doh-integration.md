@@ -94,9 +94,11 @@ because the adapter cannot safely predict the panel's save behavior.
   add or correct target fields. It never writes and is not the production API
   adapter.
 - `scripts/doh-integration-staging.py`: clones a source SQLite DB into a
-  separate staging file, then supports dry-run, verify, apply and rollback
-  against that staging file only. It is for synthetic/staging validation, not
-  for the live panel database.
+  separate staging file, then supports dry-run, verify, apply, rollback and
+  `cleanup` against that staging file only. Run `--action cleanup --staging-db
+  /path/to/stage.db` when testing is complete; it removes that staging file and
+  its `.before` snapshot, never the source/live DB. It is for synthetic/staging
+  validation, not for the live panel database.
 - `scripts/lucx-ui-doh-api.py`: production-facing, additive-only adapter using
   the LucX-UI panel API. It reads the current template, adds only missing
   `dns-out`, `dns.servers: 127.0.0.1:5355`, and a global TCP/UDP port-53 rule.
