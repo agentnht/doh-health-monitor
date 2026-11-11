@@ -332,7 +332,7 @@ class BackupCleanupTests(unittest.TestCase):
 
 
 class ApplyBackupLifecycleTests(unittest.TestCase):
-    def test_apply_deletes_snapshot_only_after_verified_readback(self):
+    def test_apply_retains_snapshot_after_verified_readback_for_delayed_rollback(self):
         initial = base_config()
         plan = api_tool.build_plan(initial)
 
@@ -355,7 +355,13 @@ class ApplyBackupLifecycleTests(unittest.TestCase):
                 backup_dir=directory,
             )
             self.assertEqual(api_tool.command_apply(args, FakeClient()), 0)
-            self.assertEqual(list(__import__("pathlib").Path(directory).iterdir()), [])
+            backups = list(__import__("pathlib").Path(directory).iterdir())
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].stat().st_mode & 0o777, 0o600)
+            saved = api_tool.load_backup(backups[0])
+            self.assertEqual(saved["state"], "applied-and-verified")
+            self.assertEqual(saved["before"]["xraySetting"], initial)
+            self.assertEqual(saved["after"]["xraySetting"], plan.expected_saved)
 
     def test_apply_retains_snapshot_when_readback_does_not_match(self):
         initial = base_config()
