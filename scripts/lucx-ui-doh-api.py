@@ -181,7 +181,15 @@ def _split_ip_address(address: str, explicit_port: object = None) -> tuple[str, 
 
 def _is_blocked_ip(ip_text: str) -> bool:
     ip = ipaddress.ip_address(ip_text)
-    if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_multicast or ip.is_unspecified:
+    private_networks = [
+        ipaddress.ip_network("10.0.0.0/8"),
+        ipaddress.ip_network("172.16.0.0/12"),
+        ipaddress.ip_network("192.168.0.0/16"),
+        ipaddress.ip_network("fc00::/7"),
+    ]
+    if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified:
+        return True
+    if any(ip.version == network.version and ip in network for network in private_networks):
         return True
     extra = [
         ipaddress.ip_network("100.64.0.0/10"),
@@ -462,6 +470,10 @@ def build_plan(original: dict) -> Plan:
     # Predict that panel-owned addition so read-back can be verified exactly.
     try:
         plan.expected_saved = panel_normalize_dns_allow_rules(cfg)
+        if canonical(plan.expected_saved) != canonical(cfg):
+            plan.changes.append(
+                "PANEL-MANAGED: LucX-UI will add/reconcile its xui-dns-allow exception for private DNS servers"
+            )
         expected_rules = plan.expected_saved.get("routing", {}).get("rules", [])
         if private_block_exists:
             managed = [
