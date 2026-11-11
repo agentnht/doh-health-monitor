@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Read-only integration check for doh-health-monitor and LucX-UI/Xray.
 set -uo pipefail
-DOH_SERVICE="\${DOH_SERVICE:-lucx-plugin-doh-health-monitor}"
-DOH_STATUS_URL="\${DOH_STATUS_URL:-http://127.0.0.1:18765/status}"
-XRAY_CONFIG="\${XRAY_CONFIG:-/usr/local/x-ui/bin/config.json}"
+DOH_SERVICE="${DOH_SERVICE:-lucx-plugin-doh-health-monitor}"
+DOH_STATUS_URL="${DOH_STATUS_URL:-http://127.0.0.1:18765/status}"
+XRAY_CONFIG="${XRAY_CONFIG:-/usr/local/x-ui/bin/config.json}"
 PLUGIN_PORT="5355"
 ok=0; warn=0; fail=0
 pass() { printf '[OK]   %s\n' "$*"; ok=$((ok + 1)); }
