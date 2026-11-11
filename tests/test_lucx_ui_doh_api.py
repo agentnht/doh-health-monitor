@@ -291,6 +291,29 @@ class AdditivePlannerTests(unittest.TestCase):
         self.assertIsNone(api_tool._split_ip_address("https://cloudflare-dns.com/dns-query"))
 
 
+class XrayVersionTests(unittest.TestCase):
+    def test_parses_standard_xray_version_output(self):
+        self.assertEqual(
+            api_tool.parse_xray_version("Xray 25.10.3 (Xray, Penetrates Everything.) Custom"),
+            "25.10.3",
+        )
+
+    def test_parses_version_with_v_prefix(self):
+        self.assertEqual(api_tool.parse_xray_version("Xray v1.8.24"), "1.8.24")
+
+    def test_rejects_unrelated_or_unparseable_output(self):
+        self.assertIsNone(api_tool.parse_xray_version("x-ui 3.11.0-lucx.357"))
+        self.assertIsNone(api_tool.parse_xray_version("Xray version unavailable"))
+
+    def test_unlisted_version_is_not_assumed_verified(self):
+        self.assertFalse(api_tool.xray_version_is_verified("0.0.0-test"))
+
+    def test_remote_panel_api_url_is_not_allowed_by_cli_policy(self):
+        self.assertFalse(api_tool.panel_api_is_local("https://panel.example.com"))
+        self.assertTrue(api_tool.panel_api_is_local("http://127.0.0.1:2053/base"))
+        self.assertTrue(api_tool.panel_api_is_local("http://localhost:2053"))
+
+
 class PanelAPITests(unittest.TestCase):
     def setUp(self):
         self.state = {

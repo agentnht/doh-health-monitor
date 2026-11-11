@@ -15,8 +15,11 @@ import getpass
 import ipaddress
 import json
 import os
+import re
 import secrets
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -26,7 +29,9 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
+# Add only Xray versions that passed staging validation. Empty means warn on all.
+VERIFIED_XRAY_VERSIONS: frozenset[str] = frozenset()
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 DNS_OUT = {
@@ -56,6 +61,143 @@ DNS_ALLOW_TAG = "xui-dns-allow"
 
 class IntegrationError(RuntimeError):
     pass
+
+
+def parse_xray_version(output: str) -> str | None:
+    """Extract the Xray core version without exposing command output."""
+    match = re.search(r"\\bXray\\s+v?(\\d+(?:\\.\\d+){1,3})\\b", output, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def xray_version_is_verified(version: str) -> bool:
+    return version in VERIFIED_XRAY_VERSIONS
+
+
+def find_xray_binary(explicit_path: str | None = None) -> str:
+    """Find the running Xray executable, then common panel/system paths."""
+    candidates: list[str] = []
+    if explicit_path:
+        candidates.append(explicit_path)
+    try:
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                exe = os.readlink(entry / "exe")
+            except OSError:
+                continue
+            if "xray" in Path(exe.removesuffix(" (deleted)")).name.lower():
+                candidates.append(str(entry / "exe"))
+    except OSError:
+        pass
+    candidates.extend([
+        "/usr/local/x-ui/bin/xray",
+        "/usr/local/x-ui/xray",
+        "/usr/bin/xray",
+        "/usr/local/bin/xray",
+    ])
+    located = shutil.which("xray")
+    if located:
+        candidates.append(located)
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        path = Path(candidate)
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+    raise IntegrationError("Xray executable was not detected; use --xray-bin with the installed Xray binary")
+
+
+def read_xray_version(binary: str) -> str:
+    """Run the local Xray binary and return only its parsed version."""
+    for argument in ("version", "-version"):
+        try:
+            result = subprocess.run(
+                [binary, argument],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        version = parse_xray_version(result.stdout or "")
+        if version:
+            return version
+    raise IntegrationError("Could not determine Xray version from the installed binary")
+
+
+def detect_panel_version() -> str | None:
+    """Best-effort informational LucX-UI version lookup; never a compatibility gate."""
+    candidates = ["/usr/local/x-ui/x-ui"]
+    located = shutil.which("x-ui")
+    if located:
+        candidates.append(located)
+    for candidate in candidates:
+        path = Path(candidate)
+        if not path.is_file() or not os.access(path, os.X_OK):
+            continue
+        try:
+            result = subprocess.run(
+                [str(path), "-v"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        match = re.search(r"\\b(\\d+\\.\\d+\\.\\d+(?:[-+][A-Za-z0-9._-]+)?)\\b", result.stdout or "")
+        if match:
+            return match.group(1)
+    return None
+
+
+def read_tty_confirmation(prompt: str) -> str:
+    """Read from /dev/tty even when Python receives its source through a pipe."""
+    try:
+        with open("/dev/tty", "r+", encoding="utf-8") as tty:
+            tty.write(prompt)
+            tty.flush()
+            return tty.readline().strip()
+    except OSError:
+        raise IntegrationError("Interactive confirmation requires a controlling TTY") from None
+
+
+def panel_api_is_local(base_url: str) -> bool:
+    parsed = urlsplit(base_url)
+    if not parsed.hostname:
+        return False
+    try:
+        return ipaddress.ip_address(parsed.hostname).is_loopback
+    except ValueError:
+        return parsed.hostname.lower() == "localhost"
+
+
+def check_xray_compatibility(explicit_binary: str | None, allow_untested: bool) -> str:
+    binary = find_xray_binary(explicit_binary)
+    version = read_xray_version(binary)
+    print("Detected Xray core:", version)
+    panel_version = detect_panel_version()
+    print("LucX-UI version:", panel_version or "not detected (informational only)")
+    if xray_version_is_verified(version):
+        print("Xray compatibility: version is in the verified list.")
+        return version
+    print("WARNING: this Xray version is not in the tool's verified-version list.")
+    print("LucX-UI version is informational and is not used as a hard compatibility gate.")
+    print("Continue only if you accept the risk and have a current panel backup.")
+    if allow_untested:
+        print("Proceeding with explicit --allow-untested-xray acknowledgement.")
+        return version
+    if read_tty_confirmation("Type RISK to continue with this unverified Xray version: ") != "RISK":
+        raise IntegrationError("Unverified Xray version was not approved; no panel update was sent")
+    return version
 
 
 def canonical(value: object) -> str:
@@ -675,10 +817,8 @@ def confirm_restart(action: str, approved_flag: bool) -> None:
     print("when Xray is running. This tool will not restart Xray directly.")
     if approved_flag:
         return
-    if not sys.stdin.isatty():
-        raise IntegrationError(f"Non-interactive apply requires --approve-restart for {action}")
     expected = "APPLY" if action == "apply" else "ROLLBACK"
-    entered = input(f"Type {expected} to continue: ").strip()
+    entered = read_tty_confirmation(f"Type {expected} to continue: ")
     if entered != expected:
         raise IntegrationError("Operator confirmation did not match; no API update was sent")
 
@@ -821,6 +961,12 @@ def main() -> int:
     )
     parser.add_argument("--base-url", required=True, help="Panel origin plus any web base path; do not append /panel/api")
     parser.add_argument("--timeout", type=float, default=15.0)
+    parser.add_argument("--xray-bin", help="Path to local Xray executable (auto-detected when omitted)")
+    parser.add_argument(
+        "--allow-untested-xray",
+        action="store_true",
+        help="Explicitly continue when the detected Xray version is not in the verified list",
+    )
     parser.add_argument("--allow-insecure-http", action="store_true", help="Allow non-loopback HTTP (not recommended)")
     parser.add_argument(
         "--backup-dir",
@@ -839,15 +985,15 @@ def main() -> int:
     if args.action == "rollback" and not args.backup:
         parser.error("rollback requires --backup")
 
-    if not sys.stdin.isatty():
-        print("ERROR: API token must be entered through a TTY with hidden input.", file=sys.stderr)
-        return 2
-    token = getpass.getpass("LucX-UI Bearer API token (hidden): ").strip()
-    if not token:
-        print("ERROR: empty API token", file=sys.stderr)
-        return 2
-
     try:
+        if os.geteuid() != 0:
+            raise IntegrationError("Run this tool as root directly on the LucX-UI VPS")
+        if not panel_api_is_local(args.base_url):
+            raise IntegrationError("Panel API URL must use localhost/loopback; run the adapter on the target VPS")
+        check_xray_compatibility(args.xray_bin, args.allow_untested_xray)
+        token = getpass.getpass("LucX-UI Bearer API token (hidden): ").strip()
+        if not token:
+            raise IntegrationError("Empty API token")
         client = PanelAPI(
             args.base_url,
             token,

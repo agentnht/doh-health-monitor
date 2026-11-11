@@ -1,7 +1,7 @@
 # LucX-UI / DoH Health Monitor integration notes
 
 This document records the integration shape inspected and validated for the
-DoH Health Monitor 2.0.0 deployment. It is implementation guidance, not an
+DoH Health Monitor 2.0.1 release line. It is implementation guidance, not an
 installer and not authorization to change a production panel.
 
 ## Validated target environment
@@ -76,10 +76,14 @@ For the inspected source version:
   (inbounds, outbounds, routing rules/balancers). DNS changes are not among
   those hot-reload sections and can require a full Xray process restart.
 
-Therefore, the scripts in this PR do not call the panel API, do not write the
-live panel database, and do not restart Xray. Any future live apply feature
-requires an explicit operator-controlled step and a separately reviewed
-restart/rollback plan.
+The production adapter calls the panel API only after explicit operator
+approval; it never opens or writes the live SQLite database and never writes
+the runtime Xray config. Before use, it detects the version of the local Xray
+core executable. A version not yet verified against a staging panel is shown
+as a warning and requires explicit operator acknowledgement. The LucX-UI
+version is displayed for context only and is not a hard compatibility gate.
+An unrecognized API response or configuration structure remains a hard stop,
+because the adapter cannot safely predict the panel's save behavior.
 
 ## Tooling in this PR
 
@@ -109,7 +113,12 @@ restart/rollback plan.
   `outboundTestUrl` metadata, prompts for a hidden Bearer token, avoids secrets
   in output, and stores local before/after backups with mode `0600`. Rollback
   is guarded by an exact read-back comparison so it cannot overwrite later
-  panel changes.
+  panel changes. The adapter requires root on the LucX-UI VPS and uses a
+  localhost/loopback panel API URL. It detects the local Xray version (or
+  accepts an explicit `--xray-bin` path). Versions absent from the verified
+  list trigger a warning and require confirmation; the list remains empty
+  until a core version has been tested on a staging panel. The LucX-UI version
+  is informational only.
 - The `POST /panel/api/xray/` read handler is read-only for ordinary current
   templates, but this LucX-UI source version also auto-heals a legacy wrapped
   `xrayTemplateConfig` by calling `SaveXraySetting` during the read. The
