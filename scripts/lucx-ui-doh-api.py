@@ -65,7 +65,7 @@ class IntegrationError(RuntimeError):
 
 def parse_xray_version(output: str) -> str | None:
     """Extract the Xray core version without exposing command output."""
-    match = re.search(r"\\bXray\\s+v?(\\d+(?:\\.\\d+){1,3})\\b", output, re.IGNORECASE)
+    match = re.search(r"\bXray\s+v?(\d+(?:\.\d+){1,3})\b", output, re.IGNORECASE)
     return match.group(1) if match else None
 
 
@@ -153,7 +153,7 @@ def detect_panel_version() -> str | None:
             )
         except (OSError, subprocess.TimeoutExpired):
             continue
-        match = re.search(r"\\b(\\d+\\.\\d+\\.\\d+(?:[-+][A-Za-z0-9._-]+)?)\\b", result.stdout or "")
+        match = re.search(r"\b(\d+\.\d+\.\d+(?:[-+][A-Za-z0-9._-]+)?)\b", result.stdout or "")
         if match:
             return match.group(1)
     return None
