@@ -352,7 +352,10 @@ def build_plan(original: dict) -> Plan:
     if not isinstance(dns, dict):
         plan.blockers.append("dns is not an object")
         dns = {}
-    servers = object_list(dns, "servers", "dns.servers")
+    servers = dns.setdefault("servers", [])
+    if not isinstance(servers, list) or any(not isinstance(x, (dict, str)) for x in servers):
+        plan.blockers.append("Invalid dns.servers; expected an array of objects or address strings")
+        servers = []
 
     local_servers = []
     for server in servers:
