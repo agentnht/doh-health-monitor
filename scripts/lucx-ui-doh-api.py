@@ -32,7 +32,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPSHandler, Request, build_opener, urlopen
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 DEFAULT_PLUGIN_SERVICE = "lucx-plugin-doh-health-monitor"
 DEFAULT_PLUGIN_STATUS_URL = "http://127.0.0.1:18765/status"
 DEFAULT_PLUGIN_PORT = 5355
@@ -479,10 +479,13 @@ def check_plugin_health(service: str, status_url: str, port: int) -> None:
 def read_tty_confirmation(prompt: str) -> str:
     """Read from /dev/tty even when Python receives its source through a pipe."""
     try:
-        with open("/dev/tty", "r+", encoding="utf-8") as tty:
-            tty.write(prompt)
-            tty.flush()
-            return tty.readline().strip()
+        # A TTY is not seekable, so Python's buffered "r+" mode rejects it.
+        # Use separate write/read streams for the same controlling terminal.
+        with open("/dev/tty", "w", encoding="utf-8") as tty_out:
+            tty_out.write(prompt)
+            tty_out.flush()
+        with open("/dev/tty", "r", encoding="utf-8") as tty_in:
+            return tty_in.readline().strip()
     except OSError:
         raise IntegrationError("Interactive confirmation requires a controlling TTY") from None
 
