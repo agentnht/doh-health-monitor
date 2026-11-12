@@ -1751,7 +1751,11 @@ def run_temporary_tunnel_test(client: PanelAPI, status_url: str, backup_dir: Pat
         finally:
             try:
                 cleanup_temporary_tunnel(client, expected, inbound_id)
-                wait_for_tunnel_port_closed(port)
+                # If the add request failed before returning an ID, a listener
+                # on this port may belong to the process that won the race.
+                # Never wait for or interfere with that external listener.
+                if inbound_id is not None:
+                    wait_for_tunnel_port_closed(port)
                 journal.unlink(missing_ok=True)
             except Exception as exc:
                 cleanup_error = exc
