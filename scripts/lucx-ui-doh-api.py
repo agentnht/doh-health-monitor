@@ -1721,10 +1721,20 @@ def main() -> int:
                 )
             else:
                 parsed_name = urlsplit("//" + args.tls_name)
+                try:
+                    explicit_name_port = parsed_name.port
+                except ValueError:
+                    explicit_name_port = -1
+                try:
+                    ipaddress.ip_address(parsed_name.hostname or "")
+                    name_is_ip = True
+                except ValueError:
+                    name_is_ip = False
                 if (
                     not parsed_name.hostname or parsed_name.username or parsed_name.password
-                    or parsed_name.port is not None or parsed_name.path or parsed_name.query
+                    or explicit_name_port is not None or parsed_name.path or parsed_name.query
                     or parsed_name.fragment or any(char.isspace() for char in args.tls_name)
+                    or name_is_ip
                 ):
                     raise IntegrationError("--tls-name must be a plain DNS hostname for --tls-mode domain")
                 endpoint = PanelEndpoint(
