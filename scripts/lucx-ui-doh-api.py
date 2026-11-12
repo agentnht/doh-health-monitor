@@ -1689,48 +1689,92 @@ def _load_recovery_journal(path: Path) -> dict:
     return payload
 
 
+def wait_for_tunnel_port_closed(port: int, timeout: float = 10.0) -> None:
+    """Verify that both TCP and UDP listeners disappeared after panel API deletion."""
+    ss = shutil.which("ss")
+    if not ss:
+        raise IntegrationError("The ss utility is required to verify temporary Tunnel cleanup")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        states = []
+        for flag in ("-ltn", "-lun"):
+            result = subprocess.run(
+                [ss, "-H", *flag.split()],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise IntegrationError("Could not verify temporary Tunnel port release")
+            states.append(listener_output_has_loopback_port(result.stdout or "", port))
+        if not any(states):
+            return
+        time.sleep(0.25)
+    raise IntegrationError(
+        f"Temporary Tunnel inbound was deleted but a TCP/UDP listener remains on port {port}"
+    )
+
+
 def run_temporary_tunnel_test(client: PanelAPI, status_url: str, backup_dir: Path) -> None:
     """Create, verify, probe, and always clean up one temporary loopback DNS Tunnel."""
-    inbounds = client.list_inbounds()
-    port = choose_temporary_tunnel_port(inbounds)
-    expected = build_temporary_tunnel(port)
-    journal = _write_recovery_journal(backup_dir, expected, None, "create-pending")
-    inbound_id = None
-    test_error = None
-    cleanup_error = None
-    try:
-        created = client.add_inbound(expected)
-        inbound_id = created["id"]
-        journal = _write_recovery_journal(backup_dir, expected, inbound_id, "created")
-        current = client.list_inbounds()
-        verify_temporary_tunnel(current, expected, inbound_id)
-        wait_for_tunnel_listeners(port)
-        # The permanent port-53 -> dns-out rule routes the Tunnel's rewritten
-        # 127.0.0.1:53 destination to the plugin. No temporary Xray routing
-        # mutation or second Xray restart is necessary.
-        run_tunnel_dns_self_test(port, status_url)
-    except Exception as exc:
-        test_error = exc
-    finally:
+    remaining = list(TUNNEL_PORT_CANDIDATES)
+    for attempt in range(3):
+        inbounds = client.list_inbounds()
+        port = choose_temporary_tunnel_port(inbounds, candidates=remaining)
+        remaining.remove(port)
+        expected = build_temporary_tunnel(port)
+        journal = _write_recovery_journal(backup_dir, expected, None, "create-pending")
+        inbound_id = None
+        test_error = None
+        cleanup_error = None
+        add_error = None
         try:
-            cleanup_temporary_tunnel(client, expected, inbound_id)
-            journal.unlink(missing_ok=True)
-        except Exception as exc:
-            cleanup_error = exc
             try:
-                _write_recovery_journal(backup_dir, expected, inbound_id, "cleanup-required")
-            except Exception:
-                pass
-    if cleanup_error:
-        raise IntegrationError(
-            f"Temporary Tunnel cleanup failed; recovery journal retained at {journal}. "
-            f"Resource marker: {expected['remark']}; inbound ID: {inbound_id or 'unknown'}"
-        ) from None
-    if test_error:
-        if isinstance(test_error, IntegrationError):
-            raise test_error
-        raise IntegrationError("Temporary Tunnel self-test failed; temporary inbound was cleaned up") from None
-    print("PASS: temporary Tunnel inbound was removed and panel API read-back confirms absence.")
+                created = client.add_inbound(expected)
+            except IntegrationError as exc:
+                add_error = exc
+                raise
+            inbound_id = created["id"]
+            journal = _write_recovery_journal(backup_dir, expected, inbound_id, "created")
+            current = client.list_inbounds()
+            verify_temporary_tunnel(current, expected, inbound_id)
+            wait_for_tunnel_listeners(port)
+            # The permanent port-53 -> dns-out rule routes the Tunnel's rewritten
+            # 127.0.0.1:53 destination to the plugin. No temporary Xray routing
+            # mutation or second Xray restart is necessary.
+            run_tunnel_dns_self_test(port, status_url)
+        except Exception as exc:
+            test_error = exc
+        finally:
+            try:
+                cleanup_temporary_tunnel(client, expected, inbound_id)
+                wait_for_tunnel_port_closed(port)
+                journal.unlink(missing_ok=True)
+            except Exception as exc:
+                cleanup_error = exc
+                try:
+                    _write_recovery_journal(backup_dir, expected, inbound_id, "cleanup-required")
+                except Exception:
+                    pass
+        if cleanup_error:
+            raise IntegrationError(
+                f"Temporary Tunnel cleanup failed; recovery journal retained at {journal}. "
+                f"Resource marker: {expected['remark']}; inbound ID: {inbound_id or 'unknown'}"
+            ) from None
+        if test_error:
+            if add_error is not None and not _port_is_free_on_loopback(port) and attempt < 2:
+                print(f"NOTICE: port {port} was claimed during Tunnel creation; retrying with another free port.")
+                continue
+            if isinstance(test_error, IntegrationError):
+                raise test_error
+            raise IntegrationError("Temporary Tunnel self-test failed; temporary inbound was cleaned up") from None
+        print("PASS: temporary Tunnel inbound was removed and panel API read-back confirms absence.")
+        print(f"PASS: temporary Tunnel TCP and UDP listeners are gone from port {port}.")
+        return
+    raise IntegrationError("Temporary Tunnel creation repeatedly lost a port-allocation race")
 
 
 
@@ -2002,6 +2046,17 @@ def command_apply(args, client: PanelAPI) -> int:
         return 2
     if not plan.changes:
         print("No API update sent; Xray was not restarted.")
+        try:
+            run_temporary_tunnel_test(
+                client,
+                getattr(args, "plugin_status_url", DEFAULT_PLUGIN_STATUS_URL),
+                Path(args.backup_dir).expanduser(),
+            )
+        except IntegrationError as exc:
+            print("ERROR: existing DNS integration failed the end-to-end Tunnel test.")
+            print("No panel Xray settings were changed.")
+            print("Reason:", exc)
+            return 2
         return 0
 
     confirm_restart("apply", args.approve_restart)
@@ -2234,8 +2289,9 @@ def main() -> int:
         )
         if endpoint.host_header:
             print("Panel domain validation: configured Host header and TLS SNI will be used.")
-        check_plugin_health(args.plugin_service, args.plugin_status_url, args.plugin_port)
-        check_xray_compatibility(args.xray_bin)
+        if args.action != "cleanup-test":
+            check_plugin_health(args.plugin_service, args.plugin_status_url, args.plugin_port)
+            check_xray_compatibility(args.xray_bin)
         token = resolve_panel_api_token(Path(args.panel_auth_file))
         client = PanelAPI(
             endpoint.base_url,
