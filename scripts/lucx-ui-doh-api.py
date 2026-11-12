@@ -489,8 +489,12 @@ def _resolve_panel_file(value: str, panel_cwd: Path) -> Path:
 
 
 def _panel_tls_is_enabled(cert_file: str, key_file: str, panel_cwd: Path) -> bool:
-    if not cert_file or not key_file:
+    if not cert_file and not key_file:
         return False
+    if not cert_file or not key_file:
+        raise IntegrationError(
+            "LucX-UI has an incomplete TLS certificate/key configuration; refusing HTTP fallback"
+        )
     cert_path = _resolve_panel_file(cert_file, panel_cwd)
     key_path = _resolve_panel_file(key_file, panel_cwd)
     try:
@@ -498,7 +502,9 @@ def _panel_tls_is_enabled(cert_file: str, key_file: str, panel_cwd: Path) -> boo
         context.load_cert_chain(str(cert_path), str(key_path))
         return True
     except (OSError, ssl.SSLError):
-        return False
+        raise IntegrationError(
+            "LucX-UI TLS certificate/key could not be loaded; refusing HTTP fallback"
+        ) from None
 
 
 def _normalize_panel_base_path(value: str) -> str:
