@@ -3,21 +3,24 @@
 
 The adapter never writes the panel SQLite database or runtime Xray config.
 When --base-url is omitted, it reads only endpoint settings from SQLite in
-read-only mode to discover the local panel URL. Xray settings are read through
-the panel API; updates require explicit approval of the possible Xray restart.
+read-only mode to discover the local panel URL. Panel authorization is resolved
+locally from the installer's root-only credential file or a dedicated token
+provisioned by the LucX-UI CLI; operators are never prompted to paste a Bearer token.
+Xray settings are read through the panel API; updates require explicit approval
+of the possible Xray restart.
 """
 
 from __future__ import annotations
 
 import argparse
 import copy
-import getpass
 import http.client
 import ipaddress
 import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import sqlite3
 import ssl
@@ -32,13 +35,16 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPSHandler, Request, build_opener, urlopen
 
-VERSION = "1.3.1"
+VERSION = "1.4.0"
 DEFAULT_PLUGIN_SERVICE = "lucx-plugin-doh-health-monitor"
 DEFAULT_PLUGIN_STATUS_URL = "http://127.0.0.1:18765/status"
 DEFAULT_PLUGIN_PORT = 5355
 # Add only Xray versions that passed staging validation. Empty means warn on all.
 VERIFIED_XRAY_VERSIONS: frozenset[str] = frozenset()
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+INSTALL_RESULT_FILE = Path("/etc/x-ui/install-result.env")
+DEFAULT_PANEL_AUTH_FILE = Path("/var/lib/doh-health-monitor-panel-auth/panel-api-auth.json")
+PANEL_AUTH_TOKEN_NAME = "doh-health-monitor-integration"
 
 DNS_OUT = {
     "tag": "dns-out",
@@ -217,6 +223,240 @@ def _running_panel_context() -> tuple[dict[str, str], Path]:
         process_env, panel_cwd, _ = matches[0]
         env.update(process_env)
     return env, panel_cwd
+
+
+def _read_secure_text_file(path: Path, *, expected_uid: int = 0, max_bytes: int = 65536) -> str | None:
+    """Read a root-owned, private regular file without following symlinks."""
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise IntegrationError(f"Could not safely open local credential file: {path}") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise IntegrationError(f"Credential path is not a regular file: {path}")
+        if info.st_uid != expected_uid or info.st_mode & 0o077:
+            raise IntegrationError(f"Credential file must be owned by uid {expected_uid} and have mode 0600 or stricter: {path}")
+        if info.st_size > max_bytes:
+            raise IntegrationError(f"Credential file is unexpectedly large: {path}")
+        with os.fdopen(fd, "r", encoding="utf-8") as stream:
+            fd = -1
+            content = stream.read(max_bytes + 1)
+        if len(content.encode("utf-8")) > max_bytes:
+            raise IntegrationError(f"Credential file is unexpectedly large: {path}")
+        return content
+    except UnicodeError:
+        raise IntegrationError(f"Credential file is not valid UTF-8: {path}") from None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _validate_api_token(token: str) -> str:
+    value = token.strip()
+    if len(value) < 32 or any(char.isspace() for char in value):
+        raise IntegrationError("LucX-UI API credential is empty or has an invalid format")
+    return value
+
+
+def load_installer_api_token(
+    path: Path = INSTALL_RESULT_FILE, *, expected_uid: int = 0
+) -> str | None:
+    """Read XUI_API_TOKEN from the installer's private env file without sourcing shell code."""
+    content = _read_secure_text_file(path, expected_uid=expected_uid)
+    if content is None:
+        return None
+    for line in content.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key.strip() == "XUI_API_TOKEN":
+            try:
+                parts = shlex.split(value, comments=False, posix=True)
+            except ValueError:
+                raise IntegrationError("XUI_API_TOKEN in LucX-UI install result is malformed") from None
+            if len(parts) != 1:
+                raise IntegrationError("XUI_API_TOKEN in LucX-UI install result is malformed")
+            return _validate_api_token(parts[0])
+    return None
+
+
+def load_saved_panel_api_token(path: Path, *, expected_uid: int = 0) -> str | None:
+    """Load the adapter's own persisted API credential, never another panel token."""
+    content = _read_secure_text_file(path, expected_uid=expected_uid)
+    if content is None:
+        return None
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        raise IntegrationError("Saved LucX-UI API credential file is malformed") from None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("format") != 1
+        or payload.get("token_name") != PANEL_AUTH_TOKEN_NAME
+        or not isinstance(payload.get("token"), str)
+    ):
+        raise IntegrationError("Saved LucX-UI API credential file has an unsupported format")
+    return _validate_api_token(payload["token"])
+
+
+def save_panel_api_token(path: Path, token: str, *, expected_uid: int = 0) -> None:
+    """Persist a newly minted adapter token atomically in a root-only file."""
+    token = _validate_api_token(token)
+    parent = path.parent
+    try:
+        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        parent_info = parent.stat()
+        if not stat.S_ISDIR(parent_info.st_mode) or parent_info.st_uid != expected_uid:
+            raise IntegrationError("LucX-UI credential directory must be a root-owned directory")
+        if parent_info.st_mode & 0o077:
+            raise IntegrationError("LucX-UI credential directory must have mode 0700 or stricter")
+        payload = json.dumps(
+            {"format": 1, "token_name": PANEL_AUTH_TOKEN_NAME, "token": token},
+            separators=(",", ":"),
+        ).encode("utf-8") + b"\\n"
+        fd, temporary_name = tempfile.mkstemp(prefix=".panel-api-auth-", dir=str(parent))
+        temporary = Path(temporary_name)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                fd = -1
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if path.exists() or path.is_symlink():
+                raise IntegrationError("Refusing to overwrite an existing LucX-UI credential file")
+            os.replace(temporary, path)
+            directory_fd = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+    except IntegrationError:
+        raise
+    except OSError:
+        raise IntegrationError("Could not persist LucX-UI API credential securely") from None
+
+
+def detect_panel_cli(panel_cwd: Path | None = None) -> Path:
+    """Find the running LucX-UI executable, independent of its installation directory."""
+    running: set[Path] = set()
+    try:
+        entries = list(Path("/proc").iterdir())
+    except OSError:
+        entries = []
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            executable = os.readlink(entry / "exe").removesuffix(" (deleted)")
+        except OSError:
+            continue
+        candidate = Path(executable)
+        if candidate.name == "x-ui" and candidate.is_file() and os.access(candidate, os.X_OK):
+            running.add(candidate)
+    if len(running) > 1:
+        raise IntegrationError("Multiple LucX-UI executables are running; cannot choose a local API-token provider safely")
+    if running:
+        return next(iter(running))
+
+    candidates: list[Path] = []
+    if panel_cwd is not None:
+        candidates.append(panel_cwd / "x-ui")
+    located = shutil.which("x-ui")
+    if located:
+        candidates.append(Path(located))
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    raise IntegrationError("Could not locate the running LucX-UI CLI to provision a local API credential")
+
+
+def mint_panel_api_token(panel_cli: Path, auth_file: Path) -> str:
+    """Create this adapter's dedicated admin token via LucX-UI's local CLI."""
+    try:
+        help_result = subprocess.run(
+            [str(panel_cli), "setting", "-h"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise IntegrationError("Could not inspect the local LucX-UI API-token CLI") from None
+    help_text = help_result.stdout or ""
+    if not all(flag in help_text for flag in ("-getApiToken", "-tokenName", "-tokenScope")):
+        raise IntegrationError(
+            "This LucX-UI build does not expose non-interactive API-token provisioning; "
+            "no API token was requested or changed"
+        )
+    try:
+        result = subprocess.run(
+            [
+                str(panel_cli), "setting", "-getApiToken",
+                "-tokenName", PANEL_AUTH_TOKEN_NAME,
+                "-tokenScope", "admin",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise IntegrationError("LucX-UI could not provision its local integration API credential") from None
+    match = re.search(r"(?m)^apiToken:\\s*(\\S+)\\s*$", result.stdout or "")
+    if result.returncode != 0 or not match:
+        raise IntegrationError(
+            "LucX-UI did not return a new API credential; no panel Xray settings were changed"
+        )
+    token = _validate_api_token(match.group(1))
+    save_panel_api_token(auth_file, token)
+    print(
+        "PASS: created a dedicated LucX-UI API credential for this integration "
+        f"({PANEL_AUTH_TOKEN_NAME}); stored locally with mode 0600"
+    )
+    return token
+
+
+def resolve_panel_api_token(
+    auth_file: Path = DEFAULT_PANEL_AUTH_FILE,
+    *,
+    installer_file: Path = INSTALL_RESULT_FILE,
+    environ: dict[str, str] | None = None,
+    panel_cli: Path | None = None,
+    panel_cwd: Path | None = None,
+) -> str:
+    """Obtain panel authorization locally; never prompt the operator for a Bearer token."""
+    env = os.environ if environ is None else environ
+    supplied = env.get("XUI_API_TOKEN", "").strip()
+    if supplied:
+        print("PASS: using XUI_API_TOKEN supplied by the service environment")
+        return _validate_api_token(supplied)
+
+    installer_token = load_installer_api_token(installer_file)
+    if installer_token:
+        print("PASS: loaded the installer-provided LucX-UI API credential (secret hidden)")
+        return installer_token
+
+    saved_token = load_saved_panel_api_token(auth_file)
+    if saved_token:
+        print("PASS: reusing the protected local LucX-UI integration credential")
+        return saved_token
+
+    cli = panel_cli or detect_panel_cli(panel_cwd)
+    return mint_panel_api_token(cli, auth_file)
 
 
 def _read_panel_endpoint_settings(database_path: Path) -> dict[str, str]:
@@ -1330,6 +1570,11 @@ def main() -> int:
         "--panel-db",
         help="Custom LucX-UI SQLite database path for read-only URL discovery (default: /etc/x-ui/x-ui.db)",
     )
+    parser.add_argument(
+        "--panel-auth-file",
+        default=str(DEFAULT_PANEL_AUTH_FILE),
+        help="Root-only local credential store used only when the installer token file is unavailable",
+    )
     parser.add_argument("--timeout", type=float, default=15.0)
     parser.add_argument("--plugin-service", default=DEFAULT_PLUGIN_SERVICE,
                         help="systemd unit for DoH Health Monitor")
@@ -1383,11 +1628,9 @@ def main() -> int:
             print("Panel domain validation: configured Host header and TLS SNI will be used.")
         check_plugin_health(args.plugin_service, args.plugin_status_url, args.plugin_port)
         check_xray_compatibility(args.xray_bin, args.allow_untested_xray)
-        token = getpass.getpass("LucX-UI Bearer API token (hidden): ").strip()
-        if not token:
-            raise IntegrationError("Empty API token")
+        token = resolve_panel_api_token(Path(args.panel_auth_file))
         client = PanelAPI(
-            args.base_url,
+            endpoint.base_url,
             token,
             timeout=args.timeout,
             allow_insecure_http=args.allow_insecure_http,
