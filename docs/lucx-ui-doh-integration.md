@@ -99,9 +99,17 @@ environment. The adapter never writes the panel SQLite DB directly or runtime
 Xray config. If `--base-url` is omitted, it reads only
 `webPort`, `webBasePath`, `webCertFile`, `webKeyFile`, and `webDomain`
 from local SQLite using `mode=ro`, taking the runtime `XUI_PORT` override
-into account. The actual base path is not printed. Pass `--panel-db` for a
-non-default SQLite location, or `--base-url` explicitly for PostgreSQL and
-other nonstandard deployments. The local Xray core version is detected for diagnostics only. An unlisted or
+into account. The actual base path is not printed. TLS is detected from panel settings and
+the configured leaf certificate SANs: without a certificate the adapter uses
+HTTP only over loopback; for an IP SAN certificate it sends SNI `localhost`,
+retains mandatory certificate-chain validation, and separately requires an
+exact matching IP SAN; for a DNS SAN certificate it uses the DNS name for
+standard hostname verification and SNI. An explicit HTTPS `--base-url`
+requires `--tls-mode ip --tls-name IP` or
+`--tls-mode domain --tls-name DOMAIN`; local HTTP can be selected with
+`--tls-mode http`. No mode disables TLS chain verification. Pass
+`--panel-db` for a non-default SQLite location, or `--base-url` explicitly
+for PostgreSQL and other nonstandard deployments. The local Xray core version is detected for diagnostics only. An unlisted or
 unavailable version is reported as a notice and does not block execution. The
 LucX-UI version is also informational. Compatibility is assessed through the
 actual panel API response, configuration structure, conflict checks, and
