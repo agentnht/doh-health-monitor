@@ -35,7 +35,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPSHandler, Request, build_opener, urlopen
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 DEFAULT_PLUGIN_SERVICE = "lucx-plugin-doh-health-monitor"
 DEFAULT_PLUGIN_STATUS_URL = "http://127.0.0.1:18765/status"
 DEFAULT_PLUGIN_PORT = 5355
@@ -178,6 +178,7 @@ class PanelEndpoint:
     base_url: str
     host_header: str | None = None
     tls_server_name: str | None = None
+    tls_verify_ip: str | None = None
 
 
 def _running_panel_context() -> tuple[dict[str, str], Path]:
@@ -507,6 +508,37 @@ def _panel_tls_is_enabled(cert_file: str, key_file: str, panel_cwd: Path) -> boo
         ) from None
 
 
+def _panel_certificate_sans(cert_file: str, panel_cwd: Path) -> list[tuple[str, str]]:
+    """Read the leaf certificate SANs used by LucX-UI without loading its private key."""
+    cert_path = _resolve_panel_file(cert_file, panel_cwd)
+    try:
+        decoded = ssl._ssl._test_decode_cert(str(cert_path))
+    except (AttributeError, OSError, ssl.SSLError, ValueError):
+        raise IntegrationError(
+            "Could not inspect the configured LucX-UI certificate SANs; specify --tls-mode and --tls-name"
+        ) from None
+    sans = decoded.get("subjectAltName", ())
+    return [
+        (str(kind), str(value))
+        for kind, value in sans
+        if isinstance(kind, str) and isinstance(value, str)
+    ]
+
+
+def verify_certificate_ip_san(certificate: dict, expected_ip: str) -> None:
+    """Require an exact IP Address SAN; never fall back to the certificate CN."""
+    try:
+        wanted = ipaddress.ip_address(expected_ip)
+        for kind, value in certificate.get("subjectAltName", ()):
+            if kind == "IP Address" and ipaddress.ip_address(value) == wanted:
+                return
+    except (TypeError, ValueError):
+        pass
+    raise ssl.CertificateError(
+        f"certificate does not contain the expected IP subjectAltName {expected_ip}"
+    )
+
+
 def _normalize_panel_base_path(value: str) -> str:
     path = (value or "/").strip()
     if not path:
@@ -572,6 +604,7 @@ def detect_panel_endpoint(
     domain = settings.get("webDomain", "").strip()
     host_header = None
     tls_server_name = None
+    tls_verify_ip = None
     if domain:
         parsed_domain = urlsplit("//" + domain)
         try:
@@ -593,22 +626,39 @@ def detect_panel_endpoint(
         try:
             parsed_ip = ipaddress.ip_address(host)
             host_for_header = f"[{host}]" if parsed_ip.version == 6 else host
+            if scheme == "https":
+                tls_server_name = "localhost"
+                tls_verify_ip = str(parsed_ip)
         except ValueError:
             host_for_header = host
+            if scheme == "https":
+                tls_server_name = host
         host_header = f"{host_for_header}:{port}"
-        if scheme == "https":
-            tls_server_name = host
+    elif scheme == "https":
+        sans = _panel_certificate_sans(settings.get("webCertFile", ""), panel_cwd)
+        ip_sans = [value for kind, value in sans if kind == "IP Address"]
+        dns_sans = [value for kind, value in sans if kind == "DNS"]
+        if ip_sans:
+            tls_verify_ip = str(ipaddress.ip_address(ip_sans[0]))
+            tls_server_name = "localhost"
+        elif dns_sans:
+            tls_server_name = dns_sans[0]
+        else:
+            raise IntegrationError(
+                "Configured LucX-UI TLS certificate has no DNS/IP SAN; specify --tls-mode and --tls-name"
+            )
 
     url_path = base_path.rstrip("/")
     base_url = f"{scheme}://127.0.0.1:{port}{url_path}"
-    return PanelEndpoint(base_url, host_header, tls_server_name)
+    return PanelEndpoint(base_url, host_header, tls_server_name, tls_verify_ip)
 
 
 class _PanelSNIHTTPSConnection(http.client.HTTPSConnection):
-    """Connect to loopback while verifying TLS against LucX-UI's configured domain."""
+    """Connect to loopback with a separate SNI name and optional IP SAN identity."""
 
-    def __init__(self, host, *args, server_hostname: str, **kwargs):
+    def __init__(self, host, *args, server_hostname: str, verify_ip: str | None = None, **kwargs):
         self._panel_server_hostname = server_hostname
+        self._panel_verify_ip = verify_ip
         super().__init__(host, *args, **kwargs)
 
     def connect(self):
@@ -617,18 +667,31 @@ class _PanelSNIHTTPSConnection(http.client.HTTPSConnection):
             self.sock,
             server_hostname=self._panel_server_hostname,
         )
+        if self._panel_verify_ip:
+            try:
+                verify_certificate_ip_san(self.sock.getpeercert(), self._panel_verify_ip)
+            except ssl.CertificateError:
+                self.sock.close()
+                raise
 
 
 class _PanelSNIHTTPSHandler(HTTPSHandler):
-    def __init__(self, server_hostname: str):
-        super().__init__(context=ssl.create_default_context())
+    def __init__(self, server_hostname: str, verify_ip: str | None = None):
+        context = ssl.create_default_context()
+        if verify_ip:
+            # Keep CERT_REQUIRED chain validation. Only built-in hostname
+            # matching is replaced by an explicit strict IP SAN check.
+            context.check_hostname = False
+        super().__init__(context=context)
         self._panel_server_hostname = server_hostname
+        self._panel_verify_ip = verify_ip
 
     def https_open(self, request):
         return self.do_open(
             lambda host, **kwargs: _PanelSNIHTTPSConnection(
                 host,
                 server_hostname=self._panel_server_hostname,
+                verify_ip=self._panel_verify_ip,
                 **kwargs,
             ),
             request,
@@ -1259,6 +1322,7 @@ class PanelAPI:
         allow_insecure_http: bool = False,
         host_header: str | None = None,
         tls_server_name: str | None = None,
+        tls_verify_ip: str | None = None,
     ):
         parsed = urlsplit(base_url)
         if parsed.scheme not in {"https", "http"} or not parsed.netloc:
@@ -1276,9 +1340,9 @@ class PanelAPI:
         self.token = token
         self.timeout = timeout
         self.host_header = host_header
-        self.opener = build_opener(_PanelSNIHTTPSHandler(tls_server_name)) if (
-            parsed.scheme == "https" and tls_server_name
-        ) else None
+        self.opener = build_opener(
+            _PanelSNIHTTPSHandler(tls_server_name, verify_ip=tls_verify_ip)
+        ) if (parsed.scheme == "https" and (tls_server_name or tls_verify_ip)) else None
 
     def _post(self, suffix: str, fields: dict[str, str] | None = None) -> dict:
         url = self.root + "/panel/api/xray/" + suffix
@@ -1599,6 +1663,16 @@ def main() -> int:
     parser.add_argument("--allow-untested-xray", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--allow-insecure-http", action="store_true", help="Allow non-loopback HTTP (not recommended)")
     parser.add_argument(
+        "--tls-mode",
+        choices=("auto", "http", "ip", "domain"),
+        default="auto",
+        help="TLS identity mode for explicit/overridden endpoints: auto, http, ip, or domain",
+    )
+    parser.add_argument(
+        "--tls-name",
+        help="Expected certificate IP (for --tls-mode ip) or DNS name (for --tls-mode domain)",
+    )
+    parser.add_argument(
         "--backup-dir",
         default=str(_default_backup_dir()),
         help="Local directory for 0600 backups (default: user state directory)",
@@ -1625,6 +1699,42 @@ def main() -> int:
             if args.base_url
             else detect_panel_endpoint(Path(args.panel_db).expanduser() if args.panel_db else None)
         )
+        if args.base_url and urlsplit(args.base_url).scheme == "https" and args.tls_mode == "auto":
+            raise IntegrationError(
+                "An explicit HTTPS --base-url requires --tls-mode ip/domain and --tls-name; "
+                "certificate identity cannot be inferred from a loopback URL"
+            )
+        if args.tls_mode == "http":
+            if urlsplit(endpoint.base_url).scheme != "http" or args.tls_name:
+                raise IntegrationError("--tls-mode http requires an HTTP --base-url and no --tls-name")
+            endpoint = PanelEndpoint(endpoint.base_url, endpoint.host_header)
+        elif args.tls_mode in {"ip", "domain"}:
+            if urlsplit(endpoint.base_url).scheme != "https" or not args.tls_name:
+                raise IntegrationError("--tls-mode ip/domain requires HTTPS and --tls-name")
+            if args.tls_mode == "ip":
+                try:
+                    expected_ip = str(ipaddress.ip_address(args.tls_name))
+                except ValueError:
+                    raise IntegrationError("--tls-name must be an IP address for --tls-mode ip") from None
+                endpoint = PanelEndpoint(
+                    endpoint.base_url, endpoint.host_header, "localhost", expected_ip
+                )
+            else:
+                parsed_name = urlsplit("//" + args.tls_name)
+                if (
+                    not parsed_name.hostname or parsed_name.username or parsed_name.password
+                    or parsed_name.port is not None or parsed_name.path or parsed_name.query
+                    or parsed_name.fragment or any(char.isspace() for char in args.tls_name)
+                ):
+                    raise IntegrationError("--tls-name must be a plain DNS hostname for --tls-mode domain")
+                endpoint = PanelEndpoint(
+                    endpoint.base_url,
+                    f"{parsed_name.hostname}:{urlsplit(endpoint.base_url).port}",
+                    parsed_name.hostname,
+                    None,
+                )
+        elif args.tls_name:
+            raise IntegrationError("--tls-name requires --tls-mode ip or domain")
         if not panel_api_is_local(endpoint.base_url):
             raise IntegrationError("Panel API URL must use localhost/loopback; run the adapter on the target VPS")
         parsed_endpoint = urlsplit(endpoint.base_url)
@@ -1645,6 +1755,7 @@ def main() -> int:
             allow_insecure_http=args.allow_insecure_http,
             host_header=endpoint.host_header,
             tls_server_name=endpoint.tls_server_name,
+            tls_verify_ip=endpoint.tls_verify_ip,
         )
         if args.action in {"check", "plan"}:
             return command_check_or_plan(args, client)
