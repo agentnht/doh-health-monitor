@@ -7,6 +7,7 @@ import copy
 import importlib.util
 import json
 import socket
+import struct
 import os
 import stat
 import sqlite3
@@ -947,6 +948,36 @@ class TemporaryTunnelSafetyTests(unittest.TestCase):
                 self.fail("must not delete an inbound whose identity changed")
         with self.assertRaises(api_tool.IntegrationError):
             api_tool.cleanup_temporary_tunnel(FakeClient(), expected, 7)
+
+
+
+
+class DnsTunnelProbeTests(unittest.TestCase):
+    def test_dns_query_packet_is_a_single_recursive_a_question(self):
+        query_id, packet = api_tool._dns_query_packet("example.com")
+        self.assertEqual(struct.unpack("!HHHHHH", packet[:12]), (query_id, 0x0100, 1, 0, 0, 0))
+        self.assertTrue(packet.endswith(b"\x00\x01\x00\x01"))
+
+    def test_dns_parser_requires_matching_positive_a_answer(self):
+        query_id, query = api_tool._dns_query_packet("example.com")
+        question_end = api_tool._skip_dns_name(query, 12) + 4
+        answer = b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 60, 4) + socket.inet_aton("93.184.216.34")
+        response = struct.pack("!HHHHHH", query_id, 0x8180, 1, 1, 0, 0) + query[12:question_end] + answer
+        self.assertEqual(api_tool._parse_dns_a_response(response, query_id), ["93.184.216.34"])
+
+    def test_dns_parser_rejects_empty_noerror_answer(self):
+        query_id, query = api_tool._dns_query_packet("example.com")
+        question_end = api_tool._skip_dns_name(query, 12) + 4
+        response = struct.pack("!HHHHHH", query_id, 0x8180, 1, 0, 0, 0) + query[12:question_end]
+        with self.assertRaisesRegex(api_tool.IntegrationError, "no positive A record"):
+            api_tool._parse_dns_a_response(response, query_id)
+
+    def test_dns_parser_rejects_rcode_error(self):
+        query_id, query = api_tool._dns_query_packet("example.com")
+        question_end = api_tool._skip_dns_name(query, 12) + 4
+        response = struct.pack("!HHHHHH", query_id, 0x8183, 1, 0, 0, 0) + query[12:question_end]
+        with self.assertRaisesRegex(api_tool.IntegrationError, "RCODE"):
+            api_tool._parse_dns_a_response(response, query_id)
 
 
 
