@@ -172,7 +172,9 @@ safely predict the panel's save behavior.
   API absence, and verifies both listeners have disappeared. A root-only
   `0600` recovery journal is retained if cleanup cannot be verified;
   subsequent `apply` is blocked until it is resolved with
-  `cleanup-test --recovery-journal PATH`. `check` and `plan` remain read-only.
+  `cleanup-test --recovery-journal PATH`; if the inbound still exists, the
+  command requires the explicit `CLEANUP` confirmation (or `--approve-restart`).
+  `check` and `plan` remain read-only.
   Rollback is guarded by an
   exact read-back comparison so it cannot overwrite later panel changes. The adapter requires root on the LucX-UI VPS and uses a
   localhost/loopback panel API URL. It detects the local Xray version (or
