@@ -1689,6 +1689,15 @@ def _load_recovery_journal(path: Path) -> dict:
     return payload
 
 
+def listener_output_has_port(output: str, port: int) -> bool:
+    """Detect a listening socket on the port regardless of its bind address."""
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) >= 4 and fields[3].endswith(f":{port}"):
+            return True
+    return False
+
+
 def wait_for_tunnel_port_closed(port: int, timeout: float = 10.0) -> None:
     """Verify that both TCP and UDP listeners disappeared after panel API deletion."""
     ss = shutil.which("ss")
@@ -1709,7 +1718,7 @@ def wait_for_tunnel_port_closed(port: int, timeout: float = 10.0) -> None:
             )
             if result.returncode != 0:
                 raise IntegrationError("Could not verify temporary Tunnel port release")
-            states.append(listener_output_has_loopback_port(result.stdout or "", port))
+            states.append(listener_output_has_port(result.stdout or "", port))
         if not any(states):
             return
         time.sleep(0.25)
