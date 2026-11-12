@@ -2016,11 +2016,13 @@ def load_backup(path: Path) -> dict:
 
 def confirm_restart(action: str, approved_flag: bool) -> None:
     print()
-    print("WARNING: submitting DNS changes through the LucX-UI API can cause a full Xray process restart")
+    print("WARNING: LucX-UI panel API changes can cause a full Xray process restart")
     print("when Xray is running. This tool will not restart Xray directly.")
     if approved_flag:
         return
-    expected = "APPLY" if action == "apply" else "ROLLBACK"
+    expected = {"apply": "APPLY", "rollback": "ROLLBACK", "cleanup": "CLEANUP"}.get(action)
+    if expected is None:
+        raise IntegrationError("Unknown operation requiring restart approval")
     entered = read_tty_confirmation(f"Type {expected} to continue: ")
     if entered != expected:
         raise IntegrationError("Operator confirmation did not match; no API update was sent")
@@ -2097,7 +2099,8 @@ def command_apply(args, client: PanelAPI) -> int:
     if plan.blockers:
         return 2
     if not plan.changes:
-        print("No API update sent; Xray was not restarted.")
+        print("No permanent Xray settings update is required.")
+        confirm_restart("apply", args.approve_restart)
         try:
             run_temporary_tunnel_test(
                 client,
@@ -2359,6 +2362,7 @@ def main() -> int:
         if args.action == "apply":
             return command_apply(args, client)
         if args.action == "cleanup-test":
+            confirm_restart("cleanup", args.approve_restart)
             journal_path = Path(args.recovery_journal).expanduser()
             journal = _load_recovery_journal(journal_path)
             inbound_id = journal.get("inbound_id")
