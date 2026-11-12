@@ -26,6 +26,7 @@ import socket
 import sqlite3
 import ssl
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -1596,6 +1597,140 @@ def cleanup_temporary_tunnel(client: PanelAPI, expected: dict, inbound_id: int) 
         raise IntegrationError(
             f"Temporary Tunnel cleanup could not be verified; recovery required for inbound ID {inbound_id}"
         )
+
+
+
+
+def _dns_query_packet(name: str) -> tuple[int, bytes]:
+    if not isinstance(name, str) or not name or len(name) > 253:
+        raise IntegrationError("Invalid DNS self-test hostname")
+    query_id = secrets.randbelow(65536)
+    labels = name.rstrip(".").split(".")
+    if any(not label or len(label.encode("idna")) > 63 for label in labels):
+        raise IntegrationError("Invalid DNS self-test hostname")
+    qname = b"".join(bytes([len(label.encode("idna"))]) + label.encode("idna") for label in labels) + b"\0"
+    return query_id, struct.pack("!HHHHHH", query_id, 0x0100, 1, 0, 0, 0) + qname + struct.pack("!HH", 1, 1)
+
+
+def _skip_dns_name(packet: bytes, offset: int) -> int:
+    while True:
+        if offset >= len(packet):
+            raise IntegrationError("DNS response contains a truncated name")
+        size = packet[offset]
+        if size & 0xC0 == 0xC0:
+            if offset + 1 >= len(packet):
+                raise IntegrationError("DNS response contains a truncated compression pointer")
+            return offset + 2
+        if size & 0xC0:
+            raise IntegrationError("DNS response contains an invalid label encoding")
+        offset += 1
+        if size == 0:
+            return offset
+        if size > 63 or offset + size > len(packet):
+            raise IntegrationError("DNS response contains an invalid label length")
+        offset += size
+
+
+def _parse_dns_a_response(packet: bytes, expected_id: int) -> list[str]:
+    if len(packet) < 12:
+        raise IntegrationError("DNS self-test response is shorter than a DNS header")
+    query_id, flags, qdcount, ancount, _, _ = struct.unpack("!HHHHHH", packet[:12])
+    if query_id != expected_id or not (flags & 0x8000):
+        raise IntegrationError("DNS self-test response does not match its query")
+    if flags & 0x000F:
+        raise IntegrationError(f"DNS self-test returned RCODE {flags & 0x000F}")
+    if qdcount != 1:
+        raise IntegrationError("DNS self-test response has an unexpected question count")
+    offset = _skip_dns_name(packet, 12)
+    if offset + 4 > len(packet):
+        raise IntegrationError("DNS self-test response has a truncated question")
+    offset += 4
+    answers = []
+    for _ in range(ancount):
+        offset = _skip_dns_name(packet, offset)
+        if offset + 10 > len(packet):
+            raise IntegrationError("DNS self-test response has a truncated resource record")
+        rr_type, rr_class, _, rdlength = struct.unpack("!HHIH", packet[offset:offset + 10])
+        offset += 10
+        if offset + rdlength > len(packet):
+            raise IntegrationError("DNS self-test response has a truncated resource-data field")
+        if rr_type == 1 and rr_class == 1 and rdlength == 4:
+            answers.append(socket.inet_ntoa(packet[offset:offset + 4]))
+        offset += rdlength
+    if not answers:
+        raise IntegrationError("DNS self-test returned no positive A record")
+    return answers
+
+
+def _recv_exact(connection: socket.socket, size: int) -> bytes:
+    chunks = []
+    remaining = size
+    while remaining:
+        chunk = connection.recv(remaining)
+        if not chunk:
+            raise IntegrationError("DNS TCP self-test connection closed before the full response arrived")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def query_dns_a(host: str, port: int, *, tcp: bool, timeout: float = 4.0) -> list[str]:
+    """Issue a DNS A query and require a positive answer over UDP or TCP."""
+    query_id, query = _dns_query_packet("example.com")
+    if tcp:
+        with socket.create_connection((host, port), timeout=timeout) as connection:
+            connection.settimeout(timeout)
+            connection.sendall(struct.pack("!H", len(query)) + query)
+            response_length = struct.unpack("!H", _recv_exact(connection, 2))[0]
+            if response_length < 12 or response_length > 65535:
+                raise IntegrationError("DNS TCP self-test returned an invalid response length")
+            response = _recv_exact(connection, response_length)
+    else:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as connection:
+            connection.settimeout(timeout)
+            connection.sendto(query, (host, port))
+            response, source = connection.recvfrom(65535)
+            if source[0] != host or source[1] != port:
+                raise IntegrationError("DNS UDP self-test response came from an unexpected endpoint")
+    return _parse_dns_a_response(response, query_id)
+
+
+def read_plugin_counters(status_url: str) -> tuple[int, int]:
+    if not panel_api_is_local(status_url):
+        raise IntegrationError("DoH Health Monitor status URL must use localhost/loopback")
+    request = Request(status_url, headers={"Accept": "application/json"})
+    try:
+        with urlopen(request, timeout=3) as response:
+            body = response.read(1024 * 1024 + 1)
+    except (HTTPError, URLError, TimeoutError, OSError):
+        raise IntegrationError("DoH Health Monitor status API is unavailable during DNS self-test") from None
+    status = validate_plugin_status(body)
+    queries, failures = status.get("queries"), status.get("failures")
+    if (
+        isinstance(queries, bool) or not isinstance(queries, int) or queries < 0
+        or isinstance(failures, bool) or not isinstance(failures, int) or failures < 0
+    ):
+        raise IntegrationError("DoH Health Monitor status counters are missing or invalid")
+    return queries, failures
+
+
+def run_tunnel_dns_self_test(port: int, status_url: str) -> None:
+    """Require positive UDP+TCP A answers and a corresponding plugin query-counter increase."""
+    before_queries, before_failures = read_plugin_counters(status_url)
+    udp_answers = query_dns_a("127.0.0.1", port, tcp=False)
+    tcp_answers = query_dns_a("127.0.0.1", port, tcp=True)
+    after_queries, after_failures = read_plugin_counters(status_url)
+    if after_queries <= before_queries:
+        raise IntegrationError("DNS Tunnel queries did not increment the plugin query counter")
+    if after_failures > before_failures:
+        raise IntegrationError("DNS Tunnel self-test increased the plugin failure counter")
+    print("PASS: temporary Tunnel returned positive DNS A answers over UDP and TCP.")
+    print(
+        "PASS: plugin query counter increased "
+        f"{before_queries} -> {after_queries}; failures stayed at {after_failures}."
+    )
+    print("UDP A answers:", ", ".join(udp_answers))
+    print("TCP A answers:", ", ".join(tcp_answers))
 
 
 def _default_backup_dir() -> Path:
