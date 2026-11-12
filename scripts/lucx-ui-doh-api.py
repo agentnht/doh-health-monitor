@@ -1579,6 +1579,8 @@ def verify_temporary_tunnel(inbounds: list[dict], expected: dict, inbound_id: in
         settings.get("rewriteAddress") != "127.0.0.1"
         or settings.get("rewritePort") != 53
         or settings.get("allowedNetwork") != "tcp,udp"
+        or settings.get("followRedirect") is not False
+        or settings.get("portMap") != {}
     ):
         raise IntegrationError("Temporary Tunnel settings do not match the expected DNS test target")
     return actual
