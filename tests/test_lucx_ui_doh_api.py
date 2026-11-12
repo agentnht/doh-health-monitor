@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import socket
 import os
 import stat
 import sqlite3
@@ -871,6 +872,81 @@ class PanelAPITests(unittest.TestCase):
             "http://panel.example.invalid", "secret", allow_insecure_http=True
         )
         self.assertTrue(allowed.root.startswith("http://"))
+
+
+
+
+class TemporaryTunnelSafetyTests(unittest.TestCase):
+    def test_port_selection_skips_panel_reservations_and_live_sockets(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1", 0))
+            occupied = listener.getsockname()[1]
+            chosen = api_tool.choose_temporary_tunnel_port(
+                [{"listen": "127.0.0.1", "port": 15353}],
+                candidates=(15353, occupied, 15354),
+            )
+        self.assertEqual(chosen, 15354)
+
+    def test_port_selection_refuses_when_all_candidates_reserved(self):
+        with self.assertRaises(api_tool.IntegrationError):
+            api_tool.choose_temporary_tunnel_port(
+                [{"listen": "0.0.0.0", "port": 15353}],
+                candidates=(15353,),
+            )
+
+    def test_temporary_tunnel_is_loopback_and_dns_only(self):
+        inbound = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718")
+        self.assertEqual(inbound["protocol"], "tunnel")
+        self.assertEqual(inbound["listen"], "127.0.0.1")
+        self.assertEqual(inbound["port"], 15353)
+        self.assertTrue(inbound["remark"].startswith(api_tool.TUNNEL_REMARK_PREFIX))
+        settings = json.loads(inbound["settings"])
+        self.assertEqual(settings["rewriteAddress"], "127.0.0.1")
+        self.assertEqual(settings["rewritePort"], 53)
+        self.assertEqual(settings["allowedNetwork"], "tcp,udp")
+
+    def test_temporary_tunnel_verification_rejects_identity_changes(self):
+        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718")
+        actual = dict(expected, id=7, tag="inbound-7")
+        self.assertEqual(
+            api_tool.verify_temporary_tunnel([actual], expected, 7)["id"], 7
+        )
+        actual["port"] = 15354
+        with self.assertRaises(api_tool.IntegrationError):
+            api_tool.verify_temporary_tunnel([actual], expected, 7)
+
+    def test_cleanup_is_idempotent_and_deletes_only_verified_id(self):
+        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718")
+        created = dict(expected, id=7, tag="inbound-7")
+
+        class FakeClient:
+            def __init__(self):
+                self.inbounds = [created]
+                self.deleted = []
+
+            def list_inbounds(self):
+                return copy.deepcopy(self.inbounds)
+
+            def delete_inbound(self, inbound_id):
+                self.deleted.append(inbound_id)
+                self.inbounds = [x for x in self.inbounds if x["id"] != inbound_id]
+
+        client = FakeClient()
+        api_tool.cleanup_temporary_tunnel(client, expected, 7)
+        api_tool.cleanup_temporary_tunnel(client, expected, 7)
+        self.assertEqual(client.deleted, [7])
+        self.assertEqual(client.inbounds, [])
+
+    def test_cleanup_refuses_to_delete_replaced_inbound(self):
+        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718")
+        replacement = dict(expected, id=7, remark="operator-owned")
+        class FakeClient:
+            def list_inbounds(self):
+                return [replacement]
+            def delete_inbound(self, _inbound_id):
+                self.fail("must not delete an inbound whose identity changed")
+        with self.assertRaises(api_tool.IntegrationError):
+            api_tool.cleanup_temporary_tunnel(FakeClient(), expected, 7)
 
 
 
