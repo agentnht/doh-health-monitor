@@ -695,6 +695,12 @@ class _PanelSNIHTTPSHandler(HTTPSHandler):
                 **kwargs,
             ),
             request,
+            # Pass the HTTPSHandler's configured SSL context through to the
+            # custom connection. Without this, HTTPSConnection creates its
+            # own default context and re-enables hostname matching against
+            # the SNI name (localhost), bypassing the strict IP-SAN mode.
+            context=self._context,
+            check_hostname=self._check_hostname,
         )
 
 
