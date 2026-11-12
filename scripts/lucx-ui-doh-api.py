@@ -2362,7 +2362,6 @@ def main() -> int:
         if args.action == "apply":
             return command_apply(args, client)
         if args.action == "cleanup-test":
-            confirm_restart("cleanup", args.approve_restart)
             journal_path = Path(args.recovery_journal).expanduser()
             journal = _load_recovery_journal(journal_path)
             inbound_id = journal.get("inbound_id")
@@ -2377,6 +2376,8 @@ def main() -> int:
                     isinstance(item, dict) and item.get("remark") == journal["inbound"]["remark"]
                     for item in before_cleanup
                 )
+            if resource_present:
+                confirm_restart("cleanup", args.approve_restart)
             cleanup_temporary_tunnel(client, journal["inbound"], inbound_id)
             if resource_present:
                 wait_for_tunnel_port_closed(journal["inbound"]["port"])
