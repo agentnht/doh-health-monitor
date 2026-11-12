@@ -2384,7 +2384,11 @@ def main() -> int:
         print("ERROR:", exc, file=sys.stderr)
         return 2
     except KeyboardInterrupt:
-        print("\nInterrupted; no additional action was taken.", file=sys.stderr)
+        print(
+            "\nInterrupted. If a temporary Tunnel was being tested, its finally cleanup was attempted; "
+            "inspect any recovery journal before retrying.",
+            file=sys.stderr,
+        )
         return 130
 
 
