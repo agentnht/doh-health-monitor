@@ -314,6 +314,37 @@ class XrayVersionTests(unittest.TestCase):
     def test_unlisted_version_is_not_assumed_verified(self):
         self.assertFalse(api_tool.xray_version_is_verified("0.0.0-test"))
 
+    def test_unlisted_xray_version_is_informational_and_does_not_prompt(self):
+        with (
+            patch.object(api_tool, "find_xray_binary", return_value="/usr/bin/xray"),
+            patch.object(api_tool, "read_xray_version", return_value="0.0.0-test"),
+            patch.object(api_tool, "detect_panel_version", return_value="3.11.0-test"),
+            patch.object(api_tool, "read_tty_confirmation") as confirm,
+        ):
+            self.assertEqual(api_tool.check_xray_compatibility(), "0.0.0-test")
+        confirm.assert_not_called()
+
+    def test_missing_xray_binary_does_not_block_api_compatibility_checks(self):
+        with (
+            patch.object(
+                api_tool, "find_xray_binary",
+                side_effect=api_tool.IntegrationError("Xray executable was not detected"),
+            ),
+            patch.object(api_tool, "detect_panel_version", return_value=None),
+            patch.object(api_tool, "read_tty_confirmation") as confirm,
+        ):
+            self.assertIsNone(api_tool.check_xray_compatibility())
+        confirm.assert_not_called()
+
+    def test_verified_xray_version_is_still_reported(self):
+        version = next(iter(api_tool.VERIFIED_XRAY_VERSIONS), "99.0.0-test")
+        with (
+            patch.object(api_tool, "find_xray_binary", return_value="/usr/bin/xray"),
+            patch.object(api_tool, "read_xray_version", return_value=version),
+            patch.object(api_tool, "detect_panel_version", return_value=None),
+        ):
+            self.assertEqual(api_tool.check_xray_compatibility(), version)
+
     def test_remote_panel_api_url_is_not_allowed_by_cli_policy(self):
         self.assertFalse(api_tool.panel_api_is_local("https://panel.example.com"))
         self.assertTrue(api_tool.panel_api_is_local("http://127.0.0.1:2053/base"))
