@@ -707,7 +707,7 @@ class TTYConfirmationTests(unittest.TestCase):
         from unittest.mock import mock_open
 
         tty_out = mock_open()
-        tty_in = mock_open(read_data="RISK\\n")
+        tty_in = mock_open(read_data="RISK\n")
         with patch("builtins.open", side_effect=[tty_out.return_value, tty_in.return_value]) as mocked_open:
             answer = api_tool.read_tty_confirmation("Type RISK: ")
 
