@@ -724,7 +724,8 @@ class PanelAPITests(unittest.TestCase):
 
         self.assertIs(captured["request"], request)
         self.assertIs(captured["context"], handler._context)
-        self.assertFalse(captured["check_hostname"])
+        self.assertNotIn("check_hostname", captured)
+        self.assertFalse(captured["context"].check_hostname)
         self.assertEqual(captured["context"].verify_mode, api_tool.ssl.CERT_REQUIRED)
 
     def setUp(self):
