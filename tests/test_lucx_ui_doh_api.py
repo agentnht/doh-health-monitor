@@ -985,6 +985,93 @@ class DnsTunnelProbeTests(unittest.TestCase):
 
 
 
+
+class TemporaryTunnelOrchestrationTests(unittest.TestCase):
+    class FakeClient:
+        def __init__(self, fail_delete=False):
+            self.inbounds = []
+            self.next_id = 1
+            self.fail_delete = fail_delete
+            self.add_calls = 0
+            self.deleted = []
+
+        def list_inbounds(self):
+            return copy.deepcopy(self.inbounds)
+
+        def add_inbound(self, payload):
+            self.add_calls += 1
+            item = copy.deepcopy(payload)
+            item.update({"id": self.next_id, "tag": f"inbound-{self.next_id}"})
+            self.next_id += 1
+            self.inbounds.append(item)
+            return item
+
+        def delete_inbound(self, inbound_id):
+            self.deleted.append(inbound_id)
+            if not self.fail_delete:
+                self.inbounds = [x for x in self.inbounds if x["id"] != inbound_id]
+
+    def test_success_path_always_removes_tunnel_and_journal(self):
+        client = self.FakeClient()
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(api_tool, "choose_temporary_tunnel_port", return_value=15353), \
+                 patch.object(api_tool, "wait_for_tunnel_listeners"), \
+                 patch.object(api_tool, "wait_for_tunnel_port_closed"), \
+                 patch.object(api_tool, "run_tunnel_dns_self_test"):
+                api_tool.run_temporary_tunnel_test(client, "http://127.0.0.1:18765/status", __import__("pathlib").Path(directory))
+            self.assertEqual(client.inbounds, [])
+            self.assertEqual(client.deleted, [1])
+            self.assertEqual(list((__import__("pathlib").Path(directory) / "recovery").iterdir()), [])
+
+    def test_dns_failure_still_cleans_up_created_inbound(self):
+        client = self.FakeClient()
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(api_tool, "choose_temporary_tunnel_port", return_value=15353), \
+                 patch.object(api_tool, "wait_for_tunnel_listeners"), \
+                 patch.object(api_tool, "wait_for_tunnel_port_closed"), \
+                 patch.object(api_tool, "run_tunnel_dns_self_test", side_effect=api_tool.IntegrationError("probe failed")):
+                with self.assertRaisesRegex(api_tool.IntegrationError, "probe failed"):
+                    api_tool.run_temporary_tunnel_test(client, "http://127.0.0.1:18765/status", __import__("pathlib").Path(directory))
+            self.assertEqual(client.inbounds, [])
+            self.assertEqual(client.deleted, [1])
+
+    def test_cleanup_failure_retains_recovery_journal_and_fails(self):
+        client = self.FakeClient(fail_delete=True)
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(api_tool, "choose_temporary_tunnel_port", return_value=15353), \
+                 patch.object(api_tool, "wait_for_tunnel_listeners"), \
+                 patch.object(api_tool, "wait_for_tunnel_port_closed"), \
+                 patch.object(api_tool, "run_tunnel_dns_self_test"):
+                with self.assertRaisesRegex(api_tool.IntegrationError, "recovery journal retained"):
+                    api_tool.run_temporary_tunnel_test(client, "http://127.0.0.1:18765/status", __import__("pathlib").Path(directory))
+            journals = list((__import__("pathlib").Path(directory) / "recovery").glob("*.json"))
+            self.assertEqual(len(journals), 1)
+            payload = json.loads(journals[0].read_text())
+            self.assertEqual(payload["state"], "cleanup-required")
+            self.assertEqual(payload["inbound_id"], 1)
+
+    def test_add_port_race_retries_another_candidate(self):
+        class RacingClient(self.FakeClient):
+            def add_inbound(self, payload):
+                self.add_calls += 1
+                if self.add_calls == 1:
+                    raise api_tool.IntegrationError("port collision")
+                return super().add_inbound(payload)
+
+        client = RacingClient()
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(api_tool, "choose_temporary_tunnel_port", side_effect=[15353, 15354]), \
+                 patch.object(api_tool, "_port_is_free_on_loopback", return_value=False), \
+                 patch.object(api_tool, "wait_for_tunnel_listeners"), \
+                 patch.object(api_tool, "wait_for_tunnel_port_closed"), \
+                 patch.object(api_tool, "run_tunnel_dns_self_test"):
+                api_tool.run_temporary_tunnel_test(client, "http://127.0.0.1:18765/status", __import__("pathlib").Path(directory))
+            self.assertEqual(client.add_calls, 2)
+            self.assertEqual(client.deleted, [1])
+            self.assertEqual(client.inbounds, [])
+
+
+
 class TTYConfirmationTests(unittest.TestCase):
     def test_confirmation_uses_separate_non_seekable_tty_streams(self):
         from unittest.mock import mock_open
