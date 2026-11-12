@@ -744,23 +744,25 @@ def panel_api_is_local(base_url: str) -> bool:
         return parsed.hostname.lower() == "localhost"
 
 
-def check_xray_compatibility(explicit_binary: str | None, allow_untested: bool) -> str:
-    binary = find_xray_binary(explicit_binary)
-    version = read_xray_version(binary)
-    print("Detected Xray core:", version)
+def check_xray_compatibility(explicit_binary: str | None = None) -> str | None:
+    """Report local versions for diagnostics; API/config validation is the compatibility gate."""
     panel_version = detect_panel_version()
     print("LucX-UI version:", panel_version or "not detected (informational only)")
+    try:
+        binary = find_xray_binary(explicit_binary)
+        version = read_xray_version(binary)
+    except IntegrationError as exc:
+        print("WARNING: Xray version could not be detected; continuing with API-based checks.")
+        print("Version diagnostic:", str(exc))
+        return None
+
+    print("Detected Xray core:", version)
     if xray_version_is_verified(version):
-        print("Xray compatibility: version is in the verified list.")
-        return version
-    print("WARNING: this Xray version is not in the tool's verified-version list.")
-    print("LucX-UI version is informational and is not used as a hard compatibility gate.")
-    print("Continue only if you accept the risk and have a current panel backup.")
-    if allow_untested:
-        print("Proceeding with explicit --allow-untested-xray acknowledgement.")
-        return version
-    if read_tty_confirmation("Type RISK to continue with this unverified Xray version: ") != "RISK":
-        raise IntegrationError("Unverified Xray version was not approved; no panel update was sent")
+        print("Xray version: present in the informational verified-version list.")
+    else:
+        print("NOTICE: Xray version is not in the informational verified-version list.")
+    print("Xray version does not block check/plan; compatibility is assessed through panel API")
+    print("response parsing, configuration validation, conflict detection, and read-back.")
     return version
 
 
@@ -1587,11 +1589,8 @@ def main() -> int:
     parser.add_argument("--plugin-port", type=int, default=DEFAULT_PLUGIN_PORT,
                         help="local DoH Health Monitor TCP/UDP listener port")
     parser.add_argument("--xray-bin", help="Path to local Xray executable (auto-detected when omitted)")
-    parser.add_argument(
-        "--allow-untested-xray",
-        action="store_true",
-        help="Explicitly continue when the detected Xray version is not in the verified list",
-    )
+    # Kept as a compatibility alias for older deployment commands; version is informational.
+    parser.add_argument("--allow-untested-xray", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--allow-insecure-http", action="store_true", help="Allow non-loopback HTTP (not recommended)")
     parser.add_argument(
         "--backup-dir",
@@ -1631,7 +1630,7 @@ def main() -> int:
         if endpoint.host_header:
             print("Panel domain validation: configured Host header and TLS SNI will be used.")
         check_plugin_health(args.plugin_service, args.plugin_status_url, args.plugin_port)
-        check_xray_compatibility(args.xray_bin, args.allow_untested_xray)
+        check_xray_compatibility(args.xray_bin)
         token = resolve_panel_api_token(Path(args.panel_auth_file))
         client = PanelAPI(
             endpoint.base_url,
