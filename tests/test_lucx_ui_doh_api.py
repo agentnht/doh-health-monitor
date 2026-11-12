@@ -701,5 +701,24 @@ class PanelAPITests(unittest.TestCase):
         self.assertTrue(allowed.root.startswith("http://"))
 
 
+
+class TTYConfirmationTests(unittest.TestCase):
+    def test_confirmation_uses_separate_non_seekable_tty_streams(self):
+        from unittest.mock import mock_open
+
+        tty_out = mock_open()
+        tty_in = mock_open(read_data="RISK\\n")
+        with patch("builtins.open", side_effect=[tty_out.return_value, tty_in.return_value]) as mocked_open:
+            answer = api_tool.read_tty_confirmation("Type RISK: ")
+
+        self.assertEqual(answer, "RISK")
+        self.assertEqual(
+            [call.args[:2] for call in mocked_open.call_args_list],
+            [("/dev/tty", "w"), ("/dev/tty", "r")],
+        )
+        tty_out.return_value.write.assert_called_once_with("Type RISK: ")
+        tty_out.return_value.flush.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
