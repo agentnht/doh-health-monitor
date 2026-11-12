@@ -1586,7 +1586,7 @@ def verify_temporary_tunnel(inbounds: list[dict], expected: dict, inbound_id: in
     return actual
 
 
-def cleanup_temporary_tunnel(client: PanelAPI, expected: dict, inbound_id: int | None) -> None:
+def cleanup_temporary_tunnel(client: PanelAPI, expected: dict, inbound_id: int | None) -> bool:
     """Delete only this run's inbound after identity read-back, then verify absence."""
     current = client.list_inbounds()
     if inbound_id is None:
@@ -1597,7 +1597,7 @@ def cleanup_temporary_tunnel(client: PanelAPI, expected: dict, inbound_id: int |
         if len(matches) > 1:
             raise IntegrationError("Multiple inbounds match the temporary Tunnel recovery marker; refusing deletion")
         if not matches:
-            return
+            return False
         inbound_id = matches[0].get("id")
         if isinstance(inbound_id, bool) or not isinstance(inbound_id, int) or inbound_id <= 0:
             raise IntegrationError("Temporary Tunnel recovery match has no valid numeric ID")
@@ -1615,7 +1615,7 @@ def cleanup_temporary_tunnel(client: PanelAPI, expected: dict, inbound_id: int |
             raise IntegrationError(
                 "Temporary Tunnel recovery marker exists under a different ID; refusing deletion"
             )
-        return
+        return False
     verify_temporary_tunnel(current, expected, inbound_id)
     client.delete_inbound(inbound_id)
     remaining = client.list_inbounds()
@@ -1623,6 +1623,7 @@ def cleanup_temporary_tunnel(client: PanelAPI, expected: dict, inbound_id: int |
         raise IntegrationError(
             f"Temporary Tunnel cleanup could not be verified; recovery required for inbound ID {inbound_id}"
         )
+    return True
 
 
 def wait_for_tunnel_listeners(port: int, timeout: float = 20.0) -> None:
@@ -1788,11 +1789,11 @@ def run_temporary_tunnel_test(client: PanelAPI, status_url: str, backup_dir: Pat
             test_error = exc
         finally:
             try:
-                cleanup_temporary_tunnel(client, expected, inbound_id)
-                # If the add request failed before returning an ID, a listener
-                # on this port may belong to the process that won the race.
+                removed = cleanup_temporary_tunnel(client, expected, inbound_id)
+                # If the add request failed and no matching panel object exists,
+                # a listener may belong to the process that won the port race.
                 # Never wait for or interfere with that external listener.
-                if inbound_id is not None:
+                if inbound_id is not None or removed:
                     wait_for_tunnel_port_closed(port)
                 journal.unlink(missing_ok=True)
             except Exception as exc:
@@ -2378,8 +2379,8 @@ def main() -> int:
                 )
             if resource_present:
                 confirm_restart("cleanup", args.approve_restart)
-            cleanup_temporary_tunnel(client, journal["inbound"], inbound_id)
-            if resource_present:
+            removed = cleanup_temporary_tunnel(client, journal["inbound"], inbound_id)
+            if inbound_id is not None or removed:
                 wait_for_tunnel_port_closed(journal["inbound"]["port"])
             journal_path.unlink(missing_ok=True)
             print("PASS: temporary Tunnel recovery cleanup verified; journal removed.")
