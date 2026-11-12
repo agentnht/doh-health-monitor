@@ -22,6 +22,7 @@ import re
 import secrets
 import shlex
 import shutil
+import socket
 import sqlite3
 import ssl
 import stat
@@ -1484,6 +1485,117 @@ class PanelAPI:
         if isinstance(inbound_id, bool) or not isinstance(inbound_id, int) or inbound_id <= 0:
             raise IntegrationError("Refusing to delete an inbound without a valid numeric ID")
         self._inbound_request("POST", f"del/{inbound_id}")
+
+
+
+
+TUNNEL_PORT_CANDIDATES = tuple(range(15353, 15454))
+TUNNEL_REMARK_PREFIX = "doh-health-monitor-selftest-"
+
+
+def _port_is_free_on_loopback(port: int) -> bool:
+    """Require both TCP and UDP loopback binds to succeed; this is preflight only."""
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise IntegrationError("Invalid temporary Tunnel port")
+    sockets = []
+    try:
+        for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+            probe = socket.socket(socket.AF_INET, kind)
+            sockets.append(probe)
+            probe.bind(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        for probe in sockets:
+            probe.close()
+
+
+def choose_temporary_tunnel_port(inbounds: list[dict], candidates=TUNNEL_PORT_CANDIDATES) -> int:
+    """Choose a free loopback port not reserved by any panel inbound."""
+    if not isinstance(inbounds, list):
+        raise IntegrationError("Cannot choose a test port without a valid inbound list")
+    reserved = set()
+    for item in inbounds:
+        if not isinstance(item, dict):
+            raise IntegrationError("Panel returned an invalid inbound entry")
+        port = item.get("port")
+        if isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535:
+            listen = str(item.get("listen") or "").strip().lower()
+            if listen in {"", "0.0.0.0", "::", "[::]", "127.0.0.1", "::1", "[::1]"}:
+                reserved.add(port)
+    for candidate in candidates:
+        if candidate not in reserved and _port_is_free_on_loopback(candidate):
+            return candidate
+    raise IntegrationError("No free loopback TCP+UDP port is available for the temporary Tunnel test")
+
+
+def build_temporary_tunnel(port: int, run_id: str | None = None) -> dict:
+    """Build a loopback-only Tunnel that forwards DNS to the plugin's local resolver."""
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise IntegrationError("Invalid temporary Tunnel port")
+    marker = run_id or secrets.token_hex(8)
+    if not re.fullmatch(r"[a-f0-9]{8,32}", marker):
+        raise IntegrationError("Invalid temporary Tunnel run marker")
+    return {
+        "remark": TUNNEL_REMARK_PREFIX + marker,
+        "protocol": "tunnel",
+        "listen": "127.0.0.1",
+        "port": port,
+        "settings": json.dumps({
+            "rewriteAddress": "127.0.0.1",
+            "rewritePort": 53,
+            "allowedNetwork": "tcp,udp",
+            "followRedirect": False,
+            "portMap": {},
+        }, separators=(",", ":")),
+        "enable": True,
+    }
+
+
+def verify_temporary_tunnel(inbounds: list[dict], expected: dict, inbound_id: int) -> dict:
+    """Verify the exact created object by ID and immutable identity fields."""
+    matches = [
+        item for item in inbounds
+        if isinstance(item, dict) and item.get("id") == inbound_id
+    ]
+    if len(matches) != 1:
+        raise IntegrationError("Created temporary Tunnel cannot be uniquely identified in the panel")
+    actual = matches[0]
+    for key in ("remark", "protocol", "listen", "port"):
+        if actual.get(key) != expected.get(key):
+            raise IntegrationError("Temporary Tunnel identity changed; refusing to modify or delete it")
+    try:
+        settings = actual.get("settings")
+        if isinstance(settings, str):
+            settings = json.loads(settings)
+    except json.JSONDecodeError:
+        settings = None
+    if not isinstance(settings, dict) or (
+        settings.get("rewriteAddress") != "127.0.0.1"
+        or settings.get("rewritePort") != 53
+        or settings.get("allowedNetwork") != "tcp,udp"
+    ):
+        raise IntegrationError("Temporary Tunnel settings do not match the expected DNS test target")
+    return actual
+
+
+def cleanup_temporary_tunnel(client: PanelAPI, expected: dict, inbound_id: int) -> None:
+    """Delete only this run's inbound after identity read-back, then verify absence."""
+    current = client.list_inbounds()
+    matches = [
+        item for item in current
+        if isinstance(item, dict) and item.get("id") == inbound_id
+    ]
+    if not matches:
+        return
+    verify_temporary_tunnel(current, expected, inbound_id)
+    client.delete_inbound(inbound_id)
+    remaining = client.list_inbounds()
+    if any(isinstance(item, dict) and item.get("id") == inbound_id for item in remaining):
+        raise IntegrationError(
+            f"Temporary Tunnel cleanup could not be verified; recovery required for inbound ID {inbound_id}"
+        )
 
 
 def _default_backup_dir() -> Path:
