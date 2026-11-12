@@ -390,7 +390,9 @@ class ApplyBackupLifecycleTests(unittest.TestCase):
                 approve_restart=True,
                 backup_dir=directory,
             )
-            self.assertEqual(api_tool.command_apply(args, FakeClient()), 0)
+            with patch.object(api_tool, 'run_temporary_tunnel_test') as tunnel_test:
+                self.assertEqual(api_tool.command_apply(args, FakeClient()), 0)
+                tunnel_test.assert_called_once()
             backups = list(__import__("pathlib").Path(directory).iterdir())
             self.assertEqual(len(backups), 1)
             self.assertEqual(backups[0].stat().st_mode & 0o777, 0o600)
@@ -423,7 +425,9 @@ class ApplyBackupLifecycleTests(unittest.TestCase):
                 approve_restart=True,
                 backup_dir=directory,
             )
-            self.assertEqual(api_tool.command_apply(args, FakeClient()), 2)
+            with patch.object(api_tool, 'run_temporary_tunnel_test') as tunnel_test:
+                self.assertEqual(api_tool.command_apply(args, FakeClient()), 2)
+                tunnel_test.assert_not_called()
             backups = list(__import__("pathlib").Path(directory).iterdir())
             self.assertEqual(len(backups), 1)
             self.assertEqual(backups[0].stat().st_mode & 0o777, 0o600)
