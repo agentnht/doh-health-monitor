@@ -994,6 +994,18 @@ class DnsTunnelProbeTests(unittest.TestCase):
         with self.assertRaisesRegex(api_tool.IntegrationError, "RCODE"):
             api_tool._parse_dns_a_response(response, query_id)
 
+    def test_tunnel_probe_requires_both_counter_increments_and_zero_failures(self):
+        with patch.object(api_tool, "read_plugin_counters", side_effect=[(10, 0), (12, 0)]), \
+             patch.object(api_tool, "query_dns_a", side_effect=[["93.184.216.34"], ["93.184.216.34"]]):
+            api_tool.run_tunnel_dns_self_test(15353, "http://127.0.0.1:18765/status")
+
+    def test_tunnel_probe_refuses_preexisting_plugin_failures(self):
+        with patch.object(api_tool, "read_plugin_counters", return_value=(10, 1)), \
+             patch.object(api_tool, "query_dns_a") as query:
+            with self.assertRaisesRegex(api_tool.IntegrationError, "non-zero before"):
+                api_tool.run_tunnel_dns_self_test(15353, "http://127.0.0.1:18765/status")
+            query.assert_not_called()
+
 
 
 
