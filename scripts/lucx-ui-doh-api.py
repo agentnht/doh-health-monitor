@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Safe additive LucX-UI DoH integration through the panel API.
 
-This tool never opens or writes the panel SQLite database and never writes the
-runtime Xray config. It reads the current xraySetting through the panel API,
-adds only missing DNS integration elements, and submits the preserved template
-back through the panel API after explicit approval of the possible Xray restart.
+The adapter never writes the panel SQLite database or runtime Xray config.
+When --base-url is omitted, it reads only endpoint settings from SQLite in
+read-only mode to discover the local panel URL. Xray settings are read through
+the panel API; updates require explicit approval of the possible Xray restart.
 """
 
 from __future__ import annotations
@@ -12,12 +12,15 @@ from __future__ import annotations
 import argparse
 import copy
 import getpass
+import http.client
 import ipaddress
 import json
 import os
 import re
 import secrets
 import shutil
+import sqlite3
+import ssl
 import stat
 import subprocess
 import sys
@@ -27,9 +30,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPSHandler, Request, build_opener, urlopen
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 DEFAULT_PLUGIN_SERVICE = "lucx-plugin-doh-health-monitor"
 DEFAULT_PLUGIN_STATUS_URL = "http://127.0.0.1:18765/status"
 DEFAULT_PLUGIN_PORT = 5355
@@ -160,6 +163,226 @@ def detect_panel_version() -> str | None:
         if match:
             return match.group(1)
     return None
+
+
+
+
+@dataclass(frozen=True)
+class PanelEndpoint:
+    base_url: str
+    host_header: str | None = None
+    tls_server_name: str | None = None
+
+
+def _running_panel_context() -> tuple[dict[str, str], Path]:
+    """Read only the non-secret runtime settings needed to locate x-ui's DB."""
+    keys = {"XUI_PORT", "XUI_DB_FOLDER", "XUI_DB_TYPE"}
+    env = {key: os.environ[key] for key in keys if key in os.environ}
+    panel_cwd = Path("/usr/local/x-ui")
+    matches: list[tuple[dict[str, str], Path, str]] = []
+    try:
+        proc_entries = list(Path("/proc").iterdir())
+    except OSError:
+        return env, panel_cwd
+
+    for entry in proc_entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            executable = os.readlink(entry / "exe").removesuffix(" (deleted)")
+            if Path(executable).name != "x-ui":
+                continue
+            raw = (entry / "environ").read_bytes()
+            process_env: dict[str, str] = {}
+            for item in raw.split(b"\0"):
+                if b"=" not in item:
+                    continue
+                key_raw, value_raw = item.split(b"=", 1)
+                key = key_raw.decode("ascii", errors="ignore")
+                if key in keys:
+                    process_env[key] = value_raw.decode("utf-8", errors="replace")
+            cwd = Path(os.readlink(entry / "cwd"))
+            matches.append((process_env, cwd, executable))
+        except OSError:
+            continue
+
+    if matches:
+        preferred = [item for item in matches if item[2] == "/usr/local/x-ui/x-ui"]
+        if preferred:
+            matches = preferred
+        if len(matches) > 1:
+            snapshots = {(tuple(sorted(item[0].items())), str(item[1])) for item in matches}
+            if len(snapshots) > 1:
+                raise IntegrationError("Multiple LucX-UI processes have different runtime settings; specify --base-url and --panel-db")
+        process_env, panel_cwd, _ = matches[0]
+        env.update(process_env)
+    return env, panel_cwd
+
+
+def _read_panel_endpoint_settings(database_path: Path) -> dict[str, str]:
+    """Read only the web endpoint keys; SQLite is opened strictly mode=ro."""
+    if not database_path.is_file():
+        raise IntegrationError("LucX-UI SQLite database for endpoint discovery was not found; specify --base-url")
+    uri = database_path.resolve().as_uri() + "?mode=ro"
+    try:
+        connection = sqlite3.connect(uri, uri=True, timeout=3)
+        try:
+            connection.execute("PRAGMA query_only=ON")
+            rows = connection.execute(
+                "SELECT key, value FROM settings WHERE key IN (?, ?, ?, ?, ?)",
+                ("webPort", "webBasePath", "webCertFile", "webKeyFile", "webDomain"),
+            ).fetchall()
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error):
+        raise IntegrationError("Could not read LucX-UI endpoint settings from SQLite in read-only mode; specify --base-url") from None
+    return {str(key): "" if value is None else str(value) for key, value in rows}
+
+
+def _resolve_panel_file(value: str, panel_cwd: Path) -> Path:
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else panel_cwd / path
+
+
+def _panel_tls_is_enabled(cert_file: str, key_file: str, panel_cwd: Path) -> bool:
+    if not cert_file or not key_file:
+        return False
+    cert_path = _resolve_panel_file(cert_file, panel_cwd)
+    key_path = _resolve_panel_file(key_file, panel_cwd)
+    try:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(str(cert_path), str(key_path))
+        return True
+    except (OSError, ssl.SSLError):
+        return False
+
+
+def _normalize_panel_base_path(value: str) -> str:
+    path = (value or "/").strip()
+    if not path:
+        path = "/"
+    if any(ord(char) < 32 or char in "?#\\ " for char in path):
+        raise IntegrationError("LucX-UI webBasePath contains unsupported URL characters")
+    if not path.startswith("/"):
+        path = "/" + path
+    segments = [segment for segment in path.split("/") if segment]
+    if any(segment in {".", ".."} for segment in segments):
+        raise IntegrationError("LucX-UI webBasePath contains a relative path segment")
+    return "/" + "/".join(segments) + ("/" if segments else "")
+
+
+def detect_panel_endpoint(
+    panel_db: Path | None = None,
+    runtime_env: dict[str, str] | None = None,
+    panel_cwd: Path | None = None,
+) -> PanelEndpoint:
+    """Detect the local LucX-UI URL without writing its database or settings."""
+    if runtime_env is None:
+        runtime_env, detected_cwd = _running_panel_context()
+        if panel_cwd is None:
+            panel_cwd = detected_cwd
+    else:
+        runtime_env = dict(runtime_env)
+    if panel_cwd is None:
+        panel_cwd = Path("/usr/local/x-ui")
+
+    if panel_db is None:
+        db_type = runtime_env.get("XUI_DB_TYPE", "sqlite").strip().lower() or "sqlite"
+        if db_type not in {"sqlite", "sqlite3"}:
+            raise IntegrationError("Automatic endpoint discovery currently supports SQLite only; specify --base-url for PostgreSQL panels")
+        db_folder = Path(runtime_env.get("XUI_DB_FOLDER", "/etc/x-ui")).expanduser()
+        if not db_folder.is_absolute():
+            db_folder = panel_cwd / db_folder
+        panel_db = db_folder / "x-ui.db"
+    settings = _read_panel_endpoint_settings(panel_db)
+
+    stored_port = settings.get("webPort", "") or "2053"
+    try:
+        port = int(stored_port)
+    except ValueError:
+        raise IntegrationError("LucX-UI webPort setting is invalid; specify --base-url") from None
+    override = runtime_env.get("XUI_PORT", "").strip()
+    if override:
+        try:
+            override_port = int(override)
+            if 1 <= override_port <= 65535:
+                port = override_port
+        except ValueError:
+            pass  # LucX-UI ignores an invalid XUI_PORT and falls back to webPort.
+    if not 1 <= port <= 65535:
+        raise IntegrationError("LucX-UI panel port is outside the valid range; specify --base-url")
+
+    base_path = _normalize_panel_base_path(settings.get("webBasePath", "/"))
+    scheme = "https" if _panel_tls_is_enabled(
+        settings.get("webCertFile", ""),
+        settings.get("webKeyFile", ""),
+        panel_cwd,
+    ) else "http"
+
+    domain = settings.get("webDomain", "").strip()
+    host_header = None
+    tls_server_name = None
+    if domain:
+        parsed_domain = urlsplit("//" + domain)
+        try:
+            explicit_domain_port = parsed_domain.port
+        except ValueError:
+            explicit_domain_port = -1
+        if (
+            not parsed_domain.hostname
+            or parsed_domain.username
+            or parsed_domain.password
+            or explicit_domain_port is not None
+            or parsed_domain.path
+            or parsed_domain.query
+            or parsed_domain.fragment
+            or any(char.isspace() for char in domain)
+        ):
+            raise IntegrationError("LucX-UI webDomain is not a plain hostname; specify --base-url")
+        host = parsed_domain.hostname
+        try:
+            parsed_ip = ipaddress.ip_address(host)
+            host_for_header = f"[{host}]" if parsed_ip.version == 6 else host
+        except ValueError:
+            host_for_header = host
+        host_header = f"{host_for_header}:{port}"
+        if scheme == "https":
+            tls_server_name = host
+
+    url_path = base_path.rstrip("/")
+    base_url = f"{scheme}://127.0.0.1:{port}{url_path}"
+    return PanelEndpoint(base_url, host_header, tls_server_name)
+
+
+class _PanelSNIHTTPSConnection(http.client.HTTPSConnection):
+    """Connect to loopback while verifying TLS against LucX-UI's configured domain."""
+
+    def __init__(self, host, *args, server_hostname: str, **kwargs):
+        self._panel_server_hostname = server_hostname
+        super().__init__(host, *args, **kwargs)
+
+    def connect(self):
+        http.client.HTTPConnection.connect(self)
+        self.sock = self._context.wrap_socket(
+            self.sock,
+            server_hostname=self._panel_server_hostname,
+        )
+
+
+class _PanelSNIHTTPSHandler(HTTPSHandler):
+    def __init__(self, server_hostname: str):
+        super().__init__(context=ssl.create_default_context())
+        self._panel_server_hostname = server_hostname
+
+    def https_open(self, request):
+        return self.do_open(
+            lambda host, **kwargs: _PanelSNIHTTPSConnection(
+                host,
+                server_hostname=self._panel_server_hostname,
+                **kwargs,
+            ),
+            request,
+        )
 
 
 def listener_output_has_loopback_port(output: str, port: int) -> bool:
@@ -773,7 +996,15 @@ def parse_api_response(body: bytes) -> dict:
 
 
 class PanelAPI:
-    def __init__(self, base_url: str, token: str, timeout: float = 15.0, allow_insecure_http: bool = False):
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        timeout: float = 15.0,
+        allow_insecure_http: bool = False,
+        host_header: str | None = None,
+        tls_server_name: str | None = None,
+    ):
         parsed = urlsplit(base_url)
         if parsed.scheme not in {"https", "http"} or not parsed.netloc:
             raise IntegrationError("--base-url must be an absolute http(s) URL")
@@ -789,6 +1020,10 @@ class PanelAPI:
         self.root = urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
         self.token = token
         self.timeout = timeout
+        self.host_header = host_header
+        self.opener = build_opener(_PanelSNIHTTPSHandler(tls_server_name)) if (
+            parsed.scheme == "https" and tls_server_name
+        ) else None
 
     def _post(self, suffix: str, fields: dict[str, str] | None = None) -> dict:
         url = self.root + "/panel/api/xray/" + suffix
@@ -802,10 +1037,16 @@ class PanelAPI:
                 "Accept": "application/json",
                 "Content-Type": "application/x-www-form-urlencoded",
                 "User-Agent": "lucx-ui-doh-api/" + VERSION,
+                **({"Host": self.host_header} if self.host_header else {}),
             },
         )
         try:
-            with urlopen(request, timeout=self.timeout) as response:
+            response_context = (
+                self.opener.open(request, timeout=self.timeout)
+                if self.opener
+                else urlopen(request, timeout=self.timeout)
+            )
+            with response_context as response:
                 body = response.read(MAX_RESPONSE_BYTES + 1)
         except HTTPError as exc:
             raise IntegrationError(f"Panel API HTTP error ({exc.code}); response body suppressed") from None
@@ -951,7 +1192,11 @@ def command_check_or_plan(args, client: PanelAPI) -> int:
     print("API capability: xraySetting and outboundTestUrl metadata were decoded.")
     print("API update endpoint: not probed by a write in read-only mode; validate on staging before production apply.")
     print("Mode: CHECK / READ-ONLY FROM ADAPTER")
-    print("SQLite and runtime Xray files are not opened.")
+    if getattr(args, "base_url", None):
+        print("Panel URL was supplied explicitly; SQLite endpoint discovery was skipped.")
+    else:
+        print("Panel endpoint settings were read from SQLite in mode=ro; the database was not modified.")
+    print("Runtime Xray files are not opened.")
     print_plan(plan)
     return 2 if plan.blockers else 0
 
@@ -1074,7 +1319,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Safe additive DoH integration for LucX-UI using its panel API"
     )
-    parser.add_argument("--base-url", required=True, help="Panel origin plus any web base path; do not append /panel/api")
+    parser.add_argument(
+        "--base-url",
+        help="Panel origin plus any web base path; auto-detected from local SQLite when omitted",
+    )
+    parser.add_argument(
+        "--panel-db",
+        help="Custom LucX-UI SQLite database path for read-only URL discovery (default: /etc/x-ui/x-ui.db)",
+    )
     parser.add_argument("--timeout", type=float, default=15.0)
     parser.add_argument("--plugin-service", default=DEFAULT_PLUGIN_SERVICE,
                         help="systemd unit for DoH Health Monitor")
@@ -1109,8 +1361,23 @@ def main() -> int:
     try:
         if os.geteuid() != 0:
             raise IntegrationError("Run this tool as root directly on the LucX-UI VPS")
-        if not panel_api_is_local(args.base_url):
+        if args.base_url and args.panel_db:
+            raise IntegrationError("--panel-db is only valid when --base-url is omitted")
+        endpoint = (
+            PanelEndpoint(args.base_url)
+            if args.base_url
+            else detect_panel_endpoint(Path(args.panel_db).expanduser() if args.panel_db else None)
+        )
+        if not panel_api_is_local(endpoint.base_url):
             raise IntegrationError("Panel API URL must use localhost/loopback; run the adapter on the target VPS")
+        parsed_endpoint = urlsplit(endpoint.base_url)
+        path_state = "root path" if not parsed_endpoint.path else "configured path (hidden)"
+        print(
+            f"Panel endpoint {'supplied' if args.base_url else 'auto-detected'}: "
+            f"{parsed_endpoint.scheme}://127.0.0.1:{parsed_endpoint.port} ({path_state})"
+        )
+        if endpoint.host_header:
+            print("Panel domain validation: configured Host header and TLS SNI will be used.")
         check_plugin_health(args.plugin_service, args.plugin_status_url, args.plugin_port)
         check_xray_compatibility(args.xray_bin, args.allow_untested_xray)
         token = getpass.getpass("LucX-UI Bearer API token (hidden): ").strip()
@@ -1121,6 +1388,8 @@ def main() -> int:
             token,
             timeout=args.timeout,
             allow_insecure_http=args.allow_insecure_http,
+            host_header=endpoint.host_header,
+            tls_server_name=endpoint.tls_server_name,
         )
         if args.action in {"check", "plan"}:
             return command_check_or_plan(args, client)

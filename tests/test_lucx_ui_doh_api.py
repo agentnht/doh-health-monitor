@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import sqlite3
 import threading
 import tempfile
 import unittest
@@ -502,6 +503,76 @@ class RollbackLifecycleTests(unittest.TestCase):
             self.assertTrue(backup.exists())
 
 
+
+class PanelEndpointDiscoveryTests(unittest.TestCase):
+    def _write_panel_db(self, path, values):
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)")
+            connection.executemany(
+                "INSERT INTO settings(key, value) VALUES (?, ?)",
+                list(values.items()),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def test_detects_tls_port_path_and_domain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = __import__("pathlib").Path(directory) / "x-ui.db"
+            self._write_panel_db(db, {
+                "webPort": "33976",
+                "webBasePath": "/private-panel-path/",
+                "webCertFile": "/cert/fullchain.pem",
+                "webKeyFile": "/cert/privkey.pem",
+                "webDomain": "panel.example.test",
+            })
+            with patch.object(api_tool, "_panel_tls_is_enabled", return_value=True):
+                endpoint = api_tool.detect_panel_endpoint(
+                    db, runtime_env={}, panel_cwd=__import__("pathlib").Path(directory)
+                )
+            self.assertEqual(endpoint.base_url, "https://127.0.0.1:33976/private-panel-path")
+            self.assertEqual(endpoint.host_header, "panel.example.test:33976")
+            self.assertEqual(endpoint.tls_server_name, "panel.example.test")
+
+    def test_runtime_xui_port_overrides_database_port(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = __import__("pathlib").Path(directory) / "x-ui.db"
+            self._write_panel_db(db, {"webPort": "33976", "webBasePath": "/"})
+            endpoint = api_tool.detect_panel_endpoint(
+                db, runtime_env={"XUI_PORT": "4455"}, panel_cwd=__import__("pathlib").Path(directory)
+            )
+            self.assertEqual(endpoint.base_url, "http://127.0.0.1:4455")
+
+    def test_invalid_runtime_port_falls_back_to_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = __import__("pathlib").Path(directory) / "x-ui.db"
+            self._write_panel_db(db, {"webPort": "33976", "webBasePath": "/"})
+            endpoint = api_tool.detect_panel_endpoint(
+                db, runtime_env={"XUI_PORT": "not-a-port"}, panel_cwd=__import__("pathlib").Path(directory)
+            )
+            self.assertEqual(endpoint.base_url, "http://127.0.0.1:33976")
+
+    def test_endpoint_discovery_refuses_relative_path_traversal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = __import__("pathlib").Path(directory) / "x-ui.db"
+            self._write_panel_db(db, {"webPort": "33976", "webBasePath": "/foo/../bar/"})
+            with self.assertRaisesRegex(api_tool.IntegrationError, "relative path segment"):
+                api_tool.detect_panel_endpoint(db, runtime_env={}, panel_cwd=__import__("pathlib").Path(directory))
+
+    def test_postgres_requires_explicit_base_url(self):
+        with self.assertRaisesRegex(api_tool.IntegrationError, "PostgreSQL"):
+            api_tool.detect_panel_endpoint(runtime_env={"XUI_DB_TYPE": "postgres"})
+
+    def test_discovery_does_not_modify_sqlite_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = __import__("pathlib").Path(directory) / "x-ui.db"
+            self._write_panel_db(db, {"webPort": "33976", "webBasePath": "/hidden/"})
+            before = db.read_bytes()
+            api_tool.detect_panel_endpoint(db, runtime_env={}, panel_cwd=__import__("pathlib").Path(directory))
+            self.assertEqual(db.read_bytes(), before)
+
+
 class PluginPreflightTests(unittest.TestCase):
     def test_detects_ipv4_and_ipv6_loopback_listeners(self):
         self.assertTrue(api_tool.listener_output_has_loopback_port(
@@ -549,6 +620,7 @@ class PanelAPITests(unittest.TestCase):
             "config": base_config(),
             "outboundTestUrl": "https://example.invalid/204",
             "authorization": [],
+            "host_headers": [],
             "posted_form": [],
         }
         state = self.state
@@ -567,6 +639,7 @@ class PanelAPITests(unittest.TestCase):
 
             def do_POST(self):
                 state["authorization"].append(self.headers.get("Authorization"))
+                state["host_headers"].append(self.headers.get("Host"))
                 length = int(self.headers.get("Content-Length", "0"))
                 raw = self.rfile.read(length).decode()
                 if self.path == "/nested/panel/api/xray/":
@@ -601,6 +674,13 @@ class PanelAPITests(unittest.TestCase):
         self.assertEqual(snapshot["xraySetting"], self.state["config"])
         self.assertEqual(snapshot["outboundTestUrl"], "https://example.invalid/204")
         self.assertEqual(self.state["authorization"], ["Bearer test-token"])
+
+    def test_configured_host_header_is_sent_to_local_panel(self):
+        client = api_tool.PanelAPI(
+            self.base_url, "test-token", timeout=3, host_header="panel.example.invalid:12345"
+        )
+        client.get_snapshot()
+        self.assertEqual(self.state["host_headers"], ["panel.example.invalid:12345"])
 
     def test_update_uses_exact_panel_route_and_preserves_outbound_test_url(self):
         config = base_config()

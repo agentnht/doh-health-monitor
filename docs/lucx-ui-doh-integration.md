@@ -84,10 +84,15 @@ JSON object. Defaults match the plugin deployment; alternate service, status
 URL and listener port can be supplied explicitly. A missing/stopped plugin or
 failed listener/status check stops the adapter before any panel API request.
 
-The production adapter calls the panel API only after explicit operator
-approval; it never opens or writes the live SQLite database and never writes
-the runtime Xray config. Before use, it detects the version of the local Xray
-core executable. A version not yet verified against a staging panel is shown
+The production adapter calls the panel API only after the operator supplies
+the token and required confirmations; it never writes the panel SQLite DB or
+runtime Xray config. If `--base-url` is omitted, it reads only
+`webPort`, `webBasePath`, `webCertFile`, `webKeyFile`, and `webDomain`
+from local SQLite using `mode=ro`, taking the runtime `XUI_PORT` override
+into account. The actual base path is not printed. Pass `--panel-db` for a
+non-default SQLite location, or `--base-url` explicitly for PostgreSQL and
+other nonstandard deployments. Before use, it detects the version of the local
+Xray core executable. A version not yet verified against a staging panel is shown
 as a warning and requires explicit operator acknowledgement. The LucX-UI
 version is displayed for context only and is not a hard compatibility gate.
 Compatibility is detected by API behavior and response shape, not by a
