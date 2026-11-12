@@ -158,7 +158,22 @@ safely predict the panel's save behavior.
   After successful read-back verification, the private snapshot is retained
   for delayed rollback; it is not automatically deleted. A verified rollback
   deletes that operation snapshot. If verification fails or rollback cannot be
-  confirmed, the snapshot is retained for recovery. Rollback is guarded by an
+  confirmed, the snapshot is retained for recovery. After the permanent DNS
+  settings are verified, `apply` runs a self-cleaning end-to-end test: it
+  selects a loopback port after checking both TCP and UDP binds and panel
+  inbound reservations, creates a temporary `tunnel` inbound only through
+  `POST /panel/api/inbounds/add`, verifies its exact ID/remark/protocol/listen/
+  port/settings through the panel API, and checks for positive A answers over
+  UDP and TCP. It also verifies that the plugin query counter increased without
+  an increase in failures. The existing global TCP/UDP port-53 -> `dns-out`
+  rule routes the Tunnel's rewritten `127.0.0.1:53` destination, so the
+  self-test does not mutate Xray routing or cause a second restart. Cleanup in
+  `finally` re-reads the inbound list, deletes only the matching ID, confirms
+  API absence, and verifies both listeners have disappeared. A root-only
+  `0600` recovery journal is retained if cleanup cannot be verified;
+  subsequent `apply` is blocked until it is resolved with
+  `cleanup-test --recovery-journal PATH`. `check` and `plan` remain read-only.
+  Rollback is guarded by an
   exact read-back comparison so it cannot overwrite later panel changes. The adapter requires root on the LucX-UI VPS and uses a
   localhost/loopback panel API URL. It detects the local Xray version (or
   accepts an explicit `--xray-bin` path) for diagnostics only. Unknown or
