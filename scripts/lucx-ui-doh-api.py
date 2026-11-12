@@ -1559,7 +1559,9 @@ def verify_temporary_tunnel(inbounds: list[dict], expected: dict, inbound_id: in
     """Verify the exact created object by ID and immutable identity fields."""
     matches = [
         item for item in inbounds
-        if isinstance(item, dict) and item.get("id") == inbound_id
+        if isinstance(item, dict)
+        and not isinstance(item.get("id"), bool)
+        and item.get("id") == inbound_id
     ]
     if len(matches) != 1:
         raise IntegrationError("Created temporary Tunnel cannot be uniquely identified in the panel")
@@ -1599,9 +1601,18 @@ def cleanup_temporary_tunnel(client: PanelAPI, expected: dict, inbound_id: int |
             raise IntegrationError("Temporary Tunnel recovery match has no valid numeric ID")
     matches = [
         item for item in current
-        if isinstance(item, dict) and item.get("id") == inbound_id
+        if isinstance(item, dict)
+        and not isinstance(item.get("id"), bool)
+        and item.get("id") == inbound_id
     ]
     if not matches:
+        if any(
+            isinstance(item, dict) and item.get("remark") == expected.get("remark")
+            for item in current
+        ):
+            raise IntegrationError(
+                "Temporary Tunnel recovery marker exists under a different ID; refusing deletion"
+            )
         return
     verify_temporary_tunnel(current, expected, inbound_id)
     client.delete_inbound(inbound_id)
