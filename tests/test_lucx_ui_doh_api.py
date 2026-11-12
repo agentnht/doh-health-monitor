@@ -1137,6 +1137,11 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
 
 
 class TTYConfirmationTests(unittest.TestCase):
+    def test_cleanup_confirmation_uses_cleanup_phrase(self):
+        with patch.object(api_tool, "read_tty_confirmation", return_value="CLEANUP") as prompt:
+            api_tool.confirm_restart("cleanup", False)
+        self.assertEqual(prompt.call_args.args[0], "Type CLEANUP to continue: ")
+
     def test_confirmation_uses_separate_non_seekable_tty_streams(self):
         from unittest.mock import mock_open
 
