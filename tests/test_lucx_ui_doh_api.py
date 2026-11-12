@@ -710,7 +710,7 @@ class PanelAPITests(unittest.TestCase):
 
     def test_ip_tls_handler_passes_custom_context_to_https_connection(self):
         handler = api_tool._PanelSNIHTTPSHandler("localhost", verify_ip="130.49.178.137")
-        request = Request("https://127.0.0.1:33976/panel/api/xray/")
+        request = api_tool.Request("https://127.0.0.1:33976/panel/api/xray/")
         captured = {}
 
         def capture_do_open(connection_factory, req, **kwargs):
