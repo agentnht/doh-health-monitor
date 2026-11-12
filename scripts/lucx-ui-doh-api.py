@@ -1718,6 +1718,22 @@ def wait_for_tunnel_port_closed(port: int, timeout: float = 10.0) -> None:
     )
 
 
+def find_pending_recovery_journals(backup_dir: Path) -> list[Path]:
+    recovery_dir = backup_dir / "recovery"
+    try:
+        info = recovery_dir.lstat()
+    except FileNotFoundError:
+        return []
+    except OSError:
+        raise IntegrationError("Could not inspect the temporary Tunnel recovery directory") from None
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise IntegrationError("Temporary Tunnel recovery directory must be a private directory owned by the current user with mode 0700")
+    journals = sorted(recovery_dir.glob("lucx-doh-selftest-*.json"))
+    for journal in journals:
+        _load_recovery_journal(journal)
+    return journals
+
+
 def run_temporary_tunnel_test(client: PanelAPI, status_url: str, backup_dir: Path) -> None:
     """Create, verify, probe, and always clean up one temporary loopback DNS Tunnel."""
     remaining = list(TUNNEL_PORT_CANDIDATES)
@@ -2043,6 +2059,14 @@ def remove_verified_backup(path: Path) -> bool:
 
 
 def command_apply(args, client: PanelAPI) -> int:
+    backup_dir = Path(args.backup_dir).expanduser()
+    pending_journals = find_pending_recovery_journals(backup_dir)
+    if pending_journals:
+        print("ERROR: a previous temporary Tunnel test has a pending recovery journal.")
+        print("Clean it up before another apply:")
+        for journal in pending_journals:
+            print(f"  sudo python3 scripts/lucx-ui-doh-api.py cleanup-test --recovery-journal {shlex.quote(str(journal))}")
+        return 2
     snapshot = client.get_snapshot()
     plan = build_plan(snapshot["xraySetting"])
     print_plan(plan)
@@ -2313,7 +2337,21 @@ def main() -> int:
         if args.action == "cleanup-test":
             journal_path = Path(args.recovery_journal).expanduser()
             journal = _load_recovery_journal(journal_path)
-            cleanup_temporary_tunnel(client, journal["inbound"], journal.get("inbound_id"))
+            inbound_id = journal.get("inbound_id")
+            before_cleanup = client.list_inbounds()
+            if inbound_id is not None:
+                resource_present = any(
+                    isinstance(item, dict) and item.get("id") == inbound_id
+                    for item in before_cleanup
+                )
+            else:
+                resource_present = any(
+                    isinstance(item, dict) and item.get("remark") == journal["inbound"]["remark"]
+                    for item in before_cleanup
+                )
+            cleanup_temporary_tunnel(client, journal["inbound"], inbound_id)
+            if resource_present:
+                wait_for_tunnel_port_closed(journal["inbound"]["port"])
             journal_path.unlink(missing_ok=True)
             print("PASS: temporary Tunnel recovery cleanup verified; journal removed.")
             return 0
