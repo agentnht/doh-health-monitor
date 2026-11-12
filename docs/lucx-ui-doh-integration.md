@@ -76,17 +76,27 @@ For the inspected source version:
   (inbounds, outbounds, routing rules/balancers). DNS changes are not among
   those hot-reload sections and can require a full Xray process restart.
 
-Before asking for the panel API token or reading Xray settings, the production
-adapter performs a mandatory DoH Health Monitor preflight: it verifies that the
+Before reading Xray settings, the production adapter performs a mandatory
+DoH Health Monitor preflight: it verifies that the
 configured systemd unit is installed and active, checks TCP and UDP loopback
 listeners on port 5355, and requires the local `/status` endpoint to return a
 JSON object. Defaults match the plugin deployment; alternate service, status
 URL and listener port can be supplied explicitly. A missing/stopped plugin or
 failed listener/status check stops the adapter before any panel API request.
 
-The production adapter calls the panel API only after the operator supplies
-the token and required confirmations; it never writes the panel SQLite DB or
-runtime Xray config. If `--base-url` is omitted, it reads only
+The production adapter never asks the operator to paste a Bearer token. It
+first reads `XUI_API_TOKEN` from the installer's protected
+`/etc/x-ui/install-result.env` (mode `0600`), then checks its own saved
+credential via `--panel-auth-file`. If neither exists, it discovers the running
+panel executable and uses the LucX-UI CLI to create a dedicated
+`doh-health-monitor-integration` token with `admin` scope. The plaintext is
+stored in `/var/lib/doh-health-monitor-panel-auth/panel-api-auth.json` with
+mode `0600`; tokens with other names are not rotated. This first-time fallback
+changes only the panel's API-token store, not the Xray template. If the local
+CLI cannot safely create a separate token, the adapter stops without asking for
+a secret. Deployments may also supply `XUI_API_TOKEN` through the process
+environment. The adapter never writes the panel SQLite DB directly or runtime
+Xray config. If `--base-url` is omitted, it reads only
 `webPort`, `webBasePath`, `webCertFile`, `webKeyFile`, and `webDomain`
 from local SQLite using `mode=ro`, taking the runtime `XUI_PORT` override
 into account. The actual base path is not printed. Pass `--panel-db` for a
@@ -133,7 +143,8 @@ safely predict the panel's save behavior.
   reorder an existing routing rule during DNS allow-rule normalization. Its
   preflight models the panel's normalization using the proposed DNS endpoints,
   including legacy allow rules that the panel might newly adopt. It preserves
-  `outboundTestUrl` metadata, prompts for a hidden Bearer token and avoids secrets in output. Before
+  `outboundTestUrl` metadata, resolves local API authorization automatically,
+  and avoids secrets in output. Before
   applying, it creates a private pre-update API snapshot with mode `0600`.
   After successful read-back verification, the private snapshot is retained
   for delayed rollback; it is not automatically deleted. A verified rollback
