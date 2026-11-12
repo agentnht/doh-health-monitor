@@ -101,10 +101,11 @@ Xray config. If `--base-url` is omitted, it reads only
 from local SQLite using `mode=ro`, taking the runtime `XUI_PORT` override
 into account. The actual base path is not printed. Pass `--panel-db` for a
 non-default SQLite location, or `--base-url` explicitly for PostgreSQL and
-other nonstandard deployments. Before use, it detects the version of the local
-Xray core executable. A version not yet verified against a staging panel is shown
-as a warning and requires explicit operator acknowledgement. The LucX-UI
-version is displayed for context only and is not a hard compatibility gate.
+other nonstandard deployments. The local Xray core version is detected for diagnostics only. An unlisted or
+unavailable version is reported as a notice and does not block execution. The
+LucX-UI version is also informational. Compatibility is assessed through the
+actual panel API response, configuration structure, conflict checks, and
+read-back verification rather than a hard-coded core-version allowlist.
 Compatibility is detected by API behavior and response shape, not by a
 hard-coded LucX-UI version allowlist: the adapter must successfully read the
 Xray settings endpoint, decode `xraySetting`, preserve `outboundTestUrl`, and
@@ -152,10 +153,10 @@ safely predict the panel's save behavior.
   confirmed, the snapshot is retained for recovery. Rollback is guarded by an
   exact read-back comparison so it cannot overwrite later panel changes. The adapter requires root on the LucX-UI VPS and uses a
   localhost/loopback panel API URL. It detects the local Xray version (or
-  accepts an explicit `--xray-bin` path). Versions absent from the verified
-  list trigger a warning and require confirmation; the list remains empty
-  until a core version has been tested on a staging panel. The LucX-UI version
-  is informational only.
+  accepts an explicit `--xray-bin` path) for diagnostics only. Unknown or
+  unavailable versions do not block execution; compatibility is assessed
+  through API responses, configuration structure, conflict checks, and
+  read-back. The LucX-UI version is informational only.
 - The `POST /panel/api/xray/` read handler is read-only for ordinary current
   templates, but this LucX-UI source version also auto-heals a legacy wrapped
   `xrayTemplateConfig` by calling `SaveXraySetting` during the read. The
