@@ -1935,17 +1935,19 @@ def read_plugin_counters(status_url: str) -> tuple[int, int]:
 def run_tunnel_dns_self_test(port: int, status_url: str) -> None:
     """Require positive UDP+TCP A answers and a corresponding plugin query-counter increase."""
     before_queries, before_failures = read_plugin_counters(status_url)
+    if before_failures != 0:
+        raise IntegrationError("Plugin failure counter was non-zero before the DNS Tunnel self-test")
     udp_answers = query_dns_a("127.0.0.1", port, tcp=False)
     tcp_answers = query_dns_a("127.0.0.1", port, tcp=True)
     after_queries, after_failures = read_plugin_counters(status_url)
-    if after_queries <= before_queries:
-        raise IntegrationError("DNS Tunnel queries did not increment the plugin query counter")
-    if after_failures > before_failures:
-        raise IntegrationError("DNS Tunnel self-test increased the plugin failure counter")
+    if after_queries < before_queries + 2:
+        raise IntegrationError("UDP and TCP Tunnel queries did not both increment the plugin query counter")
+    if after_failures != 0:
+        raise IntegrationError("Plugin failure counter was non-zero after the DNS Tunnel self-test")
     print("PASS: temporary Tunnel returned positive DNS A answers over UDP and TCP.")
     print(
         "PASS: plugin query counter increased "
-        f"{before_queries} -> {after_queries}; failures stayed at {after_failures}."
+        f"{before_queries} -> {after_queries}; failures remained zero."
     )
     print("UDP A answers:", ", ".join(udp_answers))
     print("TCP A answers:", ", ".join(tcp_answers))
