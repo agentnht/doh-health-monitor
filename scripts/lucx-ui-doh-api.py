@@ -319,7 +319,7 @@ def save_panel_api_token(path: Path, token: str, *, expected_uid: int | None = N
         payload = json.dumps(
             {"format": 1, "token_name": PANEL_AUTH_TOKEN_NAME, "token": token},
             separators=(",", ":"),
-        ).encode("utf-8") + b"\\n"
+        ).encode("utf-8") + b"\n"
         fd, temporary_name = tempfile.mkstemp(prefix=".panel-api-auth-", dir=str(parent))
         temporary = Path(temporary_name)
         try:
@@ -420,7 +420,7 @@ def mint_panel_api_token(panel_cli: Path, auth_file: Path) -> str:
         )
     except (OSError, subprocess.TimeoutExpired):
         raise IntegrationError("LucX-UI could not provision its local integration API credential") from None
-    match = re.search(r"(?m)^apiToken:\\s*(\\S+)\\s*$", result.stdout or "")
+    match = re.search(r"(?m)^apiToken:\s*(\S+)\s*$", result.stdout or "")
     if result.returncode != 0 or not match:
         raise IntegrationError(
             "LucX-UI did not return a new API credential; no panel Xray settings were changed"
