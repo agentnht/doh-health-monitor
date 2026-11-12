@@ -708,6 +708,25 @@ class PanelAPITests(unittest.TestCase):
         self.assertFalse(handler._context.check_hostname)
         self.assertEqual(handler._context.verify_mode, api_tool.ssl.CERT_REQUIRED)
 
+    def test_ip_tls_handler_passes_custom_context_to_https_connection(self):
+        handler = api_tool._PanelSNIHTTPSHandler("localhost", verify_ip="130.49.178.137")
+        request = Request("https://127.0.0.1:33976/panel/api/xray/")
+        captured = {}
+
+        def capture_do_open(connection_factory, req, **kwargs):
+            captured["connection_factory"] = connection_factory
+            captured["request"] = req
+            captured.update(kwargs)
+            return object()
+
+        handler.do_open = capture_do_open
+        handler.https_open(request)
+
+        self.assertIs(captured["request"], request)
+        self.assertIs(captured["context"], handler._context)
+        self.assertFalse(captured["check_hostname"])
+        self.assertEqual(captured["context"].verify_mode, api_tool.ssl.CERT_REQUIRED)
+
     def setUp(self):
         self.state = {
             "config": base_config(),
