@@ -567,6 +567,45 @@ class PanelEndpointDiscoveryTests(unittest.TestCase):
             self.assertEqual(endpoint.base_url, "https://127.0.0.1:33976/private-panel-path")
             self.assertEqual(endpoint.host_header, "panel.example.test:33976")
             self.assertEqual(endpoint.tls_server_name, "panel.example.test")
+            self.assertIsNone(endpoint.tls_verify_ip)
+
+    def test_detects_ip_san_certificate_and_uses_separate_sni_and_ip_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = __import__("pathlib").Path(directory)
+            db = root / "x-ui.db"
+            self._write_panel_db(db, {
+                "webPort": "33976",
+                "webBasePath": "/",
+                "webCertFile": "/cert/fullchain.pem",
+                "webKeyFile": "/cert/privkey.pem",
+            })
+            with (
+                patch.object(api_tool, "_panel_tls_is_enabled", return_value=True),
+                patch.object(
+                    api_tool.ssl._ssl,
+                    "_test_decode_cert",
+                    return_value={"subjectAltName": [("IP Address", "130.49.178.137")]},
+                ),
+            ):
+                endpoint = api_tool.detect_panel_endpoint(db, runtime_env={}, panel_cwd=root)
+            self.assertEqual(endpoint.base_url, "https://127.0.0.1:33976")
+            self.assertEqual(endpoint.tls_server_name, "localhost")
+            self.assertEqual(endpoint.tls_verify_ip, "130.49.178.137")
+
+    def test_detects_http_when_panel_has_no_tls_certificate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = __import__("pathlib").Path(directory) / "x-ui.db"
+            self._write_panel_db(db, {"webPort": "33976", "webBasePath": "/"})
+            endpoint = api_tool.detect_panel_endpoint(
+                db, runtime_env={}, panel_cwd=__import__("pathlib").Path(directory)
+            )
+            self.assertEqual(endpoint.base_url, "http://127.0.0.1:33976")
+            self.assertIsNone(endpoint.tls_server_name)
+            self.assertIsNone(endpoint.tls_verify_ip)
+
+    def test_tls_configuration_does_not_silently_fall_back_to_http(self):
+        with self.assertRaisesRegex(api_tool.IntegrationError, "refusing HTTP fallback"):
+            api_tool._panel_tls_is_enabled("/missing/cert.pem", "", __import__("pathlib").Path("/"))
 
     def test_runtime_xui_port_overrides_database_port(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -648,6 +687,27 @@ class PluginPreflightTests(unittest.TestCase):
 
 
 class PanelAPITests(unittest.TestCase):
+    def test_ip_san_verification_requires_exact_ip_san_not_cn(self):
+        api_tool.verify_certificate_ip_san(
+            {"subjectAltName": [("IP Address", "130.49.178.137")]},
+            "130.49.178.137",
+        )
+        with self.assertRaises(api_tool.ssl.CertificateError):
+            api_tool.verify_certificate_ip_san(
+                {"subject": ((("commonName", "130.49.178.137"),),)},
+                "130.49.178.137",
+            )
+        with self.assertRaises(api_tool.ssl.CertificateError):
+            api_tool.verify_certificate_ip_san(
+                {"subjectAltName": [("IP Address", "130.49.178.138")]},
+                "130.49.178.137",
+            )
+
+    def test_ip_tls_handler_keeps_chain_validation_enabled(self):
+        handler = api_tool._PanelSNIHTTPSHandler("localhost", verify_ip="130.49.178.137")
+        self.assertFalse(handler._context.check_hostname)
+        self.assertEqual(handler._context.verify_mode, api_tool.ssl.CERT_REQUIRED)
+
     def setUp(self):
         self.state = {
             "config": base_config(),
