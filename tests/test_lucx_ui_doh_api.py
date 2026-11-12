@@ -735,6 +735,9 @@ class PanelAPITests(unittest.TestCase):
             "authorization": [],
             "host_headers": [],
             "posted_form": [],
+            "inbounds": [],
+            "next_inbound_id": 1,
+            "inbound_payloads": [],
         }
         state = self.state
 
@@ -750,12 +753,32 @@ class PanelAPITests(unittest.TestCase):
                 self.end_headers()
                 self.wfile.write(body)
 
+            def do_GET(self):
+                state["authorization"].append(self.headers.get("Authorization"))
+                state["host_headers"].append(self.headers.get("Host"))
+                if self.path == "/nested/panel/api/inbounds/list":
+                    self._send({"success": True, "msg": "", "obj": state["inbounds"]})
+                else:
+                    self.send_error(404)
+
             def do_POST(self):
                 state["authorization"].append(self.headers.get("Authorization"))
                 state["host_headers"].append(self.headers.get("Host"))
                 length = int(self.headers.get("Content-Length", "0"))
                 raw = self.rfile.read(length).decode()
-                if self.path == "/nested/panel/api/xray/":
+                if self.path == "/nested/panel/api/inbounds/add":
+                    payload = json.loads(raw)
+                    state["inbound_payloads"].append(payload)
+                    created = dict(payload)
+                    created.update({"id": state["next_inbound_id"], "tag": "in-test"})
+                    state["next_inbound_id"] += 1
+                    state["inbounds"].append(created)
+                    self._send({"success": True, "msg": "", "obj": created})
+                elif self.path.startswith("/nested/panel/api/inbounds/del/"):
+                    inbound_id = int(self.path.rsplit("/", 1)[1])
+                    state["inbounds"] = [x for x in state["inbounds"] if x["id"] != inbound_id]
+                    self._send({"success": True, "msg": "", "obj": inbound_id})
+                elif self.path == "/nested/panel/api/xray/":
                     payload = {
                         "xraySetting": state["config"],
                         "outboundTestUrl": state["outboundTestUrl"],
@@ -804,6 +827,42 @@ class PanelAPITests(unittest.TestCase):
         self.assertEqual(self.state["authorization"][-1], "Bearer test-token")
         self.assertIn("xraySetting", self.state["posted_form"][-1])
         self.assertIn("outboundTestUrl", self.state["posted_form"][-1])
+
+    def test_inbound_api_lists_creates_and_deletes_only_by_numeric_id(self):
+        inbound = {
+            "remark": "doh-route-test-unit",
+            "protocol": "tunnel",
+            "listen": "127.0.0.1",
+            "port": 15353,
+            "settings": json.dumps({
+                "rewriteAddress": "127.0.0.1",
+                "rewritePort": 53,
+                "allowedNetwork": "tcp,udp",
+                "followRedirect": False,
+                "portMap": {},
+            }),
+            "enable": True,
+        }
+        created = self.client.add_inbound(inbound)
+        self.assertEqual(created["id"], 1)
+        self.assertEqual(self.client.list_inbounds()[0]["remark"], "doh-route-test-unit")
+        self.client.delete_inbound(created["id"])
+        self.assertEqual(self.client.list_inbounds(), [])
+        self.assertEqual(self.state["inbound_payloads"], [inbound])
+        self.assertTrue(all(x == "Bearer test-token" for x in self.state["authorization"]))
+
+    def test_delete_inbound_refuses_invalid_ids_without_api_request(self):
+        before = len(self.state["authorization"])
+        for invalid in (0, -1, True, "1", None):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(api_tool.IntegrationError):
+                    self.client.delete_inbound(invalid)
+        self.assertEqual(len(self.state["authorization"]), before)
+
+    def test_add_inbound_rejects_non_tunnel_protocol(self):
+        with self.assertRaisesRegex(api_tool.IntegrationError, "Only a Tunnel"):
+            self.client.add_inbound({"protocol": "vless"})
+        self.assertEqual(self.state["authorization"], [])
 
     def test_non_loopback_plain_http_requires_explicit_override(self):
         with self.assertRaises(api_tool.IntegrationError):
