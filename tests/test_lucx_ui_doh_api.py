@@ -401,6 +401,47 @@ class ApplyBackupLifecycleTests(unittest.TestCase):
             self.assertEqual(saved["before"]["xraySetting"], initial)
             self.assertEqual(saved["after"]["xraySetting"], plan.expected_saved)
 
+    def test_apply_fails_and_retains_backup_when_tunnel_self_test_fails(self):
+        initial = base_config()
+        plan = api_tool.build_plan(initial)
+
+        class FakeClient:
+            def __init__(self):
+                self.config = copy.deepcopy(initial)
+
+            def get_snapshot(self):
+                return {
+                    "xraySetting": copy.deepcopy(self.config),
+                    "outboundTestUrl": "https://example.invalid/204",
+                }
+
+            def update(self, _config, _test_url):
+                self.config = copy.deepcopy(plan.expected_saved)
+
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(approve_restart=True, backup_dir=directory)
+            with patch.object(
+                api_tool, "run_temporary_tunnel_test",
+                side_effect=api_tool.IntegrationError("self-test failed"),
+            ):
+                self.assertEqual(api_tool.command_apply(args, FakeClient()), 2)
+            backups = list(__import__("pathlib").Path(directory).glob("*.json"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(api_tool.load_backup(backups[0])["state"], "applied-and-verified")
+
+    def test_apply_blocks_when_a_recovery_journal_is_pending(self):
+        with tempfile.TemporaryDirectory() as directory:
+            backup_dir = __import__("pathlib").Path(directory)
+            expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718")
+            api_tool._write_recovery_journal(backup_dir, expected, 9, "cleanup-required")
+
+            class NeverCalledClient:
+                def get_snapshot(self):
+                    self.fail("panel mutation/read should not begin with pending recovery")
+
+            args = SimpleNamespace(backup_dir=directory)
+            self.assertEqual(api_tool.command_apply(args, NeverCalledClient()), 2)
+
     def test_apply_retains_snapshot_when_readback_does_not_match(self):
         initial = base_config()
         plan = api_tool.build_plan(initial)
