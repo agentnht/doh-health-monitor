@@ -225,8 +225,10 @@ def _running_panel_context() -> tuple[dict[str, str], Path]:
     return env, panel_cwd
 
 
-def _read_secure_text_file(path: Path, *, expected_uid: int = 0, max_bytes: int = 65536) -> str | None:
+def _read_secure_text_file(path: Path, *, expected_uid: int | None = None, max_bytes: int = 65536) -> str | None:
     """Read a root-owned, private regular file without following symlinks."""
+    if expected_uid is None:
+        expected_uid = os.geteuid()
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(path, flags)
@@ -263,7 +265,7 @@ def _validate_api_token(token: str) -> str:
 
 
 def load_installer_api_token(
-    path: Path = INSTALL_RESULT_FILE, *, expected_uid: int = 0
+    path: Path = INSTALL_RESULT_FILE, *, expected_uid: int | None = None
 ) -> str | None:
     """Read XUI_API_TOKEN from the installer's private env file without sourcing shell code."""
     content = _read_secure_text_file(path, expected_uid=expected_uid)
@@ -282,7 +284,7 @@ def load_installer_api_token(
     return None
 
 
-def load_saved_panel_api_token(path: Path, *, expected_uid: int = 0) -> str | None:
+def load_saved_panel_api_token(path: Path, *, expected_uid: int | None = None) -> str | None:
     """Load the adapter's own persisted API credential, never another panel token."""
     content = _read_secure_text_file(path, expected_uid=expected_uid)
     if content is None:
@@ -301,9 +303,11 @@ def load_saved_panel_api_token(path: Path, *, expected_uid: int = 0) -> str | No
     return _validate_api_token(payload["token"])
 
 
-def save_panel_api_token(path: Path, token: str, *, expected_uid: int = 0) -> None:
+def save_panel_api_token(path: Path, token: str, *, expected_uid: int | None = None) -> None:
     """Persist a newly minted adapter token atomically in a root-only file."""
     token = _validate_api_token(token)
+    if expected_uid is None:
+        expected_uid = os.geteuid()
     parent = path.parent
     try:
         parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -425,7 +429,7 @@ def mint_panel_api_token(panel_cli: Path, auth_file: Path) -> str:
     save_panel_api_token(auth_file, token)
     print(
         "PASS: created a dedicated LucX-UI API credential for this integration "
-        f"({PANEL_AUTH_TOKEN_NAME}); stored locally with mode 0600"
+        f"({PANEL_AUTH_TOKEN_NAME}, admin scope); stored locally with mode 0600"
     )
     return token
 
