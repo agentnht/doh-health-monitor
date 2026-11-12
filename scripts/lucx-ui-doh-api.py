@@ -30,6 +30,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1581,9 +1582,21 @@ def verify_temporary_tunnel(inbounds: list[dict], expected: dict, inbound_id: in
     return actual
 
 
-def cleanup_temporary_tunnel(client: PanelAPI, expected: dict, inbound_id: int) -> None:
+def cleanup_temporary_tunnel(client: PanelAPI, expected: dict, inbound_id: int | None) -> None:
     """Delete only this run's inbound after identity read-back, then verify absence."""
     current = client.list_inbounds()
+    if inbound_id is None:
+        matches = [
+            item for item in current
+            if isinstance(item, dict) and item.get("remark") == expected.get("remark")
+        ]
+        if len(matches) > 1:
+            raise IntegrationError("Multiple inbounds match the temporary Tunnel recovery marker; refusing deletion")
+        if not matches:
+            return
+        inbound_id = matches[0].get("id")
+        if isinstance(inbound_id, bool) or not isinstance(inbound_id, int) or inbound_id <= 0:
+            raise IntegrationError("Temporary Tunnel recovery match has no valid numeric ID")
     matches = [
         item for item in current
         if isinstance(item, dict) and item.get("id") == inbound_id
@@ -1597,6 +1610,127 @@ def cleanup_temporary_tunnel(client: PanelAPI, expected: dict, inbound_id: int) 
         raise IntegrationError(
             f"Temporary Tunnel cleanup could not be verified; recovery required for inbound ID {inbound_id}"
         )
+
+
+def wait_for_tunnel_listeners(port: int, timeout: float = 20.0) -> None:
+    """Wait for LucX-UI/Xray to expose both TCP and UDP loopback listeners."""
+    ss = shutil.which("ss")
+    if not ss:
+        raise IntegrationError("The ss utility is required to verify temporary Tunnel listeners")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        observed = {}
+        for proto, flag in (("tcp", "-ltn"), ("udp", "-lun")):
+            result = subprocess.run(
+                [ss, "-H", *flag.split()],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise IntegrationError("Could not inspect temporary Tunnel listeners")
+            observed[proto] = listener_output_has_loopback_port(result.stdout or "", port)
+        if observed["tcp"] and observed["udp"]:
+            return
+        time.sleep(0.25)
+    raise IntegrationError(
+        f"Temporary Tunnel listeners did not become active on loopback port {port} (TCP and UDP)"
+    )
+
+
+def _write_recovery_journal(backup_dir: Path, expected: dict, inbound_id: int | None, state: str) -> Path:
+    marker = expected["remark"].removeprefix(TUNNEL_REMARK_PREFIX)
+    journal_dir = backup_dir / "recovery"
+    journal_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(journal_dir, 0o700)
+    path = journal_dir / f"lucx-doh-selftest-{marker}.json"
+    _write_private_json(path, {
+        "format": 1,
+        "kind": "temporary-tunnel-selftest",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "state": state,
+        "inbound_id": inbound_id,
+        "inbound": expected,
+    })
+    return path
+
+
+def _load_recovery_journal(path: Path) -> dict:
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+            raise IntegrationError("Recovery journal must be a private regular file owned by the current user with mode 0600")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except IntegrationError:
+        raise
+    except (OSError, json.JSONDecodeError):
+        raise IntegrationError("Cannot read the temporary Tunnel recovery journal") from None
+    inbound = payload.get("inbound") if isinstance(payload, dict) else None
+    if (
+        not isinstance(payload, dict) or payload.get("format") != 1
+        or payload.get("kind") != "temporary-tunnel-selftest"
+        or not isinstance(inbound, dict)
+        or inbound.get("protocol") != "tunnel"
+        or not str(inbound.get("remark", "")).startswith(TUNNEL_REMARK_PREFIX)
+        or inbound.get("listen") != "127.0.0.1"
+        or isinstance(inbound.get("port"), bool)
+        or not isinstance(inbound.get("port"), int)
+        or not 1 <= inbound["port"] <= 65535
+    ):
+        raise IntegrationError("Recovery journal format or temporary Tunnel identity is invalid")
+    inbound_id = payload.get("inbound_id")
+    if inbound_id is not None and (
+        isinstance(inbound_id, bool) or not isinstance(inbound_id, int) or inbound_id <= 0
+    ):
+        raise IntegrationError("Recovery journal contains an invalid inbound ID")
+    return payload
+
+
+def run_temporary_tunnel_test(client: PanelAPI, status_url: str, backup_dir: Path) -> None:
+    """Create, verify, probe, and always clean up one temporary loopback DNS Tunnel."""
+    inbounds = client.list_inbounds()
+    port = choose_temporary_tunnel_port(inbounds)
+    expected = build_temporary_tunnel(port)
+    journal = _write_recovery_journal(backup_dir, expected, None, "create-pending")
+    inbound_id = None
+    test_error = None
+    cleanup_error = None
+    try:
+        created = client.add_inbound(expected)
+        inbound_id = created["id"]
+        journal = _write_recovery_journal(backup_dir, expected, inbound_id, "created")
+        current = client.list_inbounds()
+        verify_temporary_tunnel(current, expected, inbound_id)
+        wait_for_tunnel_listeners(port)
+        # The permanent port-53 -> dns-out rule routes the Tunnel's rewritten
+        # 127.0.0.1:53 destination to the plugin. No temporary Xray routing
+        # mutation or second Xray restart is necessary.
+        run_tunnel_dns_self_test(port, status_url)
+    except Exception as exc:
+        test_error = exc
+    finally:
+        try:
+            cleanup_temporary_tunnel(client, expected, inbound_id)
+            journal.unlink(missing_ok=True)
+        except Exception as exc:
+            cleanup_error = exc
+            try:
+                _write_recovery_journal(backup_dir, expected, inbound_id, "cleanup-required")
+            except Exception:
+                pass
+    if cleanup_error:
+        raise IntegrationError(
+            f"Temporary Tunnel cleanup failed; recovery journal retained at {journal}. "
+            f"Resource marker: {expected['remark']}; inbound ID: {inbound_id or 'unknown'}"
+        ) from None
+    if test_error:
+        if isinstance(test_error, IntegrationError):
+            raise test_error
+        raise IntegrationError("Temporary Tunnel self-test failed; temporary inbound was cleaned up") from None
+    print("PASS: temporary Tunnel inbound was removed and panel API read-back confirms absence.")
 
 
 
@@ -1919,6 +2053,19 @@ def command_apply(args, client: PanelAPI) -> int:
     print("Use the rollback action with this backup path to undo the integration later.")
     print("Rollback is guarded: it will refuse if the current panel settings differ from the saved after-snapshot.")
     print("Check Xray status in LucX-UI; a running core may have been fully restarted by the panel.")
+
+    try:
+        run_temporary_tunnel_test(
+            client,
+            getattr(args, "plugin_status_url", DEFAULT_PLUGIN_STATUS_URL),
+            Path(args.backup_dir).expanduser(),
+        )
+    except IntegrationError as exc:
+        print("ERROR: permanent DNS integration was applied, but the end-to-end Tunnel test did not pass.")
+        print("The persistent rollback snapshot is retained; no automatic rollback was attempted.")
+        print("Reason:", exc)
+        print("Backup:", backup_path)
+        return 2
     return 0
 
 
@@ -2009,12 +2156,17 @@ def main() -> int:
         action="store_true",
         help="Explicitly approve the full Xray restart that the panel API may perform",
     )
-    parser.add_argument("action", choices=("check", "plan", "apply", "rollback"))
+    parser.add_argument("action", choices=("check", "plan", "apply", "rollback", "cleanup-test"))
+    parser.add_argument("--recovery-journal", help="Private temporary Tunnel recovery journal for cleanup-test")
     parser.add_argument("--backup", help="Backup file required for rollback")
     args = parser.parse_args()
 
     if args.action == "rollback" and not args.backup:
         parser.error("rollback requires --backup")
+    if args.action == "cleanup-test" and not args.recovery_journal:
+        parser.error("cleanup-test requires --recovery-journal")
+    if args.action != "cleanup-test" and args.recovery_journal:
+        parser.error("--recovery-journal is only valid with cleanup-test")
 
     try:
         if os.geteuid() != 0:
@@ -2098,6 +2250,13 @@ def main() -> int:
             return command_check_or_plan(args, client)
         if args.action == "apply":
             return command_apply(args, client)
+        if args.action == "cleanup-test":
+            journal_path = Path(args.recovery_journal).expanduser()
+            journal = _load_recovery_journal(journal_path)
+            cleanup_temporary_tunnel(client, journal["inbound"], journal.get("inbound_id"))
+            journal_path.unlink(missing_ok=True)
+            print("PASS: temporary Tunnel recovery cleanup verified; journal removed.")
+            return 0
         return command_rollback(args, client)
     except IntegrationError as exc:
         print("ERROR:", exc, file=sys.stderr)
