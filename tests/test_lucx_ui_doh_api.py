@@ -942,6 +942,17 @@ class TemporaryTunnelSafetyTests(unittest.TestCase):
         self.assertEqual(client.deleted, [7])
         self.assertEqual(client.inbounds, [])
 
+    def test_cleanup_refuses_same_remark_under_a_different_id(self):
+        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718")
+        replacement = dict(expected, id=8, tag="inbound-8")
+        class FakeClient:
+            def list_inbounds(self):
+                return [replacement]
+            def delete_inbound(self, _inbound_id):
+                self.fail("must not delete an inbound with a different ID")
+        with self.assertRaisesRegex(api_tool.IntegrationError, "different ID"):
+            api_tool.cleanup_temporary_tunnel(FakeClient(), expected, 7)
+
     def test_cleanup_refuses_to_delete_replaced_inbound(self):
         expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718")
         replacement = dict(expected, id=7, remark="operator-owned")
