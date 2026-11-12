@@ -1410,6 +1410,81 @@ class PanelAPI:
         }
         self._post("update", fields)
 
+    def _inbound_request(self, method: str, suffix: str, payload: dict | None = None) -> dict:
+        """Call the official LucX-UI inbound API; never expose response bodies on errors."""
+        url = self.root + "/panel/api/inbounds/" + suffix.lstrip("/")
+        data = None if payload is None else json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
+        request = Request(
+            url,
+            data=data,
+            method=method,
+            headers={
+                "Authorization": "Bearer " + self.token,
+                "Accept": "application/json",
+                "User-Agent": "lucx-ui-doh-api/" + VERSION,
+                **({"Content-Type": "application/json"} if data is not None else {}),
+                **({"Host": self.host_header} if self.host_header else {}),
+            },
+        )
+        try:
+            response_context = (
+                self.opener.open(request, timeout=self.timeout)
+                if self.opener else urlopen(request, timeout=self.timeout)
+            )
+            with response_context as response:
+                body = response.read(MAX_RESPONSE_BYTES + 1)
+        except HTTPError as exc:
+            raise IntegrationError(
+                f"LucX-UI inbound API HTTP error ({exc.code}); response body suppressed"
+            ) from None
+        except (URLError, TimeoutError, OSError):
+            raise IntegrationError(
+                "Could not reach the LucX-UI inbound API; network details suppressed"
+            ) from None
+        if len(body) > MAX_RESPONSE_BYTES:
+            raise IntegrationError("LucX-UI inbound API response exceeded the size limit")
+        return parse_api_response(body)
+
+    @staticmethod
+    def _inbound_object(envelope: dict, description: str) -> dict:
+        value = envelope.get("obj")
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                raise IntegrationError(f"LucX-UI returned invalid {description} JSON") from None
+        if not isinstance(value, dict):
+            raise IntegrationError(f"LucX-UI response does not contain {description}")
+        return value
+
+    def list_inbounds(self) -> list[dict]:
+        envelope = self._inbound_request("GET", "list")
+        value = envelope.get("obj")
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                raise IntegrationError("LucX-UI returned an invalid inbound list") from None
+        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+            raise IntegrationError("LucX-UI response does not contain an inbound list")
+        return value
+
+    def add_inbound(self, inbound: dict) -> dict:
+        if not isinstance(inbound, dict) or inbound.get("protocol") != "tunnel":
+            raise IntegrationError("Only a Tunnel inbound can be created by this integration")
+        envelope = self._inbound_request("POST", "add", inbound)
+        created = self._inbound_object(envelope, "created inbound")
+        if isinstance(created.get("id"), bool) or not isinstance(created.get("id"), int) or created["id"] <= 0:
+            raise IntegrationError("LucX-UI did not return a valid ID for the created Tunnel inbound")
+        return created
+
+    def delete_inbound(self, inbound_id: int) -> None:
+        if isinstance(inbound_id, bool) or not isinstance(inbound_id, int) or inbound_id <= 0:
+            raise IntegrationError("Refusing to delete an inbound without a valid numeric ID")
+        self._inbound_request("POST", f"del/{inbound_id}")
+
 
 def _default_backup_dir() -> Path:
     return Path.home() / ".local" / "state" / "lucx-ui-doh" / "backups"
