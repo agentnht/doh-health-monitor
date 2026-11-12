@@ -6,6 +6,8 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import os
+import stat
 import sqlite3
 import threading
 import tempfile
@@ -718,6 +720,107 @@ class TTYConfirmationTests(unittest.TestCase):
         )
         tty_out.return_value.write.assert_called_once_with("Type RISK: ")
         tty_out.return_value.flush.assert_called_once()
+
+
+
+class PanelCredentialTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = __import__("pathlib").Path(self.temp.name)
+        self.expected_uid = os.geteuid()
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def _write_private(self, path, content):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        path.chmod(0o600)
+        return path
+
+    def test_reads_installer_token_without_sourcing_shell_file(self):
+        token = "a" * 48
+        path = self._write_private(
+            self.root / "install-result.env",
+            "XUI_USERNAME=operator\nXUI_API_TOKEN=" + token + "\n",
+        )
+        self.assertEqual(
+            api_tool.load_installer_api_token(path, expected_uid=self.expected_uid),
+            token,
+        )
+
+    def test_rejects_insecure_installer_credential_permissions(self):
+        token = "b" * 48
+        path = self._write_private(
+            self.root / "install-result.env",
+            "XUI_API_TOKEN=" + token + "\n",
+        )
+        path.chmod(0o644)
+        with self.assertRaises(api_tool.IntegrationError):
+            api_tool.load_installer_api_token(path, expected_uid=self.expected_uid)
+
+    def test_saved_token_round_trip_is_private(self):
+        token = "c" * 48
+        path = self.root / "private" / "panel-auth.json"
+        api_tool.save_panel_api_token(path, token, expected_uid=self.expected_uid)
+        self.assertEqual(
+            api_tool.load_saved_panel_api_token(path, expected_uid=self.expected_uid),
+            token,
+        )
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+
+    def test_mints_dedicated_token_and_does_not_print_secret(self):
+        token = "d" * 48
+        help_result = SimpleNamespace(
+            stdout="-getApiToken -tokenName -tokenScope",
+            returncode=0,
+        )
+        mint_result = SimpleNamespace(
+            stdout="API token created\napiToken: " + token + "\n",
+            returncode=0,
+        )
+        auth_file = self.root / "auth" / "panel-auth.json"
+        with patch.object(
+            api_tool.subprocess, "run", side_effect=[help_result, mint_result]
+        ) as run, patch("builtins.print") as output:
+            actual = api_tool.mint_panel_api_token(
+                __import__("pathlib").Path("/usr/local/x-ui/x-ui"),
+                auth_file,
+            )
+        self.assertEqual(actual, token)
+        self.assertEqual(run.call_count, 2)
+        command = run.call_args_list[1].args[0]
+        self.assertEqual(command[2:], [
+            "-getApiToken",
+            "-tokenName",
+            api_tool.PANEL_AUTH_TOKEN_NAME,
+            "-tokenScope",
+            "admin",
+        ])
+        self.assertNotIn(token, repr(output.call_args_list))
+        self.assertEqual(
+            api_tool.load_saved_panel_api_token(
+                auth_file, expected_uid=self.expected_uid
+            ),
+            token,
+        )
+
+    def test_saved_token_is_reused_without_running_panel_cli(self):
+        token = "e" * 48
+        auth_file = self.root / "auth" / "panel-auth.json"
+        api_tool.save_panel_api_token(
+            auth_file, token, expected_uid=self.expected_uid
+        )
+        missing_installer_file = self.root / "missing-install-result.env"
+        with patch.object(api_tool, "detect_panel_cli") as detect:
+            result = api_tool.resolve_panel_api_token(
+                auth_file,
+                installer_file=missing_installer_file,
+                environ={},
+            )
+        self.assertEqual(result, token)
+        detect.assert_not_called()
 
 
 if __name__ == "__main__":
