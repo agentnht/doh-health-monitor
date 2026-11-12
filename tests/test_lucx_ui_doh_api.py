@@ -1053,8 +1053,8 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
     def test_add_port_race_retries_another_candidate(self):
         class RacingClient(self.FakeClient):
             def add_inbound(self, payload):
-                self.add_calls += 1
-                if self.add_calls == 1:
+                if self.add_calls == 0:
+                    self.add_calls += 1
                     raise api_tool.IntegrationError("port collision")
                 return super().add_inbound(payload)
 
