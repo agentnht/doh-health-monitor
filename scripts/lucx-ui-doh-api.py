@@ -2197,6 +2197,84 @@ def print_plan(plan: Plan) -> None:
         print("Result: already integrated; no update or restart required")
 
 
+
+def build_selective_rollback_config(current: dict, before: dict, after: dict) -> dict:
+    """Remove only unchanged DNS objects introduced by this apply; preserve later edits."""
+    result = copy.deepcopy(current)
+
+    def tagged(items, tag):
+        return [item for item in items if isinstance(item, dict) and item.get("tag") == tag]
+
+    current_outbounds = object_list(result, "outbounds", "outbounds")
+    before_outbounds = object_list(before, "outbounds", "before.outbounds")
+    after_outbounds = object_list(after, "outbounds", "after.outbounds")
+    if not tagged(before_outbounds, "dns-out"):
+        owned = tagged(after_outbounds, "dns-out")
+        if owned:
+            if len(owned) != 1:
+                raise IntegrationError("Backup has ambiguous dns-out ownership; selective rollback refused")
+            present = tagged(current_outbounds, "dns-out")
+            if present:
+                if len(present) != 1 or canonical(present[0]) != canonical(owned[0]):
+                    raise IntegrationError("dns-out was modified after apply; refusing to delete the changed outbound")
+                current_outbounds.remove(present[0])
+
+    before_dns = before.get("dns", {})
+    after_dns = after.get("dns", {})
+    current_dns = result.get("dns", {})
+    if not isinstance(before_dns, dict) or not isinstance(after_dns, dict) or not isinstance(current_dns, dict):
+        raise IntegrationError("DNS settings are not objects; selective rollback refused")
+    before_servers = before_dns.get("servers", [])
+    after_servers = after_dns.get("servers", [])
+    current_servers = current_dns.get("servers", [])
+    if not all(isinstance(items, list) for items in (before_servers, after_servers, current_servers)):
+        raise IntegrationError("DNS server lists are invalid; selective rollback refused")
+
+    def targets_local_dns(server):
+        address = ""
+        port = None
+        if isinstance(server, str):
+            address = server
+        elif isinstance(server, dict):
+            address = server.get("address", "") if isinstance(server.get("address", ""), str) else ""
+            port = server.get("port")
+        return _split_ip_address(address, port) == ("127.0.0.1", 5355)
+
+    if not any(targets_local_dns(item) for item in before_servers):
+        owned_servers = [item for item in after_servers if targets_local_dns(item)]
+        if owned_servers:
+            if len(owned_servers) != 1:
+                raise IntegrationError("Backup has ambiguous ownership of the local DNS server; selective rollback refused")
+            present = [item for item in current_servers if targets_local_dns(item)]
+            if present:
+                if len(present) != 1 or canonical(present[0]) != canonical(owned_servers[0]):
+                    raise IntegrationError("DNS server 127.0.0.1:5355 was modified after apply; refusing to delete it")
+                current_servers.remove(present[0])
+
+    before_routing = before.get("routing", {})
+    after_routing = after.get("routing", {})
+    current_routing = result.get("routing", {})
+    if not all(isinstance(item, dict) for item in (before_routing, after_routing, current_routing)):
+        raise IntegrationError("Routing settings are not objects; selective rollback refused")
+    before_rules = before_routing.get("rules", [])
+    after_rules = after_routing.get("rules", [])
+    current_rules = current_routing.get("rules", [])
+    if not all(isinstance(items, list) for items in (before_rules, after_rules, current_rules)):
+        raise IntegrationError("Routing rule lists are invalid; selective rollback refused")
+
+    before_port53 = [rule for rule in before_rules if isinstance(rule, dict) and _global_port53_rule(rule)]
+    after_port53 = [rule for rule in after_rules if isinstance(rule, dict) and _global_port53_rule(rule)]
+    if not before_port53 and after_port53:
+        if len(after_port53) != 1 or after_port53[0].get("outboundTag") != "dns-out":
+            raise IntegrationError("Backup has ambiguous ownership of the port-53 DNS rule; selective rollback refused")
+        present = [rule for rule in current_rules if isinstance(rule, dict) and _global_port53_rule(rule)]
+        if present:
+            if len(present) != 1 or canonical(present[0]) != canonical(after_port53[0]):
+                raise IntegrationError("Global port-53 rule was modified after apply; refusing to delete it")
+            current_rules.remove(present[0])
+
+    return result
+
 def _snapshot_equal(a: dict, b: dict) -> bool:
     return (
         canonical(a.get("xraySetting")) == canonical(b.get("xraySetting"))
@@ -2334,37 +2412,41 @@ def command_rollback(args, client: PanelAPI) -> int:
     backup_data = load_backup(backup_path)
     after = backup_data.get("after")
     if not isinstance(after, dict):
-        raise IntegrationError("Backup has no verified after-snapshot; guarded rollback is unavailable")
-    current = client.get_snapshot()
-    if not _snapshot_equal(current, after):
-        raise IntegrationError(
-            "Current panel settings differ from the backup after-snapshot; rollback refused to avoid overwriting later changes"
-        )
+        raise IntegrationError("Backup has no verified after-snapshot; selective rollback is unavailable")
 
     before = backup_data["before"]
+    current = client.get_snapshot()
+    rollback_config = build_selective_rollback_config(
+        current["xraySetting"], before["xraySetting"], after["xraySetting"]
+    )
+    expected = panel_normalize_dns_allow_rules(rollback_config)
+
+    # Keep current panel metadata and all unrelated settings; only the three
+    # DNS objects owned by this apply are removed.
     confirm_restart("rollback", args.approve_restart)
     try:
-        client.update(before["xraySetting"], before["outboundTestUrl"])
+        client.update(rollback_config, current["outboundTestUrl"])
     except IntegrationError as exc:
-        print("ERROR: panel reported a rollback update error: " + str(exc))
+        print("ERROR: panel reported a selective rollback update error: " + str(exc))
         print("The backup remains available:", backup_path)
         return 2
 
     restored = client.get_snapshot()
-    expected = panel_normalize_dns_allow_rules(before["xraySetting"])
     if canonical(restored["xraySetting"]) != canonical(expected):
-        print("ERROR: rollback read-back differs from the expected panel-normalized pre-update configuration.")
+        print("ERROR: selective rollback read-back differs from the expected panel-normalized configuration.")
         print("No further update was sent. Backup:", backup_path)
         return 2
 
-    print("PASS: guarded rollback verified through the panel API.")
+    print("PASS: selective rollback verified through the panel API.")
+    print("Only unchanged dns-out, 127.0.0.1:5355 DNS server, and global port-53 rule introduced by this apply were removed.")
+    print("Unrelated current panel settings and metadata were preserved.")
     try:
         remove_verified_backup(backup_path)
         print("Temporary rollback backup deleted after successful restoration.")
     except IntegrationError as exc:
         print("WARNING:", exc)
         print("Backup retained at:", backup_path)
-    print("The panel may have fully restarted Xray while restoring DNS settings.")
+    print("The panel may have fully restarted Xray while applying selective rollback.")
     return 0
 
 
