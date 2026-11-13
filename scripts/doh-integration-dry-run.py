@@ -9,7 +9,6 @@ runtime Xray configuration.
 from __future__ import annotations
 
 import argparse
-import copy
 import difflib
 import importlib.util
 import json
@@ -20,40 +19,6 @@ from typing import Any
 
 DB_DEFAULT = "/etc/x-ui/x-ui.db"
 SETTING_KEY = "xrayTemplateConfig"
-
-DNS_OUT = {
-    "tag": "dns-out",
-    "protocol": "dns",
-    "settings": {
-        "rewriteNetwork": "udp",
-        "rewriteAddress": "127.0.0.1",
-        "rewritePort": 5355,
-    },
-}
-
-DNS_SERVER = {
-    "address": "127.0.0.1",
-    "port": 5355,
-    "domains": [],
-    "skipFallback": False,
-}
-
-DNS_ALLOW = {
-    "ip": ["127.0.0.1"],
-    "outboundTag": "direct",
-    "port": "5355",
-    "ruleTag": "xui-dns-allow",
-    "type": "field",
-}
-
-DNS_PORT_RULE = {
-    "enabled": True,
-    "network": "tcp,udp",
-    "outboundTag": "dns-out",
-    "port": "53",
-    "type": "field",
-}
-
 
 _API_PLANNER = None
 
