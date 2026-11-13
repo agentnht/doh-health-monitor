@@ -672,11 +672,8 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
         for route_index_in_list, existing_route in enumerate(route_matches):
             target_tag = existing_route.get("outboundTag")
             balancer_tag = existing_route.get("balancerTag")
-            if target_tag and balancer_tag:
-                plan.blockers.append(
-                    f"Existing global port-53 rule #{route_index_in_list + 1} has both outboundTag and balancerTag"
-                )
-            elif target_tag:
+            # Xray prioritizes outboundTag when both fields are present.
+            if target_tag:
                 if target_tag not in outbound_index:
                     plan.blockers.append(
                         f"Existing global port-53 rule references missing outbound tag {target_tag!r}"
@@ -908,7 +905,7 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                 plan.blockers.append(
                     f"routing.rules[{index}] references missing outbound tag {outbound_tag!r}"
                 )
-        elif balancer_tag and not any(item.get("tag") == balancer_tag for item in balancers):
+        elif not outbound_tag and balancer_tag and not any(item.get("tag") == balancer_tag for item in balancers):
             plan.blockers.append(
                 f"routing.rules[{index}] references missing balancer tag {balancer_tag!r}"
             )
