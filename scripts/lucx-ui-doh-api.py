@@ -946,7 +946,8 @@ def _global_port53_rule(rule: dict) -> bool:
         return False
     has_outbound = isinstance(rule.get("outboundTag"), str) and bool(rule.get("outboundTag"))
     has_balancer = isinstance(rule.get("balancerTag"), str) and bool(rule.get("balancerTag"))
-    return rule.get("type", "field") == "field" and (has_outbound != has_balancer)
+    # Xray uses outboundTag when both target fields are supplied.
+    return rule.get("type", "field") == "field" and (has_outbound or has_balancer)
 
 
 def _split_ip_address(address: str, explicit_port: object = None) -> tuple[str, int] | None:
