@@ -807,10 +807,12 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
         if _server_endpoint(item) == (DNS_ADDRESS, DNS_PORT)
     ]
     general_matches = [item for item in endpoint_matches if _server_is_general(item)]
-    if len(general_matches) > 1:
-        plan.blockers.append("Multiple general DNS server entries target 127.0.0.1:5355")
-    elif general_matches:
-        plan.warnings.append("Existing general DNS server 127.0.0.1:5355 is reused unchanged")
+    if general_matches:
+        plan.warnings.append("One or more existing general DNS server entries target 127.0.0.1:5355; all are reused unchanged")
+        if len(general_matches) > 1:
+            plan.warnings.append(
+                "Duplicate general DNS server entries already exist; they are preserved and no additional entry is added"
+            )
     elif endpoint_matches:
         plan.blockers.append(
             "127.0.0.1:5355 exists only as a scoped DNS server; adding a general entry could change DNS selection"
