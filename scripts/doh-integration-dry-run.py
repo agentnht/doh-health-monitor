@@ -79,7 +79,9 @@ def transform(original: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     plan = _load_api_planner().build_plan(original, require_api_rule=False)
     if plan.blockers:
         raise RuntimeError("; ".join(plan.blockers))
-    return plan.proposed, plan.changes
+    # expected_saved includes only the panel's modeled normalization of its
+    # own DNS exception; this makes the offline view match API apply/read-back.
+    return plan.expected_saved, plan.changes
 
 
 def load_config(args: argparse.Namespace) -> dict[str, Any]:
