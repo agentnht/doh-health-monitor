@@ -1026,11 +1026,20 @@ class AdditivePlannerTests(unittest.TestCase):
                 ))
                 self.assertEqual(plan.proposed["dns"]["servers"], [server])
 
-    def test_duplicate_local_dns_servers_are_blocked(self):
+    def test_duplicate_general_local_dns_servers_are_reused_without_adding_another(self):
         original = base_config()
-        original["dns"] = {"servers": [copy.deepcopy(api_tool.DNS_SERVER), copy.deepcopy(api_tool.DNS_SERVER)]}
+        duplicate_servers = [
+            copy.deepcopy(api_tool.DNS_SERVER),
+            copy.deepcopy(api_tool.DNS_SERVER),
+        ]
+        original["dns"] = {"servers": duplicate_servers}
+
         plan = api_tool.build_plan(original)
-        self.assertTrue(any("Multiple general DNS server" in x for x in plan.blockers))
+
+        self.assertFalse(plan.blockers)
+        self.assertEqual(plan.proposed["dns"]["servers"], duplicate_servers)
+        self.assertTrue(any("Duplicate general DNS server entries already exist" in x for x in plan.warnings))
+        self.assertFalse(any("ADD dns.servers" in item for item in plan.changes))
 
     def test_panel_owned_custom_allow_rule_is_not_silently_removed(self):
         original = base_config()
