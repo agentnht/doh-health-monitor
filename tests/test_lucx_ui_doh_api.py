@@ -271,6 +271,83 @@ class AdditivePlannerTests(unittest.TestCase):
         new_rule = next(item for item in plan.proposed["routing"]["rules"] if api_tool._global_port53_rule(item))
         self.assertEqual(new_rule["outboundTag"], added["tag"])
 
+    def test_reuses_global_dns_balancer_when_every_selected_outbound_is_compatible(self):
+        original = base_config()
+        first = copy.deepcopy(api_tool.DNS_OUT)
+        first["tag"] = "local-doh-a"
+        second = copy.deepcopy(api_tool.DNS_OUT)
+        second["tag"] = "local-doh-b"
+        original["outbounds"].extend([first, second])
+        original["routing"]["balancers"] = [{
+            "tag": "local-doh-balancer",
+            "selector": ["local-doh-"],
+            "fallbackTag": "local-doh-a",
+        }]
+        original["routing"]["rules"].insert(1, {
+            "type": "field",
+            "network": "tcp,udp",
+            "port": "53",
+            "balancerTag": "local-doh-balancer",
+        })
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        self.assertFalse(any(
+            item.get("tag") == "dns-out" for item in plan.proposed["outbounds"]
+        ))
+        self.assertEqual(
+            sum(1 for item in plan.proposed["routing"]["rules"] if api_tool._global_port53_rule(item)),
+            1,
+        )
+        self.assertEqual(plan.proposed["routing"]["rules"][1]["balancerTag"], "local-doh-balancer")
+        self.assertFalse(any("ADD global TCP/UDP port-53" in item for item in plan.changes))
+
+    def test_global_dns_balancer_with_incompatible_fallback_is_blocked(self):
+        original = base_config()
+        compatible = copy.deepcopy(api_tool.DNS_OUT)
+        compatible["tag"] = "local-doh-a"
+        incompatible = copy.deepcopy(api_tool.DNS_OUT)
+        incompatible["tag"] = "other-dns"
+        incompatible["settings"]["rewriteAddress"] = "9.9.9.9"
+        original["outbounds"].extend([compatible, incompatible])
+        original["routing"]["balancers"] = [{
+            "tag": "local-doh-balancer",
+            "selector": ["local-doh-"],
+            "fallbackTag": "other-dns",
+        }]
+        original["routing"]["rules"].insert(1, {
+            "type": "field",
+            "network": "tcp,udp",
+            "port": "53",
+            "balancerTag": "local-doh-balancer",
+        })
+
+        plan = api_tool.build_plan(original)
+
+        self.assertTrue(any("incompatible balancer" in item for item in plan.blockers))
+        self.assertEqual(plan.proposed, original)
+
+    def test_dns_outbound_with_non_direct_query_rule_is_not_reused(self):
+        original = base_config()
+        occupied = copy.deepcopy(api_tool.DNS_OUT)
+        occupied["tag"] = "dns-out"
+        occupied["settings"]["rules"] = [{
+            "action": "drop",
+            "domain": ["domain:example.net"],
+        }]
+        original["outbounds"].append(occupied)
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        added = plan.proposed["outbounds"][-1]
+        self.assertNotEqual(added["tag"], "dns-out")
+        self.assertEqual(
+            next(item for item in plan.proposed["outbounds"] if item["tag"] == "dns-out"),
+            occupied,
+        )
+
     def test_multiple_equivalent_dns_outbounds_without_a_selecting_rule_are_ambiguous(self):
         original = base_config()
         first = copy.deepcopy(api_tool.DNS_OUT)
