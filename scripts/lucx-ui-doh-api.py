@@ -42,7 +42,7 @@ from urllib.request import HTTPSHandler, Request, build_opener, urlopen
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
-from xray_dns_planner import build_dns_plan, _outbound_matches_dns_endpoint
+from xray_dns_planner import build_dns_plan, _outbound_matches_dns_endpoint, _server_endpoint
 
 VERSION = "1.6.0"
 DEFAULT_PLUGIN_SERVICE = "lucx-plugin-doh-health-monitor"
