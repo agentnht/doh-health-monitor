@@ -94,8 +94,9 @@ else
         (
           [
             $outbounds[]?
-            | select(.tag != null and any($balancers[0].selector[]; . as $prefix | (.tag | startswith($prefix))))
-            | .tag
+            | .tag as $outbound_tag
+            | select($outbound_tag != null and any($balancers[0].selector[]; . as $prefix | ($outbound_tag | startswith($prefix))))
+            | $outbound_tag
           ]
           + [($balancers[0].fallbackTag // empty)]
           | unique
