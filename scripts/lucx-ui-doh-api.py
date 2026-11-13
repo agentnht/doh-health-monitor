@@ -2292,9 +2292,42 @@ def build_selective_rollback_config(current: dict, before: dict, after: dict) ->
                     )
                 ):
                     remaining_balancer_refs.append(index)
-        if remaining_rule_refs or remaining_balancer_refs:
+        remaining_observatory_refs = []
+        for section_name in ("observatory", "burstObservatory"):
+            section = current_routing.get(section_name, result.get(section_name, {}))
+            if not isinstance(section, dict):
+                continue
+            selectors = section.get("subjectSelector", [])
+            if isinstance(selectors, str):
+                selectors = [selectors]
+            if isinstance(selectors, list) and any(
+                isinstance(selector, str) and owned_tag.startswith(selector)
+                for selector in selectors
+            ):
+                remaining_observatory_refs.append(section_name)
+
+        remaining_outbound_refs = []
+        for index, outbound in enumerate(current_outbounds):
+            if not isinstance(outbound, dict) or outbound.get("tag") == owned_tag:
+                continue
+            proxy_settings = outbound.get("proxySettings")
+            if isinstance(proxy_settings, dict) and proxy_settings.get("tag") == owned_tag:
+                remaining_outbound_refs.append(index)
+            stream_settings = outbound.get("streamSettings")
+            if isinstance(stream_settings, dict):
+                sockopt = stream_settings.get("sockopt")
+                if isinstance(sockopt, dict) and sockopt.get("dialerProxy") == owned_tag:
+                    remaining_outbound_refs.append(index)
+
+        if (
+            remaining_rule_refs
+            or remaining_balancer_refs
+            or remaining_observatory_refs
+            or remaining_outbound_refs
+        ):
             raise IntegrationError(
-                f"Added DNS outbound {owned_tag} now has additional user references; "
+                f"Added DNS outbound {owned_tag} now has additional user references "
+                "(routing rules, balancers, observatory, or outbound chaining); "
                 "selective rollback refused to leave broken links"
             )
 
