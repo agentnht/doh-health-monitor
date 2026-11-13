@@ -601,11 +601,10 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                 )
                 if resolve_error is None:
                     resolved_target = earlier_balancer
-            route_target = route.get("outboundTag") or route.get("balancerTag")
-            if resolved_target is None or resolved_target != route_target:
+            if resolved_target is None:
                 plan.blockers.append(
                     f"Earlier global port-53-overlap rule at routing.rules[{index}] "
-                    "shadows the exact port-53 route with a different or incompatible target"
+                    "shadows the exact port-53 route with an incompatible target"
                 )
         target_tag = route.get("outboundTag")
         balancer_tag = route.get("balancerTag")
