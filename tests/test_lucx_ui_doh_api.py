@@ -583,7 +583,7 @@ class AdditivePlannerTests(unittest.TestCase):
         self.assertFalse(plan.blockers)
         self.assertEqual(plan.proposed["inbounds"], original["inbounds"])
 
-    def test_duplicate_inbound_tags_are_rejected_as_ambiguous(self):
+    def test_duplicate_existing_inbound_tags_are_reserved_but_not_rewritten(self):
         original = base_config()
         original["inbounds"] = [
             {"tag": "vless-in"},
@@ -592,8 +592,14 @@ class AdditivePlannerTests(unittest.TestCase):
 
         plan = api_tool.build_plan(original)
 
-        self.assertTrue(any("Duplicate Xray tag 'vless-in'" in item for item in plan.blockers))
-        self.assertEqual(plan.proposed, original)
+        self.assertFalse(plan.blockers)
+        self.assertEqual(plan.proposed["inbounds"], original["inbounds"])
+        generated = next(
+            item["tag"] for item in plan.proposed["outbounds"]
+            if item.get("protocol") == "dns" and item.get("tag") != "dns-out"
+        ) if any(item.get("protocol") == "dns" for item in plan.proposed["outbounds"]) else None
+        if generated:
+            self.assertNotEqual(generated, "vless-in")
 
     def test_generated_outbound_tag_skips_inbound_api_and_rule_tags(self):
         original = base_config()
@@ -647,7 +653,7 @@ class AdditivePlannerTests(unittest.TestCase):
         route = next(item for item in plan.proposed["routing"]["rules"] if api_tool._global_port53_rule(item))
         self.assertEqual(route["outboundTag"], generated)
 
-    def test_duplicate_tag_across_outbound_and_nameserver_is_blocked(self):
+    def test_cross_namespace_outbound_and_nameserver_tag_text_is_reserved_not_rewritten(self):
         original = base_config()
         original["outbounds"].append(copy.deepcopy(api_tool.DNS_OUT))
         original["dns"] = {
@@ -660,27 +666,38 @@ class AdditivePlannerTests(unittest.TestCase):
 
         plan = api_tool.build_plan(original)
 
-        self.assertTrue(any("Duplicate Xray tag 'dns-out'" in item for item in plan.blockers))
-        self.assertEqual(plan.proposed, original)
+        self.assertFalse(plan.blockers)
+        self.assertEqual(plan.proposed["dns"]["servers"], original["dns"]["servers"])
+        self.assertEqual(
+            [item for item in plan.proposed["outbounds"] if item.get("tag") == "dns-out"],
+            [api_tool.DNS_OUT],
+        )
 
-    def test_duplicate_routing_rule_tags_are_rejected(self):
+    def test_duplicate_existing_routing_rule_tags_are_reserved_without_rewriting_rules(self):
         original = base_config()
         original["routing"]["rules"][1]["ruleTag"] = "same-rule"
         original["routing"]["rules"][2]["ruleTag"] = "same-rule"
 
         plan = api_tool.build_plan(original)
 
-        self.assertTrue(any("Duplicate Xray tag 'same-rule'" in item for item in plan.blockers))
-        self.assertEqual(plan.proposed, original)
+        self.assertFalse(plan.blockers)
+        self.assertEqual(
+            plan.proposed["routing"]["rules"][:3],
+            original["routing"]["rules"],
+        )
 
-    def test_routing_rule_tag_cannot_collide_with_outbound_tag(self):
+    def test_generated_rule_tag_skips_existing_outbound_tag(self):
         original = base_config()
-        original["routing"]["rules"][1]["ruleTag"] = "proxy"
+        original["routing"]["rules"][1]["ruleTag"] = "doh-health-monitor-dns-port53"
 
         plan = api_tool.build_plan(original)
 
-        self.assertTrue(any("Duplicate Xray tag 'proxy'" in item for item in plan.blockers))
-        self.assertEqual(plan.proposed, original)
+        self.assertFalse(plan.blockers)
+        generated = next(
+            rule["ruleTag"] for rule in plan.proposed["routing"]["rules"]
+            if rule.get("outboundTag") == "dns-out" and str(rule.get("port")) == "53"
+        )
+        self.assertNotEqual(generated, "doh-health-monitor-dns-port53")
 
     def test_duplicate_balancer_tags_are_rejected_as_ambiguous(self):
         original = base_config()
