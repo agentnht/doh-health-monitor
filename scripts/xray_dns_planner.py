@@ -569,6 +569,7 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                     f"Existing broad routing rule at routing.rules[{index}] also matches port 53 but does not target a compatible local DNS outbound; adding a fallback would be shadowed"
                 )
 
+    route_path_covered = bool(route_matches)
     if route_matches:
         route = route_matches[0]
         route_index = rules.index(route)
