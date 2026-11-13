@@ -2182,7 +2182,7 @@ def build_selective_rollback_config(current: dict, before: dict, after: dict) ->
         if present:
             if len(present) != 1 or canonical(present[0]) != canonical(owned):
                 raise IntegrationError(
-                    f"Added DNS outbound {owned_tag!r} was modified after apply; refusing to delete it"
+                    f"Added DNS outbound {owned_tag} was modified after apply; refusing to delete it"
                 )
             current_outbounds.remove(present[0])
 
@@ -2252,7 +2252,36 @@ def build_selective_rollback_config(current: dict, before: dict, after: dict) ->
                 raise IntegrationError("Global port-53 rule was modified after apply; refusing to delete it")
             current_rules.remove(present[0])
 
+    # Do not remove an integration-created outbound if later user changes
+    # introduced additional routing/balancer dependencies on its selected tag.
+    if owned_dns:
+        owned_tag = owned_dns[0].get("tag")
+        remaining_rule_refs = [
+            index for index, rule in enumerate(current_rules)
+            if isinstance(rule, dict) and rule.get("outboundTag") == owned_tag
+        ]
+        remaining_balancer_refs = []
+        balancers = current_routing.get("balancers", [])
+        if isinstance(balancers, list):
+            for index, balancer in enumerate(balancers):
+                if not isinstance(balancer, dict):
+                    continue
+                selectors = balancer.get("selector", [])
+                if isinstance(selectors, str):
+                    selectors = [selectors]
+                if isinstance(selectors, list) and any(
+                    isinstance(selector, str) and owned_tag.startswith(selector)
+                    for selector in selectors
+                ):
+                    remaining_balancer_refs.append(index)
+        if remaining_rule_refs or remaining_balancer_refs:
+            raise IntegrationError(
+                f"Added DNS outbound {owned_tag} now has additional user references; "
+                "selective rollback refused to leave broken links"
+            )
+
     return result
+
 
 def _snapshot_equal(a: dict, b: dict) -> bool:
     return (
