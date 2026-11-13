@@ -127,83 +127,82 @@ safely predict the panel's save behavior.
 
 ## Tooling in this PR
 
-- `scripts/check-dns-integration.sh`: read-only checks for the plugin service,
-  TCP/UDP listener, status API, runtime Xray DNS outbound/server/rules.
-- `scripts/doh-integration-dry-run.py`: legacy offline planner. It reads a JSON
-  fixture or SQLite in read-only mode and shows how its staging transform would
-  add or correct target fields. It never writes and is not the production API
-  adapter.
-- `scripts/doh-integration-staging.py`: clones a source SQLite DB into a
-  separate staging file, then supports dry-run, verify, apply, rollback and
-  `cleanup` against that staging file only. Run `--action cleanup --staging-db
-  /path/to/stage.db` when testing is complete; it removes that staging file and
-  its `.before` snapshot, never the source/live DB. It is for synthetic/staging
-  validation, not for the live panel database.
-- `scripts/lucx-ui-doh-api.py`: production-facing, additive-only adapter using
-  the LucX-UI panel API. It reads the current template, adds only missing
-  `dns-out`, `dns.servers: 127.0.0.1:5355`, and a global TCP/UDP port-53 rule.
-  Existing outbounds, DNS servers, and user routing rules are not edited or
-  removed. The port-53 rule is inserted immediately after the panel's internal
-  `api -> api` rule, so it applies to all inbound tunnels before user routing
-  rules. The adapter does not create `xui-dns-allow` itself: LucX-UI's
-  `EnsureDnsServerRouting` hook manages that rule from private DNS endpoints.
+- \`scripts/check-dns-integration.sh\`: read-only checks for the plugin service,
+  TCP/UDP listener, status API, DNS server, and the active port-53 route together
+  with the outbound selected by that route. It does not assume the outbound is
+  named \`dns-out\`.
+- \`scripts/xray_dns_planner.py\`: pure shared semantic inventory/planner. It
+  examines the Xray template's inbounds, outbounds, DNS servers, routing rules,
+  balancers, and the relevant tag references. It reuses an existing local DNS
+  outbound regardless of its tag only when its effective target is
+  \`127.0.0.1:5355/udp\` and its DNS rules/transport do not divert queries. A
+  global balancer is reusable only when all selector matches and its
+  \`fallbackTag\` lead to compatible DNS outbounds.
+- New objects are additive. The planner selects a free outbound tag and a free
+  routing \`ruleTag\`, considers existing inbound/outbound/balancer/API/rule tags,
+  and avoids outbound names captured by existing balancer selector prefixes.
+  The chosen outbound tag is used consistently by the generated routing rule.
+  If \`dns-out\` is already occupied by a different function, it is preserved and
+  a different free tag is selected. Existing objects and routing rules are not
+  rewritten to force a match.
+- Routing analysis considers first-match order and all explicit port-53
+  overlaps. Narrower rules are preserved ahead of a fallback route. A broad
+  rule/range that would shadow a new route is reused only if it already sends
+  the traffic to a fully compatible local DNS target; otherwise planning stops
+  with a conflict rather than proposing an unreachable rule. Missing or
+  ambiguous outbound/balancer references are blockers. An ambiguous choice
+  between several compatible DNS outbounds is also a blocker, not a guess.
+- \`scripts/lucx-ui-doh-api.py\`: panel API adapter. Its \`build_plan\` delegates
+  to the shared planner, then models LucX-UI's own \`xui-dns-allow\`
+  normalization, API-route invariant, and known save-time side effects.
+  \`check\` and \`plan\` are read-only. \`apply\` uses the same plan and validates
+  the saved result through API read-back.
+- \`scripts/doh-integration-dry-run.py\` loads the same planner used by the API
+  adapter; it no longer has a separate set of transformation rules.
+  \`scripts/doh-integration-staging.py\` clones a source SQLite DB into a
+  separate staging file and supports dry-run, verify, apply, rollback, and
+  cleanup against that staging file only. It never writes the source/live DB.
+- Before planning permanent changes, \`apply\` queries the panel API for leftover
+  inbounds with the reserved \`doh-health-monitor-selftest-\` remark prefix and
+  verifies the complete Tunnel identity/settings. It also checks for the exact
+  reserved \`allow/tcp,udp/5355/127.0.0.1\` entry in
+  \`direct.settings.finalRules\`. Only verified resources are deleted. A
+  malformed or ambiguous reserved object is preserved and blocks apply.
+  Recovery-journal files are treated as opaque private markers at this stage:
+  their contents are not read to decide what to delete. After both resource
+  classes are independently verified absent, stale marker files with the
+  reserved filename, owner, and mode are removed.
+- The end-to-end self-test creates a loopback-only temporary \`tunnel\` inbound
+  through the official inbound API, tests positive A answers over UDP and TCP,
+  and verifies that the plugin query counter increases while failures remain
+  zero. In its \`finally\` path, Tunnel deletion/listener verification and
+  temporary \`finalRule\` deletion are attempted independently; failure of one
+  cleanup does not skip the other. A recovery marker is retained if either
+  resource cannot be verified absent. Permanent DNS changes are not rolled back
+  automatically when the connectivity test fails.
+- The adapter retains a private pre-update API snapshot (mode \`0600\`) for
+  delayed rollback after successful read-back. Rollback removes only DNS
+  outbound/server/port-53 route objects that this operation actually created,
+  using their recorded before/after identity rather than assuming a fixed tag.
+  Reused objects are never treated as owned. If an added outbound was edited or
+  has acquired later routing/balancer references, rollback stops rather than
+  leaving broken links. Unrelated settings and current \`outboundTestUrl\`
+  metadata are preserved.
+- Panel Xray-settings and inbound API updates may each restart Xray; \`apply\`
+  requires explicit restart approval. The adapter requires root on the
+  LucX-UI VPS and a localhost/loopback panel API URL. It never writes SQLite or
+  runtime Xray configuration directly.
+- The Xray template returned by LucX-UI may not contain all runtime-injected
+  AWG, subscription, or sidecar objects. The planner does not claim to inspect
+  those hidden runtime additions; it reports/uses what is present in the panel
+  template and refuses unsafe or ambiguous template-level dependencies.
 - The API adapter refuses to save when the panel would also move/create its
-  internal API route, rewrite an existing numeric DNS `qType: 0`, or remove or
-  reorder an existing routing rule during DNS allow-rule normalization. Its
-  preflight models the panel's normalization using the proposed DNS endpoints,
-  including legacy allow rules that the panel might newly adopt. It preserves
-  `outboundTestUrl` metadata, resolves local API authorization automatically,
-  and avoids secrets in output. Before
-  applying, it creates a private pre-update API snapshot with mode `0600`.
-  After successful read-back verification, the private snapshot is retained
-  for delayed rollback; it is not automatically deleted. A verified rollback
-  deletes that operation snapshot. If verification fails or rollback cannot be
-  confirmed, the snapshot is retained for recovery. After the permanent DNS
-  settings are verified, `apply` runs a self-cleaning end-to-end test: it
-  selects a loopback port after checking both TCP and UDP binds and panel
-  inbound reservations, creates a temporary `tunnel` inbound only through
-  `POST /panel/api/inbounds/add`, verifies its exact ID/remark/protocol/listen/
-  port/settings through the panel API, and checks for positive A answers over
-  UDP and TCP. It also verifies that the plugin query counter increased without
-  an increase in failures. The self-test temporarily adds the exact
-  `allow/tcp,udp/5355/127.0.0.1` entry to `direct.settings.finalRules` through
-  the panel Xray-settings API before creating the Tunnel. If that exact rule
-  was manually persisted in the permanent template, the permanent apply plan
-  removes it first so it is owned only by the self-test. Cleanup in `finally`
-  deletes the matching Tunnel by verified ID, removes only the exact temporary
-  finalRule, reads both resources back, and verifies that the Tunnel listeners
-  have disappeared. Other finalRules and unrelated settings are preserved.
-  Panel Xray-settings and inbound API updates may each restart Xray; the apply
-  confirmation covers this temporary lifecycle too. A root-only `0600`
-  recovery journal records both resources and is retained if either cleanup
-  cannot be verified;
-  subsequent `apply` is blocked until it is resolved with
-  `cleanup-test --recovery-journal PATH`; if the inbound still exists, the
-  command requires the explicit `CLEANUP` confirmation (or `--approve-restart`).
-  `check` and `plan` remain read-only.
-  Rollback is guarded by an
-  exact read-back comparison so it cannot overwrite later panel changes. The adapter requires root on the LucX-UI VPS and uses a
-  localhost/loopback panel API URL. It detects the local Xray version (or
-  accepts an explicit `--xray-bin` path) for diagnostics only. Unknown or
-  unavailable versions do not block execution; compatibility is assessed
-  through API responses, configuration structure, conflict checks, and
-  read-back. The LucX-UI version is informational only.
-- The `POST /panel/api/xray/` read handler is read-only for ordinary current
-  templates, but this LucX-UI source version also auto-heals a legacy wrapped
-  `xrayTemplateConfig` by calling `SaveXraySetting` during the read. The
-  adapter never writes SQLite itself; on such a legacy database, the panel may
-  perform that internal repair as part of its own API behavior.
-- DNS updates through `POST /panel/api/xray/update` may cause a full Xray
-  process restart when the core is running. `apply` requires explicit restart
-  approval; `check` and `plan` do not submit an update. The tool never writes
-  the panel SQLite DB or runtime Xray config directly.
-- `tests/test_doh_integration.py` and `tests/test_lucx_ui_doh_api.py` cover
-  transformations, conflict handling, preservation, API response decoding,
-  and mock-panel request/response behavior without requiring a live panel.
-
-A real panel database or full Xray config must not be committed as a fixture:
-those files can contain private panel settings, identifiers, credentials, or
-user-specific routing. Tests should use minimal synthetic data.
+  internal API route, rewrite an existing numeric DNS \`qType: 0\`, or remove or
+  reorder an existing routing rule during DNS allow-rule normalization. It
+  preserves \`outboundTestUrl\`, resolves local API authorization automatically,
+  and avoids exposing credentials. The panel's read handler may itself repair
+  a legacy wrapped \`xrayTemplateConfig\`; the adapter never performs that DB
+  write directly.
 
 ## Manual validation already performed
 
