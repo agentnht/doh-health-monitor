@@ -376,42 +376,45 @@ def _validate_outbound_tag_index(
     dns_tags: list[tuple[str, str]],
     routing_tags: list[tuple[str, str]],
 ) -> tuple[dict[str, dict[str, Any]], set[str], list[str]]:
-    """Index outbound targets and reserve/validate every tag-bearing namespace."""
+    """Index target namespaces and reserve every existing tag for new names."""
     index: dict[str, dict[str, Any]] = {}
     used: set[str] = set()
     blockers: list[str] = []
-    definitions: dict[str, list[str]] = {}
 
-    for namespace, items in (
-        ("inbound", inbounds),
-        ("outbound", outbounds),
-        ("balancer", balancers),
-    ):
-        for item in items:
-            tag = item.get("tag")
-            if not isinstance(tag, str) or not tag:
-                continue
+    # Routing references are typed (inboundTag vs outboundTag vs balancerTag),
+    # so identical text across different namespaces is not itself a conflict.
+    # Generated names are still globally unique across every namespace.
+    for item in inbounds:
+        tag = item.get("tag")
+        if isinstance(tag, str) and tag:
             used.add(tag)
-            definitions.setdefault(tag, []).append(namespace)
-            if namespace == "outbound" and tag not in index:
-                index[tag] = item
+
+    for item in outbounds:
+        tag = item.get("tag")
+        if not isinstance(tag, str) or not tag:
+            continue
+        used.add(tag)
+        if tag in index:
+            blockers.append(f"Duplicate outbound tag {tag!r}; outboundTag references are ambiguous")
+        else:
+            index[tag] = item
+
+    balancer_tags: set[str] = set()
+    for item in balancers:
+        tag = item.get("tag")
+        if not isinstance(tag, str) or not tag:
+            continue
+        used.add(tag)
+        if tag in balancer_tags:
+            blockers.append(f"Duplicate balancer tag {tag!r}; balancerTag references are ambiguous")
+        balancer_tags.add(tag)
 
     if isinstance(api_tag, str) and api_tag:
-        # api.tag names the panel's API inbound; it is a reference/alias for
-        # that inbound tag, not a second independently-defined Xray object.
+        # api.tag aliases the panel API inbound tag; reserve, do not double-count.
         used.add(api_tag)
-    for namespace, tag in dns_tags + routing_tags:
+    for _namespace, tag in dns_tags + routing_tags:
         if tag:
             used.add(tag)
-            definitions.setdefault(tag, []).append(namespace)
-
-    # Xray tag references are global. Any duplicate definition across these
-    # namespaces makes a reference ambiguous and therefore blocks planning.
-    for tag, namespaces in definitions.items():
-        if len(namespaces) > 1:
-            blockers.append(
-                f"Duplicate Xray tag {tag!r} across {', '.join(namespaces)}; references are ambiguous"
-            )
 
     return index, used, blockers
 
