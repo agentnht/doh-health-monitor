@@ -456,6 +456,15 @@ class AdditivePlannerTests(unittest.TestCase):
         self.assertTrue(any("Multiple compatible DNS outbounds" in item for item in plan.blockers))
         self.assertEqual(plan.proposed, original)
 
+    def test_api_tag_is_an_alias_for_its_inbound_tag(self):
+        original = base_config()
+        original["inbounds"] = [{"tag": "api", "protocol": "dokodemo-door"}]
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        self.assertEqual(plan.proposed["inbounds"], original["inbounds"])
+
     def test_duplicate_inbound_tags_are_rejected_as_ambiguous(self):
         original = base_config()
         original["inbounds"] = [
