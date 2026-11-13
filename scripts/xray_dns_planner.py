@@ -151,8 +151,8 @@ def _outbound_matches_dns_endpoint(item: dict[str, Any]) -> bool:
         return False
     if rewrite_port != DNS_PORT:
         return False
-    rewrite_network = settings.get("rewriteNetwork", "udp")
-    if str(rewrite_network).lower() != "udp":
+    rewrite_network = settings.get("rewriteNetwork")
+    if rewrite_network is not None and str(rewrite_network).lower() not in {"tcp", "udp"}:
         return False
 
     # DNS-outbound rules can hijack, drop, or synthesize selected answers.
