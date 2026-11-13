@@ -387,6 +387,61 @@ class AdditivePlannerTests(unittest.TestCase):
         self.assertTrue(any("Multiple compatible DNS outbounds" in item for item in plan.blockers))
         self.assertEqual(plan.proposed, original)
 
+    def test_duplicate_inbound_tags_are_rejected_as_ambiguous(self):
+        original = base_config()
+        original["inbounds"] = [
+            {"tag": "vless-in"},
+            {"tag": "vless-in"},
+        ]
+
+        plan = api_tool.build_plan(original)
+
+        self.assertTrue(any("Duplicate inbound tag" in item for item in plan.blockers))
+        self.assertEqual(plan.proposed, original)
+
+    def test_generated_outbound_tag_skips_inbound_api_and_rule_tags(self):
+        original = base_config()
+        occupied = copy.deepcopy(api_tool.DNS_OUT)
+        occupied["settings"]["rewriteAddress"] = "9.9.9.9"
+        original["outbounds"].append(occupied)
+        original["inbounds"] = [{"tag": "dns-out-doh-health-monitor"}]
+        original["api"] = {"tag": "doh-health-monitor-dns-out"}
+        original["routing"]["rules"].append({
+            "type": "field",
+            "port": "443",
+            "outboundTag": "proxy",
+            "ruleTag": "xray-dns-out",
+        })
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        generated = plan.proposed["outbounds"][-1]["tag"]
+        self.assertNotIn(
+            generated,
+            {
+                original["inbounds"][0]["tag"],
+                original["api"]["tag"],
+                original["routing"]["rules"][-1]["ruleTag"],
+            },
+        )
+        self.assertEqual(
+            next(rule for rule in plan.proposed["routing"]["rules"] if api_tool._global_port53_rule(rule))["outboundTag"],
+            generated,
+        )
+
+    def test_duplicate_balancer_tags_are_rejected_as_ambiguous(self):
+        original = base_config()
+        original["routing"]["balancers"] = [
+            {"tag": "dns-balancer", "selector": ["dns"]},
+            {"tag": "dns-balancer", "selector": ["local"]},
+        ]
+
+        plan = api_tool.build_plan(original)
+
+        self.assertTrue(any("Duplicate balancer tag" in item for item in plan.blockers))
+        self.assertEqual(plan.proposed, original)
+
     def test_duplicate_outbound_tags_are_rejected_as_ambiguous(self):
         original = base_config()
         duplicate = copy.deepcopy(original["outbounds"][1])
