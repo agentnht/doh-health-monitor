@@ -374,6 +374,28 @@ class AdditivePlannerTests(unittest.TestCase):
             occupied,
         )
 
+    def test_dns_outbound_with_scoped_direct_query_rule_is_not_reused(self):
+        original = base_config()
+        occupied = copy.deepcopy(api_tool.DNS_OUT)
+        occupied["tag"] = "local-dns"
+        occupied["settings"]["rules"] = [{
+            "action": "direct",
+            "qType": 1,
+            "domain": ["domain:example.net"],
+        }]
+        original["outbounds"].append(occupied)
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        self.assertEqual(
+            next(item for item in plan.proposed["outbounds"] if item.get("tag") == "local-dns"),
+            occupied,
+        )
+        self.assertNotEqual(plan.proposed["outbounds"][-1]["tag"], "local-dns")
+        route = next(item for item in plan.proposed["routing"]["rules"] if api_tool._global_port53_rule(item))
+        self.assertEqual(route["outboundTag"], plan.proposed["outbounds"][-1]["tag"])
+
     def test_multiple_equivalent_dns_outbounds_without_a_selecting_rule_are_ambiguous(self):
         original = base_config()
         first = copy.deepcopy(api_tool.DNS_OUT)
