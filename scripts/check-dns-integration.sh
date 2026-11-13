@@ -65,7 +65,11 @@ else
   ' "$XRAY_CONFIG" >/dev/null; then
     if jq -e --arg port "$PLUGIN_PORT" '
       (.routing.rules // []) as $rules |
-      [$rules | to_entries[] | select(.value.ruleTag == "xui-dns-allow")] as $allow |
+      [$rules | to_entries[] | select(
+        .value.ruleTag == "xui-dns-allow" and
+        (($port == (.value.port | tostring)) and
+         ((.value.ip // []) | index("127.0.0.1")) != null)
+      )] as $allow |
       [$rules | to_entries[] | select(((.value.ip // []) | index("geoip:private")) != null)] as $private |
       ($allow | length) == 1 and
       ($allow[0].value.ip // [] | index("127.0.0.1")) != null and
