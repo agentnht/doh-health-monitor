@@ -315,6 +315,7 @@ def _validate_outbound_tag_index(
     inbounds: list[dict[str, Any]],
     api_tag: str | None,
     dns_tags: list[tuple[str, str]],
+    routing_tags: list[tuple[str, str]],
 ) -> tuple[dict[str, dict[str, Any]], set[str], list[str]]:
     """Index outbound targets and reserve/validate every tag-bearing namespace."""
     index: dict[str, dict[str, Any]] = {}
@@ -339,7 +340,7 @@ def _validate_outbound_tag_index(
     if isinstance(api_tag, str) and api_tag:
         used.add(api_tag)
         definitions.setdefault(api_tag, []).append("api")
-    for namespace, tag in dns_tags:
+    for namespace, tag in dns_tags + routing_tags:
         if tag:
             used.add(tag)
             definitions.setdefault(tag, []).append(namespace)
@@ -433,19 +434,21 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                     server_tag = server.get("tag")
                     if isinstance(server_tag, str) and server_tag:
                         dns_tags.append(("dns server", server_tag))
+    routing_tags: list[tuple[str, str]] = []
+    for rule in rules:
+        for key in ("tag", "ruleTag"):
+            value = rule.get(key)
+            if isinstance(value, str) and value:
+                routing_tags.append((f"routing rule {key}", value))
     outbound_index, used_tags, tag_blockers = _validate_outbound_tag_index(
         outbounds,
         balancers,
         inbounds,
         api_tag if isinstance(api_tag, str) else None,
         dns_tags,
+        routing_tags,
     )
     plan.blockers.extend(tag_blockers)
-    for rule in rules:
-        for key in ("tag", "ruleTag"):
-            value = rule.get(key)
-            if isinstance(value, str) and value:
-                used_tags.add(value)
     balancer_selectors = tuple(
         selector
         for balancer in balancers
