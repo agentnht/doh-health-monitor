@@ -386,7 +386,7 @@ class AdditivePlannerTests(unittest.TestCase):
         self.assertEqual(plan.proposed["routing"]["rules"][1]["balancerTag"], "local-doh-balancer")
         self.assertFalse(any("ADD global TCP/UDP port-53" in item for item in plan.changes))
 
-    def test_reuses_compatible_scoped_dns_balancer_for_global_fallback(self):
+    def test_reuses_compatible_scoped_dns_balancer_and_uses_direct_outbound_fallback(self):
         original = base_config()
         first = copy.deepcopy(api_tool.DNS_OUT)
         first["tag"] = "local-doh-a"
@@ -415,8 +415,8 @@ class AdditivePlannerTests(unittest.TestCase):
             item for item in plan.proposed["routing"]["rules"]
             if api_tool._global_port53_rule(item)
         )
-        self.assertEqual(global_rule["balancerTag"], "local-doh-balancer")
-        self.assertNotIn("outboundTag", global_rule)
+        self.assertEqual(global_rule["outboundTag"], "local-doh-a")
+        self.assertNotIn("balancerTag", global_rule)
 
     def test_scoped_dns_balancer_with_missing_reference_is_blocked(self):
         original = base_config()
@@ -433,7 +433,7 @@ class AdditivePlannerTests(unittest.TestCase):
         self.assertTrue(any("references missing balancer tag" in item for item in plan.blockers))
         self.assertEqual(plan.proposed, original)
 
-    def test_partial_global_balancer_route_generates_balancer_fallback(self):
+    def test_partial_global_balancer_route_generates_direct_outbound_fallback(self):
         original = base_config()
         first = copy.deepcopy(api_tool.DNS_OUT)
         first["tag"] = "local-doh-a"
@@ -461,8 +461,8 @@ class AdditivePlannerTests(unittest.TestCase):
             item for item in plan.proposed["routing"]["rules"]
             if api_tool._global_port53_rule(item)
         )
-        self.assertEqual(fallback["balancerTag"], "local-doh-balancer")
-        self.assertNotIn("outboundTag", fallback)
+        self.assertEqual(fallback["outboundTag"], "local-doh-a")
+        self.assertNotIn("balancerTag", fallback)
 
     def test_earlier_tcp_only_compatible_route_and_exact_global_route_are_both_reused(self):
         original = base_config()
@@ -773,6 +773,30 @@ class AdditivePlannerTests(unittest.TestCase):
         self.assertFalse(plan.blockers)
         self.assertTrue(any("already provide the required DNS path" in item for item in plan.warnings))
         self.assertEqual(plan.proposed["routing"]["rules"][1], broad)
+
+    def test_xray_outbound_tag_precedes_balancer_tag_when_both_are_present(self):
+        original = base_config()
+        compatible = copy.deepcopy(api_tool.DNS_OUT)
+        compatible["tag"] = "local-doh"
+        original["outbounds"].append(compatible)
+        original["routing"]["balancers"] = [{
+            "tag": "incompatible-balancer",
+            "selector": ["proxy"],
+            "fallbackTag": "proxy",
+        }]
+        route = copy.deepcopy(api_tool.DNS_PORT_RULE)
+        route["outboundTag"] = "local-doh"
+        route["balancerTag"] = "incompatible-balancer"
+        original["routing"]["rules"].insert(1, route)
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        self.assertEqual(plan.proposed["routing"]["rules"][1], route)
+        self.assertFalse(any(
+            "ADD global TCP/UDP port-53" in change
+            for change in plan.changes
+        ))
 
     def test_existing_global_route_shadowed_by_earlier_broad_rule_is_blocked(self):
         original = add_complete_dns(base_config())
