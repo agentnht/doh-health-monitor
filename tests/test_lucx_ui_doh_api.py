@@ -196,7 +196,7 @@ class AdditivePlannerTests(unittest.TestCase):
         plan = api_tool.build_plan(original)
 
         self.assertFalse(plan.blockers)
-        self.assertFalse(plan.outbound_created if hasattr(plan, "outbound_created") else False)
+        self.assertFalse(any(item.get("tag") == "dns-out" for item in plan.proposed["outbounds"]))
         self.assertEqual(
             [item for item in plan.proposed["outbounds"] if item["tag"] == "local-doh-resolver"],
             [outbound],
