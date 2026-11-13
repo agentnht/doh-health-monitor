@@ -44,7 +44,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 from xray_dns_planner import build_dns_plan, _outbound_matches_dns_endpoint
 
-VERSION = "1.5.1"
+VERSION = "1.6.0"
 DEFAULT_PLUGIN_SERVICE = "lucx-plugin-doh-health-monitor"
 DEFAULT_PLUGIN_STATUS_URL = "http://127.0.0.1:18765/status"
 DEFAULT_PLUGIN_PORT = 5355
