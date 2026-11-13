@@ -47,33 +47,44 @@ if [[ ! -r "$XRAY_CONFIG" ]]; then
   error "Не найден доступный для чтения Xray config: $XRAY_CONFIG"
 else
   pass "Xray config доступен: $XRAY_CONFIG"
-  if jq -e --arg port "$PLUGIN_PORT" '
+  dns_tag="$(jq -er '
+    [
+      .routing.rules[]?
+      | select(.enabled != false and (.type // "field") == "field")
+      | select((.port | tostring) == "53")
+      | select(
+          ((.network // "tcp,udp")
+            | if type == "array" then map(ascii_downcase) | sort
+              else split(",") | map(ascii_downcase) | sort
+              end) == ["tcp", "udp"]
+        )
+      | select((keys - ["enabled", "network", "port", "type", "ruleTag", "remarks", "comment", "outboundTag"]) | length == 0)
+      | .outboundTag // empty
+    ]
+    | if length == 1 then .[0] else empty end
+  ' "$XRAY_CONFIG" 2>/dev/null)" || dns_tag=""
+  if [[ -z "$dns_tag" ]]; then
+    error "Не найдено единственное глобальное TCP/UDP правило порта 53 с outboundTag"
+  elif jq -e --arg tag "$dns_tag" --arg port "$PLUGIN_PORT" '
     any(.outbounds[]?;
-      .tag == "dns-out" and .protocol == "dns" and
+      .tag == $tag and .protocol == "dns" and
       .settings.rewriteAddress == "127.0.0.1" and
-      (.settings.rewritePort | tostring) == $port)
+      (.settings.rewritePort | tostring) == $port and
+      (.settings.rewriteNetwork // "udp") == "udp")
   ' "$XRAY_CONFIG" >/dev/null; then
-    pass "dns-out направляет DNS на 127.0.0.1:5355"
+    pass "Outbound $dns_tag направляет DNS на 127.0.0.1:5355"
   else
-    error "dns-out не направляет DNS на 127.0.0.1:5355"
+    error "Outbound $dns_tag не направляет DNS на 127.0.0.1:5355"
   fi
   if jq -e --arg port "$PLUGIN_PORT" '
     any(.dns.servers[]?;
-      .address == "127.0.0.1" and (.port | tostring) == $port)
+      if type == "string" then . == ("127.0.0.1:" + $port)
+      else .address == "127.0.0.1" and (.port | tostring) == $port
+      end)
   ' "$XRAY_CONFIG" >/dev/null; then
     pass "В dns.servers найден 127.0.0.1:5355"
   else
-    error "В dns.servers не найден сервер 127.0.0.1:5355"
-  fi
-  if jq -e --arg port "$PLUGIN_PORT" '
-    any(.routing.rules[]?;
-      .enabled != false and
-      ((.network // "") | split(",") | sort) == ["tcp", "udp"] and
-      ((.port | tostring) == "53") and .outboundTag == "dns-out")
-  ' "$XRAY_CONFIG" >/dev/null; then
-    pass "Активное TCP/UDP правило порта 53 направляет DNS в dns-out"
-  else
-    error "Не найдено активное TCP/UDP правило порта 53 -> dns-out"
+    error "В dns.servers не найден 127.0.0.1:5355"
   fi
 
   if jq -e --arg port "$PLUGIN_PORT" '
