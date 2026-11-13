@@ -500,19 +500,20 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
     }
 
     broad_compatible_routes: list[tuple[int, str]] = []
+    partial_global_routes: list[tuple[int, set[str], str]] = []
     if not route_matches:
-        # Global range rules may shadow a later exact port-53 fallback. A
-        # global TCP-only or UDP-only rule also owns that transport and must
-        # already route it to a compatible DNS endpoint.
+        # A globally scoped route that owns only TCP or UDP still intercepts
+        # that transport before any later fallback. Reuse it only when it
+        # already sends that transport to the local DNS service.
         for index, rule in enumerate(rules):
-            if (
-                not _global_protocol_port53_rule(rule)
-                or _global_port53_rule(rule)
-                or _global_port53_overlap(rule)
-            ):
+            if not _global_protocol_port53_rule(rule):
+                continue
+            if _global_port53_rule(rule) or _global_port53_overlap(rule):
                 continue
             networks = _tokens(rule.get("network"))
             covered = networks.intersection({"tcp", "udp"})
+            if not covered:
+                continue
             target = rule.get("outboundTag")
             balancer = rule.get("balancerTag")
             resolved = None
@@ -520,28 +521,30 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                 plan.blockers.append(
                     f"Existing global single-transport rule at routing.rules[{index}] has both outboundTag and balancerTag"
                 )
-            elif isinstance(target, str) and target in compatible:
-                resolved = target
+            elif isinstance(target, str):
+                if target in compatible:
+                    resolved = target
+                else:
+                    plan.blockers.append(
+                        f"Existing global {','.join(sorted(covered))} port-53 rule at routing.rules[{index}] targets incompatible outbound {target!r}"
+                    )
             elif isinstance(balancer, str):
-                _selected, error = _resolve_balancer_dns_targets(
-                    balancer, balancers, outbound_index
-                )
+                _selected, error = _resolve_balancer_dns_targets(balancer, balancers, outbound_index)
                 if error is None:
                     resolved = balancer
                 else:
                     plan.blockers.append(
-                        f"Existing global single-transport rule at routing.rules[{index}] "
-                        f"does not have a compatible DNS balancer: {error}"
+                        f"Existing global single-transport rule at routing.rules[{index}] does not have a compatible DNS balancer: {error}"
                     )
-            if resolved is None and not plan.blockers:
+            else:
                 plan.blockers.append(
-                    f"Existing global {','.join(sorted(covered))} port-53 rule at routing.rules[{index}] "
-                    "routes to an incompatible target and would intercept DNS before the integration fallback"
+                    f"Existing global {','.join(sorted(covered))} port-53 rule at routing.rules[{index}] has no valid outboundTag or balancerTag"
                 )
+            if resolved is not None:
+                partial_global_routes.append((index, covered, resolved))
 
-        # A broad rule whose port selector spans 53 shadows any fallback rule
-        # inserted after it. Reuse it only when it already targets this DNS
-        # endpoint; otherwise stop rather than adding an unreachable route.
+        # A broader port range that includes both TCP and UDP port 53 shadows
+        # any later fallback. Reuse it only when its target is fully compatible.
         for index, rule in enumerate(rules):
             if not _global_port53_overlap(rule) or _global_port53_rule(rule):
                 continue
@@ -554,20 +557,16 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
             elif isinstance(target, str) and target in compatible:
                 broad_compatible_routes.append((index, target))
             elif isinstance(balancer, str):
-                _selected, error = _resolve_balancer_dns_targets(
-                    balancer, balancers, outbound_index
-                )
+                _selected, error = _resolve_balancer_dns_targets(balancer, balancers, outbound_index)
                 if error:
                     plan.blockers.append(
-                        f"Existing broad routing rule at routing.rules[{index}] also matches port 53 "
-                        f"but its balancer is not DNS-compatible: {error}"
+                        f"Existing broad routing rule at routing.rules[{index}] also matches port 53 but its balancer is not DNS-compatible: {error}"
                     )
                 else:
                     broad_compatible_routes.append((index, balancer))
             else:
                 plan.blockers.append(
-                    f"Existing broad routing rule at routing.rules[{index}] also matches port 53 "
-                    "but does not target a compatible local DNS outbound; adding a fallback would be shadowed"
+                    f"Existing broad routing rule at routing.rules[{index}] also matches port 53 but does not target a compatible local DNS outbound; adding a fallback would be shadowed"
                 )
 
     if route_matches:
