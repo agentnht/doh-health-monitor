@@ -610,7 +610,7 @@ class RollbackLifecycleTests(unittest.TestCase):
 
             def update(self, config, _test_url):
                 self.update_calls += 1
-                self.config = copy.deepcopy(config)
+                self.config = api_tool.panel_normalize_dns_allow_rules(copy.deepcopy(config))
 
         with tempfile.TemporaryDirectory() as directory:
             backup = self._make_applied_backup(directory, before, after)
