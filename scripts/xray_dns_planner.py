@@ -300,32 +300,44 @@ def _validate_outbound_tag_index(
     balancers: list[dict[str, Any]],
     inbounds: list[dict[str, Any]],
     api_tag: str | None,
+    dns_tags: list[tuple[str, str]],
 ) -> tuple[dict[str, dict[str, Any]], set[str], list[str]]:
-    """Index outbound targets and reserve every existing Xray tag namespace."""
+    """Index outbound targets and reserve/validate every tag-bearing namespace."""
     index: dict[str, dict[str, Any]] = {}
     used: set[str] = set()
     blockers: list[str] = []
+    definitions: dict[str, list[str]] = {}
 
-    for namespace, items in (("inbound", inbounds), ("outbound", outbounds), ("balancer", balancers)):
-        counts: dict[str, int] = {}
+    for namespace, items in (
+        ("inbound", inbounds),
+        ("outbound", outbounds),
+        ("balancer", balancers),
+    ):
         for item in items:
             tag = item.get("tag")
             if not isinstance(tag, str) or not tag:
                 continue
             used.add(tag)
-            counts[tag] = counts.get(tag, 0) + 1
+            definitions.setdefault(tag, []).append(namespace)
             if namespace == "outbound" and tag not in index:
                 index[tag] = item
-        for tag, count in counts.items():
-            if count > 1:
-                blockers.append(f"Duplicate {namespace} tag {tag!r}; references are ambiguous")
 
-    # The API tag is a live Xray tag too and must be reserved against generated names.
     if isinstance(api_tag, str) and api_tag:
         used.add(api_tag)
+        definitions.setdefault(api_tag, []).append("api")
+    for namespace, tag in dns_tags:
+        if tag:
+            used.add(tag)
+            definitions.setdefault(tag, []).append(namespace)
 
-    # Routing rule identifiers are also reserved so generated ruleTag values
-    # never collide with any existing named rule or other Xray tag.
+    # Xray tag references are global. Any duplicate definition across these
+    # namespaces makes a reference ambiguous and therefore blocks planning.
+    for tag, namespaces in definitions.items():
+        if len(namespaces) > 1:
+            blockers.append(
+                f"Duplicate Xray tag {tag!r} across {', '.join(namespaces)}; references are ambiguous"
+            )
+
     return index, used, blockers
 
 def _resolve_balancer_dns_targets(
@@ -394,9 +406,25 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
         inbounds = []
     api_section = cfg.get("api", {})
     api_tag = api_section.get("tag") if isinstance(api_section, dict) else None
+    dns_section = cfg.get("dns", {})
+    dns_tags: list[tuple[str, str]] = []
+    if isinstance(dns_section, dict):
+        dns_tag = dns_section.get("tag")
+        if isinstance(dns_tag, str) and dns_tag:
+            dns_tags.append(("dns", dns_tag))
+        existing_servers = dns_section.get("servers", [])
+        if isinstance(existing_servers, list):
+            for server in existing_servers:
+                if isinstance(server, dict):
+                    server_tag = server.get("tag")
+                    if isinstance(server_tag, str) and server_tag:
+                        dns_tags.append(("dns server", server_tag))
     outbound_index, used_tags, tag_blockers = _validate_outbound_tag_index(
-        outbounds, balancers, inbounds,
+        outbounds,
+        balancers,
+        inbounds,
         api_tag if isinstance(api_tag, str) else None,
+        dns_tags,
     )
     plan.blockers.extend(tag_blockers)
     for rule in rules:
