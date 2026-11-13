@@ -65,6 +65,72 @@ def add_complete_dns(config):
     return cfg
 
 
+class TemporaryDNSFinalRuleTests(unittest.TestCase):
+    class FakePanel:
+        def __init__(self, config):
+            self.snapshot = {
+                "xraySetting": copy.deepcopy(config),
+                "outboundTestUrl": "https://example.invalid/",
+            }
+            self.updates = 0
+
+        def get_snapshot(self):
+            return copy.deepcopy(self.snapshot)
+
+        def update(self, config, outbound_test_url):
+            self.snapshot = {
+                "xraySetting": copy.deepcopy(config),
+                "outboundTestUrl": outbound_test_url,
+            }
+            self.updates += 1
+
+    def test_temporary_rule_is_added_and_removed_without_touching_other_rules(self):
+        config = base_config()
+        config["outbounds"][0]["settings"]["finalRules"] = [
+            {"action": "block", "network": "tcp", "port": "25", "ip": ["192.0.2.1"]}
+        ]
+        client = self.FakePanel(config)
+
+        api_tool.install_temporary_dns_final_rule(client)
+        rules = client.snapshot["xraySetting"]["outbounds"][0]["settings"]["finalRules"]
+        self.assertEqual(len(rules), 2)
+        self.assertEqual(rules[1], api_tool.TEMP_DNS_FINAL_RULE)
+
+        self.assertTrue(api_tool.cleanup_temporary_dns_final_rule(
+            client, api_tool.TEMP_DNS_FINAL_RULE
+        ))
+        restored = client.snapshot["xraySetting"]["outbounds"][0]["settings"]["finalRules"]
+        self.assertEqual(restored, config["outbounds"][0]["settings"]["finalRules"])
+        self.assertEqual(client.updates, 2)
+
+    def test_plan_removes_manually_persisted_temporary_rule(self):
+        config = base_config()
+        config["outbounds"][0]["settings"]["finalRules"] = [
+            copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE),
+            {"action": "block", "network": "tcp", "port": "25", "ip": ["192.0.2.1"]},
+        ]
+        plan = api_tool.build_plan(config)
+        self.assertFalse(plan.blockers)
+        self.assertTrue(any("REMOVE manually-persisted temporary DNS allow finalRule" in x
+                            for x in plan.changes))
+        rules = plan.proposed["outbounds"][0]["settings"]["finalRules"]
+        self.assertEqual(rules, [
+            {"action": "block", "network": "tcp", "port": "25", "ip": ["192.0.2.1"]}
+        ])
+
+    def test_cleanup_refuses_ambiguous_duplicate_temporary_rules(self):
+        config = base_config()
+        config["outbounds"][0]["settings"]["finalRules"] = [
+            copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE),
+            copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE),
+        ]
+        client = self.FakePanel(config)
+        with self.assertRaises(api_tool.IntegrationError):
+            api_tool.cleanup_temporary_dns_final_rule(
+                client, api_tool.TEMP_DNS_FINAL_RULE
+            )
+
+
 class AdditivePlannerTests(unittest.TestCase):
     def test_clean_template_adds_only_dns_items_and_panel_managed_allow(self):
         original = base_config()
