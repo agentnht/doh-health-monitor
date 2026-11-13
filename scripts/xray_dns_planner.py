@@ -330,6 +330,27 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
         if _outbound_matches_dns_endpoint(item)
     }
 
+    if not route_matches:
+        # A broad rule whose port selector spans 53 shadows any fallback rule
+        # inserted after it. Reuse it only when it already targets this DNS
+        # endpoint; otherwise stop rather than adding an unreachable route.
+        for index, rule in enumerate(rules):
+            if not rule_may_match_port53(rule) or _global_port53_rule(rule):
+                continue
+            selectors = set(rule)
+            is_global_scope = not selectors.intersection({
+                "inboundTag", "domain", "ip", "source", "sourcePort", "user", "attrs",
+            })
+            networks = _tokens(rule.get("network", "tcp,udp"))
+            covers_both = not networks or networks == {"tcp", "udp"}
+            if is_global_scope and covers_both:
+                target = rule.get("outboundTag")
+                if not isinstance(target, str) or target not in compatible:
+                    plan.blockers.append(
+                        f"Existing broad routing rule at routing.rules[{index}] also matches port 53 "
+                        "but does not target a compatible local DNS outbound; adding a fallback would be shadowed"
+                    )
+
     if route_matches:
         route = route_matches[0]
         route_index = rules.index(route)
