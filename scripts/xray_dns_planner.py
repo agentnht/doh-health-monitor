@@ -146,7 +146,9 @@ def _global_port53_rule(rule: dict[str, Any]) -> bool:
     has_outbound = isinstance(rule.get("outboundTag"), str) and bool(rule.get("outboundTag"))
     has_balancer = isinstance(rule.get("balancerTag"), str) and bool(rule.get("balancerTag"))
     # Xray gives outboundTag precedence if both are present.
-    return has_outbound or has_balancer and not any(key not in allowed for key in rule)
+    return (has_outbound or has_balancer) and not any(
+        key not in allowed for key in rule
+    )
 
 
 def _global_protocol_port53_rule(rule: dict[str, Any]) -> bool:
@@ -617,13 +619,13 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
             if isinstance(target, str) and target in compatible:
                 broad_compatible_routes.append((index, target))
             elif isinstance(balancer, str):
-                _selected, error = _resolve_balancer_dns_targets(balancer, balancers, outbound_index)
+                selected, error = _resolve_balancer_dns_targets(balancer, balancers, outbound_index)
                 if error:
                     plan.blockers.append(
                         f"Existing broad routing rule at routing.rules[{index}] also matches port 53 but its balancer is not DNS-compatible: {error}"
                     )
                 else:
-                    broad_compatible_routes.append((index, balancer))
+                    broad_compatible_routes.append((index, selected[0]))
             else:
                 plan.blockers.append(
                     f"Existing broad routing rule at routing.rules[{index}] also matches port 53 but does not target a compatible local DNS outbound; adding a fallback would be shadowed"
@@ -694,7 +696,7 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                         f"Existing global port-53 rule uses an incompatible balancer: {error}"
                     )
                 else:
-                    resolved_route_targets.append(balancer_tag)
+                    resolved_route_targets.append(_selected[0])
             else:
                 plan.blockers.append(
                     f"Existing global port-53 rule #{route_index_in_list + 1} has no outboundTag or balancerTag"
@@ -897,11 +899,9 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
             continue
         outbound_tag = rule.get("outboundTag")
         balancer_tag = rule.get("balancerTag")
-        if outbound_tag and balancer_tag:
-            plan.blockers.append(
-                f"routing.rules[{index}] has both outboundTag and balancerTag for DNS traffic"
-            )
-        elif outbound_tag and outbound_tag not in outbound_index:
+        # Xray uses outboundTag first when both are supplied; only inspect
+        # balancerTag when outboundTag is absent.
+        if outbound_tag and outbound_tag not in outbound_index:
             # The newly generated target is already included in outbound_index only
             # when created after inventory; account for it explicitly.
             if outbound_tag != chosen_tag or not plan.outbound_created:
