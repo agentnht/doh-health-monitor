@@ -864,6 +864,10 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
             plan.blockers.append(
                 f"routing.rules[{index}] references missing balancer tag {balancer_tag!r}"
             )
+        elif not outbound_tag and not balancer_tag:
+            plan.blockers.append(
+                f"routing.rules[{index}] matches DNS port 53 but has no outboundTag or balancerTag"
+            )
 
     if plan.blockers:
         # Do not present a partially viable proposal as executable.
