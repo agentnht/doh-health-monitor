@@ -646,6 +646,10 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
         for index, rule in enumerate(rules):
             if not rule_may_match_port53(rule):
                 continue
+            # Global rules are analyzed separately so TCP-only/UDP-only
+            # ownership is not confused with an inbound-scoped exception.
+            if _global_protocol_port53_rule(rule):
+                continue
             target = rule.get("outboundTag")
             balancer = rule.get("balancerTag")
             if target and balancer:
@@ -653,31 +657,46 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                     f"routing.rules[{index}] has both outboundTag and balancerTag for DNS traffic"
                 )
             elif isinstance(target, str) and target in compatible:
-                # This is a scoped policy exception, not a replacement for the
-                # global route. Its compatible outbound may be reused by the
-                # new global fallback without changing the scoped rule.
                 scoped_targets.add(target)
             elif isinstance(balancer, str):
-                selected, resolve_error = _resolve_balancer_dns_targets(
+                _selected, resolve_error = _resolve_balancer_dns_targets(
                     balancer, balancers, outbound_index
                 )
                 if resolve_error is None:
                     scoped_targets.add(balancer)
+
         broad_targets = {target for _index, target in broad_compatible_routes}
+        covered_transports = {
+            protocol
+            for _index, transports, _target in partial_global_routes
+            for protocol in transports
+        }
+        route_path_covered = False
         if len(broad_targets) > 1:
             plan.blockers.append(
                 "Multiple broad port-53 rules target different compatible DNS outbounds; routing is ambiguous"
             )
         elif broad_targets:
             chosen_tag = next(iter(broad_targets))
+            route_path_covered = True
             plan.warnings.append(
-                "An existing broad port-range rule already routes TCP/UDP port 53 to the local DNS outbound; it is preserved unchanged"
+                "An existing broad port-range rule already routes TCP/UDP port 53 to the local DNS endpoint; it is preserved unchanged"
+            )
+        elif {"tcp", "udp"}.issubset(covered_transports):
+            route_path_covered = True
+            plan.warnings.append(
+                "Existing global TCP-only/UDP-only rules already cover both DNS transports through compatible local DNS targets; both rules are preserved"
+            )
+        elif partial_global_routes:
+            chosen_tag = min(partial_global_routes, key=lambda item: item[0])[2]
+            plan.warnings.append(
+                "An existing global single-transport port-53 route is reused; the generated fallback will complete the other DNS transport"
             )
         elif len(scoped_targets) == 1:
             chosen_tag = next(iter(scoped_targets))
         elif len(scoped_targets) > 1:
             plan.blockers.append(
-                "Scoped port-53 rules use multiple compatible DNS outbounds; target selection is ambiguous"
+                "Scoped port-53 rules use multiple compatible DNS outbounds; routing target is ambiguous"
             )
         elif len(compatible) == 1:
             chosen_tag = next(iter(compatible))
@@ -686,7 +705,7 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                 "Multiple compatible DNS outbounds exist but no unique route selects one; refusing to guess"
             )
 
-    if chosen_tag is None and not plan.blockers:
+    if chosen_tag is None and not plan.blockers and not route_path_covered:
         new_tag = _unique_tag("dns-out", used_tags, balancer_selectors)
         if new_tag is None:
             plan.blockers.append(
@@ -746,7 +765,7 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
     # Reuse an exact global route when it exists. Otherwise insert a new route
     # after narrower port-53 rules, but before generic rules that could swallow
     # the rewritten loopback DNS traffic. Existing rules are never moved.
-    if not route_matches and not broad_compatible_routes and chosen_tag is not None:
+    if not route_matches and not broad_compatible_routes and chosen_tag is not None and not route_path_covered:
         scoped_indexes = [
             index for index, rule in enumerate(rules)
             if rule_may_match_port53(rule)
