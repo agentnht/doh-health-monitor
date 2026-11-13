@@ -256,10 +256,24 @@ def _server_endpoint(server: Any) -> tuple[str, int] | None:
 
 
 def _server_is_general(server: Any) -> bool:
-    if isinstance(server, dict):
-        domains = server.get("domains", [])
-        return (domains in (None, [], "")) and server.get("skipFallback") is not True
-    return isinstance(server, str)
+    """Whether a local DNS server entry is an unrestricted fallback candidate."""
+    if isinstance(server, str):
+        return True
+    if not isinstance(server, dict):
+        return False
+    if server.get("domains") not in (None, [], ""):
+        return False
+    if server.get("skipFallback") is True:
+        return False
+    # These fields can restrict which query results the server may return or
+    # which address family is queried; preserve such entries as scoped objects.
+    strategy = server.get("queryStrategy")
+    if strategy not in (None, "", "UseIP"):
+        return False
+    for key in ("expectedIPs", "expectIPs", "unexpectedIPs"):
+        if server.get(key) not in (None, [], ""):
+            return False
+    return True
 
 
 def _rule_may_match_loopback_dns_without_port(rule: dict[str, Any]) -> bool:
