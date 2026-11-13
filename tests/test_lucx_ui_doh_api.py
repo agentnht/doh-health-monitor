@@ -452,6 +452,43 @@ class AdditivePlannerTests(unittest.TestCase):
             generated,
         )
 
+    def test_generated_tags_skip_dns_app_and_nameserver_tags(self):
+        original = base_config()
+        occupied = copy.deepcopy(api_tool.DNS_OUT)
+        occupied["settings"]["rewriteAddress"] = "9.9.9.9"
+        original["outbounds"].append(occupied)
+        original["dns"] = {
+            "tag": "dns-out-doh-health-monitor",
+            "servers": [{"address": "127.0.0.1", "port": 5355, "tag": "doh-health-monitor-dns-out"}],
+        }
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        generated = plan.proposed["outbounds"][-1]["tag"]
+        self.assertNotIn(generated, {
+            original["dns"]["tag"],
+            original["dns"]["servers"][0]["tag"],
+        })
+        route = next(item for item in plan.proposed["routing"]["rules"] if api_tool._global_port53_rule(item))
+        self.assertEqual(route["outboundTag"], generated)
+
+    def test_duplicate_tag_across_outbound_and_nameserver_is_blocked(self):
+        original = base_config()
+        original["outbounds"].append(copy.deepcopy(api_tool.DNS_OUT))
+        original["dns"] = {
+            "servers": [{
+                "address": "127.0.0.1",
+                "port": 5355,
+                "tag": "dns-out",
+            }]
+        }
+
+        plan = api_tool.build_plan(original)
+
+        self.assertTrue(any("Duplicate Xray tag 'dns-out'" in item for item in plan.blockers))
+        self.assertEqual(plan.proposed, original)
+
     def test_duplicate_balancer_tags_are_rejected_as_ambiguous(self):
         original = base_config()
         original["routing"]["balancers"] = [
