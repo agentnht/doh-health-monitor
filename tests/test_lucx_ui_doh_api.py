@@ -589,7 +589,7 @@ class RollbackLifecycleTests(unittest.TestCase):
             )
             self.assertFalse(backup.exists())
 
-    def test_rollback_refuses_later_panel_changes_and_keeps_backup(self):
+    def test_rollback_preserves_unrelated_changes_made_after_apply(self):
         before = base_config()
         after = api_tool.build_plan(before).expected_saved
 
@@ -597,6 +597,9 @@ class RollbackLifecycleTests(unittest.TestCase):
             def __init__(self):
                 self.config = copy.deepcopy(after)
                 self.config["log"]["loglevel"] = "debug"
+                self.config.setdefault("routing", {}).setdefault("rules", []).append(
+                    {"type": "field", "domain": ["example.org"], "outboundTag": "direct"}
+                )
                 self.update_calls = 0
 
             def get_snapshot(self):
@@ -605,19 +608,39 @@ class RollbackLifecycleTests(unittest.TestCase):
                     "outboundTestUrl": "https://example.invalid/204",
                 }
 
-            def update(self, _config, _test_url):
+            def update(self, config, _test_url):
                 self.update_calls += 1
+                self.config = copy.deepcopy(config)
 
         with tempfile.TemporaryDirectory() as directory:
             backup = self._make_applied_backup(directory, before, after)
             client = FakeClient()
             args = SimpleNamespace(backup=str(backup), approve_restart=True)
-            with self.assertRaisesRegex(
-                api_tool.IntegrationError, "differ from the backup after-snapshot"
-            ):
-                api_tool.command_rollback(args, client)
-            self.assertEqual(client.update_calls, 0)
-            self.assertTrue(backup.exists())
+            self.assertEqual(api_tool.command_rollback(args, client), 0)
+            self.assertEqual(client.update_calls, 1)
+            self.assertEqual(client.config["log"]["loglevel"], "debug")
+            self.assertIn(
+                {"type": "field", "domain": ["example.org"], "outboundTag": "direct"},
+                client.config["routing"]["rules"],
+            )
+            self.assertFalse(any(
+                isinstance(item, dict) and item.get("tag") == "dns-out"
+                for item in client.config.get("outbounds", [])
+            ))
+            self.assertFalse(any(
+                isinstance(item, dict) and item.get("port") == "53"
+                and item.get("outboundTag") == "dns-out"
+                for item in client.config.get("routing", {}).get("rules", [])
+            ))
+            self.assertFalse(backup.exists())
+
+    def test_rollback_refuses_to_delete_modified_owned_dns_out(self):
+        before = base_config()
+        after = api_tool.build_plan(before).expected_saved
+        current = copy.deepcopy(after)
+        next(item for item in current["outbounds"] if item.get("tag") == "dns-out")["settings"]["rewritePort"] = 5356
+        with self.assertRaisesRegex(api_tool.IntegrationError, "dns-out was modified"):
+            api_tool.build_selective_rollback_config(current, before, after)
 
     def test_rollback_keeps_backup_when_readback_verification_fails(self):
         before = base_config()
