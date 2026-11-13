@@ -582,6 +582,9 @@ class ApplyBackupLifecycleTests(unittest.TestCase):
             def __init__(self):
                 self.config = copy.deepcopy(initial)
 
+            def list_inbounds(self):
+                return []
+
             def get_snapshot(self):
                 return {
                     "xraySetting": copy.deepcopy(self.config),
@@ -615,6 +618,9 @@ class ApplyBackupLifecycleTests(unittest.TestCase):
             def __init__(self):
                 self.config = copy.deepcopy(initial)
 
+            def list_inbounds(self):
+                return []
+
             def get_snapshot(self):
                 return {
                     "xraySetting": copy.deepcopy(self.config),
@@ -635,18 +641,30 @@ class ApplyBackupLifecycleTests(unittest.TestCase):
             self.assertEqual(len(backups), 1)
             self.assertEqual(api_tool.load_backup(backups[0])["state"], "applied-and-verified")
 
-    def test_apply_blocks_when_a_recovery_journal_is_pending(self):
+    def test_precleanup_treats_recovery_journals_as_opaque_markers(self):
+        class ReadOnlyClient:
+            def list_inbounds(self):
+                return []
+
+            def get_snapshot(self):
+                return {
+                    "xraySetting": base_config(),
+                    "outboundTestUrl": "https://example.invalid/204",
+                }
+
         with tempfile.TemporaryDirectory() as directory:
             backup_dir = __import__("pathlib").Path(directory)
-            expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718")
-            api_tool._write_recovery_journal(backup_dir, expected, 9, "cleanup-required")
-
-            class NeverCalledClient:
-                def get_snapshot(self):
-                    self.fail("panel mutation/read should not begin with pending recovery")
-
-            args = SimpleNamespace(backup_dir=directory)
-            self.assertEqual(api_tool.command_apply(args, NeverCalledClient()), 2)
+            recovery = backup_dir / "recovery"
+            recovery.mkdir(mode=0o700)
+            journal = recovery / "lucx-doh-selftest-not-a-parseable-journal.json"
+            journal.write_text("do not parse this", encoding="utf-8")
+            journal.chmod(0o600)
+            discovered = api_tool.inspect_temporary_leftovers(ReadOnlyClient(), backup_dir)
+            self.assertEqual(discovered["errors"], [])
+            self.assertEqual(discovered["tunnels"], [])
+            self.assertFalse(discovered["final_rule_present"])
+            api_tool.cleanup_temporary_leftovers(ReadOnlyClient(), backup_dir, discovered)
+            self.assertFalse(journal.exists())
 
     def test_apply_retains_snapshot_when_readback_does_not_match(self):
         initial = base_config()
@@ -655,17 +673,21 @@ class ApplyBackupLifecycleTests(unittest.TestCase):
         class FakeClient:
             def __init__(self):
                 self.calls = 0
+                self.updated = False
+
+            def list_inbounds(self):
+                return []
 
             def get_snapshot(self):
                 self.calls += 1
-                config = initial if self.calls == 1 else {"unexpected": True}
+                config = {"unexpected": True} if self.updated else initial
                 return {
                     "xraySetting": copy.deepcopy(config),
                     "outboundTestUrl": "https://example.invalid/204",
                 }
 
             def update(self, _config, _test_url):
-                return None
+                self.updated = True
 
         with tempfile.TemporaryDirectory() as directory:
             args = SimpleNamespace(
