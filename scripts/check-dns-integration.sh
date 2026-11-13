@@ -47,7 +47,7 @@ if [[ ! -r "$XRAY_CONFIG" ]]; then
   error "Не найден доступный для чтения Xray config: $XRAY_CONFIG"
 else
   pass "Xray config доступен: $XRAY_CONFIG"
-  dns_tag="$(jq -er '
+  route_json="$(jq -ce '
     [
       .routing.rules[]?
       | select(.enabled != false and (.type // "field") == "field")
@@ -55,26 +55,72 @@ else
       | select(
           ((.network // "tcp,udp")
             | if type == "array" then map(ascii_downcase) | sort
-              else split(",") | map(ascii_downcase) | sort
+              else split(",") | map(gsub("\\s"; "") | ascii_downcase) | sort
               end) == ["tcp", "udp"]
         )
-      | select((keys - ["enabled", "network", "port", "type", "ruleTag", "remarks", "comment", "outboundTag"]) | length == 0)
-      | .outboundTag // empty
+      | select((keys - ["enabled", "network", "port", "type", "ruleTag", "remarks", "comment", "outboundTag", "balancerTag"]) | length == 0)
+      | select((.outboundTag // "") != "" or (.balancerTag // "") != "")
     ]
     | if length == 1 then .[0] else empty end
-  ' "$XRAY_CONFIG" 2>/dev/null)" || dns_tag=""
-  if [[ -z "$dns_tag" ]]; then
-    error "Не найдено единственное глобальное TCP/UDP правило порта 53 с outboundTag"
-  elif jq -e --arg tag "$dns_tag" --arg port "$PLUGIN_PORT" '
+  ' "$XRAY_CONFIG" 2>/dev/null)" || route_json=""
+  outbound_tag=""
+  balancer_tag=""
+  if [[ -n "$route_json" ]]; then
+    outbound_tag="$(jq -r '.outboundTag // empty' <<<"$route_json")"
+    balancer_tag="$(jq -r '.balancerTag // empty' <<<"$route_json")"
+  fi
+  if [[ -n "$outbound_tag" ]] && jq -e --arg tag "$outbound_tag" --arg port "$PLUGIN_PORT" '
     any(.outbounds[]?;
       .tag == $tag and .protocol == "dns" and
       .settings.rewriteAddress == "127.0.0.1" and
       (.settings.rewritePort | tostring) == $port and
-      (.settings.rewriteNetwork // "udp") == "udp")
+      ((.settings.rewriteNetwork // "udp") == "udp" or (.settings.rewriteNetwork // "") == "tcp") and
+      all((.settings.rules // [])[]; .action == "direct") and
+      ((.settings.blockTypes // []) | length == 0) and
+      (.settings.nonIPQuery // "direct") == "direct" and
+      (.proxySettings // null) == null and
+      (.streamSettings // null) == null and
+      (.mux // null) == null and
+      ((.sendThrough // "127.0.0.1") | try (test("^(127\\.|::1$)")) catch false))
   ' "$XRAY_CONFIG" >/dev/null; then
-    pass "Outbound $dns_tag направляет DNS на 127.0.0.1:5355"
+    pass "Outbound $outbound_tag направляет DNS на 127.0.0.1:5355"
+  elif [[ -n "$balancer_tag" ]] && jq -e --arg tag "$balancer_tag" --arg port "$PLUGIN_PORT" '
+    (.outbounds // []) as $outbounds
+    | [.routing.balancers[]? | select(.tag == $tag)] as $balancers
+    | ($balancers | length) == 1
+      and ($balancers[0].selector | type == "array" and length > 0)
+      and all($balancers[0].selector[]; type == "string" and length > 0)
+      and (
+        (
+          [
+            $outbounds[]?
+            | select(.tag != null and any($balancers[0].selector[]; . as $prefix | (.tag | startswith($prefix))))
+            | .tag
+          ]
+          + [($balancers[0].fallbackTag // empty)]
+          | unique
+        ) as $selected
+        | ($selected | length) > 0
+          and all($selected[]; . as $selected_tag
+            | any($outbounds[]?;
+                .tag == $selected_tag and .protocol == "dns" and
+                .settings.rewriteAddress == "127.0.0.1" and
+                (.settings.rewritePort | tostring) == $port and
+                ((.settings.rewriteNetwork // "udp") == "udp" or (.settings.rewriteNetwork // "") == "tcp") and
+                all((.settings.rules // [])[]; .action == "direct") and
+                ((.settings.blockTypes // []) | length == 0) and
+                (.settings.nonIPQuery // "direct") == "direct" and
+                (.proxySettings // null) == null and
+                (.streamSettings // null) == null and
+                (.mux // null) == null and
+                ((.sendThrough // "127.0.0.1") | try (test("^(127\\.|::1$)")) catch false)
+            )
+          )
+      )
+  ' "$XRAY_CONFIG" >/dev/null; then
+    pass "Balancer $balancer_tag направляет DNS на 127.0.0.1:5355"
   else
-    error "Outbound $dns_tag не направляет DNS на 127.0.0.1:5355"
+    error "Не найдено единственное глобальное TCP/UDP правило порта 53 с совместимым outbound/balancer"
   fi
   if jq -e --arg port "$PLUGIN_PORT" '
     any(.dns.servers[]?;
