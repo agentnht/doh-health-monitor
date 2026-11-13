@@ -518,8 +518,6 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
         rule for rule in rules
         if _global_port53_rule(rule)
     ]
-    if len(route_matches) > 1:
-        plan.blockers.append("Multiple global TCP/UDP port-53 rules exist; routing is ambiguous")
 
     chosen_tag: str | None = None
     compatible = {
@@ -634,41 +632,56 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                     f"Earlier global port-53-overlap rule at routing.rules[{index}] "
                     "shadows the exact port-53 route with an incompatible target"
                 )
-        target_tag = route.get("outboundTag")
-        balancer_tag = route.get("balancerTag")
-        if target_tag and balancer_tag:
-            plan.blockers.append("Existing global port-53 rule has both outboundTag and balancerTag")
-        elif target_tag:
-            if target_tag not in outbound_index:
+        resolved_route_targets: list[str] = []
+        for route_index_in_list, existing_route in enumerate(route_matches):
+            target_tag = existing_route.get("outboundTag")
+            balancer_tag = existing_route.get("balancerTag")
+            if target_tag and balancer_tag:
                 plan.blockers.append(
-                    f"Existing global port-53 rule references missing outbound tag {target_tag!r}"
+                    f"Existing global port-53 rule #{route_index_in_list + 1} has both outboundTag and balancerTag"
                 )
-            elif not _outbound_matches_dns_endpoint(outbound_index[target_tag]):
-                plan.blockers.append(
-                    f"Existing global port-53 rule targets {target_tag!r}, whose outbound does not resolve to 127.0.0.1:5355; it will not be changed"
-                )
-            else:
-                chosen_tag = target_tag
-                plan.warnings.append(
-                    f"Existing global TCP/UDP port-53 route and outbound {target_tag!r} already provide the required DNS path"
-                )
-                if len(compatible) > 1:
-                    plan.warnings.append(
-                        "Additional compatible DNS outbounds exist; the existing global route target is reused and the others are preserved"
+            elif target_tag:
+                if target_tag not in outbound_index:
+                    plan.blockers.append(
+                        f"Existing global port-53 rule references missing outbound tag {target_tag!r}"
                     )
-        elif balancer_tag:
-            selected, error = _resolve_balancer_dns_targets(balancer_tag, balancers, outbound_index)
-            if error:
-                plan.blockers.append(
-                    f"Existing global port-53 rule uses an incompatible balancer: {error}"
+                elif not _outbound_matches_dns_endpoint(outbound_index[target_tag]):
+                    plan.blockers.append(
+                        f"Existing global port-53 rule targets {target_tag!r}, whose outbound does not resolve to 127.0.0.1:5355; it will not be changed"
+                    )
+                else:
+                    resolved_route_targets.append(target_tag)
+            elif balancer_tag:
+                _selected, error = _resolve_balancer_dns_targets(
+                    balancer_tag, balancers, outbound_index
                 )
+                if error:
+                    plan.blockers.append(
+                        f"Existing global port-53 rule uses an incompatible balancer: {error}"
+                    )
+                else:
+                    resolved_route_targets.append(balancer_tag)
             else:
-                chosen_tag = balancer_tag
-                plan.warnings.append(
-                    f"Existing global TCP/UDP port-53 rule uses balancer {balancer_tag!r}; all selected outbounds reach the local DNS endpoint"
+                plan.blockers.append(
+                    f"Existing global port-53 rule #{route_index_in_list + 1} has no outboundTag or balancerTag"
                 )
-        else:
-            plan.blockers.append("Existing global port-53 rule has no outboundTag or balancerTag")
+
+        if resolved_route_targets:
+            # Different tags may still represent the same verified local DNS
+            # behavior. Preserve all existing rules and reuse the first route;
+            # do not add another catch-all rule for an already-covered path.
+            chosen_tag = resolved_route_targets[0]
+            plan.warnings.append(
+                f"Existing global TCP/UDP port-53 route already provides the local DNS path via {chosen_tag!r}"
+            )
+            if len(route_matches) > 1:
+                plan.warnings.append(
+                    "Multiple global port-53 rules already exist; all were verified as compatible and are preserved unchanged"
+                )
+            if len(compatible) > 1:
+                plan.warnings.append(
+                    "Additional compatible DNS outbounds exist; existing route targets are reused and other outbounds are preserved"
+                )
     else:
         scoped_targets: set[str] = set()
         for index, rule in enumerate(rules):
