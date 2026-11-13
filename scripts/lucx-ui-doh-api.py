@@ -1772,8 +1772,10 @@ def find_pending_recovery_journals(backup_dir: Path) -> list[Path]:
     return journals
 
 
-def install_temporary_dns_final_rule(client: PanelAPI) -> None:
-    """Install the exact loopback allow finalRule through LucX-UI's official settings API."""
+def install_temporary_dns_final_rule(
+    client: PanelAPI, *, attempt_state: list[bool] | None = None
+) -> None:
+    """Install the reserved loopback finalRule and report when the API write is attempted."""
     before = client.get_snapshot()
     config = copy.deepcopy(before["xraySetting"])
     direct = _direct_freedom_outbound(config)
@@ -1787,6 +1789,11 @@ def install_temporary_dns_final_rule(client: PanelAPI) -> None:
         )
     rules.append(copy.deepcopy(TEMP_DNS_FINAL_RULE))
     settings["finalRules"] = rules
+    # Mark ownership only after the existing-rule guard, immediately before
+    # the API write. If the API response is lost after commit, finally cleanup
+    # must still run; if the guard refused an existing entry, it must not.
+    if attempt_state is not None:
+        attempt_state[0] = True
     client.update(config, before["outboundTestUrl"])
     after = client.get_snapshot()
     after_direct = _direct_freedom_outbound(after["xraySetting"])
@@ -1847,14 +1854,15 @@ def run_temporary_tunnel_test(client: PanelAPI, status_url: str, backup_dir: Pat
         test_error = None
         cleanup_error = None
         add_error = None
-        final_rule_attempted = False
+        final_rule_attempted = [False]
         try:
-            final_rule_attempted = True
             journal = _write_recovery_journal(
                 backup_dir, expected, None, "final-rule-create-pending",
                 final_rule=TEMP_DNS_FINAL_RULE,
             )
-            install_temporary_dns_final_rule(client)
+            install_temporary_dns_final_rule(
+                client, attempt_state=final_rule_attempted
+            )
             journal = _write_recovery_journal(
                 backup_dir, expected, None, "final-rule-created",
                 final_rule=TEMP_DNS_FINAL_RULE,
@@ -1889,7 +1897,7 @@ def run_temporary_tunnel_test(client: PanelAPI, status_url: str, backup_dir: Pat
 
             # Cleanup is deliberately independent: a failed inbound deletion
             # must not prevent an attempt to remove the temporary finalRule.
-            if final_rule_attempted:
+            if final_rule_attempted[0]:
                 try:
                     cleanup_temporary_dns_final_rule(client, TEMP_DNS_FINAL_RULE)
                 except Exception as exc:
