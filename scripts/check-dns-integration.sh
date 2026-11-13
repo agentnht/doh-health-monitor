@@ -75,7 +75,12 @@ else
       .settings.rewriteAddress == "127.0.0.1" and
       (.settings.rewritePort | tostring) == $port and
       ((.settings.rewriteNetwork // "udp") == "udp" or (.settings.rewriteNetwork // "") == "tcp") and
-      all((.settings.rules // [])[]; .action == "direct") and
+      all((.settings.rules // [])[];
+        .action == "direct" and
+        ((.qType // .qtype // []) == []) and
+        ((.domain // []) == []) and
+        ((keys - ["action", "rCode"]) | length == 0)
+      ) and
       ((.settings.blockTypes // []) | length == 0) and
       (.settings.nonIPQuery // "direct") == "direct" and
       (.proxySettings // null) == null and
