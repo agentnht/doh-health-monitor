@@ -165,12 +165,18 @@ safely predict the panel's save behavior.
   `POST /panel/api/inbounds/add`, verifies its exact ID/remark/protocol/listen/
   port/settings through the panel API, and checks for positive A answers over
   UDP and TCP. It also verifies that the plugin query counter increased without
-  an increase in failures. The existing global TCP/UDP port-53 -> `dns-out`
-  rule routes the Tunnel's rewritten `127.0.0.1:53` destination, so the
-  self-test does not mutate Xray routing or cause a second restart. Cleanup in
-  `finally` re-reads the inbound list, deletes only the matching ID, confirms
-  API absence, and verifies both listeners have disappeared. A root-only
-  `0600` recovery journal is retained if cleanup cannot be verified;
+  an increase in failures. The self-test temporarily adds the exact
+  `allow/tcp,udp/5355/127.0.0.1` entry to `direct.settings.finalRules` through
+  the panel Xray-settings API before creating the Tunnel. If that exact rule
+  was manually persisted in the permanent template, the permanent apply plan
+  removes it first so it is owned only by the self-test. Cleanup in `finally`
+  deletes the matching Tunnel by verified ID, removes only the exact temporary
+  finalRule, reads both resources back, and verifies that the Tunnel listeners
+  have disappeared. Other finalRules and unrelated settings are preserved.
+  Panel Xray-settings and inbound API updates may each restart Xray; the apply
+  confirmation covers this temporary lifecycle too. A root-only `0600`
+  recovery journal records both resources and is retained if either cleanup
+  cannot be verified;
   subsequent `apply` is blocked until it is resolved with
   `cleanup-test --recovery-journal PATH`; if the inbound still exists, the
   command requires the explicit `CLEANUP` confirmation (or `--approve-restart`).
