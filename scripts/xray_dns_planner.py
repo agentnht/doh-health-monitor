@@ -616,15 +616,20 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                 continue
             target = rule.get("outboundTag")
             balancer = rule.get("balancerTag")
-            if isinstance(target, str) and target in compatible:
-                broad_compatible_routes.append((index, target))
+            if isinstance(target, str):
+                if target in compatible:
+                    broad_compatible_routes.append((index, target))
+                else:
+                    plan.blockers.append(
+                        f"Existing broad routing rule at routing.rules[{index}] uses incompatible outboundTag {target!r}; its balancerTag, if any, is not selected by Xray"
+                    )
             elif isinstance(balancer, str):
                 selected, error = _resolve_balancer_dns_targets(balancer, balancers, outbound_index)
                 if error:
                     plan.blockers.append(
                         f"Existing broad routing rule at routing.rules[{index}] also matches port 53 but its balancer is not DNS-compatible: {error}"
                     )
-                else:
+                elif selected:
                     broad_compatible_routes.append((index, selected[0]))
             else:
                 plan.blockers.append(
@@ -655,14 +660,15 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
             earlier_target = earlier.get("outboundTag")
             earlier_balancer = earlier.get("balancerTag")
             resolved_target = None
-            if isinstance(earlier_target, str) and earlier_target in compatible:
-                resolved_target = earlier_target
+            if isinstance(earlier_target, str):
+                if earlier_target in compatible:
+                    resolved_target = earlier_target
             elif isinstance(earlier_balancer, str):
                 _selected, resolve_error = _resolve_balancer_dns_targets(
                     earlier_balancer, balancers, outbound_index
                 )
-                if resolve_error is None:
-                    resolved_target = earlier_balancer
+                if resolve_error is None and _selected:
+                    resolved_target = _selected[0]
             if resolved_target is None:
                 plan.blockers.append(
                     f"Earlier global port-53-overlap rule at routing.rules[{index}] "
