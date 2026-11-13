@@ -136,6 +136,20 @@ def _global_port53_rule(rule: dict[str, Any]) -> bool:
     return has_outbound != has_balancer and not any(key not in allowed for key in rule)
 
 
+def _global_port53_overlap(rule: dict[str, Any]) -> bool:
+    """Whether a rule globally covers TCP+UDP port 53, including ranges."""
+    if not rule_may_match_port53(rule) or rule.get("type", "field") != "field":
+        return False
+    networks = _tokens(rule.get("network", "tcp,udp"))
+    if networks and not {"tcp", "udp"}.issubset(networks):
+        return False
+    allowed = {
+        "type", "ruleTag", "enabled", "network", "port",
+        "outboundTag", "balancerTag", "remarks", "comment",
+    }
+    return not any(key not in allowed for key in rule)
+
+
 def _outbound_matches_dns_endpoint(item: dict[str, Any]) -> bool:
     """Return true only when the outbound's effective DNS behavior is the local plugin."""
     if item.get("protocol") != "dns":
@@ -457,6 +471,29 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
             plan.blockers.append(
                 "An earlier broad routing rule can intercept rewritten loopback DNS before the existing port-53 route; manual review required"
             )
+        # An earlier global range such as 53,443 also shadows an exact
+        # port-53 rule. It is safe only when that earlier rule selects the
+        # same compatible direct outbound or an entirely compatible balancer.
+        for index, earlier in enumerate(rules[:route_index]):
+            if not _global_port53_overlap(earlier):
+                continue
+            earlier_target = earlier.get("outboundTag")
+            earlier_balancer = earlier.get("balancerTag")
+            resolved_target = None
+            if isinstance(earlier_target, str) and earlier_target in compatible:
+                resolved_target = earlier_target
+            elif isinstance(earlier_balancer, str):
+                _selected, resolve_error = _resolve_balancer_dns_targets(
+                    earlier_balancer, balancers, outbound_index
+                )
+                if resolve_error is None:
+                    resolved_target = earlier_balancer
+            route_target = route.get("outboundTag") or route.get("balancerTag")
+            if resolved_target is None or resolved_target != route_target:
+                plan.blockers.append(
+                    f"Earlier global port-53-overlap rule at routing.rules[{index}] "
+                    "shadows the exact port-53 route with a different or incompatible target"
+                )
         target_tag = route.get("outboundTag")
         balancer_tag = route.get("balancerTag")
         if target_tag and balancer_tag:
