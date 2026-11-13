@@ -709,6 +709,27 @@ class AdditivePlannerTests(unittest.TestCase):
         self.assertTrue(any("exists only as a scoped DNS server" in x for x in plan.blockers))
         self.assertEqual(len(plan.proposed["dns"]["servers"]), 1)
 
+    def test_local_dns_server_with_query_or_ip_filters_is_not_reused_as_general(self):
+        variants = [
+            {"queryStrategy": "UseIPv4"},
+            {"expectedIPs": ["geoip:private"]},
+            {"unexpectedIPs": ["geoip:private"]},
+        ]
+        for extra in variants:
+            with self.subTest(extra=extra):
+                original = base_config()
+                server = copy.deepcopy(api_tool.DNS_SERVER)
+                server.update(extra)
+                original["dns"] = {"servers": [server]}
+
+                plan = api_tool.build_plan(original)
+
+                self.assertTrue(any(
+                    "exists only as a scoped DNS server" in item
+                    for item in plan.blockers
+                ))
+                self.assertEqual(plan.proposed["dns"]["servers"], [server])
+
     def test_duplicate_local_dns_servers_are_blocked(self):
         original = base_config()
         original["dns"] = {"servers": [copy.deepcopy(api_tool.DNS_SERVER), copy.deepcopy(api_tool.DNS_SERVER)]}
