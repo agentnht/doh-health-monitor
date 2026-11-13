@@ -198,8 +198,11 @@ class AdditivePlannerTests(unittest.TestCase):
         )
         plan = api_tool.build_plan(original)
         self.assertFalse(plan.blockers)
-        self.assertEqual(plan.proposed["routing"]["rules"][1], api_tool.DNS_PORT_RULE)
-        self.assertEqual(plan.proposed["routing"]["rules"][2], original["routing"]["rules"][1])
+        self.assertEqual(plan.proposed["routing"]["rules"][1], original["routing"]["rules"][1])
+        self.assertEqual(plan.proposed["routing"]["rules"][2], {
+            **api_tool.DNS_PORT_RULE,
+            "outboundTag": plan.proposed["routing"]["rules"][2]["outboundTag"],
+        })
 
     def test_global_port53_rule_to_other_outbound_is_blocked(self):
         original = base_config()
@@ -208,7 +211,7 @@ class AdditivePlannerTests(unittest.TestCase):
             {"type": "field", "network": "tcp,udp", "port": "53", "outboundTag": "proxy"},
         )
         plan = api_tool.build_plan(original)
-        self.assertTrue(any("routes to another outbound" in x for x in plan.blockers))
+        self.assertTrue(any("does not resolve to 127.0.0.1:5355" in x for x in plan.blockers))
         self.assertEqual(
             sum(1 for x in plan.proposed["routing"]["rules"] if api_tool._global_port53_rule(x)),
             1,
@@ -227,8 +230,11 @@ class AdditivePlannerTests(unittest.TestCase):
         )
         plan = api_tool.build_plan(original)
         self.assertFalse(plan.blockers)
-        self.assertEqual(plan.proposed["routing"]["rules"][1], api_tool.DNS_PORT_RULE)
-        self.assertEqual(plan.proposed["routing"]["rules"][2], original["routing"]["rules"][1])
+        self.assertEqual(plan.proposed["routing"]["rules"][1], original["routing"]["rules"][1])
+        self.assertEqual(plan.proposed["routing"]["rules"][2], {
+            **api_tool.DNS_PORT_RULE,
+            "outboundTag": plan.proposed["routing"]["rules"][2]["outboundTag"],
+        })
 
     def test_existing_unmanaged_legacy_allow_rule_that_panel_would_adopt_is_blocked(self):
         original = base_config()
@@ -244,12 +250,15 @@ class AdditivePlannerTests(unittest.TestCase):
         plan = api_tool.build_plan(original)
         self.assertTrue(any("rewrite or remove an existing routing rule" in x for x in plan.blockers))
 
-    def test_existing_global_port53_rule_below_user_rule_is_blocked(self):
-        original = base_config()
-        original["routing"]["rules"].insert(1, {"type": "field", "domain": ["example.net"], "outboundTag": "proxy"})
-        original["routing"]["rules"].insert(2, copy.deepcopy(api_tool.DNS_PORT_RULE))
+    def test_existing_global_port53_rule_after_domain_rule_is_reused(self):
+        original = add_complete_dns(base_config())
+        rules = original["routing"]["rules"]
+        route = next(item for item in rules if api_tool._global_port53_rule(item))
+        rules.remove(route)
+        rules.insert(2, route)  # domain-only rule cannot match the rewritten loopback IP
         plan = api_tool.build_plan(original)
-        self.assertTrue(any("not immediately after" in x for x in plan.blockers))
+        self.assertFalse(plan.blockers)
+        self.assertFalse(any("ADD global TCP/UDP port-53" in item for item in plan.changes))
 
     def test_missing_or_misordered_api_rule_is_blocked(self):
         missing = base_config()
@@ -274,8 +283,12 @@ class AdditivePlannerTests(unittest.TestCase):
         original["outbounds"].append(conflicting)
         before = copy.deepcopy(original)
         plan = api_tool.build_plan(original)
-        self.assertTrue(any("will not be overwritten" in x for x in plan.blockers))
-        self.assertEqual(plan.proposed["outbounds"], before["outbounds"])
+        self.assertFalse(plan.blockers)
+        self.assertEqual(plan.proposed["outbounds"][:len(before["outbounds"])], before["outbounds"])
+        added = plan.proposed["outbounds"][-1]
+        self.assertEqual(added["tag"], "dns-out-doh-health-monitor")
+        self.assertEqual(added["settings"]["rewritePort"], 5355)
+        self.assertEqual(plan.proposed["routing"]["rules"][1]["outboundTag"], added["tag"])
 
     def test_existing_scoped_local_dns_server_is_not_duplicated_or_replaced(self):
         original = base_config()
@@ -290,14 +303,14 @@ class AdditivePlannerTests(unittest.TestCase):
             ]
         }
         plan = api_tool.build_plan(original)
-        self.assertTrue(any("domain-scoped" in x for x in plan.blockers))
+        self.assertTrue(any("exists only as a scoped DNS server" in x for x in plan.blockers))
         self.assertEqual(len(plan.proposed["dns"]["servers"]), 1)
 
     def test_duplicate_local_dns_servers_are_blocked(self):
         original = base_config()
         original["dns"] = {"servers": [copy.deepcopy(api_tool.DNS_SERVER), copy.deepcopy(api_tool.DNS_SERVER)]}
         plan = api_tool.build_plan(original)
-        self.assertTrue(any("Multiple DNS server" in x for x in plan.blockers))
+        self.assertTrue(any("Multiple general DNS server" in x for x in plan.blockers))
 
     def test_panel_owned_custom_allow_rule_is_not_silently_removed(self):
         original = base_config()
