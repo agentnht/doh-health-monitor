@@ -38,6 +38,12 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPSHandler, Request, build_opener, urlopen
 
+# Shared, side-effect-free semantic Xray DNS planner.
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from xray_dns_planner import build_dns_plan
+
 VERSION = "1.5.1"
 DEFAULT_PLUGIN_SERVICE = "lucx-plugin-doh-health-monitor"
 DEFAULT_PLUGIN_STATUS_URL = "http://127.0.0.1:18765/status"
@@ -69,6 +75,7 @@ DNS_PORT_RULE = {
     "network": "tcp,udp",
     "outboundTag": "dns-out",
     "port": "53",
+    "ruleTag": "doh-health-monitor-dns-port53",
     "type": "field",
 }
 DNS_ALLOW_TAG = "xui-dns-allow"
@@ -1166,20 +1173,27 @@ def _remove_persistent_temporary_dns_rule(config: dict) -> bool:
 
 
 def build_plan(original: dict) -> Plan:
+    """Build the panel-aware plan from the shared semantic Xray inventory."""
     if not isinstance(original, dict):
         raise IntegrationError("xraySetting must be a JSON object")
+
     cfg = copy.deepcopy(original)
     plan = Plan(proposed=cfg, expected_saved={})
 
-    outbounds = object_list(cfg, "outbounds", "outbounds")
-    direct_matches = [x for x in outbounds if x.get("tag") == "direct"]
+    # A manually-persisted copy of the reserved self-test finalRule is not a
+    # permanent integration object. Transfer it to the temporary test lifecycle.
+    direct_matches = [
+        item for item in cfg.get("outbounds", [])
+        if isinstance(item, dict) and item.get("tag") == "direct"
+    ] if isinstance(cfg.get("outbounds", []), list) else []
     if any(
-        isinstance(x, dict)
-        and isinstance(x.get("settings"), dict)
-        and isinstance(x["settings"].get("finalRules", []), list)
-        and any(canonical(rule) == canonical(TEMP_DNS_FINAL_RULE)
-                for rule in x["settings"].get("finalRules", []) if isinstance(rule, dict))
-        for x in direct_matches
+        isinstance(item.get("settings"), dict)
+        and isinstance(item["settings"].get("finalRules", []), list)
+        and any(
+            isinstance(rule, dict) and canonical(rule) == canonical(TEMP_DNS_FINAL_RULE)
+            for rule in item["settings"].get("finalRules", [])
+        )
+        for item in direct_matches
     ):
         try:
             if _remove_persistent_temporary_dns_rule(cfg):
@@ -1188,73 +1202,27 @@ def build_plan(original: dict) -> Plan:
                 )
         except IntegrationError as exc:
             plan.blockers.append(str(exc))
-    dns_matches = [x for x in outbounds if x.get("tag") == "dns-out"]
-    if len(dns_matches) > 1:
-        plan.blockers.append("More than one outbound uses tag dns-out")
-    elif not dns_matches:
-        outbounds.append(copy.deepcopy(DNS_OUT))
-        plan.changes.append("ADD outbounds[dns-out] (DNS outbound to 127.0.0.1:5355)")
-    else:
-        current = dns_matches[0]
-        settings = current.get("settings")
-        if (
-            current.get("protocol") != "dns"
-            or not isinstance(settings, dict)
-            or any(settings.get(k) != v for k, v in DNS_OUT["settings"].items())
-        ):
-            plan.blockers.append("Existing dns-out has different settings; it will not be overwritten")
+            return plan
 
-    dns = cfg.get("dns")
-    if dns is None:
-        dns = {}
-        cfg["dns"] = dns
-    if not isinstance(dns, dict):
-        plan.blockers.append("dns is not an object")
-        dns = {}
-    servers = dns.setdefault("servers", [])
-    if not isinstance(servers, list) or any(not isinstance(x, (dict, str)) for x in servers):
-        plan.blockers.append("Invalid dns.servers; expected an array of objects or address strings")
-        servers = []
+    try:
+        semantic = build_dns_plan(cfg)
+    except (ValueError, TypeError) as exc:
+        plan.blockers.append(f"Xray DNS inventory failed: {exc}")
+        return plan
 
-    local_servers = []
-    for server in servers:
-        address = ""
-        explicit_port = None
-        if isinstance(server, str):
-            address = server
-        elif isinstance(server, dict):
-            address = server.get("address", "") if isinstance(server.get("address", ""), str) else ""
-            explicit_port = server.get("port")
-        endpoint = _split_ip_address(address, explicit_port)
-        if endpoint == ("127.0.0.1", 5355):
-            local_servers.append(server)
+    plan.proposed = semantic.proposed
+    plan.changes.extend(semantic.changes)
+    plan.warnings.extend(semantic.warnings)
+    plan.blockers.extend(semantic.blockers)
+    if plan.blockers:
+        return plan
 
-    if len(local_servers) > 1:
-        plan.blockers.append("Multiple DNS server entries already target 127.0.0.1:5355")
-    elif not local_servers:
-        old_groups = {port: ips for port, ips in _dns_private_groups(original)}
-        if 5355 in old_groups:
-            plan.blockers.append(
-                "Panel groups private DNS allow-rules by port; adding 127.0.0.1:5355 would rewrite an existing port-5355 allow-rule"
-            )
-        servers.append(copy.deepcopy(DNS_SERVER))
-        plan.changes.append("ADD dns.servers entry 127.0.0.1:5355")
-    else:
-        existing = local_servers[0]
-        if isinstance(existing, dict) and existing.get("domains"):
-            plan.blockers.append(
-                "Existing 127.0.0.1:5355 DNS server is domain-scoped; it will not be replaced or duplicated"
-            )
-        else:
-            plan.warnings.append("DNS server 127.0.0.1:5355 already exists; preserved unchanged")
-
-    routing = cfg.get("routing")
-    if routing is None:
-        routing = {}
-        cfg["routing"] = routing
+    proposed = plan.proposed
+    outbounds = object_list(proposed, "outbounds", "outbounds")
+    routing = proposed.get("routing")
     if not isinstance(routing, dict):
         plan.blockers.append("routing is not an object")
-        routing = {}
+        return plan
     rules = object_list(routing, "rules", "routing.rules")
 
     api_indexes = [i for i, rule in enumerate(rules) if _is_api_rule(rule)]
@@ -1268,15 +1236,23 @@ def build_plan(original: dict) -> Plan:
             "Panel save would rewrite an existing numeric DNS qType 0 to string '0'; refusing to change an unrelated DNS setting"
         )
 
-    # Verify that the panel's own DNS-rule synchronization would not remove,
-    # reorder, or rewrite an existing routing rule before this tool submits.
+    # Verify the panel's DNS synchronization does not rewrite existing rules.
     try:
-        after_normalized = panel_normalize_dns_allow_rules(cfg)
-        before_rules = original.get("routing", {}).get("rules", []) if isinstance(original.get("routing"), dict) else []
-        after_before_rules = after_normalized.get("routing", {}).get("rules", []) if isinstance(after_normalized.get("routing"), dict) else []
+        after_normalized = panel_normalize_dns_allow_rules(proposed)
+        before_rules = (
+            original.get("routing", {}).get("rules", [])
+            if isinstance(original.get("routing"), dict) else []
+        )
+        after_before_rules = (
+            after_normalized.get("routing", {}).get("rules", [])
+            if isinstance(after_normalized.get("routing"), dict) else []
+        )
         cursor = 0
         for old_rule in before_rules:
-            while cursor < len(after_before_rules) and canonical(after_before_rules[cursor]) != canonical(old_rule):
+            while (
+                cursor < len(after_before_rules)
+                and canonical(after_before_rules[cursor]) != canonical(old_rule)
+            ):
                 cursor += 1
             if cursor >= len(after_before_rules):
                 plan.blockers.append(
@@ -1287,52 +1263,23 @@ def build_plan(original: dict) -> Plan:
     except IntegrationError as exc:
         plan.blockers.append(str(exc))
 
-    # The panel creates its own xui-dns-allow exception for private DNS
-    # endpoints. This tool never creates, edits, or moves that managed rule.
-    # We only verify that a required direct outbound exists for that rule.
+    # LucX-UI owns the private-DNS allow exception. Verify its required
+    # direct outbound, but never create, rename, or move the managed rule here.
     private_block_exists = any(
         rule.get("outboundTag") == "blocked"
-        and any(x.lower() == "geoip:private" for x in _ip_values(rule.get("ip")))
+        and any(value.lower() == "geoip:private" for value in _ip_values(rule.get("ip")))
         for rule in rules
     )
     if private_block_exists:
-        direct_matches = [x for x in outbounds if x.get("tag") == "direct"]
+        direct_matches = [item for item in outbounds if item.get("tag") == "direct"]
         if len(direct_matches) != 1:
             plan.blockers.append(
                 "A private-IP block exists, but there is not exactly one direct outbound for the panel-managed DNS exception"
             )
 
-    broad_port53 = [
-        (i, rule) for i, rule in enumerate(rules)
-        if _global_port53_rule(rule)
-    ]
-    if len(broad_port53) > 1:
-        plan.blockers.append("Multiple global TCP/UDP port-53 rules exist; routing order is ambiguous")
-    elif broad_port53:
-        index, rule = broad_port53[0]
-        target = rule.get("outboundTag")
-        if target != "dns-out":
-            plan.blockers.append(
-                "An existing global TCP/UDP port-53 rule routes to another outbound; it will not be overwritten"
-            )
-        elif index != 1:
-            plan.blockers.append(
-                "The global port-53 -> dns-out rule is not immediately after the panel API rule; it will not be moved"
-            )
-        else:
-            plan.warnings.append("Global TCP/UDP port-53 -> dns-out rule already exists; preserved unchanged")
-    else:
-        if api_indexes == [0]:
-            rules.insert(1, copy.deepcopy(DNS_PORT_RULE))
-            plan.changes.append(
-                "ADD global TCP/UDP port 53 -> dns-out at routing.rules[1] (covers every inbound/tunnel)"
-            )
-
-    # The panel's save pipeline also normalizes its managed DNS exception.
-    # Predict that panel-owned addition so read-back can be verified exactly.
     try:
-        plan.expected_saved = panel_normalize_dns_allow_rules(cfg)
-        if canonical(plan.expected_saved) != canonical(cfg):
+        plan.expected_saved = panel_normalize_dns_allow_rules(proposed)
+        if canonical(plan.expected_saved) != canonical(proposed):
             plan.changes.append(
                 "PANEL-MANAGED: LucX-UI will add/reconcile its xui-dns-allow exception for private DNS servers"
             )
@@ -1341,7 +1288,7 @@ def build_plan(original: dict) -> Plan:
             managed = [
                 rule for rule in expected_rules
                 if rule.get("ruleTag") == DNS_ALLOW_TAG
-                and rule.get("port") == "5355"
+                and str(rule.get("port")) == "5355"
                 and "127.0.0.1" in _ip_values(rule.get("ip"))
             ]
             if not managed:
@@ -1350,15 +1297,8 @@ def build_plan(original: dict) -> Plan:
                 )
             else:
                 plan.warnings.append(
-                    "LucX-UI will manage xui-dns-allow for 127.0.0.1:5355 before geoip:private; the adapter will not write this rule itself"
+                    "LucX-UI manages xui-dns-allow for 127.0.0.1:5355 before geoip:private; the adapter will not write this rule itself"
                 )
-        elif local_servers or any(
-            isinstance(s, dict) and s.get("address") == "127.0.0.1" and str(s.get("port")) == "5355"
-            for s in servers
-        ):
-            plan.warnings.append(
-                "No geoip:private block rule exists; LucX-UI will not generate xui-dns-allow because no such exception is needed by its save hook"
-            )
     except IntegrationError as exc:
         plan.blockers.append(str(exc))
 
