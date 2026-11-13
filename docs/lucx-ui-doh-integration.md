@@ -204,27 +204,22 @@ safely predict the panel's save behavior.
   a legacy wrapped \`xrayTemplateConfig\`; the adapter never performs that DB
   write directly.
 
-## Manual validation already performed
+## Validation status
 
-During development against a private VPS, the operator reported:
+Earlier iterations were tested against read-only panel settings and separate
+staging/test copies. Those results predate the shared semantic planner and do
+not validate the current refactor.
 
-- read-only SQLite extraction of the template;
-- dry-run against the panel DB: no proposed changes;
-- dry-run against a separately-created JSON fixture: no proposed changes;
-- transformation tests for missing/incorrect DNS elements, duplicate and
-  conflict rejection, preservation of unrelated config, and no input mutation;
-- idempotency checks: a second transform after correction proposed no changes;
-- staging clone, dry-run and verify against a private staging copy: no proposed
-  changes, mode `0600`;
-- staging writer lifecycle against a separate throwaway SQLite copy: a test-only
-  `rewritePort=9999` value was corrected to `5355`, read-back verification
-  passed, rollback restored `9999`, and a subsequent dry-run proposed the
-  correction again. The operator reported that the live panel DB was not touched.
+The current automated suite covers semantic reuse, nonstandard outbound tags,
+unique tag generation, balancer selectors/fallbacks, first-match routing
+conflicts, opaque recovery markers, independent cleanup, and dynamic-tag
+rollback. GitHub Actions results should be checked on the current PR head before
+treating the refactor as CI-verified.
 
-These are operator-reported manual results on staging/test copies, not a live
-production write. The automated suite independently exercises the same lifecycle
-on synthetic SQLite files. No live panel API update or Xray restart is performed
-by these tools.
+**The current refactor has not yet been re-run through the live disposable
+staging panel apply → UDP/TCP self-test → cleanup cycle.** Do not interpret the
+earlier manual Tunnel validation as proof that the new code path has passed.
+
 
 
 ## Source references inspected
@@ -241,4 +236,4 @@ installed VPS binary was not cryptographically matched to the tag.
 
 ### Selective rollback
 
-The delayed `rollback` action does not restore the entire pre-apply Xray snapshot. It identifies only the three integration objects that were absent before apply and present in the verified after-snapshot: outbound `dns-out`, DNS server `127.0.0.1:5355`, and the global TCP/UDP port-53 routing rule targeting `dns-out`. It removes an object only if its current representation still exactly matches the saved post-apply object. If an owned object was edited after apply, rollback stops rather than deleting the edited object. Objects already absent are treated as already removed. All unrelated current Xray settings, later panel changes, and the current `outboundTestUrl` metadata are preserved. The resulting configuration is written and verified through the LucX-UI API, including the panel's DNS-rule normalization.
+The delayed `rollback` action does not restore the entire pre-apply Xray snapshot. It identifies DNS integration objects created by this operation from the before/verified-after snapshots: the selected DNS outbound tag (which may be a generated name rather than `dns-out`), the local DNS server `127.0.0.1:5355`, and the generated global TCP/UDP port-53 route. Reused pre-existing objects are not owned and are never removed. Each created object is removed only if its current representation still exactly matches the verified after-snapshot. If an object was edited or a later routing rule/balancer now references the outbound, rollback stops rather than deleting it and leaving broken links. Objects already absent are treated as already removed. Unrelated current Xray settings, later panel changes, and current `outboundTestUrl` metadata are preserved. The resulting configuration is written and verified through the LucX-UI API, including the panel's DNS-rule normalization.
