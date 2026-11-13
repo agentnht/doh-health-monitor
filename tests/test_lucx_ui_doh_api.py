@@ -554,6 +554,59 @@ class AdditivePlannerTests(unittest.TestCase):
         route = next(item for item in plan.proposed["routing"]["rules"] if api_tool._global_port53_rule(item))
         self.assertEqual(route["outboundTag"], plan.proposed["outbounds"][-1]["tag"])
 
+    def test_generated_outbound_skips_dangling_outbound_tag_references(self):
+        original = base_config()
+        original["routing"]["rules"].append({
+            "type": "field",
+            "port": "443",
+            "outboundTag": "dns-out",
+        })
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        generated = next(
+            item["tag"] for item in plan.proposed["outbounds"]
+            if item.get("protocol") == "dns"
+        )
+        self.assertNotEqual(generated, "dns-out")
+        self.assertTrue(generated.startswith("dns-out-"))
+        dns_rule = next(
+            item for item in plan.proposed["routing"]["rules"]
+            if api_tool._global_port53_rule(item)
+        )
+        self.assertEqual(dns_rule["outboundTag"], generated)
+
+    def test_generated_outbound_avoids_observatory_subject_selector_prefixes(self):
+        original = base_config()
+        occupied = copy.deepcopy(api_tool.DNS_OUT)
+        occupied["settings"]["rewriteAddress"] = "9.9.9.9"
+        original["outbounds"].append(occupied)
+        original["observatory"] = {"subjectSelector": ["dns"]}
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        generated = plan.proposed["outbounds"][-1]["tag"]
+        self.assertFalse(generated.startswith("dns"))
+
+    def test_generated_outbound_skips_dangling_balancer_fallback_reference(self):
+        original = base_config()
+        occupied = copy.deepcopy(api_tool.DNS_OUT)
+        occupied["settings"]["rewriteAddress"] = "9.9.9.9"
+        original["outbounds"].append(occupied)
+        original["routing"]["balancers"] = [{
+            "tag": "user-balancer",
+            "selector": ["proxy"],
+            "fallbackTag": "dns-out",
+        }]
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        generated = plan.proposed["outbounds"][-1]["tag"]
+        self.assertNotEqual(generated, "dns-out")
+
     def test_multiple_equivalent_dns_outbounds_without_a_selecting_rule_reuse_first(self):
         original = base_config()
         first = copy.deepcopy(api_tool.DNS_OUT)
