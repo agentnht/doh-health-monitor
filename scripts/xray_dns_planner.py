@@ -175,6 +175,21 @@ def _outbound_matches_dns_endpoint(item: dict[str, Any]) -> bool:
     settings = item.get("settings")
     if not isinstance(settings, dict):
         return False
+    # Do not reuse an outbound with unmodeled routing/transport fields. Known
+    # DNS filtering options are checked below; unrelated behavioral settings
+    # make its effective behavior uncertain.
+    allowed_top_level = {
+        "tag", "protocol", "settings", "sendThrough", "streamSettings",
+        "proxySettings", "mux", "userLevel",
+    }
+    if set(item) - allowed_top_level:
+        return False
+    allowed_settings = {
+        "rewriteNetwork", "rewriteAddress", "rewritePort",
+        "rules", "blockTypes", "nonIPQuery", "userLevel",
+    }
+    if set(settings) - allowed_settings:
+        return False
     if settings.get("rewriteAddress") != DNS_ADDRESS:
         return False
     try:
