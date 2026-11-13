@@ -2277,15 +2277,195 @@ def remove_verified_backup(path: Path) -> bool:
     return True
 
 
+def inspect_temporary_leftovers(client: PanelAPI, backup_dir: Path) -> dict:
+    """Discover reserved self-test resources through panel APIs, never journal contents."""
+    inbounds = client.list_inbounds()
+    tunnels = []
+    errors = []
+    seen_ids = set()
+    for item in inbounds:
+        remark = item.get("remark")
+        if not isinstance(remark, str) or not remark.startswith(TUNNEL_REMARK_PREFIX):
+            continue
+        inbound_id = item.get("id")
+        port = item.get("port")
+        marker = remark[len(TUNNEL_REMARK_PREFIX):]
+        try:
+            if isinstance(inbound_id, bool) or not isinstance(inbound_id, int) or inbound_id <= 0:
+                raise IntegrationError("reserved Tunnel has no valid numeric ID")
+            if inbound_id in seen_ids:
+                raise IntegrationError("duplicate inbound ID in panel response")
+            seen_ids.add(inbound_id)
+            if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+                raise IntegrationError("reserved Tunnel has an invalid port")
+            expected = build_temporary_tunnel(port, marker)
+            verify_temporary_tunnel([item], expected, inbound_id)
+            tunnels.append({"expected": expected, "inbound_id": inbound_id, "port": port})
+        except IntegrationError as exc:
+            errors.append(f"Tunnel marker {remark!r} was not removed because its identity could not be verified: {exc}")
+
+    snapshot = client.get_snapshot()
+    outbounds = snapshot["xraySetting"].get("outbounds", [])
+    direct_rules_present = False
+    if isinstance(outbounds, list):
+        for outbound in outbounds:
+            if not isinstance(outbound, dict) or outbound.get("tag") != "direct":
+                continue
+            settings = outbound.get("settings")
+            if isinstance(settings, dict) and isinstance(settings.get("finalRules", []), list):
+                if any(
+                    isinstance(rule, dict) and canonical(rule) == canonical(TEMP_DNS_FINAL_RULE)
+                    for rule in settings.get("finalRules", [])
+                ):
+                    direct_rules_present = True
+                    break
+    if direct_rules_present:
+        try:
+            _direct_freedom_outbound(snapshot["xraySetting"])
+        except IntegrationError as exc:
+            errors.append(f"Temporary finalRule exists but its owning direct outbound is ambiguous: {exc}")
+
+    recovery_dir = backup_dir / "recovery"
+    journal_paths = []
+    try:
+        info = recovery_dir.lstat()
+    except FileNotFoundError:
+        info = None
+    except OSError:
+        errors.append("Could not inspect the temporary Tunnel recovery directory")
+        info = None
+    if info is not None:
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o700
+        ):
+            errors.append(
+                "Temporary Tunnel recovery directory must be a private directory owned by the current user with mode 0700"
+            )
+        else:
+            for path in sorted(recovery_dir.glob("lucx-doh-selftest-*.json")):
+                try:
+                    file_info = path.lstat()
+                    if (
+                        not stat.S_ISREG(file_info.st_mode)
+                        or file_info.st_uid != os.geteuid()
+                        or stat.S_IMODE(file_info.st_mode) != 0o600
+                    ):
+                        raise IntegrationError("recovery marker is not a private regular file owned by the current user")
+                    journal_paths.append(path)
+                except (OSError, IntegrationError) as exc:
+                    errors.append(f"Recovery marker {path.name!r} cannot be safely removed: {exc}")
+
+    return {
+        "tunnels": tunnels,
+        "final_rule_present": direct_rules_present,
+        "journal_paths": journal_paths,
+        "errors": errors,
+    }
+
+
+def cleanup_temporary_leftovers(client: PanelAPI, backup_dir: Path, discovered: dict) -> None:
+    """Independently remove verified reserved resources, then clear opaque journal markers."""
+    errors = list(discovered.get("errors", []))
+
+    for resource in discovered.get("tunnels", []):
+        expected = resource["expected"]
+        inbound_id = resource["inbound_id"]
+        port = resource["port"]
+        try:
+            removed = cleanup_temporary_tunnel(client, expected, inbound_id)
+            if removed:
+                wait_for_tunnel_port_closed(port)
+        except Exception as exc:
+            errors.append(f"Tunnel {expected['remark']}: {exc}")
+
+    if discovered.get("final_rule_present"):
+        try:
+            cleanup_temporary_dns_final_rule(client, TEMP_DNS_FINAL_RULE)
+        except Exception as exc:
+            errors.append(f"temporary finalRule: {exc}")
+
+    # Verify both resource classes independently, even when one cleanup failed.
+    try:
+        remaining = [
+            item for item in client.list_inbounds()
+            if isinstance(item.get("remark"), str)
+            and item["remark"].startswith(TUNNEL_REMARK_PREFIX)
+        ]
+        if remaining:
+            errors.append("One or more reserved temporary Tunnel inbounds remain after cleanup")
+    except Exception as exc:
+        errors.append(f"Could not verify temporary Tunnel absence: {exc}")
+
+    try:
+        current = client.get_snapshot()["xraySetting"]
+        outbounds = current.get("outbounds", [])
+        still_present = False
+        if isinstance(outbounds, list):
+            for outbound in outbounds:
+                if not isinstance(outbound, dict) or outbound.get("tag") != "direct":
+                    continue
+                settings = outbound.get("settings")
+                final_rules = settings.get("finalRules", []) if isinstance(settings, dict) else []
+                if isinstance(final_rules, list) and any(
+                    isinstance(rule, dict) and canonical(rule) == canonical(TEMP_DNS_FINAL_RULE)
+                    for rule in final_rules
+                ):
+                    still_present = True
+        if still_present:
+            errors.append("Temporary DNS finalRule remains after cleanup")
+    except Exception as exc:
+        errors.append(f"Could not verify temporary finalRule absence: {exc}")
+
+    if errors:
+        raise IntegrationError("; ".join(errors))
+
+    # Journal filenames are only opaque recovery markers here. Resource identity
+    # was established from the live API; journal JSON is intentionally not read.
+    for path in discovered.get("journal_paths", []):
+        try:
+            info = path.lstat()
+            if (
+                stat.S_ISREG(info.st_mode)
+                and info.st_uid == os.geteuid()
+                and stat.S_IMODE(info.st_mode) == 0o600
+            ):
+                path.unlink()
+            else:
+                raise IntegrationError("recovery marker permissions changed during cleanup")
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise IntegrationError(f"Resources were cleaned but recovery marker {path.name!r} could not be removed: {exc}") from None
+
+    print(
+        "PASS: pre-existing temporary Tunnel/finalRule resources were checked through the panel API; "
+        "verified leftovers and opaque recovery markers were cleaned."
+    )
+
+
 def command_apply(args, client: PanelAPI) -> int:
     backup_dir = Path(args.backup_dir).expanduser()
-    pending_journals = find_pending_recovery_journals(backup_dir)
-    if pending_journals:
-        print("ERROR: a previous temporary Tunnel test has a pending recovery journal.")
-        print("Clean it up before another apply:")
-        for journal in pending_journals:
-            print(f"  sudo python3 scripts/lucx-ui-doh-api.py cleanup-test --recovery-journal {shlex.quote(str(journal))}")
+
+    # First discover and clean only leftovers bearing our reserved identity.
+    # No recovery journal contents or system logs are read for this decision.
+    leftovers = inspect_temporary_leftovers(client, backup_dir)
+    has_leftovers = bool(
+        leftovers["tunnels"] or leftovers["final_rule_present"]
+    )
+    cleanup_approved = False
+    if has_leftovers:
+        confirm_restart("apply", args.approve_restart)
+        cleanup_approved = True
+    try:
+        cleanup_temporary_leftovers(client, backup_dir, leftovers)
+    except IntegrationError as exc:
+        print("ERROR: previous temporary self-test resources could not be safely cleaned.")
+        print("No permanent DNS integration changes were attempted.")
+        print("Reason:", exc)
         return 2
+
     snapshot = client.get_snapshot()
     plan = build_plan(snapshot["xraySetting"])
     print_plan(plan)
@@ -2293,22 +2473,24 @@ def command_apply(args, client: PanelAPI) -> int:
         return 2
     if not plan.changes:
         print("No permanent Xray settings update is required.")
-        confirm_restart("apply", args.approve_restart)
+        if not cleanup_approved:
+            confirm_restart("apply", args.approve_restart)
         try:
             run_temporary_tunnel_test(
                 client,
                 getattr(args, "plugin_status_url", DEFAULT_PLUGIN_STATUS_URL),
-                Path(args.backup_dir).expanduser(),
+                backup_dir,
             )
         except IntegrationError as exc:
             print("ERROR: existing DNS integration failed the end-to-end Tunnel test.")
-            print("No panel Xray settings were changed.")
+            print("No permanent Xray settings update was required.")
             print("Reason:", exc)
             return 2
         return 0
 
-    confirm_restart("apply", args.approve_restart)
-    backup_path = create_backup(snapshot, Path(args.backup_dir).expanduser())
+    if not cleanup_approved:
+        confirm_restart("apply", args.approve_restart)
+    backup_path = create_backup(snapshot, backup_dir)
     print("Private backup created (mode 0600):", backup_path)
 
     api_error = None
