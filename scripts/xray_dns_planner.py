@@ -718,16 +718,16 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
             for protocol in transports
         }
         route_path_covered = False
-        if len(broad_targets) > 1:
-            plan.blockers.append(
-                "Multiple broad port-53 rules target different compatible DNS outbounds; routing is ambiguous"
-            )
-        elif broad_targets:
-            chosen_tag = next(iter(broad_targets))
+        if broad_targets:
+            chosen_tag = min(broad_compatible_routes, key=lambda item: item[0])[1]
             route_path_covered = True
             plan.warnings.append(
-                "An existing broad port-range rule already routes TCP/UDP port 53 to the local DNS endpoint; it is preserved unchanged"
+                "One or more existing broad port-range rules already route TCP/UDP port 53 to compatible local DNS outbounds; all are preserved unchanged"
             )
+            if len(broad_targets) > 1:
+                plan.warnings.append(
+                    "Multiple equivalent broad routes use different compatible outbound tags; the earliest route is the effective one"
+                )
         elif {"tcp", "udp"}.issubset(covered_transports):
             route_path_covered = True
             plan.warnings.append(
@@ -738,18 +738,27 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
             plan.warnings.append(
                 "An existing global single-transport port-53 route is reused; the generated fallback will complete the other DNS transport"
             )
-        elif len(scoped_targets) == 1:
-            chosen_tag = next(iter(scoped_targets))
-        elif len(scoped_targets) > 1:
-            plan.blockers.append(
-                "Scoped port-53 rules use multiple compatible DNS outbounds; routing target is ambiguous"
+        elif scoped_targets:
+            # Every member was independently verified to perform the same
+            # local DNS operation. Reuse the first matching existing policy
+            # target and preserve all scoped rules without rewriting them.
+            chosen_tag = next(
+                target for rule in rules
+                for target in [rule.get("outboundTag") or rule.get("balancerTag")]
+                if target in scoped_targets
             )
-        elif len(compatible) == 1:
+            if len(scoped_targets) > 1:
+                plan.warnings.append(
+                    "Scoped port-53 rules use multiple equivalent local DNS targets; the first is reused for the global fallback"
+                )
+        elif compatible:
+            # These are distinct tags but verified-equivalent DNS endpoints.
+            # Reuse the first existing outbound rather than create a duplicate.
             chosen_tag = next(iter(compatible))
-        elif len(compatible) > 1:
-            plan.blockers.append(
-                "Multiple compatible DNS outbounds exist but no unique route selects one; refusing to guess"
-            )
+            if len(compatible) > 1:
+                plan.warnings.append(
+                    "Multiple compatible local DNS outbounds exist without a selecting route; the first is reused and all are preserved"
+                )
 
     if chosen_tag is None and not plan.blockers and not route_path_covered:
         new_tag = _unique_tag("dns-out", used_tags, balancer_selectors)
