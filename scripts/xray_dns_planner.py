@@ -109,7 +109,7 @@ def rule_may_match_port53(rule: dict[str, Any]) -> bool:
     """Conservative TCP/UDP port-53 overlap test for routing-order analysis."""
     if rule.get("enabled") is False:
         return False
-    if "port" in rule and not _port_contains_53(rule.get("port")):
+    if "port" not in rule or not _port_contains_53(rule.get("port")):
         return False
     return _network_intersects_dns(rule.get("network"))
 
