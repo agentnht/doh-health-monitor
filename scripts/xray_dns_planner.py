@@ -152,16 +152,28 @@ def _outbound_matches_dns_endpoint(item: dict[str, Any]) -> bool:
     return str(rewrite_network).lower() == "udp"
 
 
-def _unique_tag(preferred: str, used: set[str]) -> str:
-    if preferred not in used:
-        return preferred
-    stem = preferred + "-doh-health-monitor"
-    if stem not in used:
-        return stem
-    suffix = 2
-    while f"{stem}-{suffix}" in used:
-        suffix += 1
-    return f"{stem}-{suffix}"
+def _unique_tag(
+    preferred: str,
+    used: set[str],
+    forbidden_prefixes: tuple[str, ...] = (),
+) -> str | None:
+    """Choose a globally unused tag that cannot be captured by a balancer selector."""
+    bases = (
+        preferred,
+        preferred + "-doh-health-monitor",
+        "doh-health-monitor-" + preferred,
+        "xray-" + preferred,
+        "custom-" + preferred,
+    )
+    prefixes = tuple(prefix for prefix in forbidden_prefixes if prefix)
+    if any(not prefix for prefix in forbidden_prefixes):
+        return None
+    for base in bases:
+        for suffix in range(1, 1000):
+            candidate = base if suffix == 1 else f"{base}-{suffix}"
+            if candidate not in used and not any(candidate.startswith(prefix) for prefix in prefixes):
+                return candidate
+    return None
 
 
 def _server_endpoint(server: Any) -> tuple[str, int] | None:
@@ -263,12 +275,44 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
         cfg["routing"] = routing
     if not isinstance(routing, dict):
         plan.blockers.append("routing must be an object")
+        plan.proposed = copy.deepcopy(original)
         return plan
     rules = _object_list(routing, "rules", "routing.rules")
     balancers = _object_list(routing, "balancers", "routing.balancers")
 
     outbound_index, used_tags, tag_blockers = _validate_outbound_tag_index(outbounds, balancers)
     plan.blockers.extend(tag_blockers)
+
+    # Reserve tags from every Xray tag-bearing namespace so generated names
+    # cannot collide with inbound/outbound/balancer/rule/API tags.
+    inbounds = cfg.get("inbounds", [])
+    if not isinstance(inbounds, list) or any(not isinstance(item, dict) for item in inbounds):
+        plan.blockers.append("inbounds must be an array of objects")
+        inbounds = []
+    for item in inbounds:
+        tag = item.get("tag")
+        if isinstance(tag, str) and tag:
+            used_tags.add(tag)
+    api_section = cfg.get("api", {})
+    if isinstance(api_section, dict):
+        api_tag = api_section.get("tag")
+        if isinstance(api_tag, str) and api_tag:
+            used_tags.add(api_tag)
+    for rule in rules:
+        for key in ("tag", "ruleTag"):
+            value = rule.get(key)
+            if isinstance(value, str) and value:
+                used_tags.add(value)
+    balancer_selectors = tuple(
+        selector
+        for balancer in balancers
+        for selector in (
+            balancer.get("selector", [])
+            if isinstance(balancer.get("selector", []), list)
+            else [balancer.get("selector")]
+        )
+        if isinstance(selector, str)
+    )
 
     route_matches = [
         rule for rule in rules
@@ -336,15 +380,21 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
             )
 
     if chosen_tag is None and not plan.blockers:
-        new_tag = _unique_tag("dns-out", used_tags)
-        outbound = copy.deepcopy(DNS_OUT_TEMPLATE)
-        outbound["tag"] = new_tag
-        outbounds.append(outbound)
-        chosen_tag = new_tag
-        plan.outbound_created = True
-        plan.changes.append(
-            f"ADD outbounds[{new_tag}] (DNS outbound to {DNS_ADDRESS}:{DNS_PORT})"
-        )
+        new_tag = _unique_tag("dns-out", used_tags, balancer_selectors)
+        if new_tag is None:
+            plan.blockers.append(
+                "No safe unique DNS outbound tag is available outside existing balancer selector prefixes"
+            )
+        else:
+            outbound = copy.deepcopy(DNS_OUT_TEMPLATE)
+            outbound["tag"] = new_tag
+            outbounds.append(outbound)
+            used_tags.add(new_tag)
+            chosen_tag = new_tag
+            plan.outbound_created = True
+            plan.changes.append(
+                f"ADD outbounds[{new_tag}] (DNS outbound to {DNS_ADDRESS}:{DNS_PORT})"
+            )
 
     plan.outbound_tag = chosen_tag
 
@@ -356,10 +406,16 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
         cfg["dns"] = dns
     if not isinstance(dns, dict):
         plan.blockers.append("dns must be an object")
+        plan.proposed = copy.deepcopy(original)
+        plan.changes.clear()
+        plan.outbound_created = False
         return plan
     servers = dns.get("servers", [])
     if not isinstance(servers, list) or any(not isinstance(item, (dict, str)) for item in servers):
         plan.blockers.append("dns.servers must be an array of objects or address strings")
+        plan.proposed = copy.deepcopy(original)
+        plan.changes.clear()
+        plan.outbound_created = False
         return plan
     endpoint_matches = [
         item for item in servers
@@ -400,23 +456,25 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                 "Existing routing order has a broad rule before the position needed for a safe port-53 route; manual review required"
             )
         else:
-            used_rule_tags = {
-                str(rule.get("ruleTag")) for rule in rules if rule.get("ruleTag")
-            }
+            used_rule_tags = set(used_tags)
             rule_tag = _unique_tag("doh-health-monitor-dns-port53", used_rule_tags)
+            if rule_tag is None:
+                plan.blockers.append("No unique routing ruleTag is available")
+                rule_tag = None
             new_rule = copy.deepcopy(DNS_ROUTE_RULE_TEMPLATE)
-            new_rule["outboundTag"] = chosen_tag
-            new_rule["ruleTag"] = rule_tag
-            rules.insert(insert_at, new_rule)
-            plan.routing_rule_tag = rule_tag
-            plan.routing_rule_created = True
-            plan.changes.append(
-                f"ADD global TCP/UDP port-53 rule -> {chosen_tag} at routing.rules[{insert_at}] (ruleTag {rule_tag})"
-            )
-            if scoped_indexes:
-                plan.warnings.append(
-                    "Existing scoped port-53 rules are preserved before the new global rule; their selected traffic keeps its configured routing"
+            if rule_tag is not None:
+                new_rule["outboundTag"] = chosen_tag
+                new_rule["ruleTag"] = rule_tag
+                rules.insert(insert_at, new_rule)
+                plan.routing_rule_tag = rule_tag
+                plan.routing_rule_created = True
+                plan.changes.append(
+                    f"ADD global TCP/UDP port-53 rule -> {chosen_tag} at routing.rules[{insert_at}] (ruleTag {rule_tag})"
                 )
+                if scoped_indexes:
+                    plan.warnings.append(
+                        "Existing scoped port-53 rules are preserved before the new global rule; their selected traffic keeps its configured routing"
+                    )
 
     # Every port-53 rule target must resolve to exactly one existing outbound
     # or balancer. Unrelated rules are inventoried but not rewritten.
