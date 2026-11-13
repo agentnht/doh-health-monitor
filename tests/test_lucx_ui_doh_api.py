@@ -178,6 +178,22 @@ class SharedPlannerCLITests(unittest.TestCase):
 
 
 class AdditivePlannerTests(unittest.TestCase):
+    def test_missing_outbounds_and_routing_rules_arrays_are_created(self):
+        original = {
+            "api": {"tag": "api"},
+            "routing": {},
+            "dns": {"servers": []},
+        }
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        self.assertTrue(plan.changes)
+        self.assertTrue(plan.proposed["outbounds"])
+        self.assertTrue(plan.proposed["routing"]["rules"])
+        self.assertFalse(original.get("outbounds"))
+        self.assertNotIn("rules", original["routing"])
+
     def test_clean_template_adds_only_dns_items_and_panel_managed_allow(self):
         original = base_config()
         plan = api_tool.build_plan(original)
@@ -1003,8 +1019,18 @@ class AdditivePlannerTests(unittest.TestCase):
         self.assertEqual(plan.proposed["dns"]["servers"], [server])
 
     def test_ipv6_dns_server_without_port_is_not_misparsed_as_embedded_port(self):
-        endpoint = api_tool._server_endpoint({"address": "2001:db8::1"})
-        self.assertEqual(endpoint, ("2001:db8::1", 53))
+        self.assertEqual(
+            api_tool._server_endpoint({"address": "2001:db8::1"}),
+            ("2001:db8::1", 53),
+        )
+        self.assertEqual(
+            api_tool._server_endpoint("2001:db8::1"),
+            ("2001:db8::1", 53),
+        )
+        self.assertEqual(
+            api_tool._server_endpoint("[2001:db8::1]:5355"),
+            ("2001:db8::1", 5355),
+        )
     def test_local_dns_server_with_query_or_ip_filters_is_not_reused_as_general(self):
         variants = [
             {"queryStrategy": "UseIPv4"},
