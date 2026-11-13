@@ -651,6 +651,11 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
         for index, rule in enumerate(rules):
             if not rule_may_match_port53(rule):
                 continue
+            if rule.get("type", "field") != "field":
+                plan.blockers.append(
+                    f"routing.rules[{index}] uses an unsupported rule type for port-53 DNS traffic"
+                )
+                continue
             # Global rules are analyzed separately so TCP-only/UDP-only
             # ownership is not confused with an inbound-scoped exception.
             if _global_protocol_port53_rule(rule):
