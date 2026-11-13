@@ -368,7 +368,7 @@ class AdditivePlannerTests(unittest.TestCase):
             1,
         )
 
-    def test_combined_port_range_is_not_mistaken_for_exact_port53_rule(self):
+    def test_combined_global_port_range_that_shadows_port53_is_blocked(self):
         original = base_config()
         original["routing"]["rules"].insert(
             1,
@@ -380,12 +380,8 @@ class AdditivePlannerTests(unittest.TestCase):
             },
         )
         plan = api_tool.build_plan(original)
-        self.assertFalse(plan.blockers)
-        self.assertEqual(plan.proposed["routing"]["rules"][1], original["routing"]["rules"][1])
-        self.assertEqual(plan.proposed["routing"]["rules"][2], {
-            **api_tool.DNS_PORT_RULE,
-            "outboundTag": plan.proposed["routing"]["rules"][2]["outboundTag"],
-        })
+        self.assertTrue(any("fallback would be shadowed" in item for item in plan.blockers))
+        self.assertEqual(plan.proposed, original)
 
     def test_existing_unmanaged_legacy_allow_rule_that_panel_would_adopt_is_blocked(self):
         original = base_config()
