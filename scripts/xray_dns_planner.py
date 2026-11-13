@@ -285,6 +285,15 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
 
     if route_matches:
         route = route_matches[0]
+        route_index = rules.index(route)
+        earlier_broad = [
+            index for index, rule in enumerate(rules[:route_index])
+            if index > 0 and _rule_may_match_loopback_dns_without_port(rule)
+        ]
+        if earlier_broad:
+            plan.blockers.append(
+                "An earlier broad routing rule can intercept rewritten loopback DNS before the existing port-53 route; manual review required"
+            )
         target_tag = route.get("outboundTag")
         if not isinstance(target_tag, str) or not target_tag:
             plan.blockers.append("Existing global port-53 rule has no outboundTag; it cannot be safely reused")
