@@ -582,12 +582,26 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
             plan.blockers.append("Existing global port-53 rule has no outboundTag or balancerTag")
     else:
         scoped_targets: set[str] = set()
-        for rule in rules:
+        for index, rule in enumerate(rules):
             if not rule_may_match_port53(rule):
                 continue
             target = rule.get("outboundTag")
-            if isinstance(target, str) and target in compatible:
+            balancer = rule.get("balancerTag")
+            if target and balancer:
+                plan.blockers.append(
+                    f"routing.rules[{index}] has both outboundTag and balancerTag for DNS traffic"
+                )
+            elif isinstance(target, str) and target in compatible:
+                # This is a scoped policy exception, not a replacement for the
+                # global route. Its compatible outbound may be reused by the
+                # new global fallback without changing the scoped rule.
                 scoped_targets.add(target)
+            elif isinstance(balancer, str):
+                selected, resolve_error = _resolve_balancer_dns_targets(
+                    balancer, balancers, outbound_index
+                )
+                if resolve_error is None:
+                    scoped_targets.add(balancer)
         broad_targets = {target for _index, target in broad_compatible_routes}
         if len(broad_targets) > 1:
             plan.blockers.append(
