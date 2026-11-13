@@ -865,7 +865,7 @@ class AdditivePlannerTests(unittest.TestCase):
         self.assertEqual(retained, before_outbounds)
         retained_rules = [
             x for x in plan.proposed["routing"]["rules"]
-            if x != api_tool.DNS_PORT_RULE
+            if not api_tool._global_port53_rule(x)
         ]
         self.assertEqual(retained_rules, before_rules)
         self.assertEqual(plan.proposed["policy"], original["policy"])
