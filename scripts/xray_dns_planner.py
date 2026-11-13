@@ -169,8 +169,11 @@ def _unique_tag(
     if any(not prefix for prefix in forbidden_prefixes):
         return None
     for base in bases:
-        for suffix in range(1, 1000):
-            candidate = base if suffix == 1 else f"{base}-{suffix}"
+        if base not in used and not any(base.startswith(prefix) for prefix in prefixes):
+            return base
+    for base in bases:
+        for suffix in range(2, 1000):
+            candidate = f"{base}-{suffix}"
             if candidate not in used and not any(candidate.startswith(prefix) for prefix in prefixes):
                 return candidate
     return None
