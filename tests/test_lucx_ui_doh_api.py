@@ -769,7 +769,7 @@ class AdditivePlannerTests(unittest.TestCase):
 
         plan = api_tool.build_plan(original)
 
-        self.assertTrue(any("Duplicate Xray tag 'dns-balancer'" in item for item in plan.blockers))
+        self.assertTrue(any("Duplicate balancer tag 'dns-balancer'" in item for item in plan.blockers))
         self.assertEqual(plan.proposed, original)
 
     def test_duplicate_outbound_tags_are_rejected_as_ambiguous(self):
@@ -779,7 +779,7 @@ class AdditivePlannerTests(unittest.TestCase):
 
         plan = api_tool.build_plan(original)
 
-        self.assertTrue(any("Duplicate Xray tag 'proxy'" in item for item in plan.blockers))
+        self.assertTrue(any("Duplicate outbound tag 'proxy'" in item for item in plan.blockers))
         self.assertEqual(plan.proposed, original)
 
     def test_multiple_equivalent_global_port53_rules_are_preserved_without_new_rule(self):
