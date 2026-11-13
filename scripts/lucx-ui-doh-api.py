@@ -1807,11 +1807,12 @@ def cleanup_temporary_dns_final_rule(client: PanelAPI, final_rule: dict) -> bool
     if not isinstance(rules, list) or any(not isinstance(item, dict) for item in rules):
         raise IntegrationError("direct.settings.finalRules is not a valid array; recovery required")
     matches = [i for i, item in enumerate(rules) if canonical(item) == canonical(final_rule)]
-    if len(matches) > 1:
-        raise IntegrationError("Multiple matching temporary DNS finalRules exist; refusing ambiguous cleanup")
     if not matches:
         return False
-    del rules[matches[0]]
+    # Every exact match is the reserved self-test object. Remove all such
+    # leftovers while preserving every non-matching user finalRule.
+    for index in reversed(matches):
+        del rules[index]
     if rules:
         settings["finalRules"] = rules
     else:
@@ -1872,6 +1873,7 @@ def run_temporary_tunnel_test(client: PanelAPI, status_url: str, backup_dir: Pat
         except Exception as exc:
             test_error = exc
         finally:
+            cleanup_errors = []
             try:
                 removed = cleanup_temporary_tunnel(client, expected, inbound_id)
                 # If the add request failed and no matching panel object exists,
@@ -1879,11 +1881,19 @@ def run_temporary_tunnel_test(client: PanelAPI, status_url: str, backup_dir: Pat
                 # Never wait for or interfere with that external listener.
                 if inbound_id is not None or removed:
                     wait_for_tunnel_port_closed(port)
-                if final_rule_attempted:
-                    cleanup_temporary_dns_final_rule(client, TEMP_DNS_FINAL_RULE)
-                journal.unlink(missing_ok=True)
             except Exception as exc:
-                cleanup_error = exc
+                cleanup_errors.append("Tunnel: " + str(exc))
+
+            # Cleanup is deliberately independent: a failed inbound deletion
+            # must not prevent an attempt to remove the temporary finalRule.
+            if final_rule_attempted:
+                try:
+                    cleanup_temporary_dns_final_rule(client, TEMP_DNS_FINAL_RULE)
+                except Exception as exc:
+                    cleanup_errors.append("finalRule: " + str(exc))
+
+            if cleanup_errors:
+                cleanup_error = IntegrationError("; ".join(cleanup_errors))
                 try:
                     _write_recovery_journal(
                         backup_dir, expected, inbound_id, "cleanup-required",
@@ -1891,10 +1901,13 @@ def run_temporary_tunnel_test(client: PanelAPI, status_url: str, backup_dir: Pat
                     )
                 except Exception:
                     pass
+            else:
+                journal.unlink(missing_ok=True)
         if cleanup_error:
             raise IntegrationError(
                 f"Temporary Tunnel/finalRule cleanup failed; recovery journal retained at {journal}. "
-                f"Resource marker: {expected['remark']}; inbound ID: {inbound_id or 'unknown'}"
+                f"Resource marker: {expected['remark']}; inbound ID: {inbound_id or 'unknown'}; "
+                f"details: {cleanup_error}"
             ) from None
         if test_error:
             if add_error is not None and not _port_is_free_on_loopback(port) and attempt < 2:
