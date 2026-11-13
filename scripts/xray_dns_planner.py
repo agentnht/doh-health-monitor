@@ -503,6 +503,23 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
             value = rule.get(key)
             if isinstance(value, str) and value:
                 routing_tags.append((f"routing rule {key}", value))
+        # Reserve references too, even when currently dangling. Otherwise a
+        # generated outbound could accidentally make a user's broken reference
+        # begin resolving and silently change unrelated routing behavior.
+        for key in ("inboundTag", "outboundTag", "balancerTag"):
+            value = rule.get(key)
+            values = [value] if isinstance(value, str) else value if isinstance(value, list) else []
+            for tag in values:
+                if isinstance(tag, str) and tag:
+                    routing_tags.append((f"routing rule {key} reference", tag))
+
+    # Balancer fallbackTag is a reference, not a definition, but must still be
+    # reserved from generated names.
+    for balancer in balancers:
+        fallback = balancer.get("fallbackTag")
+        if isinstance(fallback, str) and fallback:
+            routing_tags.append(("balancer fallbackTag reference", fallback))
+
     outbound_index, used_tags, tag_blockers = _validate_outbound_tag_index(
         outbounds,
         balancers,
@@ -512,16 +529,30 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
         routing_tags,
     )
     plan.blockers.extend(tag_blockers)
+
     balancer_selectors = tuple(
         selector
-        for balancer in balancers
+        for owner in (balancers, [cfg.get("observatory", {})], [cfg.get("burstObservatory", {})])
+        for item in owner
+        if isinstance(item, dict)
         for selector in (
-            balancer.get("selector", [])
-            if isinstance(balancer.get("selector", []), list)
-            else [balancer.get("selector")]
+            item.get("selector", item.get("subjectSelector", []))
+            if isinstance(item.get("selector", item.get("subjectSelector", [])), list)
+            else [item.get("selector", item.get("subjectSelector"))]
         )
         if isinstance(selector, str)
     )
+
+    reverse = cfg.get("reverse", {})
+    if isinstance(reverse, dict):
+        for key in ("bridges", "portals"):
+            entries = reverse.get(key, [])
+            if isinstance(entries, list):
+                for entry in entries:
+                    if isinstance(entry, dict):
+                        tag = entry.get("tag")
+                        if isinstance(tag, str) and tag:
+                            used_tags.add(tag)
 
     route_matches = [
         rule for rule in rules
