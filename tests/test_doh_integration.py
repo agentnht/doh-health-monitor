@@ -121,27 +121,34 @@ class TransformTests(unittest.TestCase):
         self.assertEqual(proposed, self.original)
         self.assertEqual(changes, [])
 
-    def test_missing_dns_out_is_added_and_dns_doqd_is_preserved(self):
+    def test_missing_dns_out_and_route_are_added_without_removing_dns_doqd(self):
         cfg = copy.deepcopy(self.original)
         cfg["outbounds"] = [x for x in cfg["outbounds"] if x.get("tag") != "dns-out"]
+        cfg["routing"]["rules"] = [
+            item for item in cfg["routing"]["rules"]
+            if item.get("outboundTag") != "dns-out" or str(item.get("port")) != "53"
+        ]
         proposed, changes = planner.transform(cfg)
-        self.assertTrue(any(x.get("tag") == "dns-out" for x in proposed["outbounds"]))
+        added = next(x for x in proposed["outbounds"] if x.get("tag") == "dns-out")
+        self.assertEqual(added["settings"]["rewritePort"], 5355)
         self.assertTrue(any(x.get("tag") == "dns-doqd" for x in proposed["outbounds"]))
-        self.assertIn("add dns-out", changes)
+        self.assertTrue(any("ADD outbounds[dns-out]" in change for change in changes))
 
-    def test_wrong_rewrite_port_is_corrected(self):
+    def test_wrong_rewrite_port_conflict_is_not_rewritten(self):
         cfg = copy.deepcopy(self.original)
         cfg["outbounds"][0]["settings"]["rewritePort"] = 9999
-        proposed, changes = planner.transform(cfg)
-        self.assertEqual(proposed["outbounds"][0]["settings"]["rewritePort"], 5355)
-        self.assertTrue(changes)
+        before = copy.deepcopy(cfg)
+        with self.assertRaisesRegex(RuntimeError, "does not resolve to 127.0.0.1:5355"):
+            planner.transform(cfg)
+        self.assertEqual(cfg, before)
 
-    def test_dns_server_skip_fallback_is_corrected(self):
+    def test_scoped_dns_server_is_not_widened_or_rewritten(self):
         cfg = copy.deepcopy(self.original)
-        cfg["dns"]["servers"][0]["skipFallback"] = True
-        proposed, changes = planner.transform(cfg)
-        self.assertFalse(proposed["dns"]["servers"][0]["skipFallback"])
-        self.assertTrue(changes)
+        cfg["dns"]["servers"][0]["domains"] = ["geosite:category-ru"]
+        before = copy.deepcopy(cfg)
+        with self.assertRaisesRegex(RuntimeError, "exists only as a scoped DNS server"):
+            planner.transform(cfg)
+        self.assertEqual(cfg, before)
 
     def test_missing_dns_server_is_added_without_replacing_other_servers(self):
         cfg = copy.deepcopy(self.original)
@@ -154,11 +161,18 @@ class TransformTests(unittest.TestCase):
         )
         self.assertTrue(changes)
 
-    def test_disabled_port53_rule_is_enabled(self):
+    def test_disabled_port53_rule_is_preserved_and_active_fallback_is_added(self):
         cfg = copy.deepcopy(self.original)
         cfg["routing"]["rules"][0]["enabled"] = False
+        disabled_before = copy.deepcopy(cfg["routing"]["rules"][0])
         proposed, changes = planner.transform(cfg)
-        self.assertTrue(proposed["routing"]["rules"][0]["enabled"])
+        self.assertEqual(proposed["routing"]["rules"][0], disabled_before)
+        active = [
+            item for item in proposed["routing"]["rules"]
+            if item.get("enabled") is True and str(item.get("port")) == "53"
+        ]
+        self.assertEqual(len(active), 1)
+        self.assertEqual(active[0]["outboundTag"], "dns-out")
         self.assertTrue(changes)
 
     def test_missing_allow_rule_is_added_before_private_block(self):
@@ -177,25 +191,23 @@ class TransformTests(unittest.TestCase):
         self.assertLess(allow_i, private_i)
         self.assertTrue(changes)
 
-    def test_allow_rule_reposition_preserves_unrelated_rules(self):
+    def test_panel_rule_reordering_conflict_is_reported_without_rewrite(self):
         cfg = copy.deepcopy(self.original)
         rules = cfg["routing"]["rules"]
         allow = next(x for x in rules if x.get("ruleTag") == "xui-dns-allow")
         rules.remove(allow)
         rules.append(allow)
-        expected = [copy.deepcopy(x) for x in rules if x.get("ruleTag") != "xui-dns-allow"]
-        proposed, changes = planner.transform(cfg)
-        self.assertEqual(
-            [x for x in proposed["routing"]["rules"] if x.get("ruleTag") != "xui-dns-allow"],
-            expected,
-        )
-        self.assertTrue(changes)
+        before = copy.deepcopy(cfg)
+        with self.assertRaisesRegex(RuntimeError, "rewrite or remove an existing routing rule"):
+            planner.transform(cfg)
+        self.assertEqual(cfg, before)
 
-    def test_input_is_not_mutated(self):
+    def test_conflicting_input_is_not_mutated(self):
         cfg = copy.deepcopy(self.original)
         cfg["outbounds"][0]["settings"]["rewritePort"] = 9999
         before = json.dumps(cfg, sort_keys=True)
-        planner.transform(cfg)
+        with self.assertRaises(RuntimeError):
+            planner.transform(cfg)
         self.assertEqual(json.dumps(cfg, sort_keys=True), before)
 
     def test_duplicate_dns_out_is_rejected(self):
@@ -222,11 +234,20 @@ class TransformTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             planner.transform(cfg)
 
-    def test_partial_port53_rule_is_rejected(self):
+    def test_partial_port53_rule_is_preserved_and_global_fallback_is_added(self):
         cfg = copy.deepcopy(self.original)
-        cfg["routing"]["rules"][0]["network"] = "udp"
-        with self.assertRaises(RuntimeError):
-            planner.transform(cfg)
+        scoped = copy.deepcopy(cfg["routing"]["rules"][0])
+        scoped["network"] = "udp"
+        cfg["routing"]["rules"][0] = scoped
+        proposed, changes = planner.transform(cfg)
+        self.assertEqual(proposed["routing"]["rules"][0], scoped)
+        routes = [
+            item for item in proposed["routing"]["rules"]
+            if item.get("enabled") is True and str(item.get("port")) == "53"
+        ]
+        self.assertEqual(len(routes), 2)
+        self.assertTrue(any(item.get("network") == "tcp,udp" for item in routes))
+        self.assertTrue(changes)
 
     def test_untagged_local_allow_candidate_is_rejected(self):
         cfg = copy.deepcopy(self.original)
@@ -238,10 +259,6 @@ class TransformTests(unittest.TestCase):
         mutations = []
         cfg = copy.deepcopy(self.original)
         cfg["outbounds"] = [x for x in cfg["outbounds"] if x.get("tag") != "dns-out"]
-        mutations.append(cfg)
-
-        cfg = copy.deepcopy(self.original)
-        cfg["outbounds"][0]["settings"]["rewritePort"] = 9999
         mutations.append(cfg)
 
         cfg = copy.deepcopy(self.original)
@@ -265,11 +282,10 @@ class TransformTests(unittest.TestCase):
 
     def test_unrelated_settings_and_routing_are_preserved(self):
         cfg = copy.deepcopy(self.original)
-        cfg["outbounds"][0]["settings"]["rewritePort"] = 9999
-        proposed, _ = planner.transform(cfg)
+        proposed, changes = planner.transform(cfg)
+        self.assertEqual(proposed, cfg)
+        self.assertEqual(changes, [])
         self.assertEqual(proposed["policy"], cfg["policy"])
-        self.assertEqual(proposed["outbounds"][1:], cfg["outbounds"][1:])
-        self.assertEqual(proposed["routing"]["rules"], cfg["routing"]["rules"])
 
 
 class StagingLifecycleTests(unittest.TestCase):
