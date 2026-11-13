@@ -212,6 +212,32 @@ class AdditivePlannerTests(unittest.TestCase):
             [route],
         )
 
+    def test_reuses_dns_outbound_with_tcp_or_preserved_transport(self):
+        for network in ("tcp", None):
+            with self.subTest(rewriteNetwork=network):
+                original = base_config()
+                outbound = copy.deepcopy(api_tool.DNS_OUT)
+                outbound["tag"] = "custom-local-dns"
+                if network is None:
+                    outbound["settings"].pop("rewriteNetwork", None)
+                else:
+                    outbound["settings"]["rewriteNetwork"] = network
+                original["outbounds"].append(outbound)
+                route = copy.deepcopy(api_tool.DNS_PORT_RULE)
+                route["outboundTag"] = "custom-local-dns"
+                original["routing"]["rules"].insert(1, route)
+
+                plan = api_tool.build_plan(original)
+
+                self.assertFalse(plan.blockers)
+                self.assertEqual(
+                    [item for item in plan.proposed["outbounds"] if item.get("tag") == "custom-local-dns"],
+                    [outbound],
+                )
+                self.assertFalse(any(
+                    item.get("tag") == "dns-out" for item in plan.proposed["outbounds"]
+                ))
+
     def test_existing_conflicting_dns_outbound_gets_a_unique_new_tag(self):
         original = base_config()
         occupied = copy.deepcopy(api_tool.DNS_OUT)
