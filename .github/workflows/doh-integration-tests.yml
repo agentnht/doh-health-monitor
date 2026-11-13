@@ -7,6 +7,7 @@ on:
       - "scripts/doh-integration-dry-run.py"
       - "scripts/doh-integration-staging.py"
       - "scripts/lucx-ui-doh-api.py"
+      - "scripts/xray_dns_planner.py"
       - "tests/test_doh_integration.py"
       - "tests/test_lucx_ui_doh_api.py"
       - "docs/lucx-ui-doh-integration.md"
@@ -32,6 +33,7 @@ jobs:
           scripts/doh-integration-dry-run.py
           scripts/doh-integration-staging.py
           scripts/lucx-ui-doh-api.py
+          scripts/xray_dns_planner.py
           tests/test_doh_integration.py
           tests/test_lucx_ui_doh_api.py
       - name: Run unit and synthetic SQLite lifecycle tests
