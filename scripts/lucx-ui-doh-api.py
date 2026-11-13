@@ -2523,7 +2523,15 @@ def main() -> int:
                     isinstance(item, dict) and item.get("remark") == journal["inbound"]["remark"]
                     for item in before_cleanup
                 )
-            if resource_present:
+            current_snapshot = client.get_snapshot()
+            current_direct = _direct_freedom_outbound(current_snapshot["xraySetting"])
+            current_final_rules = current_direct["settings"].get("finalRules", [])
+            rule_present = isinstance(current_final_rules, list) and any(
+                isinstance(item, dict)
+                and canonical(item) == canonical(journal["final_rule"])
+                for item in current_final_rules
+            )
+            if resource_present or rule_present:
                 confirm_restart("cleanup", args.approve_restart)
             removed = cleanup_temporary_tunnel(client, journal["inbound"], inbound_id)
             if inbound_id is not None or removed:
