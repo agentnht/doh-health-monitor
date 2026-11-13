@@ -53,7 +53,15 @@ class DNSPlan:
     dns_server_created: bool = False
 
 
-def _object_list(parent: dict[str, Any], key: str, description: str) -> list[dict[str, Any]]:
+def _object_list(
+    parent: dict[str, Any],
+    key: str,
+    description: str,
+    *,
+    create: bool = True,
+) -> list[dict[str, Any]]:
+    if key not in parent and create:
+        parent[key] = []
     value = parent.get(key, [])
     if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
         raise ValueError(f"Invalid {description}: expected an array of objects")
@@ -458,7 +466,7 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
         plan.proposed = copy.deepcopy(original)
         return plan
     rules = _object_list(routing, "rules", "routing.rules")
-    balancers = _object_list(routing, "balancers", "routing.balancers")
+    balancers = _object_list(routing, "balancers", "routing.balancers", create=False)
 
     # Reserve tags across all namespaces before selecting generated identifiers.
     inbounds = cfg.get("inbounds", [])
