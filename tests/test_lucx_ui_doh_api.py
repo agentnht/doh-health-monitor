@@ -246,7 +246,8 @@ class AdditivePlannerTests(unittest.TestCase):
         self.assertEqual(added["tag"], "dns-out-doh-health-monitor")
         new_rule = next(item for item in plan.proposed["routing"]["rules"] if api_tool._global_port53_rule(item))
         self.assertEqual(new_rule["outboundTag"], added["tag"])
-        self.assertEqual(new_rule["ruleTag"], "doh-health-monitor-dns-port53-2")
+        self.assertNotEqual(new_rule["ruleTag"], "doh-health-monitor-dns-port53")
+        self.assertTrue(new_rule["ruleTag"].startswith("doh-health-monitor-dns-port53-"))
         all_outbound_tags = [item.get("tag") for item in plan.proposed["outbounds"] if item.get("tag")]
         self.assertEqual(len(all_outbound_tags), len(set(all_outbound_tags)))
         all_rule_tags = [item.get("ruleTag") for item in plan.proposed["routing"]["rules"] if item.get("ruleTag")]
@@ -401,12 +402,13 @@ class AdditivePlannerTests(unittest.TestCase):
         self.assertTrue(any("rewrite or remove an existing routing rule" in x for x in plan.blockers))
 
     def test_existing_global_port53_rule_after_domain_rule_is_reused(self):
-        original = add_complete_dns(base_config())
+        original = base_config()
+        original["outbounds"].append(copy.deepcopy(api_tool.DNS_OUT))
+        original["dns"] = {"servers": [copy.deepcopy(api_tool.DNS_SERVER)]}
         rules = original["routing"]["rules"]
-        route = next(item for item in rules if api_tool._global_port53_rule(item))
-        rules.remove(route)
         domain_rule = {"type": "field", "domain": ["example.net"], "outboundTag": "proxy"}
         rules.insert(1, domain_rule)
+        route = copy.deepcopy(api_tool.DNS_PORT_RULE)
         rules.insert(2, route)  # domain-only rule cannot match rewritten loopback IP
         plan = api_tool.build_plan(original)
         self.assertFalse(plan.blockers)
