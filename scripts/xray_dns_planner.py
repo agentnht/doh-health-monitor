@@ -272,27 +272,38 @@ def _rule_may_match_loopback_dns_without_port(rule: dict[str, Any]) -> bool:
     return True
 
 
-def _validate_outbound_tag_index(outbounds: list[dict[str, Any]], balancers: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], set[str], list[str]]:
+def _validate_outbound_tag_index(
+    outbounds: list[dict[str, Any]],
+    balancers: list[dict[str, Any]],
+    inbounds: list[dict[str, Any]],
+    api_tag: str | None,
+) -> tuple[dict[str, dict[str, Any]], set[str], list[str]]:
+    """Index outbound targets and reserve every existing Xray tag namespace."""
     index: dict[str, dict[str, Any]] = {}
     used: set[str] = set()
     blockers: list[str] = []
-    for item in outbounds:
-        tag = item.get("tag")
-        if not isinstance(tag, str) or not tag:
-            continue
-        if tag in index:
-            blockers.append(f"Duplicate outbound tag {tag!r}; references are ambiguous")
-        else:
-            index[tag] = item
-        used.add(tag)
-    for item in balancers:
-        tag = item.get("tag")
-        if isinstance(tag, str) and tag:
-            if tag in used:
-                blockers.append(f"Tag {tag!r} is reused by an outbound and a balancer")
-            used.add(tag)
-    return index, used, blockers
 
+    for namespace, items in (("inbound", inbounds), ("outbound", outbounds), ("balancer", balancers)):
+        counts: dict[str, int] = {}
+        for item in items:
+            tag = item.get("tag")
+            if not isinstance(tag, str) or not tag:
+                continue
+            used.add(tag)
+            counts[tag] = counts.get(tag, 0) + 1
+            if namespace == "outbound" and tag not in index:
+                index[tag] = item
+        for tag, count in counts.items():
+            if count > 1:
+                blockers.append(f"Duplicate {namespace} tag {tag!r}; references are ambiguous")
+
+    # The API tag is a live Xray tag too and must be reserved against generated names.
+    if isinstance(api_tag, str) and api_tag:
+        used.add(api_tag)
+
+    # Routing rule identifiers are also reserved so generated ruleTag values
+    # never collide with any existing named rule or other Xray tag.
+    return index, used, blockers
 
 def _resolve_balancer_dns_targets(
     balancer_tag: str,
@@ -353,24 +364,18 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
     rules = _object_list(routing, "rules", "routing.rules")
     balancers = _object_list(routing, "balancers", "routing.balancers")
 
-    outbound_index, used_tags, tag_blockers = _validate_outbound_tag_index(outbounds, balancers)
-    plan.blockers.extend(tag_blockers)
-
-    # Reserve tags from every Xray tag-bearing namespace so generated names
-    # cannot collide with inbound/outbound/balancer/rule/API tags.
+    # Reserve tags across all namespaces before selecting generated identifiers.
     inbounds = cfg.get("inbounds", [])
     if not isinstance(inbounds, list) or any(not isinstance(item, dict) for item in inbounds):
         plan.blockers.append("inbounds must be an array of objects")
         inbounds = []
-    for item in inbounds:
-        tag = item.get("tag")
-        if isinstance(tag, str) and tag:
-            used_tags.add(tag)
     api_section = cfg.get("api", {})
-    if isinstance(api_section, dict):
-        api_tag = api_section.get("tag")
-        if isinstance(api_tag, str) and api_tag:
-            used_tags.add(api_tag)
+    api_tag = api_section.get("tag") if isinstance(api_section, dict) else None
+    outbound_index, used_tags, tag_blockers = _validate_outbound_tag_index(
+        outbounds, balancers, inbounds,
+        api_tag if isinstance(api_tag, str) else None,
+    )
+    plan.blockers.extend(tag_blockers)
     for rule in rules:
         for key in ("tag", "ruleTag"):
             value = rule.get(key)
@@ -416,7 +421,7 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                 })
             )
             networks = _tokens(rule.get("network", "tcp,udp"))
-            covers_both = not networks or networks == {"tcp", "udp"}
+            covers_both = not networks or {"tcp", "udp"}.issubset(networks)
             if is_global_scope and covers_both:
                 target = rule.get("outboundTag")
                 balancer = rule.get("balancerTag")
