@@ -1767,7 +1767,10 @@ def _load_recovery_journal(path: Path) -> dict:
     ):
         raise IntegrationError("Recovery journal contains an invalid inbound ID")
     final_rule = payload.get("final_rule")
-    if not isinstance(final_rule, dict) or canonical(final_rule) != canonical(TEMP_DNS_FINAL_RULE):
+    if final_rule is not None and (
+        not isinstance(final_rule, dict)
+        or canonical(final_rule) != canonical(TEMP_DNS_FINAL_RULE)
+    ):
         raise IntegrationError("Recovery journal temporary DNS finalRule identity is invalid")
     return payload
 
@@ -2523,20 +2526,24 @@ def main() -> int:
                     isinstance(item, dict) and item.get("remark") == journal["inbound"]["remark"]
                     for item in before_cleanup
                 )
-            current_snapshot = client.get_snapshot()
-            current_direct = _direct_freedom_outbound(current_snapshot["xraySetting"])
-            current_final_rules = current_direct["settings"].get("finalRules", [])
-            rule_present = isinstance(current_final_rules, list) and any(
-                isinstance(item, dict)
-                and canonical(item) == canonical(journal["final_rule"])
-                for item in current_final_rules
-            )
+            final_rule = journal.get("final_rule")
+            rule_present = False
+            if final_rule is not None:
+                current_snapshot = client.get_snapshot()
+                current_direct = _direct_freedom_outbound(current_snapshot["xraySetting"])
+                current_final_rules = current_direct["settings"].get("finalRules", [])
+                rule_present = isinstance(current_final_rules, list) and any(
+                    isinstance(item, dict)
+                    and canonical(item) == canonical(final_rule)
+                    for item in current_final_rules
+                )
             if resource_present or rule_present:
                 confirm_restart("cleanup", args.approve_restart)
             removed = cleanup_temporary_tunnel(client, journal["inbound"], inbound_id)
             if inbound_id is not None or removed:
                 wait_for_tunnel_port_closed(journal["inbound"]["port"])
-            cleanup_temporary_dns_final_rule(client, journal["final_rule"])
+            if final_rule is not None:
+                cleanup_temporary_dns_final_rule(client, final_rule)
             journal_path.unlink(missing_ok=True)
             print("PASS: temporary Tunnel and DNS finalRule recovery cleanup verified; journal removed.")
             return 0
