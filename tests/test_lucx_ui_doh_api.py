@@ -775,6 +775,22 @@ class AdditivePlannerTests(unittest.TestCase):
         self.assertTrue(any("exists only as a scoped DNS server" in x for x in plan.blockers))
         self.assertEqual(len(plan.proposed["dns"]["servers"]), 1)
 
+    def test_local_dns_server_object_with_embedded_port_is_reused(self):
+        original = base_config()
+        server = {"address": "127.0.0.1:5355", "domains": [], "skipFallback": False}
+        original["dns"] = {"servers": [server]}
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        self.assertFalse(any(
+            "ADD dns.servers" in change for change in plan.changes
+        ))
+        self.assertEqual(plan.proposed["dns"]["servers"], [server])
+
+    def test_ipv6_dns_server_without_port_is_not_misparsed_as_embedded_port(self):
+        endpoint = api_tool._server_endpoint({"address": "2001:db8::1"})
+        self.assertEqual(endpoint, ("2001:db8::1", 53))
     def test_local_dns_server_with_query_or_ip_filters_is_not_reused_as_general(self):
         variants = [
             {"queryStrategy": "UseIPv4"},
