@@ -137,6 +137,7 @@ def _global_port53_rule(rule: dict[str, Any]) -> bool:
 
 
 def _outbound_matches_dns_endpoint(item: dict[str, Any]) -> bool:
+    """Return true only when the outbound's effective DNS behavior is the local plugin."""
     if item.get("protocol") != "dns":
         return False
     settings = item.get("settings")
@@ -151,7 +152,34 @@ def _outbound_matches_dns_endpoint(item: dict[str, Any]) -> bool:
     if rewrite_port != DNS_PORT:
         return False
     rewrite_network = settings.get("rewriteNetwork", "udp")
-    return str(rewrite_network).lower() == "udp"
+    if str(rewrite_network).lower() != "udp":
+        return False
+
+    # DNS-outbound rules can hijack, drop, or synthesize selected answers.
+    # Such an outbound is not a general replacement for this integration path.
+    dns_rules = settings.get("rules", [])
+    if not isinstance(dns_rules, list) or any(
+        not isinstance(rule, dict) or rule.get("action") != "direct"
+        for rule in dns_rules
+    ):
+        return False
+    if settings.get("blockTypes"):
+        return False
+    if settings.get("nonIPQuery") not in (None, "", "direct"):
+        return False
+
+    # A proxy chain or transport override can change where the DNS connection
+    # actually goes even though the rewrite endpoint fields look correct.
+    if item.get("proxySettings") or item.get("streamSettings") or item.get("mux"):
+        return False
+    send_through = item.get("sendThrough")
+    if send_through:
+        try:
+            if not ipaddress.ip_address(str(send_through)).is_loopback:
+                return False
+        except ValueError:
+            return False
+    return True
 
 
 def _unique_tag(
@@ -286,6 +314,12 @@ def _resolve_balancer_dns_targets(
         tag for tag in outbound_index
         if any(tag.startswith(prefix) for prefix in selector)
     ]
+    fallback = matches[0].get("fallbackTag")
+    if fallback:
+        if not isinstance(fallback, str) or fallback not in outbound_index:
+            return [], f"Balancer {balancer_tag!r} has a missing fallbackTag"
+        if fallback not in selected:
+            selected.append(fallback)
     if not selected:
         return [], f"Balancer {balancer_tag!r} selects no configured outbounds"
     incompatible = [
