@@ -418,7 +418,7 @@ class AdditivePlannerTests(unittest.TestCase):
 
         plan = api_tool.build_plan(original)
 
-        self.assertTrue(any("Duplicate inbound tag" in item for item in plan.blockers))
+        self.assertTrue(any("Duplicate Xray tag 'vless-in'" in item for item in plan.blockers))
         self.assertEqual(plan.proposed, original)
 
     def test_generated_outbound_tag_skips_inbound_api_and_rule_tags(self):
@@ -498,7 +498,7 @@ class AdditivePlannerTests(unittest.TestCase):
 
         plan = api_tool.build_plan(original)
 
-        self.assertTrue(any("Duplicate balancer tag" in item for item in plan.blockers))
+        self.assertTrue(any("Duplicate Xray tag 'dns-balancer'" in item for item in plan.blockers))
         self.assertEqual(plan.proposed, original)
 
     def test_duplicate_outbound_tags_are_rejected_as_ambiguous(self):
@@ -508,7 +508,7 @@ class AdditivePlannerTests(unittest.TestCase):
 
         plan = api_tool.build_plan(original)
 
-        self.assertTrue(any("Duplicate outbound tag" in item for item in plan.blockers))
+        self.assertTrue(any("Duplicate Xray tag 'proxy'" in item for item in plan.blockers))
         self.assertEqual(plan.proposed, original)
 
     def test_existing_global_route_with_missing_outbound_reference_is_blocked(self):
