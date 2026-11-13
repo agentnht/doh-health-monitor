@@ -172,11 +172,20 @@ def _outbound_matches_dns_endpoint(item: dict[str, Any]) -> bool:
     # DNS-outbound rules can hijack, drop, or synthesize selected answers.
     # Such an outbound is not a general replacement for this integration path.
     dns_rules = settings.get("rules", [])
-    if not isinstance(dns_rules, list) or any(
-        not isinstance(rule, dict) or rule.get("action") != "direct"
-        for rule in dns_rules
-    ):
+    if not isinstance(dns_rules, list):
         return False
+    for rule in dns_rules:
+        if not isinstance(rule, dict) or rule.get("action") != "direct":
+            return False
+        # A direct rule restricted by qType/domain is only a partial match;
+        # the DNS outbound's fallback would handle the remaining queries
+        # differently. Do not treat a restricted rule as a general DoH path.
+        qtype = rule.get("qType", rule.get("qtype"))
+        domain = rule.get("domain")
+        if qtype not in (None, "", []) or domain not in (None, "", []):
+            return False
+        if set(rule) - {"action", "rCode"}:
+            return False
     if settings.get("blockTypes"):
         return False
     if settings.get("nonIPQuery") not in (None, "", "direct"):
