@@ -238,3 +238,8 @@ installed VPS binary was not cryptographically matched to the tag.
 - [Xray settings controller and API routes](https://github.com/AlexeyLCP/lucx-ui/blob/v3.11.0-lucx.357/internal/web/controller/xray_setting.go)
 - [Xray settings persistence and validation](https://github.com/AlexeyLCP/lucx-ui/blob/v3.11.0-lucx.357/internal/web/service/xray_setting.go)
 - [Xray hot-diff section support](https://github.com/AlexeyLCP/lucx-ui/blob/v3.11.0-lucx.357/internal/xray/hot_diff.go)
+
+
+### Selective rollback
+
+The delayed `rollback` action does not restore the entire pre-apply Xray snapshot. It identifies only the three integration objects that were absent before apply and present in the verified after-snapshot: outbound `dns-out`, DNS server `127.0.0.1:5355`, and the global TCP/UDP port-53 routing rule targeting `dns-out`. It removes an object only if its current representation still exactly matches the saved post-apply object. If an owned object was edited after apply, rollback stops rather than deleting the edited object. Objects already absent are treated as already removed. All unrelated current Xray settings, later panel changes, and the current `outboundTestUrl` metadata are preserved. The resulting configuration is written and verified through the LucX-UI API, including the panel's DNS-rule normalization.
