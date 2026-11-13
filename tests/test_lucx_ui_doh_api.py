@@ -184,6 +184,133 @@ class AdditivePlannerTests(unittest.TestCase):
         self.assertFalse(plan.blockers)
         self.assertFalse(any("port 53" in item for item in plan.changes))
 
+    def test_reuses_dns_outbound_with_a_nonstandard_tag(self):
+        original = base_config()
+        outbound = copy.deepcopy(api_tool.DNS_OUT)
+        outbound["tag"] = "local-doh-resolver"
+        original["outbounds"].append(outbound)
+        route = copy.deepcopy(api_tool.DNS_PORT_RULE)
+        route["outboundTag"] = "local-doh-resolver"
+        original["routing"]["rules"].insert(1, route)
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        self.assertFalse(plan.outbound_created if hasattr(plan, "outbound_created") else False)
+        self.assertEqual(
+            [item for item in plan.proposed["outbounds"] if item["tag"] == "local-doh-resolver"],
+            [outbound],
+        )
+        self.assertFalse(any(item.get("tag") == "dns-out" for item in plan.proposed["outbounds"]))
+        self.assertEqual(
+            [item for item in plan.proposed["routing"]["rules"] if api_tool._global_port53_rule(item)],
+            [route],
+        )
+
+    def test_existing_conflicting_dns_outbound_gets_a_unique_new_tag(self):
+        original = base_config()
+        occupied = copy.deepcopy(api_tool.DNS_OUT)
+        occupied["settings"]["rewriteAddress"] = "9.9.9.9"
+        original["outbounds"].append(occupied)
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        self.assertEqual(original["outbounds"][-1], occupied)
+        added = plan.proposed["outbounds"][-1]
+        self.assertEqual(added["tag"], "dns-out-doh-health-monitor")
+        global_rule = next(item for item in plan.proposed["routing"]["rules"] if api_tool._global_port53_rule(item))
+        self.assertEqual(global_rule["outboundTag"], added["tag"])
+
+    def test_new_outbound_and_rule_tags_skip_collisions(self):
+        original = base_config()
+        occupied = copy.deepcopy(api_tool.DNS_OUT)
+        occupied["settings"]["rewriteAddress"] = "9.9.9.9"
+        original["outbounds"].append(occupied)
+        original["routing"]["rules"].append({
+            "type": "field",
+            "port": "443",
+            "outboundTag": "proxy",
+            "ruleTag": "doh-health-monitor-dns-port53",
+        })
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        added = plan.proposed["outbounds"][-1]
+        self.assertEqual(added["tag"], "dns-out-doh-health-monitor")
+        new_rule = next(item for item in plan.proposed["routing"]["rules"] if api_tool._global_port53_rule(item))
+        self.assertEqual(new_rule["outboundTag"], added["tag"])
+        self.assertEqual(new_rule["ruleTag"], "doh-health-monitor-dns-port53-2")
+        all_outbound_tags = [item.get("tag") for item in plan.proposed["outbounds"] if item.get("tag")]
+        self.assertEqual(len(all_outbound_tags), len(set(all_outbound_tags)))
+        all_rule_tags = [item.get("ruleTag") for item in plan.proposed["routing"]["rules"] if item.get("ruleTag")]
+        self.assertEqual(len(all_rule_tags), len(set(all_rule_tags)))
+
+    def test_multiple_equivalent_dns_outbounds_without_a_selecting_rule_are_ambiguous(self):
+        original = base_config()
+        first = copy.deepcopy(api_tool.DNS_OUT)
+        first["tag"] = "doh-one"
+        second = copy.deepcopy(api_tool.DNS_OUT)
+        second["tag"] = "doh-two"
+        original["outbounds"].extend([first, second])
+
+        plan = api_tool.build_plan(original)
+
+        self.assertTrue(any("Multiple compatible DNS outbounds" in item for item in plan.blockers))
+        self.assertEqual(plan.proposed, original)
+
+    def test_duplicate_outbound_tags_are_rejected_as_ambiguous(self):
+        original = base_config()
+        duplicate = copy.deepcopy(original["outbounds"][1])
+        original["outbounds"].append(duplicate)
+
+        plan = api_tool.build_plan(original)
+
+        self.assertTrue(any("Duplicate outbound tag" in item for item in plan.blockers))
+        self.assertEqual(plan.proposed, original)
+
+    def test_existing_global_route_with_missing_outbound_reference_is_blocked(self):
+        original = base_config()
+        route = copy.deepcopy(api_tool.DNS_PORT_RULE)
+        route["outboundTag"] = "missing-dns"
+        original["routing"]["rules"].insert(1, route)
+
+        plan = api_tool.build_plan(original)
+
+        self.assertTrue(any("references missing outbound tag" in item for item in plan.blockers))
+        self.assertEqual(plan.proposed, original)
+
+    def test_existing_global_route_shadowed_by_earlier_broad_rule_is_blocked(self):
+        original = add_complete_dns(base_config())
+        rules = original["routing"]["rules"]
+        route = next(item for item in rules if api_tool._global_port53_rule(item))
+        rules.remove(route)
+        rules.insert(1, {"type": "field", "ip": ["geoip:private"], "outboundTag": "blocked"})
+        rules.insert(2, route)
+
+        plan = api_tool.build_plan(original)
+
+        self.assertTrue(any("earlier broad routing rule" in item for item in plan.blockers))
+
+    def test_scoped_dns_rule_is_preserved_before_global_fallback(self):
+        original = base_config()
+        scoped = {
+            "type": "field",
+            "network": "udp",
+            "port": "53",
+            "inboundTag": ["vless-in"],
+            "outboundTag": "proxy",
+        }
+        original["routing"]["rules"].insert(1, scoped)
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        self.assertEqual(plan.proposed["routing"]["rules"][1], scoped)
+        self.assertEqual(plan.proposed["routing"]["rules"][2]["outboundTag"], "dns-out")
+        self.assertTrue(any("scoped port-53 rules are preserved" in item for item in plan.warnings))
+
     def test_scoped_udp_port53_rule_does_not_replace_global_rule(self):
         original = base_config()
         original["routing"]["rules"].insert(
