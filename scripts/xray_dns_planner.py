@@ -368,8 +368,9 @@ def _validate_outbound_tag_index(
                 index[tag] = item
 
     if isinstance(api_tag, str) and api_tag:
+        # api.tag names the panel's API inbound; it is a reference/alias for
+        # that inbound tag, not a second independently-defined Xray object.
         used.add(api_tag)
-        definitions.setdefault(api_tag, []).append("api")
     for namespace, tag in dns_tags + routing_tags:
         if tag:
             used.add(tag)
