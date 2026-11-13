@@ -1172,7 +1172,7 @@ def _remove_persistent_temporary_dns_rule(config: dict) -> bool:
     return False
 
 
-def build_plan(original: dict) -> Plan:
+def build_plan(original: dict, *, require_api_rule: bool = True) -> Plan:
     """Build the panel-aware plan from the shared semantic Xray inventory."""
     if not isinstance(original, dict):
         raise IntegrationError("xraySetting must be a JSON object")
@@ -1226,7 +1226,7 @@ def build_plan(original: dict) -> Plan:
     rules = object_list(routing, "rules", "routing.rules")
 
     api_indexes = [i for i, rule in enumerate(rules) if _is_api_rule(rule)]
-    if len(api_indexes) != 1 or api_indexes[0] != 0:
+    if require_api_rule and (len(api_indexes) != 1 or api_indexes[0] != 0):
         plan.blockers.append(
             "LucX-UI requires its api-inbound -> api-outbound rule at routing.rules[0]; the panel would add or move it during save"
         )
