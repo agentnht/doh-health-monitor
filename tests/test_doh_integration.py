@@ -259,6 +259,10 @@ class TransformTests(unittest.TestCase):
         mutations = []
         cfg = copy.deepcopy(self.original)
         cfg["outbounds"] = [x for x in cfg["outbounds"] if x.get("tag") != "dns-out"]
+        cfg["routing"]["rules"] = [
+            rule for rule in cfg["routing"]["rules"]
+            if rule.get("outboundTag") != "dns-out"
+        ]
         mutations.append(cfg)
 
         cfg = copy.deepcopy(self.original)
@@ -314,11 +318,20 @@ class StagingLifecycleTests(unittest.TestCase):
             self.assertIn("Staging copy created", clone_output)
             self.assertEqual(os.stat(stage_db).st_mode & 0o777, 0o600)
 
-            # Introduce a deliberately broken value only in the staging copy.
+            # Remove the previous local DNS integration objects only in the
+            # staging copy. The shared planner must add the missing path without
+            # rewriting or claiming ownership of unrelated objects.
             con = sqlite3.connect(stage_db)
             try:
                 cfg = read_db_config(stage_db)
-                cfg["outbounds"][0]["settings"]["rewritePort"] = 9999
+                cfg["outbounds"] = [
+                    item for item in cfg["outbounds"] if item.get("tag") != "dns-out"
+                ]
+                cfg["routing"]["rules"] = [
+                    rule for rule in cfg["routing"]["rules"]
+                    if rule.get("outboundTag") != "dns-out"
+                    or str(rule.get("port")) != "53"
+                ]
                 con.execute(
                     "UPDATE settings SET value=? WHERE key='xrayTemplateConfig'",
                     (json.dumps(cfg),),
@@ -332,7 +345,11 @@ class StagingLifecycleTests(unittest.TestCase):
             )
             self.assertIn("PASS: staging write and read-back verification succeeded", apply_output)
             self.assertTrue(Path(str(stage_db) + ".before").is_file())
-            self.assertEqual(read_db_config(stage_db)["outbounds"][0]["settings"]["rewritePort"], 5355)
+            self.assertTrue(any(
+                item.get("tag") == "dns-out"
+                and item.get("settings", {}).get("rewritePort") == 5355
+                for item in read_db_config(stage_db)["outbounds"]
+            ))
 
             verify_output = self.run_cli(
                 "--action", "verify", "--staging-db", stage_db,
@@ -343,12 +360,16 @@ class StagingLifecycleTests(unittest.TestCase):
                 "--action", "rollback", "--staging-db", stage_db,
             )
             self.assertIn("staging database restored", rollback_output)
-            self.assertEqual(read_db_config(stage_db)["outbounds"][0]["settings"]["rewritePort"], 9999)
+            self.assertFalse(any(
+                item.get("tag") == "dns-out"
+                and item.get("settings", {}).get("rewritePort") == 5355
+                for item in read_db_config(stage_db)["outbounds"]
+            ))
 
             post_rollback = self.run_cli(
                 "--action", "dry-run", "--staging-db", stage_db,
             )
-            self.assertIn("set dns-out.settings.rewritePort", post_rollback)
+            self.assertIn("ADD outbounds[dns-out]", post_rollback)
             self.assertEqual(read_db_config(source)["outbounds"][0]["settings"]["rewritePort"], 5355)
 
             cleanup_output = self.run_cli(
