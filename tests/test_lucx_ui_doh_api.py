@@ -538,7 +538,7 @@ class AdditivePlannerTests(unittest.TestCase):
         route = next(item for item in plan.proposed["routing"]["rules"] if api_tool._global_port53_rule(item))
         self.assertEqual(route["outboundTag"], plan.proposed["outbounds"][-1]["tag"])
 
-    def test_multiple_equivalent_dns_outbounds_without_a_selecting_rule_are_ambiguous(self):
+    def test_multiple_equivalent_dns_outbounds_without_a_selecting_rule_reuse_first(self):
         original = base_config()
         first = copy.deepcopy(api_tool.DNS_OUT)
         first["tag"] = "doh-one"
@@ -548,8 +548,15 @@ class AdditivePlannerTests(unittest.TestCase):
 
         plan = api_tool.build_plan(original)
 
-        self.assertTrue(any("Multiple compatible DNS outbounds" in item for item in plan.blockers))
-        self.assertEqual(plan.proposed, original)
+        self.assertFalse(plan.blockers)
+        self.assertFalse(any(item.get("tag") == "dns-out" for item in plan.proposed["outbounds"]))
+        route = next(item for item in plan.proposed["routing"]["rules"] if api_tool._global_port53_rule(item))
+        self.assertEqual(route["outboundTag"], "doh-one")
+        self.assertEqual(
+            [item for item in plan.proposed["outbounds"] if item.get("tag") in {"doh-one", "doh-two"}],
+            [first, second],
+        )
+        self.assertTrue(any("Multiple compatible local DNS outbounds exist" in item for item in plan.warnings))
 
     def test_api_tag_is_an_alias_for_its_inbound_tag(self):
         original = base_config()
@@ -680,6 +687,29 @@ class AdditivePlannerTests(unittest.TestCase):
 
         self.assertTrue(any("Duplicate Xray tag 'proxy'" in item for item in plan.blockers))
         self.assertEqual(plan.proposed, original)
+
+    def test_multiple_equivalent_global_port53_rules_are_preserved_without_new_rule(self):
+        original = base_config()
+        first = copy.deepcopy(api_tool.DNS_OUT)
+        first["tag"] = "doh-one"
+        second = copy.deepcopy(api_tool.DNS_OUT)
+        second["tag"] = "doh-two"
+        original["outbounds"].extend([first, second])
+        route_one = copy.deepcopy(api_tool.DNS_PORT_RULE)
+        route_one["outboundTag"] = "doh-one"
+        route_two = copy.deepcopy(api_tool.DNS_PORT_RULE)
+        route_two["outboundTag"] = "doh-two"
+        route_two["ruleTag"] = "dns-rule-two"
+        original["routing"]["rules"][1:1] = [route_one, route_two]
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        self.assertEqual(plan.proposed["routing"]["rules"][1:3], [route_one, route_two])
+        self.assertFalse(any(
+            "ADD global TCP/UDP port-53" in item for item in plan.changes
+        ))
+        self.assertTrue(any("Multiple global port-53 rules already exist" in item for item in plan.warnings))
 
     def test_existing_global_route_with_missing_outbound_reference_is_blocked(self):
         original = base_config()
