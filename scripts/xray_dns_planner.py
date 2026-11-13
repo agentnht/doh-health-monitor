@@ -145,7 +145,8 @@ def _global_port53_rule(rule: dict[str, Any]) -> bool:
     }
     has_outbound = isinstance(rule.get("outboundTag"), str) and bool(rule.get("outboundTag"))
     has_balancer = isinstance(rule.get("balancerTag"), str) and bool(rule.get("balancerTag"))
-    return has_outbound != has_balancer and not any(key not in allowed for key in rule)
+    # Xray gives outboundTag precedence if both are present.
+    return has_outbound or has_balancer and not any(key not in allowed for key in rule)
 
 
 def _global_protocol_port53_rule(rule: dict[str, Any]) -> bool:
@@ -548,11 +549,7 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
             target = rule.get("outboundTag")
             balancer = rule.get("balancerTag")
             resolved = None
-            if target and balancer:
-                plan.blockers.append(
-                    f"Existing global single-transport rule at routing.rules[{index}] has both outboundTag and balancerTag"
-                )
-            elif isinstance(target, str):
+            if isinstance(target, str):
                 if target in compatible:
                     resolved = target
                 else:
@@ -581,11 +578,7 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                 continue
             target = rule.get("outboundTag")
             balancer = rule.get("balancerTag")
-            if target and balancer:
-                plan.blockers.append(
-                    f"Existing broad routing rule at routing.rules[{index}] has both outboundTag and balancerTag"
-                )
-            elif isinstance(target, str) and target in compatible:
+            if isinstance(target, str) and target in compatible:
                 broad_compatible_routes.append((index, target))
             elif isinstance(balancer, str):
                 _selected, error = _resolve_balancer_dns_targets(balancer, balancers, outbound_index)
@@ -703,18 +696,14 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                 continue
             target = rule.get("outboundTag")
             balancer = rule.get("balancerTag")
-            if target and balancer:
-                plan.blockers.append(
-                    f"routing.rules[{index}] has both outboundTag and balancerTag for DNS traffic"
-                )
-            elif isinstance(target, str) and target in compatible:
+            if isinstance(target, str) and target in compatible:
                 scoped_targets.add(target)
             elif isinstance(balancer, str):
-                _selected, resolve_error = _resolve_balancer_dns_targets(
+                selected, resolve_error = _resolve_balancer_dns_targets(
                     balancer, balancers, outbound_index
                 )
-                if resolve_error is None:
-                    scoped_targets.add(balancer)
+                if resolve_error is None and selected:
+                    scoped_targets.add(selected[0])
 
         broad_targets = {target for _index, target in broad_compatible_routes}
         covered_transports = {
@@ -782,10 +771,6 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                 f"ADD outbounds[{new_tag}] (DNS outbound to {DNS_ADDRESS}:{DNS_PORT})"
             )
 
-    chosen_tag_is_balancer = chosen_tag is not None and any(
-        isinstance(item, dict) and item.get("tag") == chosen_tag
-        for item in balancers
-    )
     plan.outbound_tag = chosen_tag
 
     # Reuse a general DNS server for the endpoint; do not widen a domain-scoped
@@ -855,10 +840,7 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                 rule_tag = None
             new_rule = copy.deepcopy(DNS_ROUTE_RULE_TEMPLATE)
             if rule_tag is not None:
-                if chosen_tag_is_balancer:
-                    new_rule["balancerTag"] = chosen_tag
-                else:
-                    new_rule["outboundTag"] = chosen_tag
+                new_rule["outboundTag"] = chosen_tag
                 new_rule["ruleTag"] = rule_tag
                 rules.insert(insert_at, new_rule)
                 plan.routing_rule_tag = rule_tag
