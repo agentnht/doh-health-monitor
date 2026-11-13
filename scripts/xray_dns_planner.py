@@ -723,6 +723,10 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                 f"ADD outbounds[{new_tag}] (DNS outbound to {DNS_ADDRESS}:{DNS_PORT})"
             )
 
+    chosen_tag_is_balancer = chosen_tag is not None and any(
+        isinstance(item, dict) and item.get("tag") == chosen_tag
+        for item in balancers
+    )
     plan.outbound_tag = chosen_tag
 
     # Reuse a general DNS server for the endpoint; do not widen a domain-scoped
@@ -790,7 +794,10 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                 rule_tag = None
             new_rule = copy.deepcopy(DNS_ROUTE_RULE_TEMPLATE)
             if rule_tag is not None:
-                new_rule["outboundTag"] = chosen_tag
+                if chosen_tag_is_balancer:
+                    new_rule["balancerTag"] = chosen_tag
+                else:
+                    new_rule["outboundTag"] = chosen_tag
                 new_rule["ruleTag"] = rule_tag
                 rules.insert(insert_at, new_rule)
                 plan.routing_rule_tag = rule_tag
