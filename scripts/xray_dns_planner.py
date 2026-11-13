@@ -246,10 +246,18 @@ def _server_endpoint(server: Any) -> tuple[str, int] | None:
         address = server.get("address")
         if not isinstance(address, str):
             return None
+        # Some Xray templates encode an explicit port in address rather than
+        # a separate port member. Recognize both forms without broad matching.
+        host, separator, embedded_port = address.rpartition(":")
+        explicit_port = server.get("port")
+        if separator and explicit_port is None and host:
+            address = host.strip("[]")
+            port_value: Any = embedded_port
+        else:
+            address = address.strip("[]")
+            port_value = 53 if explicit_port is None else explicit_port
         try:
-            host = str(ipaddress.ip_address(address.strip("[]")))
-            port = int(server.get("port", 53))
-            return host, port
+            return str(ipaddress.ip_address(address)), int(port_value)
         except (ValueError, TypeError):
             return None
     return None
