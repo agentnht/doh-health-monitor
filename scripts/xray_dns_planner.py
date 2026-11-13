@@ -6,8 +6,12 @@ Conflicting user objects are preserved and reported, never rewritten.
 """
 from __future__ import annotations
 
+import argparse
 import copy
 import ipaddress
+import json
+import sys
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -842,3 +846,39 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
         plan.routing_rule_tag = None
         plan.outbound_tag = None
     return plan
+
+def main(argv: list[str] | None = None) -> int:
+    """Read-only runtime/template check entry point used by the shell checker."""
+    parser = argparse.ArgumentParser(
+        description="Analyze an Xray config for the local DoH DNS path without writing it"
+    )
+    parser.add_argument("--check-config", type=Path, required=True)
+    args = parser.parse_args(argv)
+    try:
+        config = json.loads(args.check_config.read_text(encoding="utf-8"))
+        plan = build_dns_plan(config)
+    except (OSError, json.JSONDecodeError, ValueError, TypeError) as exc:
+        print(f"ERROR: cannot analyze Xray config: {exc}", file=sys.stderr)
+        return 2
+
+    for warning in plan.warnings:
+        print(f"NOTICE: {warning}")
+    if plan.blockers:
+        for blocker in plan.blockers:
+            print(f"ERROR: {blocker}", file=sys.stderr)
+        return 2
+    if plan.changes:
+        for change in plan.changes:
+            print(f"MISSING: {change}")
+        print("ERROR: Xray DNS path is incomplete; no changes were made.", file=sys.stderr)
+        return 1
+
+    print(
+        f"PASS: existing Xray DNS routing and resolver configuration covers "
+        f"TCP/UDP DNS to {DNS_ADDRESS}:{DNS_PORT}; no changes are required."
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
