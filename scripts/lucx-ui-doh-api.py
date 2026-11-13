@@ -940,11 +940,13 @@ def _global_port53_rule(rule: dict) -> bool:
     # would narrow/alter the intended all-tunnel TCP+UDP interception.
     allowed = {
         "type", "ruleTag", "enabled", "network", "port",
-        "outboundTag", "remarks", "comment",
+        "outboundTag", "balancerTag", "remarks", "comment",
     }
     if any(key not in allowed for key in rule):
         return False
-    return rule.get("type", "field") == "field"
+    has_outbound = isinstance(rule.get("outboundTag"), str) and bool(rule.get("outboundTag"))
+    has_balancer = isinstance(rule.get("balancerTag"), str) and bool(rule.get("balancerTag"))
+    return rule.get("type", "field") == "field" and (has_outbound != has_balancer)
 
 
 def _split_ip_address(address: str, explicit_port: object = None) -> tuple[str, int] | None:
