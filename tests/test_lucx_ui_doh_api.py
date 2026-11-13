@@ -2136,6 +2136,37 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
             if not self.fail_delete:
                 self.inbounds = [x for x in self.inbounds if x["id"] != inbound_id]
 
+    def test_existing_final_rule_refusal_does_not_delete_unowned_rule(self):
+        client = self.FakeClient()
+        direct = next(
+            item for item in client.snapshot["xraySetting"]["outbounds"]
+            if item.get("tag") == "direct"
+        )
+        original_rule = copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE)
+        direct["settings"]["finalRules"] = [original_rule]
+
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(api_tool, "choose_temporary_tunnel_port", return_value=15353):
+                with self.assertRaisesRegex(api_tool.IntegrationError, "already present"):
+                    api_tool.run_temporary_tunnel_test(
+                        client,
+                        "http://127.0.0.1:18765/status",
+                        __import__("pathlib").Path(directory),
+                    )
+
+            restored_direct = next(
+                item for item in client.snapshot["xraySetting"]["outbounds"]
+                if item.get("tag") == "direct"
+            )
+            self.assertEqual(restored_direct["settings"]["finalRules"], [original_rule])
+            self.assertEqual(client.update_calls, 0)
+            self.assertEqual(client.add_calls, 0)
+            self.assertEqual(client.inbounds, [])
+            self.assertEqual(
+                list((__import__("pathlib").Path(directory) / "recovery").iterdir()),
+                [],
+            )
+
     def test_success_path_always_removes_tunnel_and_journal(self):
         client = self.FakeClient()
         with tempfile.TemporaryDirectory() as directory:
