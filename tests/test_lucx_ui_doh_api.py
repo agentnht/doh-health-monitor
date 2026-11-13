@@ -463,6 +463,42 @@ class AdditivePlannerTests(unittest.TestCase):
         self.assertTrue(any("references missing outbound tag" in item for item in plan.blockers))
         self.assertEqual(plan.proposed, original)
 
+    def test_earlier_global_port_range_shadowing_exact_dns_route_is_blocked(self):
+        original = base_config()
+        original["outbounds"].append(copy.deepcopy(api_tool.DNS_OUT))
+        original["dns"] = {"servers": [copy.deepcopy(api_tool.DNS_SERVER)]}
+        original["routing"]["rules"].insert(1, {
+            "type": "field",
+            "network": "tcp,udp",
+            "port": "53,443",
+            "outboundTag": "proxy",
+        })
+        original["routing"]["rules"].insert(2, copy.deepcopy(api_tool.DNS_PORT_RULE))
+
+        plan = api_tool.build_plan(original)
+
+        self.assertTrue(any("shadows the exact port-53 route" in item for item in plan.blockers))
+        self.assertEqual(plan.proposed, original)
+
+    def test_earlier_global_port_range_is_reused_when_it_targets_same_dns_outbound(self):
+        original = base_config()
+        original["outbounds"].append(copy.deepcopy(api_tool.DNS_OUT))
+        original["dns"] = {"servers": [copy.deepcopy(api_tool.DNS_SERVER)]}
+        broad = {
+            "type": "field",
+            "network": "tcp,udp,quic",
+            "port": "53,443",
+            "outboundTag": "dns-out",
+        }
+        original["routing"]["rules"].insert(1, broad)
+        original["routing"]["rules"].insert(2, copy.deepcopy(api_tool.DNS_PORT_RULE))
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        self.assertTrue(any("already provide the required DNS path" in item for item in plan.warnings))
+        self.assertEqual(plan.proposed["routing"]["rules"][1], broad)
+
     def test_existing_global_route_shadowed_by_earlier_broad_rule_is_blocked(self):
         original = add_complete_dns(base_config())
         rules = original["routing"]["rules"]
