@@ -557,9 +557,11 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                         f"Existing global {','.join(sorted(covered))} port-53 rule at routing.rules[{index}] targets incompatible outbound {target!r}"
                     )
             elif isinstance(balancer, str):
-                _selected, error = _resolve_balancer_dns_targets(balancer, balancers, outbound_index)
-                if error is None:
-                    resolved = balancer
+                selected, error = _resolve_balancer_dns_targets(balancer, balancers, outbound_index)
+                if error is None and selected:
+                    # A new fallback uses a concrete compatible outbound,
+                    # not a newly introduced balancerTag.
+                    resolved = selected[0]
                 else:
                     plan.blockers.append(
                         f"Existing global single-transport rule at routing.rules[{index}] does not have a compatible DNS balancer: {error}"
@@ -696,8 +698,9 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                 continue
             target = rule.get("outboundTag")
             balancer = rule.get("balancerTag")
-            if isinstance(target, str) and target in compatible:
-                scoped_targets.add(target)
+            if isinstance(target, str):
+                if target in compatible:
+                    scoped_targets.add(target)
             elif isinstance(balancer, str):
                 selected, resolve_error = _resolve_balancer_dns_targets(
                     balancer, balancers, outbound_index
