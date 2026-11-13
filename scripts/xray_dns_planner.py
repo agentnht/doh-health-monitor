@@ -248,11 +248,15 @@ def _server_endpoint(server: Any) -> tuple[str, int] | None:
             return None
         # Some Xray templates encode an explicit port in address rather than
         # a separate port member. Recognize both forms without broad matching.
-        host, separator, embedded_port = address.rpartition(":")
         explicit_port = server.get("port")
-        if separator and explicit_port is None and host:
-            address = host.strip("[]")
-            port_value: Any = embedded_port
+        if address.startswith("[") and "]:" in address and explicit_port is None:
+            close = address.index("]:")
+            port_value: Any = address[close + 2:]
+            address = address[1:close]
+        elif address.count(":") == 1 and explicit_port is None:
+            host, embedded_port = address.rsplit(":", 1)
+            address = host
+            port_value = embedded_port
         else:
             address = address.strip("[]")
             port_value = 53 if explicit_port is None else explicit_port
