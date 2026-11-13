@@ -42,7 +42,7 @@ from urllib.request import HTTPSHandler, Request, build_opener, urlopen
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
-from xray_dns_planner import build_dns_plan
+from xray_dns_planner import build_dns_plan, _outbound_matches_dns_endpoint
 
 VERSION = "1.5.1"
 DEFAULT_PLUGIN_SERVICE = "lucx-plugin-doh-health-monitor"
@@ -2161,16 +2161,30 @@ def build_selective_rollback_config(current: dict, before: dict, after: dict) ->
     current_outbounds = object_list(result, "outbounds", "outbounds")
     before_outbounds = object_list(before, "outbounds", "before.outbounds")
     after_outbounds = object_list(after, "outbounds", "after.outbounds")
-    if not tagged(before_outbounds, "dns-out"):
-        owned = tagged(after_outbounds, "dns-out")
-        if owned:
-            if len(owned) != 1:
-                raise IntegrationError("Backup has ambiguous dns-out ownership; selective rollback refused")
-            present = tagged(current_outbounds, "dns-out")
-            if present:
-                if len(present) != 1 or canonical(present[0]) != canonical(owned[0]):
-                    raise IntegrationError("dns-out was modified after apply; refusing to delete the changed outbound")
-                current_outbounds.remove(present[0])
+    before_tags = {
+        item.get("tag") for item in before_outbounds
+        if isinstance(item.get("tag"), str) and item.get("tag")
+    }
+    # A DNS outbound is owned only when this apply introduced its tag. The
+    # preferred name may have been occupied, so rollback must not assume dns-out.
+    owned_dns = [
+        item for item in after_outbounds
+        if isinstance(item.get("tag"), str)
+        and item.get("tag") not in before_tags
+        and _outbound_matches_dns_endpoint(item)
+    ]
+    if len(owned_dns) > 1:
+        raise IntegrationError("Backup has ambiguous ownership of added local DNS outbounds; selective rollback refused")
+    if owned_dns:
+        owned = owned_dns[0]
+        owned_tag = owned.get("tag")
+        present = tagged(current_outbounds, owned_tag)
+        if present:
+            if len(present) != 1 or canonical(present[0]) != canonical(owned):
+                raise IntegrationError(
+                    f"Added DNS outbound {owned_tag!r} was modified after apply; refusing to delete it"
+                )
+            current_outbounds.remove(present[0])
 
     before_dns = before.get("dns", {})
     after_dns = after.get("dns", {})
@@ -2230,7 +2244,7 @@ def build_selective_rollback_config(current: dict, before: dict, after: dict) ->
     before_port53 = [rule for rule in before_rules if isinstance(rule, dict) and _global_port53_rule(rule)]
     after_port53 = [rule for rule in after_rules if isinstance(rule, dict) and _global_port53_rule(rule)]
     if not before_port53 and after_port53:
-        if len(after_port53) != 1 or after_port53[0].get("outboundTag") != "dns-out":
+        if len(after_port53) != 1:
             raise IntegrationError("Backup has ambiguous ownership of the port-53 DNS rule; selective rollback refused")
         present = [rule for rule in current_rules if isinstance(rule, dict) and _global_port53_rule(rule)]
         if present:
@@ -2585,7 +2599,7 @@ def command_rollback(args, client: PanelAPI) -> int:
         return 2
 
     print("PASS: selective rollback verified through the panel API.")
-    print("Only unchanged dns-out, 127.0.0.1:5355 DNS server, and global port-53 rule introduced by this apply were removed.")
+    print("Only the unchanged DNS outbound, 127.0.0.1:5355 DNS server, and global port-53 rule introduced by this apply were removed.")
     print("Unrelated current panel settings and metadata were preserved.")
     try:
         remove_verified_backup(backup_path)
