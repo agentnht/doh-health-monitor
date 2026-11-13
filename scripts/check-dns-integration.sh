@@ -58,19 +58,27 @@ else
     error "python3 не установлен; общий анализатор Xray DNS path недоступен"
   fi
 
-  if jq -e --arg port "$PLUGIN_PORT" '
-    (.routing.rules // []) as $rules |
-    [$rules | to_entries[] | select(.value.ruleTag == "xui-dns-allow")] as $allow |
-    [$rules | to_entries[] | select(((.value.ip // []) | index("geoip:private")) != null)] as $private |
-    ($allow | length) == 1 and
-    ($allow[0].value.ip // [] | index("127.0.0.1")) != null and
-    (($allow[0].value.port | tostring) == $port) and
-    $allow[0].value.outboundTag == "direct" and
-    (($private | length) == 0 or $allow[0].key < $private[0].key)
+  if jq -e '
+    any(.routing.rules[]?;
+      ((.ip // []) | index("geoip:private")) != null
+    )
   ' "$XRAY_CONFIG" >/dev/null; then
-    pass "xui-dns-allow корректно разрешает localhost до блокировки private IP"
+    if jq -e --arg port "$PLUGIN_PORT" '
+      (.routing.rules // []) as $rules |
+      [$rules | to_entries[] | select(.value.ruleTag == "xui-dns-allow")] as $allow |
+      [$rules | to_entries[] | select(((.value.ip // []) | index("geoip:private")) != null)] as $private |
+      ($allow | length) == 1 and
+      ($allow[0].value.ip // [] | index("127.0.0.1")) != null and
+      (($allow[0].value.port | tostring) == $port) and
+      $allow[0].value.outboundTag == "direct" and
+      $allow[0].key < $private[0].key
+    ' "$XRAY_CONFIG" >/dev/null; then
+      pass "xui-dns-allow корректно разрешает localhost до блокировки private IP"
+    else
+      error "xui-dns-allow отсутствует, дублируется, неверно настроен или расположен после private-IP block"
+    fi
   else
-    error "xui-dns-allow отсутствует, дублируется, неверно настроен или расположен после private-IP block"
+    pass "geoip:private block отсутствует; xui-dns-allow не требуется"
   fi
 fi
 printf '\nИтог: %d OK, %d WARN, %d FAIL\n' "$ok" "$warn" "$fail"
