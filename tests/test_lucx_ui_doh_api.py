@@ -118,17 +118,22 @@ class TemporaryDNSFinalRuleTests(unittest.TestCase):
             {"action": "block", "network": "tcp", "port": "25", "ip": ["192.0.2.1"]}
         ])
 
-    def test_cleanup_refuses_ambiguous_duplicate_temporary_rules(self):
+    def test_cleanup_removes_all_exact_reserved_temporary_rules(self):
         config = base_config()
         config["outbounds"][0]["settings"]["finalRules"] = [
             copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE),
+            {"action": "block", "network": "tcp", "port": "25", "ip": ["192.0.2.1"]},
             copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE),
         ]
         client = self.FakePanel(config)
-        with self.assertRaises(api_tool.IntegrationError):
-            api_tool.cleanup_temporary_dns_final_rule(
-                client, api_tool.TEMP_DNS_FINAL_RULE
-            )
+        self.assertTrue(api_tool.cleanup_temporary_dns_final_rule(
+            client, api_tool.TEMP_DNS_FINAL_RULE
+        ))
+        final_rules = client.snapshot["xraySetting"]["outbounds"][0]["settings"]["finalRules"]
+        self.assertEqual(
+            final_rules,
+            [{"action": "block", "network": "tcp", "port": "25", "ip": ["192.0.2.1"]}],
+        )
 
 
 class AdditivePlannerTests(unittest.TestCase):
@@ -400,7 +405,9 @@ class AdditivePlannerTests(unittest.TestCase):
         rules = original["routing"]["rules"]
         route = next(item for item in rules if api_tool._global_port53_rule(item))
         rules.remove(route)
-        rules.insert(2, route)  # domain-only rule cannot match the rewritten loopback IP
+        domain_rule = {"type": "field", "domain": ["example.net"], "outboundTag": "proxy"}
+        rules.insert(1, domain_rule)
+        rules.insert(2, route)  # domain-only rule cannot match rewritten loopback IP
         plan = api_tool.build_plan(original)
         self.assertFalse(plan.blockers)
         self.assertFalse(any("ADD global TCP/UDP port-53" in item for item in plan.changes))
