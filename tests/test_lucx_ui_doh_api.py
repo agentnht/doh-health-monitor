@@ -904,6 +904,71 @@ class RollbackLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(api_tool.IntegrationError, "dns-out was modified"):
             api_tool.build_selective_rollback_config(current, before, after)
 
+    def test_rollback_removes_only_dynamically_named_dns_objects_it_created(self):
+        before = base_config()
+        occupied = copy.deepcopy(api_tool.DNS_OUT)
+        occupied["settings"]["rewritePort"] = 5356
+        before["outbounds"].append(occupied)
+        plan = api_tool.build_plan(before)
+        self.assertFalse(plan.blockers)
+        added_tag = plan.proposed["outbounds"][-1]["tag"]
+        self.assertNotEqual(added_tag, "dns-out")
+
+        restored = api_tool.build_selective_rollback_config(
+            plan.expected_saved, before, plan.expected_saved
+        )
+
+        self.assertEqual(
+            next(item for item in restored["outbounds"] if item.get("tag") == "dns-out"),
+            occupied,
+        )
+        self.assertFalse(any(item.get("tag") == added_tag for item in restored["outbounds"]))
+        self.assertFalse(any(
+            item.get("outboundTag") == added_tag
+            and api_tool._global_port53_rule(item)
+            for item in restored["routing"]["rules"]
+        ))
+
+    def test_rollback_refuses_when_later_user_rule_references_added_dns_tag(self):
+        before = base_config()
+        occupied = copy.deepcopy(api_tool.DNS_OUT)
+        occupied["settings"]["rewritePort"] = 5356
+        before["outbounds"].append(occupied)
+        after = api_tool.build_plan(before).expected_saved
+        added_tag = next(
+            item["tag"] for item in after["outbounds"]
+            if item.get("tag") != "dns-out" and api_tool._outbound_matches_dns_endpoint(item)
+        )
+        current = copy.deepcopy(after)
+        current["routing"]["rules"].append({
+            "type": "field",
+            "domain": ["example.net"],
+            "outboundTag": added_tag,
+        })
+
+        with self.assertRaisesRegex(api_tool.IntegrationError, "additional user references"):
+            api_tool.build_selective_rollback_config(current, before, after)
+
+    def test_rollback_refuses_when_later_balancer_fallback_references_added_dns_tag(self):
+        before = base_config()
+        occupied = copy.deepcopy(api_tool.DNS_OUT)
+        occupied["settings"]["rewritePort"] = 5356
+        before["outbounds"].append(occupied)
+        after = api_tool.build_plan(before).expected_saved
+        added_tag = next(
+            item["tag"] for item in after["outbounds"]
+            if item.get("tag") != "dns-out" and api_tool._outbound_matches_dns_endpoint(item)
+        )
+        current = copy.deepcopy(after)
+        current["routing"]["balancers"] = [{
+            "tag": "user-balancer",
+            "selector": ["unrelated-"],
+            "fallbackTag": added_tag,
+        }]
+
+        with self.assertRaisesRegex(api_tool.IntegrationError, "additional user references"):
+            api_tool.build_selective_rollback_config(current, before, after)
+
     def test_rollback_keeps_backup_when_readback_verification_fails(self):
         before = base_config()
         after = api_tool.build_plan(before).expected_saved
