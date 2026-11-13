@@ -2251,6 +2251,18 @@ def build_selective_rollback_config(current: dict, before: dict, after: dict) ->
                     raise IntegrationError("DNS server 127.0.0.1:5355 was modified after apply; refusing to delete it")
                 current_servers.remove(present[0])
 
+    # Undo only empty container keys introduced by this integration. Do not
+    # erase an originally-present DNS object or any later DNS settings.
+    if "dns" not in before and current_dns == {"servers": []}:
+        result.pop("dns", None)
+    elif (
+        isinstance(before_dns, dict)
+        and "servers" not in before_dns
+        and current_dns.get("servers") == []
+        and set(current_dns) == {"servers"}
+    ):
+        current_dns.pop("servers", None)
+
     before_routing = before.get("routing", {})
     after_routing = after.get("routing", {})
     current_routing = result.get("routing", {})
