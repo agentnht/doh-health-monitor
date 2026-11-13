@@ -1124,6 +1124,21 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
             self.fail_delete = fail_delete
             self.add_calls = 0
             self.deleted = []
+            self.snapshot = {
+                "xraySetting": base_config(),
+                "outboundTestUrl": "https://example.invalid/",
+            }
+            self.update_calls = 0
+
+        def get_snapshot(self):
+            return copy.deepcopy(self.snapshot)
+
+        def update(self, config, outbound_test_url):
+            self.snapshot = {
+                "xraySetting": copy.deepcopy(config),
+                "outboundTestUrl": outbound_test_url,
+            }
+            self.update_calls += 1
 
         def list_inbounds(self):
             return copy.deepcopy(self.inbounds)
