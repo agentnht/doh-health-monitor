@@ -2497,7 +2497,9 @@ def cleanup_temporary_leftovers(client: PanelAPI, backup_dir: Path, discovered: 
     )
 
 
-def command_apply(args, client: PanelAPI) -> int:
+def command_apply(
+    args, client: PanelAPI, *, perform_preflight: bool = False
+) -> int:
     backup_dir = Path(args.backup_dir).expanduser()
 
     # First discover and clean only leftovers bearing our reserved identity.
@@ -2517,6 +2519,12 @@ def command_apply(args, client: PanelAPI) -> int:
         print("No permanent DNS integration changes were attempted.")
         print("Reason:", exc)
         return 2
+
+    # A stale Tunnel/finalRule must be cleaned even if the plugin is currently
+    # unhealthy. Only after cleanup do we enforce the normal apply preflight.
+    if perform_preflight:
+        check_plugin_health(args.plugin_service, args.plugin_status_url, args.plugin_port)
+        check_xray_compatibility(args.xray_bin)
 
     snapshot = client.get_snapshot()
     plan = build_plan(snapshot["xraySetting"])
@@ -2775,7 +2783,7 @@ def main() -> int:
         )
         if endpoint.host_header:
             print("Panel domain validation: configured Host header and TLS SNI will be used.")
-        if args.action != "cleanup-test":
+        if args.action not in {"cleanup-test", "apply"}:
             check_plugin_health(args.plugin_service, args.plugin_status_url, args.plugin_port)
             check_xray_compatibility(args.xray_bin)
         token = resolve_panel_api_token(Path(args.panel_auth_file))
@@ -2791,7 +2799,7 @@ def main() -> int:
         if args.action in {"check", "plan"}:
             return command_check_or_plan(args, client)
         if args.action == "apply":
-            return command_apply(args, client)
+            return command_apply(args, client, perform_preflight=True)
         if args.action == "cleanup-test":
             journal_path = Path(args.recovery_journal).expanduser()
             journal = _load_recovery_journal(journal_path)
