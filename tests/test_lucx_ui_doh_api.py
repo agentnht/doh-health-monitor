@@ -247,6 +247,24 @@ class AdditivePlannerTests(unittest.TestCase):
         all_rule_tags = [item.get("ruleTag") for item in plan.proposed["routing"]["rules"] if item.get("ruleTag")]
         self.assertEqual(len(all_rule_tags), len(set(all_rule_tags)))
 
+    def test_new_outbound_tag_avoids_existing_balancer_selector_prefixes(self):
+        original = base_config()
+        occupied = copy.deepcopy(api_tool.DNS_OUT)
+        occupied["settings"]["rewriteAddress"] = "9.9.9.9"
+        original["outbounds"].append(occupied)
+        original["routing"]["balancers"] = [
+            {"tag": "dns-balancer", "selector": ["dns"]}
+        ]
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        added = plan.proposed["outbounds"][-1]
+        self.assertEqual(added["tag"], "doh-health-monitor-dns-out")
+        self.assertFalse(added["tag"].startswith("dns"))
+        new_rule = next(item for item in plan.proposed["routing"]["rules"] if api_tool._global_port53_rule(item))
+        self.assertEqual(new_rule["outboundTag"], added["tag"])
+
     def test_multiple_equivalent_dns_outbounds_without_a_selecting_rule_are_ambiguous(self):
         original = base_config()
         first = copy.deepcopy(api_tool.DNS_OUT)
