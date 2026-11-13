@@ -586,8 +586,8 @@ class AdditivePlannerTests(unittest.TestCase):
     def test_duplicate_existing_inbound_tags_are_reserved_but_not_rewritten(self):
         original = base_config()
         original["inbounds"] = [
-            {"tag": "vless-in"},
-            {"tag": "vless-in"},
+            {"tag": "dns-out"},
+            {"tag": "dns-out"},
         ]
 
         plan = api_tool.build_plan(original)
@@ -596,10 +596,14 @@ class AdditivePlannerTests(unittest.TestCase):
         self.assertEqual(plan.proposed["inbounds"], original["inbounds"])
         generated = next(
             item["tag"] for item in plan.proposed["outbounds"]
-            if item.get("protocol") == "dns" and item.get("tag") != "dns-out"
-        ) if any(item.get("protocol") == "dns" for item in plan.proposed["outbounds"]) else None
-        if generated:
-            self.assertNotEqual(generated, "vless-in")
+            if item.get("protocol") == "dns"
+        )
+        self.assertNotEqual(generated, "dns-out")
+        global_rule = next(
+            item for item in plan.proposed["routing"]["rules"]
+            if api_tool._global_port53_rule(item)
+        )
+        self.assertEqual(global_rule["outboundTag"], generated)
 
     def test_generated_outbound_tag_skips_inbound_api_and_rule_tags(self):
         original = base_config()
@@ -688,7 +692,11 @@ class AdditivePlannerTests(unittest.TestCase):
 
     def test_generated_rule_tag_skips_existing_outbound_tag(self):
         original = base_config()
-        original["routing"]["rules"][1]["ruleTag"] = "doh-health-monitor-dns-port53"
+        original["outbounds"].append({
+            "tag": "doh-health-monitor-dns-port53",
+            "protocol": "blackhole",
+            "settings": {},
+        })
 
         plan = api_tool.build_plan(original)
 
