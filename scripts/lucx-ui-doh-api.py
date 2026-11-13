@@ -2389,7 +2389,7 @@ def command_apply(args, client: PanelAPI) -> int:
     print("Existing outbounds, DNS entries, and user routing rules were preserved by the predicted transformation.")
     print("Persistent rollback snapshot retained (mode 0600):", backup_path)
     print("Use the rollback action with this backup path to undo the integration later.")
-    print("Rollback is guarded: it will refuse if the current panel settings differ from the saved after-snapshot.")
+    print("Rollback removes only unchanged DNS integration objects owned by this apply; unrelated later panel changes are preserved.")
     print("Check Xray status in LucX-UI; a running core may have been fully restarted by the panel.")
 
     try:
