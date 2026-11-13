@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import copy
 import difflib
+import importlib.util
 import json
 import sqlite3
 import sys
@@ -54,165 +55,31 @@ DNS_PORT_RULE = {
 }
 
 
-def one(items: list[dict[str, Any]], predicate, description: str):
-    found = [item for item in items if predicate(item)]
-    if len(found) > 1:
-        raise RuntimeError(f"Ambiguous configuration: multiple {description}")
-    return found[0] if found else None
+_API_PLANNER = None
 
 
-def _require_object(value: Any, description: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise RuntimeError(f"Invalid {description}: expected JSON object")
-    return value
-
-
-def _require_object_list(value: Any, description: str) -> list[dict[str, Any]]:
-    if not isinstance(value, list) or not all(isinstance(x, dict) for x in value):
-        raise RuntimeError(f"Invalid {description}: expected array of objects")
-    return value
-
-
-def _network_tokens(rule: dict[str, Any]) -> set[str]:
-    value = rule.get("network", "")
-    if not isinstance(value, str):
-        return set()
-    return {token.strip().lower() for token in value.split(",") if token.strip()}
+def _load_api_planner():
+    """Load the production planner so dry-run and apply share identical decisions."""
+    global _API_PLANNER
+    if _API_PLANNER is not None:
+        return _API_PLANNER
+    api_path = Path(__file__).resolve().with_name("lucx-ui-doh-api.py")
+    spec = importlib.util.spec_from_file_location("doh_dry_run_api_planner", api_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Cannot load the shared LucX-UI DNS planner")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    _API_PLANNER = module
+    return module
 
 
 def transform(original: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
-    """Return a corrected deep copy and change descriptions; never mutate input.
-
-    Ambiguous duplicate/conflicting structures fail closed rather than creating
-    another rule or silently replacing a different routing decision.
-    """
-    if not isinstance(original, dict):
-        raise RuntimeError("Xray config root must be a JSON object")
-
-    cfg = copy.deepcopy(original)
-    changes: list[str] = []
-
-    outbounds = _require_object_list(cfg.setdefault("outbounds", []), "outbounds")
-    dns_out = one(
-        outbounds,
-        lambda item: item.get("tag") == "dns-out",
-        "dns-out outbounds",
-    )
-    if dns_out is None:
-        outbounds.append(copy.deepcopy(DNS_OUT))
-        changes.append("add dns-out")
-    else:
-        for key in ("tag", "protocol"):
-            expected = DNS_OUT[key]
-            if dns_out.get(key) != expected:
-                dns_out[key] = copy.deepcopy(expected)
-                changes.append(f"set dns-out.{key}")
-
-        settings = dns_out.get("settings")
-        if settings is None:
-            settings = {}
-            dns_out["settings"] = settings
-        _require_object(settings, "dns-out.settings")
-        for key, expected in DNS_OUT["settings"].items():
-            if settings.get(key) != expected:
-                settings[key] = copy.deepcopy(expected)
-                changes.append(f"set dns-out.settings.{key}")
-
-    dns = _require_object(cfg.setdefault("dns", {}), "dns")
-    servers = _require_object_list(dns.setdefault("servers", []), "dns.servers")
-    local_server = one(
-        servers,
-        lambda item: item.get("address") == "127.0.0.1"
-        and str(item.get("port", "")) == "5355",
-        "DNS servers for 127.0.0.1:5355",
-    )
-    if local_server is None:
-        servers.append(copy.deepcopy(DNS_SERVER))
-        changes.append("add DNS server 127.0.0.1:5355")
-    else:
-        for key, expected in DNS_SERVER.items():
-            if local_server.get(key) != expected:
-                local_server[key] = copy.deepcopy(expected)
-                changes.append(f"set local DNS server.{key}")
-
-    routing = _require_object(cfg.setdefault("routing", {}), "routing")
-    rules = _require_object_list(routing.setdefault("rules", []), "routing.rules")
-
-    # The target is a global TCP+UDP port-53 rule. A rule with the same scope
-    # but a different outbound is a policy conflict, not something to rewrite.
-    port53 = one(
-        rules,
-        lambda item: str(item.get("port", "")) == "53"
-        and _network_tokens(item) == {"tcp", "udp"},
-        "global TCP/UDP port 53 rules",
-    )
-    if port53 is None:
-        # Avoid silently overriding narrower custom port-53 handling.
-        partial_port53 = [
-            item for item in rules
-            if str(item.get("port", "")) == "53"
-            and _network_tokens(item).intersection({"tcp", "udp"})
-        ]
-        if partial_port53:
-            raise RuntimeError(
-                "Conflicting/narrower port-53 routing rules found; manual review required"
-            )
-        rules.insert(0, copy.deepcopy(DNS_PORT_RULE))
-        changes.append("add TCP/UDP port 53 -> dns-out rule")
-    else:
-        if port53.get("outboundTag") not in (None, "dns-out"):
-            raise RuntimeError(
-                "Global TCP/UDP port 53 rule routes elsewhere; refusing to replace policy"
-            )
-        for key, expected in DNS_PORT_RULE.items():
-            if port53.get(key) != expected:
-                port53[key] = copy.deepcopy(expected)
-                changes.append(f"set port 53 rule.{key}")
-
-    allow = one(
-        rules,
-        lambda item: item.get("ruleTag") == "xui-dns-allow",
-        "xui-dns-allow rules",
-    )
-    if allow is None:
-        untagged_allow = [
-            item for item in rules
-            if str(item.get("port", "")) == "5355"
-            and "127.0.0.1" in (item.get("ip") or [])
-        ]
-        if untagged_allow:
-            raise RuntimeError(
-                "An untagged rule already matches 127.0.0.1:5355; manual review required"
-            )
-        private_index = next(
-            (
-                index for index, rule in enumerate(rules)
-                if "geoip:private" in (rule.get("ip") or [])
-            ),
-            len(rules),
-        )
-        rules.insert(private_index, copy.deepcopy(DNS_ALLOW))
-        changes.append("add xui-dns-allow before private-IP block")
-    else:
-        for key, expected in DNS_ALLOW.items():
-            if allow.get(key) != expected:
-                allow[key] = copy.deepcopy(expected)
-                changes.append(f"set xui-dns-allow.{key}")
-
-        allow_index = rules.index(allow)
-        private_index = next(
-            (
-                index for index, rule in enumerate(rules)
-                if "geoip:private" in (rule.get("ip") or [])
-            ),
-            len(rules),
-        )
-        if allow_index > private_index:
-            rules.pop(allow_index)
-            rules.insert(private_index, allow)
-            changes.append("move xui-dns-allow before private-IP block")
-
-    return cfg, changes
+    """Use the same semantic plan as apply; this function remains read-only."""
+    plan = _load_api_planner().build_plan(original, require_api_rule=False)
+    if plan.blockers:
+        raise RuntimeError("; ".join(plan.blockers))
+    return plan.proposed, plan.changes
 
 
 def load_config(args: argparse.Namespace) -> dict[str, Any]:
