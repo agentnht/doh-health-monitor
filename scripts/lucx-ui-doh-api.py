@@ -2269,9 +2269,16 @@ def build_selective_rollback_config(current: dict, before: dict, after: dict) ->
                 selectors = balancer.get("selector", [])
                 if isinstance(selectors, str):
                     selectors = [selectors]
-                if isinstance(selectors, list) and any(
-                    isinstance(selector, str) and owned_tag.startswith(selector)
-                    for selector in selectors
+                fallback_tag = balancer.get("fallbackTag")
+                if (
+                    fallback_tag == owned_tag
+                    or (
+                        isinstance(selectors, list)
+                        and any(
+                            isinstance(selector, str) and owned_tag.startswith(selector)
+                            for selector in selectors
+                        )
+                    )
                 ):
                     remaining_balancer_refs.append(index)
         if remaining_rule_refs or remaining_balancer_refs:
