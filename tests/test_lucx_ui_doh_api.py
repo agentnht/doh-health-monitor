@@ -636,6 +636,86 @@ class AdditivePlannerTests(unittest.TestCase):
 
         self.assertTrue(any("earlier broad routing rule" in item for item in plan.blockers))
 
+    def test_global_tcp_only_rule_is_reused_and_udp_fallback_is_added(self):
+        original = base_config()
+        outbound = copy.deepcopy(api_tool.DNS_OUT)
+        outbound["tag"] = "existing-local-dns"
+        original["outbounds"].append(outbound)
+        tcp_rule = {
+            "type": "field",
+            "network": "tcp",
+            "port": "53",
+            "outboundTag": "existing-local-dns",
+        }
+        original["routing"]["rules"].insert(1, tcp_rule)
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        self.assertEqual(plan.proposed["routing"]["rules"][1], tcp_rule)
+        fallback = next(
+            item for item in plan.proposed["routing"]["rules"]
+            if api_tool._global_port53_rule(item)
+        )
+        self.assertEqual(fallback["outboundTag"], "existing-local-dns")
+        self.assertEqual(fallback["network"], "tcp,udp")
+        self.assertFalse(any(
+            item.get("tag") == "dns-out" for item in plan.proposed["outbounds"]
+        ))
+
+    def test_global_tcp_only_rule_to_an_incompatible_target_blocks_apply(self):
+        original = base_config()
+        original["routing"]["rules"].insert(1, {
+            "type": "field",
+            "network": "tcp",
+            "port": "53",
+            "outboundTag": "proxy",
+        })
+
+        plan = api_tool.build_plan(original)
+
+        self.assertTrue(any("global tcp port-53 rule" in item for item in plan.blockers))
+        self.assertEqual(plan.proposed, original)
+
+    def test_existing_global_tcp_and_udp_only_routes_cover_dns_without_new_route(self):
+        original = base_config()
+        tcp_out = copy.deepcopy(api_tool.DNS_OUT)
+        tcp_out["tag"] = "local-dns-tcp"
+        udp_out = copy.deepcopy(api_tool.DNS_OUT)
+        udp_out["tag"] = "local-dns-udp"
+        original["outbounds"].extend([tcp_out, udp_out])
+        original["dns"] = {"servers": [copy.deepcopy(api_tool.DNS_SERVER)]}
+        tcp_rule = {
+            "type": "field",
+            "network": "tcp",
+            "port": "53",
+            "outboundTag": "local-dns-tcp",
+        }
+        udp_rule = {
+            "type": "field",
+            "network": "udp",
+            "port": "53",
+            "outboundTag": "local-dns-udp",
+        }
+        original["routing"]["rules"][1:1] = [tcp_rule, udp_rule]
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        self.assertEqual(plan.proposed["routing"]["rules"][1:3], [tcp_rule, udp_rule])
+        self.assertFalse(any(
+            api_tool._global_port53_rule(item)
+            for item in plan.proposed["routing"]["rules"]
+        ))
+        self.assertFalse(any(
+            "ADD global TCP/UDP port-53" in change
+            for change in plan.changes
+        ))
+        self.assertFalse(any(
+            item.get("tag") == "dns-out"
+            for item in plan.proposed["outbounds"]
+        ))
+
     def test_scoped_dns_rule_is_preserved_before_global_fallback(self):
         original = base_config()
         scoped = {
