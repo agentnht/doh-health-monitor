@@ -1579,6 +1579,42 @@ class RollbackLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(api_tool.IntegrationError, "additional user references"):
             api_tool.build_selective_rollback_config(current, before, after)
 
+    def test_rollback_refuses_when_later_observatory_selector_references_added_dns_tag(self):
+        before = base_config()
+        occupied = copy.deepcopy(api_tool.DNS_OUT)
+        occupied["settings"]["rewritePort"] = 5356
+        before["outbounds"].append(occupied)
+        after = api_tool.build_plan(before).expected_saved
+        added_tag = next(
+            item["tag"] for item in after["outbounds"]
+            if item.get("tag") != "dns-out" and api_tool._outbound_matches_dns_endpoint(item)
+        )
+        current = copy.deepcopy(after)
+        current["observatory"] = {"subjectSelector": [added_tag]}
+
+        with self.assertRaisesRegex(api_tool.IntegrationError, "additional user references"):
+            api_tool.build_selective_rollback_config(current, before, after)
+
+    def test_rollback_refuses_when_later_proxy_chain_references_added_dns_tag(self):
+        before = base_config()
+        occupied = copy.deepcopy(api_tool.DNS_OUT)
+        occupied["settings"]["rewritePort"] = 5356
+        before["outbounds"].append(occupied)
+        after = api_tool.build_plan(before).expected_saved
+        added_tag = next(
+            item["tag"] for item in after["outbounds"]
+            if item.get("tag") != "dns-out" and api_tool._outbound_matches_dns_endpoint(item)
+        )
+        current = copy.deepcopy(after)
+        current["outbounds"].append({
+            "tag": "user-proxy-chain",
+            "protocol": "freedom",
+            "proxySettings": {"tag": added_tag},
+        })
+
+        with self.assertRaisesRegex(api_tool.IntegrationError, "additional user references"):
+            api_tool.build_selective_rollback_config(current, before, after)
+
     def test_rollback_refuses_when_later_balancer_fallback_references_added_dns_tag(self):
         before = base_config()
         occupied = copy.deepcopy(api_tool.DNS_OUT)
