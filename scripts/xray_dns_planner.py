@@ -275,10 +275,15 @@ def _unique_tag(
 
 def _server_endpoint(server: Any) -> tuple[str, int] | None:
     if isinstance(server, str):
-        # Accept plain IPv4 host:port in addition to a bare address.
-        host, sep, port_text = server.rpartition(":")
-        if not sep:
-            host, port_text = server, "53"
+        # Accept bare IPv4/IPv6 addresses, bracketed IPv6 host:port, and
+        # ordinary IPv4 host:port without confusing an IPv6 literal's colons.
+        if server.startswith("[") and "]:" in server:
+            close = server.index("]:")
+            host, port_text = server[1:close], server[close + 2:]
+        elif server.count(":") == 1:
+            host, port_text = server.rsplit(":", 1)
+        else:
+            host, port_text = server.strip("[]"), "53"
         try:
             return str(ipaddress.ip_address(host.strip("[]"))), int(port_text)
         except (ValueError, TypeError):
