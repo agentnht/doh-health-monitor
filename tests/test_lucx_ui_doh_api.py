@@ -7,6 +7,7 @@ import copy
 import importlib.util
 import json
 import socket
+import subprocess
 import struct
 import os
 import stat
@@ -134,6 +135,46 @@ class TemporaryDNSFinalRuleTests(unittest.TestCase):
             final_rules,
             [{"action": "block", "network": "tcp", "port": "25", "ip": ["192.0.2.1"]}],
         )
+
+
+class SharedPlannerCLITests(unittest.TestCase):
+    def _run(self, config):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as handle:
+            json.dump(config, handle)
+            handle.flush()
+            return subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "xray_dns_planner.py"),
+                    "--check-config",
+                    handle.name,
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+    def test_complete_config_passes_read_only_runtime_check(self):
+        config = add_complete_dns(base_config())
+        before = copy.deepcopy(config)
+
+        result = self._run(config)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("PASS:", result.stdout)
+        self.assertEqual(config, before)
+
+    def test_incomplete_config_reports_missing_items_without_writing(self):
+        config = base_config()
+        before = copy.deepcopy(config)
+
+        result = self._run(config)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("MISSING:", result.stdout)
+        self.assertIn("no changes were made", result.stderr)
+        self.assertEqual(config, before)
 
 
 class AdditivePlannerTests(unittest.TestCase):
