@@ -2332,7 +2332,8 @@ def build_remove_plan(original: dict) -> RemovePlan:
     ]
     tags = [item.get("tag") for item in candidates]
     candidate_tags = {tag for tag in tags if isinstance(tag, str) and tag}
-    if len(candidate_tags) != len(tags):
+    outbound_is_shared_or_ambiguous = len(candidate_tags) != len(tags)
+    if outbound_is_shared_or_ambiguous:
         result.blockers.append("A compatible local DNS outbound has no unique non-empty tag; it will be preserved.")
 
     tag_counts = {}
@@ -2376,6 +2377,7 @@ def build_remove_plan(original: dict) -> RemovePlan:
     ignored_routes = set(result.route_indexes)
     for tag in sorted(candidate_tags):
         if tag_counts.get(tag) != 1:
+            outbound_is_shared_or_ambiguous = True
             result.blockers.append(
                 f"DNS outbound tag {tag!r} is duplicated; it cannot be removed unambiguously."
             )
@@ -2384,6 +2386,7 @@ def build_remove_plan(original: dict) -> RemovePlan:
             original, tag, ignored_route_indexes=ignored_routes
         )
         if references:
+            outbound_is_shared_or_ambiguous = True
             result.blockers.append(
                 f"DNS outbound {tag!r} is still referenced by: {', '.join(references)}; it will be preserved."
             )
@@ -2411,13 +2414,18 @@ def build_remove_plan(original: dict) -> RemovePlan:
         )
     elif len(general_indexes) == 1:
         index = general_indexes[0]
-        references = _dns_server_reference_reasons(original, servers[index])
-        if references:
+        if outbound_is_shared_or_ambiguous:
             result.blockers.append(
-                f"dns.servers[{index}] is still referenced by: {', '.join(references)}; it will be preserved."
+                f"dns.servers[{index}] is retained because its matching local DNS outbound is still shared or ambiguous."
             )
         else:
-            result.dns_server_indexes.append(index)
+            references = _dns_server_reference_reasons(original, servers[index])
+            if references:
+                result.blockers.append(
+                    f"dns.servers[{index}] is still referenced by: {', '.join(references)}; it will be preserved."
+                )
+            else:
+                result.dns_server_indexes.append(index)
 
     if not (result.route_indexes or result.outbound_tags or result.dns_server_indexes):
         result.warnings.append("No unambiguous, removable permanent DNS integration objects were found.")
