@@ -155,6 +155,7 @@ class RemovePlannerTests(unittest.TestCase):
 
         self.assertEqual(plan.route_indexes, [1])
         self.assertEqual(plan.outbound_tags, [])
+        self.assertEqual(plan.dns_server_indexes, [])
         self.assertTrue(any("routing.rules[4].outboundTag" in item for item in plan.blockers))
 
     def test_preserves_outbound_referenced_by_balancer_and_observatory(self):
@@ -255,6 +256,7 @@ class RemovePlannerTests(unittest.TestCase):
         final = client.read_state()["xraySetting"]
         self.assertTrue(any(item.get("tag") == "dns-out" for item in final["outbounds"]))
         self.assertIn(user_rule, final["routing"]["rules"])
+        self.assertEqual(len(final["dns"]["servers"]), 1)
         self.assertFalse(any(api_tool._global_port53_rule(item) for item in final["routing"]["rules"]))
 
     def test_remove_command_replans_after_each_verified_mutation(self):
