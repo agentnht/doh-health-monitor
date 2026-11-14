@@ -115,14 +115,14 @@ Exact rule shape:
 - Remove only the temporary rule that the test operation actually added; do not delete a compatible rule that was already present/reused.
 - Verify the rule is absent and unrelated live rules are preserved.
 - Then delete the exact temporary Tunnel and verify it is absent and its TCP/UDP listeners are gone.
-- This order ensures interruption after rule removal leaves a discoverable Tunnel, rather than an orphan rule with no associated test inbound.
+- The required cleanup order is rule first, verify absence, then Tunnel. Apply this order every time; never delete the Tunnel while its temporary rule remains.
 - Never touch the plugin's own `127.0.0.1:5355` listeners.
 
 A reserved Tunnel remark identifies a temporary test inbound only; it is not an ownership database for permanent DNS objects. If the live panel state contains an ambiguous test object that the current Integrate plan cannot safely classify, report the blocker and do not guess or delete a pre-existing object.
 
 ## Known legacy staging VPS state
 
-The previous staging command `sudo python3 scripts/lucx-ui-doh-api.py --approve-restart apply` stopped before permanent changes because the old implementation rejected a format-1 recovery journal.
+During the previous staging attempt, `sudo python3 scripts/lucx-ui-doh-api.py --approve-restart apply` did not reach permanent changes because the old implementation rejected a format-1 journal. This is historical context about the obsolete implementation, not a recovery mode required by the new design.
 
 Known old journal:
 - Path: `/root/.local/state/lucx-ui-doh/backups/recovery/lucx-doh-selftest-817de6b08c61fb60.json`
@@ -150,11 +150,11 @@ These files are historical artifacts from the old implementation only. Do not us
 5. A unique integration route is removed first; the outbound is removed only after read-back and fresh zero-reference scan.
 6. Panel-owned `xui-dns-allow`, user routes, FakeDNS, and unrelated outbounds/DNS servers remain unchanged.
 7. Ambiguous/duplicate candidates are listed as blockers; no speculative deletion occurs.
-8. Each new Integrate or Remove invocation computes its entire plan from the current live config; it does not load or continue a prior execution.
+8. Each invocation accepts exactly one directive (Integrate or Remove) and computes its entire plan from current live config; there are no operation IDs or continuation/resume states.
 9. No full Xray snapshots, historical rule arrays, mandatory journals, or snapshot-based rollback files are created or needed.
 10. Temporary test reuses pre-existing compatible rule and never deletes it as though it were newly added.
 11. Test creates Tunnel before any missing temporary allow rule; cleanup removes and verifies the rule before deleting Tunnel.
-12. Every API mutation is read back before a dependent mutation; an invocation reports success only for the requested plan it completed, otherwise it reports the blocking error without restoring old state.
+12. Every API mutation is read back before a dependent mutation; the selected directive reports its result and blockers. No old state is restored and no separate recovery action is created.
 13. Plugin listeners on 5355 are never mistaken for temporary Tunnel listeners.
 14. Both UDP and TCP probes pass before self-test success.
 15. Every panel API mutation is followed by read-back verification.
@@ -163,4 +163,4 @@ All Python compilation/unit tests/shell syntax checks and both GitHub Actions wo
 
 ## Next implementation work
 
-The current adapter still contains legacy backup/journal/rollback behavior. Remove that architecture rather than adapting it into a new journal format or adding a resume/recovery mode. Refactor `scripts/lucx-ui-doh-api.py`, `scripts/xray_dns_planner.py` if required, `tests/test_lucx_ui_doh_api.py`, and the API documentation around the single live-state reconciliation model above. Then run both GitHub workflows. Only after CI passes should the staging VPS run the new read-only plan/inspection and selected operation.
+The current adapter still contains legacy backup/journal/rollback behavior. Remove that architecture rather than adapting it into a new journal format, continuation state, or a third recovery directive. Refactor `scripts/lucx-ui-doh-api.py`, `scripts/xray_dns_planner.py` if required, `tests/test_lucx_ui_doh_api.py`, and the API documentation around the single live-state reconciliation model above. Then run both GitHub workflows. Only after CI passes should the staging VPS run the new read-only plan/inspection and selected operation.
