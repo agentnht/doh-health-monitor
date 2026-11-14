@@ -1911,7 +1911,7 @@ def _diagnostic_external_use_reasons(config: dict, resources: list[dict], inboun
         raise IntegrationError("routing.rules must be an array before diagnostic dependency analysis")
 
     for inbound in inbounds:
-        if not isinstance(inbound, dict) or inbound.get("id") in diagnostic_ids:
+        if not isinstance(inbound, dict):
             continue
         tag = inbound.get("tag")
         if not isinstance(tag, str) or not tag:
@@ -1931,11 +1931,9 @@ def _diagnostic_external_use_reasons(config: dict, resources: list[dict], inboun
     for index, rule in enumerate(rules):
         if not isinstance(rule, dict) or "direct" not in _tag_list(rule.get("outboundTag")):
             continue
-        selected = _as_tokens(rule.get("inboundTag"))
-        # An unscoped route, or one that also matches a non-diagnostic inbound,
-        # is an external consumer of direct's finalRules.
-        if not selected or selected - diagnostic_tags:
-            reasons["final_rule"].append(f"routing.rules[{index}].outboundTag")
+        # No routing rule is part of the diagnostic resource plan. Any
+        # route selecting direct is therefore an external consumer.
+        reasons["final_rule"].append(f"routing.rules[{index}].outboundTag")
 
     outbounds = object_list(config, "outbounds", "outbounds")
     if outbounds and outbounds[0].get("tag") == "direct":
