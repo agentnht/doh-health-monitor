@@ -2470,7 +2470,7 @@ def build_remove_plan(original: dict) -> RemovePlan:
                             + ", ".join(external_dns_refs)
                             + "; it will be preserved."
                         )
-                    elif result.outbound_tags or result.dns_server_indexes or result.route_indexes:
+                    else:
                         result.direct_final_rule_indexes.extend(diagnostic_allow_indexes)
 
     if not (
