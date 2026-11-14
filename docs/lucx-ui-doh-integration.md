@@ -43,9 +43,11 @@ The inspected template already contained the required DNS path:
 ```
 
 It also contained a DNS server at `127.0.0.1:5355`, an active global
-TCP/UDP port-53 rule routed to `dns-out`, and an `xui-dns-allow` rule allowing
-`127.0.0.1:5355` through `direct`. The allow rule appeared before the
-`geoip:private` block rule.
+TCP/UDP port-53 rule routed to `dns-out`, and a loopback allow exception for
+`127.0.0.1:5355` before the `geoip:private` block rule. Remove deletes that
+exact exception when no other DNS resources use the endpoint; it preserves the
+`direct` freedom outbound, the `geoip:private` block, the fallback allow, and
+all unrelated finalRules.
 
 Integration tools must preserve these behaviors:
 
