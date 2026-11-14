@@ -2134,6 +2134,49 @@ class DnsTunnelProbeTests(unittest.TestCase):
              patch.object(api_tool, "query_dns_a", side_effect=[["93.184.216.34"], ["93.184.216.34"]]):
             api_tool.run_tunnel_dns_self_test(15353, "http://127.0.0.1:18765/status")
 
+    def test_udp_probe_failure_is_reported_separately_and_stops_before_tcp(self):
+        with patch.object(api_tool, "read_plugin_counters", return_value=(10, 0)), \
+             patch.object(api_tool, "query_dns_a", side_effect=api_tool.IntegrationError("UDP response timeout")) as query:
+            with self.assertRaisesRegex(
+                api_tool.IntegrationError,
+                r"UDP Tunnel DNS self-test failed at 127\.0\.0\.1:15353: UDP response timeout",
+            ):
+                api_tool.run_tunnel_dns_self_test(15353, "http://127.0.0.1:18765/status")
+        query.assert_called_once_with("127.0.0.1", 15353, tcp=False)
+
+    def test_tcp_probe_failure_is_reported_separately_after_udp_passes(self):
+        with patch.object(api_tool, "read_plugin_counters", return_value=(10, 0)), \
+             patch.object(
+                 api_tool, "query_dns_a",
+                 side_effect=[["93.184.216.34"], api_tool.IntegrationError("TCP response timeout")],
+             ) as query:
+            with self.assertRaisesRegex(
+                api_tool.IntegrationError,
+                r"TCP Tunnel DNS self-test failed at 127\.0\.0\.1:15353: TCP response timeout",
+            ):
+                api_tool.run_tunnel_dns_self_test(15353, "http://127.0.0.1:18765/status")
+        self.assertEqual(query.call_count, 2)
+        self.assertEqual(query.call_args_list[0].kwargs, {"tcp": False})
+        self.assertEqual(query.call_args_list[1].kwargs, {"tcp": True})
+
+    def test_query_dns_a_reports_udp_receive_timeout_with_endpoint(self):
+        with patch.object(api_tool.socket, "socket") as socket_factory:
+            connection = socket_factory.return_value.__enter__.return_value
+            connection.recvfrom.side_effect = TimeoutError("timed out")
+            with self.assertRaisesRegex(
+                api_tool.IntegrationError,
+                r"UDP DNS self-test timed out waiting for a response from 127\.0\.0\.1:15353",
+            ):
+                api_tool.query_dns_a("127.0.0.1", 15353, tcp=False)
+
+    def test_query_dns_a_reports_tcp_connect_timeout_with_endpoint(self):
+        with patch.object(api_tool.socket, "create_connection", side_effect=TimeoutError("timed out")):
+            with self.assertRaisesRegex(
+                api_tool.IntegrationError,
+                r"TCP DNS self-test timed out connecting to 127\.0\.0\.1:15353",
+            ):
+                api_tool.query_dns_a("127.0.0.1", 15353, tcp=True)
+
     def test_tunnel_probe_refuses_preexisting_plugin_failures(self):
         with patch.object(api_tool, "read_plugin_counters", return_value=(10, 1)), \
              patch.object(api_tool, "query_dns_a") as query:
