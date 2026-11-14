@@ -2017,7 +2017,7 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
     def test_tunnel_is_created_before_missing_rule_and_cleanup_is_rule_first(self):
         client = self.FakeClient()
         with patch.object(api_tool, "choose_temporary_tunnel_port", return_value=15353), \
-             patch.object(api_tool, "wait_for_tunnel_listeners"), \
+             patch.object(api_tool, "wait_for_tunnel_listeners") as wait_for_listeners, \
              patch.object(api_tool, "wait_for_tunnel_port_closed"), \
              patch.object(api_tool, "run_tunnel_dns_self_test"):
             api_tool.run_temporary_tunnel_test(client, "http://127.0.0.1:18765/status")
@@ -2029,6 +2029,7 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
         self.assertLess(client.events.index("add-inbound"), client.events.index("update"))
         self.assertLess(client.events.index("update"), client.events.index("delete-inbound"))
         self.assertEqual(client.update_calls, 2)
+        self.assertEqual(wait_for_listeners.call_count, 2)
 
     def test_pre_existing_rule_is_reused_and_never_deleted(self):
         client = self.FakeClient()
@@ -2037,13 +2038,14 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
         direct["settings"]["finalRules"] = [existing]
 
         with patch.object(api_tool, "choose_temporary_tunnel_port", return_value=15353), \
-             patch.object(api_tool, "wait_for_tunnel_listeners"), \
+             patch.object(api_tool, "wait_for_tunnel_listeners") as wait_for_listeners, \
              patch.object(api_tool, "wait_for_tunnel_port_closed"), \
              patch.object(api_tool, "run_tunnel_dns_self_test"):
             api_tool.run_temporary_tunnel_test(client, "http://127.0.0.1:18765/status")
 
         self.assertEqual(client.inbounds, [])
         self.assertEqual(client.update_calls, 0)
+        self.assertEqual(wait_for_listeners.call_count, 1)
         restored = next(item for item in client.state["xraySetting"]["outbounds"] if item.get("tag") == "direct")
         self.assertEqual(restored["settings"]["finalRules"], [existing])
 
