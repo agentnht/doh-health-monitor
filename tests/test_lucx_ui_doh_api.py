@@ -113,6 +113,23 @@ class TemporaryDNSFinalRuleTests(unittest.TestCase):
         self.assertEqual(rules, [unrelated, api_tool.TEMP_DNS_FINAL_RULE, private_block, later])
         self.assertTrue(api_tool._temporary_dns_allow_precedes_blocks(rules))
 
+    def test_existing_dns_allow_is_moved_before_private_block(self):
+        config = base_config()
+        private_block = {"action": "block", "ip": ["geoip:private"]}
+        broad_allow = {"action": "allow"}
+        dns_allow = copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE)
+        config["outbounds"][0]["settings"]["finalRules"] = [
+            private_block, broad_allow, dns_allow,
+        ]
+        client = self.FakePanel(config)
+
+        api_tool._add_temporary_dns_final_rule(client)
+
+        rules = api_tool._temporary_final_rules(client.state["xraySetting"])
+        self.assertEqual(rules, [dns_allow, private_block, broad_allow])
+        self.assertTrue(api_tool._temporary_dns_allow_precedes_blocks(rules))
+        self.assertEqual(client.updates, 1)
+
     def test_integrate_planner_never_rewrites_a_matching_final_rule(self):
         config = base_config()
         existing = copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE)
@@ -2109,6 +2126,26 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
         self.assertEqual(client.inbounds, [])
         self.assertEqual(client.deleted, [10])
         self.assertEqual(api_tool._temporary_final_rule_count(client.state["xraySetting"]), 1)
+
+    def test_create_repairs_misordered_existing_dns_allow(self):
+        client = self.FakeClient(existing_rule=True)
+        direct = next(item for item in client.state["xraySetting"]["outbounds"] if item.get("tag") == "direct")
+        direct["settings"]["finalRules"] = [
+            {"action": "block", "ip": ["geoip:private"]},
+            {"action": "allow"},
+            copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE),
+        ]
+        with patch.object(api_tool, "choose_temporary_tunnel_port", return_value=15353), \
+             patch.object(api_tool, "wait_for_tunnel_listeners"), \
+             patch.object(api_tool, "confirm_restart"):
+            self.assertEqual(api_tool.command_tunnel_create(self._args(), client), 0)
+
+        rules = api_tool._temporary_final_rules(client.state["xraySetting"])
+        self.assertEqual(rules[0], api_tool.TEMP_DNS_FINAL_RULE)
+        self.assertEqual(rules[1]["ip"], ["geoip:private"])
+        self.assertEqual(rules[2], {"action": "allow"})
+        self.assertEqual(len(client.inbounds), 1)
+        self.assertEqual(client.deleted, [])
 
     def test_create_refuses_to_create_a_second_diagnostic_tunnel(self):
         client = self.FakeClient()
