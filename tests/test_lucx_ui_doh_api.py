@@ -336,41 +336,47 @@ class IntegrateOrchestrationTests(unittest.TestCase):
             plugin_status_url="http://127.0.0.1:18765/status",
         )
 
-    def test_integrate_creates_and_tests_retained_diagnostic_tunnel(self):
+    def test_integrate_cleans_up_diagnostic_tunnel_after_successful_self_test(self):
         client = self.FakePanel(base_config())
         with patch.object(api_tool, "discover_temporary_leftovers", return_value=[]), \
              patch.object(api_tool, "confirm_restart"), \
              patch.object(api_tool, "_apply_panel_update", return_value=client.state), \
              patch.object(api_tool, "command_tunnel_create") as create, \
-             patch.object(api_tool, "command_tunnel_test") as test:
+             patch.object(api_tool, "command_tunnel_test") as test, \
+             patch.object(api_tool, "cleanup_temporary_leftovers") as cleanup:
             self.assertEqual(api_tool.command_integrate(self._args(), client), 0)
 
         create.assert_called_once_with(self._args(), client, notify_restart=False)
         test.assert_called_once_with(self._args(), client)
+        cleanup.assert_called_once_with(client)
         self.assertEqual(client.reads, 1)
 
-    def test_integrate_tests_existing_diagnostic_tunnel_without_recreating_it(self):
+    def test_integrate_tests_and_cleans_up_existing_diagnostic_tunnel(self):
         client = self.FakePanel(base_config())
         existing = [{"inbound_id": 10, "port": 15353}]
         with patch.object(api_tool, "discover_temporary_leftovers", return_value=existing), \
              patch.object(api_tool, "confirm_restart"), \
              patch.object(api_tool, "_apply_panel_update", return_value=client.state), \
              patch.object(api_tool, "command_tunnel_create") as create, \
-             patch.object(api_tool, "command_tunnel_test") as test:
+             patch.object(api_tool, "command_tunnel_test") as test, \
+             patch.object(api_tool, "cleanup_temporary_leftovers") as cleanup:
             self.assertEqual(api_tool.command_integrate(self._args(), client), 0)
 
         create.assert_not_called()
         test.assert_called_once_with(self._args(), client)
+        cleanup.assert_called_once_with(client)
 
-    def test_integrate_reports_failed_self_test_without_automatic_cleanup(self):
+    def test_integrate_leaves_diagnostic_resources_for_failed_self_test(self):
         client = self.FakePanel(base_config())
         with patch.object(api_tool, "discover_temporary_leftovers", return_value=[]), \
              patch.object(api_tool, "confirm_restart"), \
              patch.object(api_tool, "_apply_panel_update", return_value=client.state), \
              patch.object(api_tool, "command_tunnel_create"), \
-             patch.object(api_tool, "command_tunnel_test", side_effect=api_tool.IntegrationError("UDP failed")):
-            with self.assertRaisesRegex(api_tool.IntegrationError, "not automatically removed"):
+             patch.object(api_tool, "command_tunnel_test", side_effect=api_tool.IntegrationError("UDP failed")), \
+             patch.object(api_tool, "cleanup_temporary_leftovers") as cleanup:
+            with self.assertRaisesRegex(api_tool.IntegrationError, "left in place for investigation"):
                 api_tool.command_integrate(self._args(), client)
+        cleanup.assert_not_called()
 
 
 class AdapterCLITests(unittest.TestCase):
