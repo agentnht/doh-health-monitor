@@ -150,23 +150,32 @@ class TemporaryDNSFinalRuleTests(unittest.TestCase):
 
 
 class RemovePlannerTests(unittest.TestCase):
-    def test_finds_renamed_semantic_objects_and_plans_dependency_order(self):
+    def test_removes_only_objects_selected_by_the_integrate_plan(self):
         config = add_complete_dns(base_config())
-        config["outbounds"][-1]["tag"] = "local-resolver"
-        config["routing"]["rules"][1]["outboundTag"] = "local-resolver"
+        config["outbounds"].append({
+            "tag": "other-local-resolver",
+            "protocol": "dns",
+            "settings": {
+                "rewriteNetwork": "udp",
+                "rewriteAddress": "127.0.0.1",
+                "rewritePort": 5355,
+            },
+        })
 
         plan = api_tool.build_remove_plan(config)
 
-        self.assertFalse(plan.blockers)
+        self.assertFalse(plan.plan_blocked)
         self.assertEqual(plan.route_indexes, [1])
-        self.assertEqual(plan.outbound_tags, ["local-resolver"])
+        self.assertEqual(plan.outbound_tags, ["dns-out"])
         self.assertEqual(plan.dns_server_indexes, [0])
+        self.assertTrue(any(item.get("tag") == "other-local-resolver" for item in config["outbounds"]))
 
-    def test_preserves_outbound_referenced_by_an_unrelated_rule(self):
+    def test_preserves_planned_outbound_and_dns_server_used_by_unrelated_rule(self):
         config = add_complete_dns(base_config())
-        config["routing"]["rules"].append({
+        user_rule = {
             "type": "field", "domain": ["internal.example"], "outboundTag": "dns-out"
-        })
+        }
+        config["routing"]["rules"].append(user_rule)
 
         plan = api_tool.build_remove_plan(config)
 
@@ -184,10 +193,11 @@ class RemovePlannerTests(unittest.TestCase):
 
         self.assertEqual(plan.route_indexes, [1])
         self.assertEqual(plan.outbound_tags, [])
+        self.assertEqual(plan.dns_server_indexes, [])
         self.assertTrue(any("routing.balancers[0]" in item for item in plan.blockers))
         self.assertTrue(any("observatory.subjectSelector" in item for item in plan.blockers))
 
-    def test_preserves_shared_dns_server_entry(self):
+    def test_preserves_dns_server_referenced_by_dns_rule(self):
         config = add_complete_dns(base_config())
         config["dns"]["servers"][0]["tag"] = "local-doh"
         config["dns"]["rules"] = [{
@@ -199,14 +209,16 @@ class RemovePlannerTests(unittest.TestCase):
         self.assertEqual(plan.dns_server_indexes, [])
         self.assertTrue(any("dns.rules[0].server" in item for item in plan.blockers))
 
-    def test_preserves_scoped_dns_server_entry(self):
+    def test_blocking_scoped_dns_endpoint_stops_remove_planning(self):
         config = add_complete_dns(base_config())
         config["dns"]["servers"][0]["domains"] = ["domain:example.org"]
 
         plan = api_tool.build_remove_plan(config)
 
+        self.assertTrue(plan.plan_blocked)
+        self.assertEqual(plan.route_indexes, [])
+        self.assertEqual(plan.outbound_tags, [])
         self.assertEqual(plan.dns_server_indexes, [])
-        self.assertTrue(any("scoped" in item for item in plan.blockers))
 
     def test_finds_general_string_dns_server_entry(self):
         config = add_complete_dns(base_config())
@@ -216,27 +228,30 @@ class RemovePlannerTests(unittest.TestCase):
 
         self.assertEqual(plan.dns_server_indexes, [0])
 
-    def test_preserves_global_route_when_candidate_outbound_tag_is_ambiguous(self):
+    def test_ambiguous_outbound_tag_blocks_remove_instead_of_guessing(self):
         config = add_complete_dns(base_config())
         duplicate = copy.deepcopy(config["outbounds"][-1])
         config["outbounds"].append(duplicate)
 
         plan = api_tool.build_remove_plan(config)
 
+        self.assertTrue(plan.plan_blocked)
         self.assertEqual(plan.route_indexes, [])
         self.assertEqual(plan.outbound_tags, [])
-        self.assertTrue(any("duplicated" in item for item in plan.blockers))
+        self.assertEqual(plan.dns_server_indexes, [])
 
-    def test_removes_stale_global_route_when_canonical_outbound_is_absent(self):
+    def test_stale_route_with_missing_outbound_is_not_claimed_by_remove_plan(self):
         config = base_config()
         config["routing"]["rules"].insert(1, copy.deepcopy(api_tool.DNS_PORT_RULE))
 
         plan = api_tool.build_remove_plan(config)
 
-        self.assertEqual(plan.route_indexes, [1])
+        self.assertTrue(plan.plan_blocked)
+        self.assertEqual(plan.route_indexes, [])
         self.assertEqual(plan.outbound_tags, [])
+        self.assertEqual(plan.dns_server_indexes, [])
 
-    def test_remove_completes_while_preserving_outbound_used_by_user_rule(self):
+    def test_remove_applies_one_plan_and_preserves_external_resources(self):
         class FakePanel:
             def __init__(self, config):
                 self.state = {
@@ -254,9 +269,6 @@ class RemovePlannerTests(unittest.TestCase):
                     "xraySetting": api_tool.panel_normalize_dns_allow_rules(copy.deepcopy(config)),
                     "outboundTestUrl": outbound_test_url,
                 }
-
-            def list_inbounds(self):
-                return []
 
         config = add_complete_dns(base_config())
         user_rule = {
@@ -266,7 +278,7 @@ class RemovePlannerTests(unittest.TestCase):
         client = FakePanel(config)
 
         result = api_tool.command_remove(
-            SimpleNamespace(plan_only=False, approve_restart=True), client
+            SimpleNamespace(approve_restart=True), client
         )
 
         self.assertEqual(result, 0)
@@ -275,8 +287,9 @@ class RemovePlannerTests(unittest.TestCase):
         self.assertIn(user_rule, final["routing"]["rules"])
         self.assertEqual(len(final["dns"]["servers"]), 1)
         self.assertFalse(any(api_tool._global_port53_rule(item) for item in final["routing"]["rules"]))
+        self.assertEqual(len(client.updates), 1)
 
-    def test_remove_command_replans_after_each_verified_mutation(self):
+    def test_remove_does_not_mutate_when_desired_plan_is_blocked(self):
         class FakePanel:
             def __init__(self, config):
                 self.state = {
@@ -290,26 +303,70 @@ class RemovePlannerTests(unittest.TestCase):
 
             def update(self, config, outbound_test_url):
                 self.updates.append(copy.deepcopy(config))
-                self.state = {
-                    "xraySetting": api_tool.panel_normalize_dns_allow_rules(copy.deepcopy(config)),
-                    "outboundTestUrl": outbound_test_url,
-                }
 
-            def list_inbounds(self):
-                return []
-
-        config = add_complete_dns(base_config())
-        config["dns"]["servers"] = ["127.0.0.1:5355"]
+        config = base_config()
+        config["routing"]["rules"].insert(1, copy.deepcopy(api_tool.DNS_PORT_RULE))
         client = FakePanel(config)
-        args = SimpleNamespace(plan_only=False, approve_restart=True)
 
-        self.assertEqual(api_tool.command_remove(args, client), 0)
-        final = client.read_state()["xraySetting"]
-        self.assertFalse(any(api_tool._outbound_matches_dns_endpoint(item) for item in final["outbounds"]))
-        self.assertFalse(any(api_tool._global_port53_rule(item) for item in final["routing"]["rules"]))
-        self.assertEqual(final["dns"]["servers"], [])
-        self.assertEqual(len(client.updates), 3)
+        result = api_tool.command_remove(SimpleNamespace(approve_restart=True), client)
 
+        self.assertEqual(result, 2)
+        self.assertEqual(client.updates, [])
+
+
+class IntegrateOrchestrationTests(unittest.TestCase):
+    class FakePanel:
+        def __init__(self, config):
+            self.state = {
+                "xraySetting": copy.deepcopy(config),
+                "outboundTestUrl": "https://example.invalid/",
+            }
+            self.reads = 0
+
+        def read_state(self):
+            self.reads += 1
+            return copy.deepcopy(self.state)
+
+    def _args(self):
+        return SimpleNamespace(
+            approve_restart=True,
+            plugin_status_url="http://127.0.0.1:18765/status",
+        )
+
+    def test_integrate_creates_and_tests_retained_diagnostic_tunnel(self):
+        client = self.FakePanel(base_config())
+        with patch.object(api_tool, "discover_temporary_leftovers", return_value=[]), \
+             patch.object(api_tool, "confirm_restart"), \
+             patch.object(api_tool, "_apply_panel_update", return_value=client.state), \
+             patch.object(api_tool, "command_tunnel_create") as create, \
+             patch.object(api_tool, "command_tunnel_test") as test:
+            self.assertEqual(api_tool.command_integrate(self._args(), client), 0)
+
+        create.assert_called_once_with(self._args(), client, notify_restart=False)
+        test.assert_called_once_with(self._args(), client)
+
+    def test_integrate_tests_existing_diagnostic_tunnel_without_recreating_it(self):
+        client = self.FakePanel(base_config())
+        existing = [{"inbound_id": 10, "port": 15353}]
+        with patch.object(api_tool, "discover_temporary_leftovers", return_value=existing), \
+             patch.object(api_tool, "confirm_restart"), \
+             patch.object(api_tool, "_apply_panel_update", return_value=client.state), \
+             patch.object(api_tool, "command_tunnel_create") as create, \
+             patch.object(api_tool, "command_tunnel_test") as test:
+            self.assertEqual(api_tool.command_integrate(self._args(), client), 0)
+
+        create.assert_not_called()
+        test.assert_called_once_with(self._args(), client)
+
+    def test_integrate_reports_failed_self_test_without_automatic_cleanup(self):
+        client = self.FakePanel(base_config())
+        with patch.object(api_tool, "discover_temporary_leftovers", return_value=[]), \
+             patch.object(api_tool, "confirm_restart"), \
+             patch.object(api_tool, "_apply_panel_update", return_value=client.state), \
+             patch.object(api_tool, "command_tunnel_create"), \
+             patch.object(api_tool, "command_tunnel_test", side_effect=api_tool.IntegrationError("UDP failed")):
+            with self.assertRaisesRegex(api_tool.IntegrationError, "not automatically removed"):
+                api_tool.command_integrate(self._args(), client)
 
 
 class SharedPlannerCLITests(unittest.TestCase):
