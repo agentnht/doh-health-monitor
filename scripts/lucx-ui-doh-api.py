@@ -1957,6 +1957,11 @@ def cleanup_temporary_dns_final_rule(
         raise IntegrationError("Recovery snapshot for the original Freedom finalRules is invalid")
     matches = [i for i, item in enumerate(rules) if canonical(item) == canonical(final_rule)]
     if not matches:
+        if not _is_subsequence(original_final_rules, rules):
+            raise IntegrationError(
+                "direct.settings.finalRules changed during the Tunnel test; "
+                "the temporary rule is already absent, but original user rules were modified"
+            )
         return False
     if len(matches) != 1:
         raise IntegrationError(
