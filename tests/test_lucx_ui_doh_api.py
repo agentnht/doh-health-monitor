@@ -156,7 +156,7 @@ class RemovePlannerTests(unittest.TestCase):
         self.assertEqual(plan.route_indexes, [1])
         self.assertEqual(plan.outbound_tags, [])
         self.assertEqual(plan.dns_server_indexes, [])
-        self.assertTrue(any("routing.rules[4].outboundTag" in item for item in plan.blockers))
+        self.assertTrue(any("routing.rules[5].outboundTag" in item for item in plan.blockers))
 
     def test_preserves_outbound_referenced_by_balancer_and_observatory(self):
         config = add_complete_dns(base_config())
