@@ -141,3 +141,52 @@ The backups are historical evidence, not a substitute for a fresh live API read.
 - A disposable staging panel completes apply -> UDP/TCP self-test -> cleanup, with API read-back after each mutation.
 - Keep PR #6 open and Draft until code and disposable staging validation pass.
 - Do not rerun staging apply while the old live state is unresolved. First implement the desired-state delta lifecycle in `scripts/lucx-ui-doh-api.py` and `tests/test_lucx_ui_doh_api.py`; then CI; then read-only live staging inspection and explicit legacy recovery. Panel API writes may restart Xray, so retain the explicit `--approve-restart` guard.
+
+
+## Removing the permanent integration: inverse semantic planner
+
+Uninstall is the inverse of provisioning, but it is **not** temporary self-test cleanup and does not create temporary rules.
+
+Do not depend on a saved pre-install snapshot, a journal, or a list of historical object IDs. Re-read the current panel configuration and use the same canonical integration specification/planner to discover the objects that currently implement this integration.
+
+### Discovery plan (read-only)
+
+1. Build the canonical desired integration plan exactly as the provisioning command does.
+2. In the current config, find candidate objects by their semantic shape and relationships, not only by fixed names:
+   - DNS outbound whose protocol/settings implement the plugin's local DNS bridge (for example, DNS rewrite to 127.0.0.1:5355);
+   - DNS server entry pointing to the plugin endpoint 127.0.0.1:5355 with matching behavior;
+   - port-53 TCP/UDP routing rule(s) that direct DNS traffic to the candidate DNS outbound (including dynamically selected tags and panel-normalized variants);
+   - any integration-specific supporting objects that the same planner recognizes.
+3. Use recognizable tags/ruleTags such as dns-out and doh-health-monitor-dns-port53 as supporting evidence, not as the only test. A renamed or differently tagged but semantically equivalent object may still be a candidate.
+4. Build a complete reference/dependency graph from the current configuration. Check every use of the candidate outbound/rule targets, including routing rules, balancers, DNS-related references, observatory selectors, proxy chains and any other supported reference locations. Check whether the DNS server entry is shared or part of unrelated DNS policy.
+5. Produce a read-only removal plan that lists each candidate, the evidence that it belongs to the integration, every discovered reference, and the reason it is safe or unsafe to remove. No panel changes during planning.
+
+### Removal decision
+
+- Remove an integration-specific port-53 route only when its match/action/target relationship identifies it as part of the DoH integration and it has no other semantic role. Do not remove panel-owned xui-dns-allow or unrelated user rules.
+- Remove the DNS outbound only after the integration route has been removed and read-back verified, and only if the current reference scan proves no other object uses it.
+- Remove the local DNS server entry only when it matches the integration endpoint/configuration and is not shared by other DNS policy. If other rules/objects rely on it, retain it.
+- Preserve any shared, reused, or ambiguous object. It is acceptable for uninstall to report a partial removal and explain what remains; it is not acceptable to delete an object merely because its endpoint looks familiar.
+- If two candidates are semantically indistinguishable, or evidence is insufficient to distinguish integration plumbing from a pre-existing user object, stop before deleting the ambiguous object and report it in the plan.
+- A candidate can be identified as likely integration plumbing by the combination of its config fingerprint, its connection to the integration's port-53 rule, known generated tags, and absence of unrelated references. No one clue should be treated as conclusive in isolation.
+
+### Mutation order and verification
+
+1. Show the removal plan and blockers first. Require the explicit restart approval used by other panel mutations.
+2. Remove only the verified integration-specific routing rule(s); read back and verify those exact rules are absent while unrelated rule order/content is preserved.
+3. Recompute references from the updated live config. Remove a candidate DNS outbound only if now unreferenced; read back.
+4. Recompute dependencies again. Remove the plugin DNS server entry only if it is still a verified integration candidate and no longer shared/used; read back.
+5. Re-read the complete relevant Xray settings and report exactly what was removed, what was preserved as shared/ambiguous, and any blockers.
+
+Never restore a historical full snapshot during uninstall. Never bulk-delete by tag prefix. The current live config plus semantic candidate discovery and reference analysis are authoritative.
+
+### Uninstall regression tests
+
+- Finds generated-tag and renamed-but-semantically-equivalent integration candidates.
+- Does not delete a matching local DNS outbound that is used by an unrelated routing rule, balancer, proxy chain, or observatory selector.
+- Does not delete a shared DNS server entry.
+- Removes a unique integration port-53 route, then removes its outbound only after read-back and a fresh zero-reference scan.
+- Leaves panel-owned xui-dns-allow, unrelated user routes, DNS servers, FakeDNS, and unrelated outbounds unchanged.
+- Ambiguous or duplicate candidates are listed as blockers; no speculative delete occurs.
+- Re-running uninstall is idempotent: already absent objects are reported as absent, not errors.
+- Every mutation is followed by panel API read-back; partial cleanup is reported accurately.
