@@ -92,13 +92,16 @@ class TemporaryDNSFinalRuleTests(unittest.TestCase):
         ]
         client = self.FakePanel(config)
 
-        api_tool.install_temporary_dns_final_rule(client)
+        original_rules = copy.deepcopy(config["outbounds"][0]["settings"]["finalRules"])
+        api_tool.install_temporary_dns_final_rule(client, original_rules)
         rules = client.snapshot["xraySetting"]["outbounds"][0]["settings"]["finalRules"]
         self.assertEqual(len(rules), 2)
         self.assertEqual(rules[1], api_tool.TEMP_DNS_FINAL_RULE)
+        self.assertEqual(api_tool.TEMP_DNS_FINAL_RULE["port"], "5355")
+        self.assertEqual(api_tool.TEMP_DNS_FINAL_RULE["network"], "tcp,udp")
 
         self.assertTrue(api_tool.cleanup_temporary_dns_final_rule(
-            client, api_tool.TEMP_DNS_FINAL_RULE
+            client, api_tool.TEMP_DNS_FINAL_RULE, original_rules
         ))
         restored = client.snapshot["xraySetting"]["outbounds"][0]["settings"]["finalRules"]
         self.assertEqual(restored, config["outbounds"][0]["settings"]["finalRules"])
@@ -123,7 +126,7 @@ class TemporaryDNSFinalRuleTests(unittest.TestCase):
         config["outbounds"][0]["settings"]["finalRules"] = copy.deepcopy(original_rules)
         client = self.FakePanel(config)
 
-        api_tool.install_temporary_dns_final_rule(client)
+        api_tool.install_temporary_dns_final_rule(client, original_rules)
 
         rules = client.snapshot["xraySetting"]["outbounds"][0]["settings"]["finalRules"]
         self.assertEqual(
@@ -138,7 +141,7 @@ class TemporaryDNSFinalRuleTests(unittest.TestCase):
         self.assertTrue(api_tool._temporary_dns_allow_precedes_blocks(rules))
 
         self.assertTrue(api_tool.cleanup_temporary_dns_final_rule(
-            client, api_tool.TEMP_DNS_FINAL_RULE
+            client, api_tool.TEMP_DNS_FINAL_RULE, original_rules
         ))
         restored = client.snapshot["xraySetting"]["outbounds"][0]["settings"]["finalRules"]
         self.assertEqual(restored, original_rules)
@@ -170,21 +173,53 @@ class TemporaryDNSFinalRuleTests(unittest.TestCase):
             {"action": "block", "network": "tcp", "port": "25", "ip": ["192.0.2.1"]}
         ])
 
-    def test_cleanup_removes_all_exact_reserved_temporary_rules(self):
+    def test_cleanup_refuses_ambiguous_duplicate_temporary_rules(self):
         config = base_config()
         config["outbounds"][0]["settings"]["finalRules"] = [
-            copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE),
             {"action": "block", "network": "tcp", "port": "25", "ip": ["192.0.2.1"]},
-            copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE),
         ]
+        original_rules = copy.deepcopy(config["outbounds"][0]["settings"]["finalRules"])
         client = self.FakePanel(config)
-        self.assertTrue(api_tool.cleanup_temporary_dns_final_rule(
-            client, api_tool.TEMP_DNS_FINAL_RULE
-        ))
-        final_rules = client.snapshot["xraySetting"]["outbounds"][0]["settings"]["finalRules"]
+        api_tool.install_temporary_dns_final_rule(client, original_rules)
+        direct_rules = client.snapshot["xraySetting"]["outbounds"][0]["settings"]["finalRules"]
+        direct_rules.append(copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE))
+
+        with self.assertRaisesRegex(api_tool.IntegrationError, "Multiple identical temporary"):
+            api_tool.cleanup_temporary_dns_final_rule(
+                client, api_tool.TEMP_DNS_FINAL_RULE, original_rules
+            )
         self.assertEqual(
-            final_rules,
-            [{"action": "block", "network": "tcp", "port": "25", "ip": ["192.0.2.1"]}],
+            sum(
+                item == api_tool.TEMP_DNS_FINAL_RULE
+                for item in client.snapshot["xraySetting"]["outbounds"][0]["settings"]["finalRules"]
+            ),
+            2,
+        )
+
+    def test_cleanup_refuses_to_overwrite_concurrent_final_rules_change(self):
+        config = base_config()
+        user_rule = {
+            "action": "block", "network": "tcp", "port": "25",
+            "ip": ["192.0.2.1"],
+        }
+        config["outbounds"][0]["settings"]["finalRules"] = [copy.deepcopy(user_rule)]
+        original_rules = copy.deepcopy(config["outbounds"][0]["settings"]["finalRules"])
+        client = self.FakePanel(config)
+        api_tool.install_temporary_dns_final_rule(client, original_rules)
+
+        direct = next(
+            item for item in client.snapshot["xraySetting"]["outbounds"]
+            if item.get("tag") == "direct"
+        )
+        direct["settings"]["finalRules"][0]["port"] = "26"
+
+        with self.assertRaisesRegex(api_tool.IntegrationError, "changed during the Tunnel test"):
+            api_tool.cleanup_temporary_dns_final_rule(
+                client, api_tool.TEMP_DNS_FINAL_RULE, original_rules
+            )
+        self.assertIn(
+            api_tool.TEMP_DNS_FINAL_RULE,
+            direct["settings"]["finalRules"],
         )
 
 
