@@ -44,7 +44,6 @@ def sample_config() -> dict:
                     "rewriteAddress": "127.0.0.1",
                     "rewritePort": 5355,
                 },
-                "targetStrategy": "ForceIPv4",
                 "sendThrough": "127.0.0.1",
             },
             {"tag": "direct", "protocol": "freedom", "settings": {}},
