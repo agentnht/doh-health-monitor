@@ -2118,6 +2118,7 @@ class RemovePlan:
     dns_server_indexes: list[int] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    plan_blocked: bool = False
 
 
 def _tag_list(value: object) -> list[str]:
@@ -2199,18 +2200,29 @@ def _dns_server_reference_reasons(config: dict, server: object) -> list[str]:
 
 
 def build_remove_plan(original: dict) -> RemovePlan:
-    """Plan Remove from live state using the same semantic DNS planner as Integrate."""
+    """Build Remove strictly from the same desired-state plan used by Integrate."""
     if not isinstance(original, dict):
         raise IntegrationError("xraySetting must be a JSON object")
+
     integrate_spec = build_plan(original, require_api_rule=False)
     result = RemovePlan()
     if integrate_spec.blockers:
+        result.plan_blocked = True
         result.warnings.append(
-            "The Integrate planner reports current-state conflicts; Remove will act only on independently verified semantic matches."
+            "The desired DNS integration plan has blocking conflicts; Remove cannot safely identify its resources."
         )
+        result.blockers.extend(integrate_spec.blockers)
+        return result
 
-    original_outbounds = original.get("outbounds", [])
-    if not isinstance(original_outbounds, list) or any(not isinstance(item, dict) for item in original_outbounds):
+    target_tag = integrate_spec.outbound_tag
+    if not isinstance(target_tag, str) or not target_tag:
+        result.warnings.append(
+            "The Integrate plan does not select a local DNS outbound; no matching resources are removable."
+        )
+        return result
+
+    outbounds = original.get("outbounds", [])
+    if not isinstance(outbounds, list) or any(not isinstance(item, dict) for item in outbounds):
         raise IntegrationError("outbounds must be an array of objects")
     routing = original.get("routing", {})
     if not isinstance(routing, dict):
@@ -2222,80 +2234,57 @@ def build_remove_plan(original: dict) -> RemovePlan:
     if not isinstance(balancers, list) or any(not isinstance(item, dict) for item in balancers):
         raise IntegrationError("routing.balancers must be an array of objects")
 
-    candidates = [
-        item for item in original_outbounds if _outbound_matches_dns_endpoint(item)
-    ]
-    tags = [item.get("tag") for item in candidates]
-    candidate_tags = {tag for tag in tags if isinstance(tag, str) and tag}
-    outbound_is_shared_or_ambiguous = len(candidate_tags) != len(tags)
-    if outbound_is_shared_or_ambiguous:
-        result.blockers.append("A compatible local DNS outbound has no unique non-empty tag; it will be preserved.")
-
-    tag_counts = {}
-    for item in original_outbounds:
-        tag = item.get("tag")
-        if isinstance(tag, str):
-            tag_counts[tag] = tag_counts.get(tag, 0) + 1
-    unique_candidate_tags = {
-        tag for tag in candidate_tags if tag_counts.get(tag) == 1
-    }
     outbound_index = {
-        item.get("tag"): item for item in original_outbounds
+        item.get("tag"): item for item in outbounds
         if isinstance(item.get("tag"), str)
     }
+
+    # The desired-state planner selects the first compatible global port-53
+    # route as the active path. Only that route belongs to this plan; duplicate
+    # or additional routes remain external configuration.
     for index, rule in enumerate(rules):
         if not _global_port53_rule(rule):
             continue
+        resolved: list[str] = []
         target = rule.get("outboundTag")
-        missing_target_marker = (
-            isinstance(target, str)
-            and target not in outbound_index
-            and (
-                target == DNS_PORT_RULE["outboundTag"]
-                or rule.get("ruleTag") == DNS_PORT_RULE.get("ruleTag")
-            )
-        )
-        is_candidate = (
-            isinstance(target, str)
-            and (
-                target in unique_candidate_tags
-                # A stale global route can remain after its integration
-                # outbound was removed. Its canonical ruleTag/default target,
-                # together with the exact global port-53 shape, identifies it.
-                or missing_target_marker
-            )
-        )
         balancer_tag = rule.get("balancerTag")
-        if not is_candidate and isinstance(balancer_tag, str):
+        if isinstance(target, str):
+            resolved = [target] if target in outbound_index and _outbound_matches_dns_endpoint(outbound_index[target]) else []
+        elif isinstance(balancer_tag, str):
             selected, error = _resolve_balancer_dns_targets(
                 balancer_tag, balancers, outbound_index
             )
-            is_candidate = (
-                error is None and bool(selected)
-                and set(selected).issubset(unique_candidate_tags)
-            )
-        if is_candidate:
+            if error is None:
+                resolved = selected
+        if resolved and resolved[0] == target_tag:
             result.route_indexes.append(index)
+            break
 
-    ignored_routes = set(result.route_indexes)
-    for tag in sorted(candidate_tags):
-        if tag_counts.get(tag) != 1:
-            outbound_is_shared_or_ambiguous = True
+    # The selected outbound is a candidate only if the exact planned endpoint
+    # exists once. References outside the planned route keep it in place.
+    matching_outbounds = [
+        item for item in outbounds
+        if item.get("tag") == target_tag and _outbound_matches_dns_endpoint(item)
+    ]
+    tag_count = sum(1 for item in outbounds if item.get("tag") == target_tag)
+    if len(matching_outbounds) != 1 or tag_count != 1:
+        if matching_outbounds or tag_count:
             result.blockers.append(
-                f"DNS outbound tag {tag!r} is duplicated; it cannot be removed unambiguously."
+                f"Planned DNS outbound {target_tag!r} is missing, duplicated, or ambiguous; it will be preserved."
             )
-            continue
+    else:
         references = _outbound_reference_reasons(
-            original, tag, ignored_route_indexes=ignored_routes
+            original, target_tag, ignored_route_indexes=set(result.route_indexes)
         )
         if references:
-            outbound_is_shared_or_ambiguous = True
             result.blockers.append(
-                f"DNS outbound {tag!r} is still referenced by: {', '.join(references)}; it will be preserved."
+                f"Planned DNS outbound {target_tag!r} is used outside the integration plan by: {', '.join(references)}; it will be preserved."
             )
         else:
-            result.outbound_tags.append(tag)
+            result.outbound_tags.append(target_tag)
 
+    # The planner reuses all general entries at this endpoint. A single
+    # unscoped entry is removable only when no DNS rule references it.
     dns = original.get("dns", {})
     if dns is not None and not isinstance(dns, dict):
         raise IntegrationError("dns must be an object")
@@ -2306,32 +2295,27 @@ def build_remove_plan(original: dict) -> RemovePlan:
         index for index, server in enumerate(servers)
         if _server_endpoint(server) == ("127.0.0.1", 5355)
     ]
-    general_indexes = [index for index in endpoint_indexes if _server_is_general(servers[index])]
-    for index in sorted(set(endpoint_indexes) - set(general_indexes)):
-        result.blockers.append(
-            f"dns.servers[{index}] targets 127.0.0.1:5355 but is scoped; it will be preserved."
-        )
-    if len(general_indexes) > 1:
-        result.blockers.append(
-            "Multiple general DNS server entries target 127.0.0.1:5355; ownership is ambiguous and all are preserved."
-        )
-    elif len(general_indexes) == 1:
+    general_indexes = [
+        index for index in endpoint_indexes if _server_is_general(servers[index])
+    ]
+    if len(general_indexes) == 1 and len(endpoint_indexes) == 1:
         index = general_indexes[0]
-        if outbound_is_shared_or_ambiguous:
+        references = _dns_server_reference_reasons(original, servers[index])
+        if references:
             result.blockers.append(
-                f"dns.servers[{index}] is retained because its matching local DNS outbound is still shared or ambiguous."
+                f"Planned DNS server at dns.servers[{index}] is used outside the integration plan by: {', '.join(references)}; it will be preserved."
             )
         else:
-            references = _dns_server_reference_reasons(original, servers[index])
-            if references:
-                result.blockers.append(
-                    f"dns.servers[{index}] is still referenced by: {', '.join(references)}; it will be preserved."
-                )
-            else:
-                result.dns_server_indexes.append(index)
+            result.dns_server_indexes.append(index)
+    elif endpoint_indexes:
+        result.blockers.append(
+            "The planned local DNS endpoint has multiple or scoped DNS server entries; they are ambiguous or shared and will be preserved."
+        )
 
     if not (result.route_indexes or result.outbound_tags or result.dns_server_indexes):
-        result.warnings.append("No unambiguous, removable permanent DNS integration objects were found.")
+        result.warnings.append(
+            "No unshared resources selected by the desired Integrate plan are removable."
+        )
     return result
 
 
@@ -2379,105 +2363,116 @@ def _apply_panel_update(client: PanelAPI, before: dict, config: dict, label: str
 
 
 def command_integrate(args, client: PanelAPI) -> int:
-    """Apply only permanent DNS integration records; never touch diagnostic Tunnels."""
+    """Apply permanent DNS integration, then verify UDP/TCP through a retained diagnostic Tunnel."""
     state = client.read_state()
     plan = build_plan(state["xraySetting"])
     print("Directive: INTEGRATE")
     print_plan(plan)
-    if args.plan_only:
-        print("Read-only plan: no panel mutation was sent.")
-        return 2 if plan.blockers else 0
     if plan.blockers:
         return 2
-    confirm_restart("integrate", args.approve_restart)
 
-    state = client.read_state()
-    plan = build_plan(state["xraySetting"])
-    print_plan(plan)
-    if plan.blockers:
-        return 2
-    if canonical(state["xraySetting"]) != canonical(plan.expected_saved):
-        _apply_panel_update(
+    needs_panel_update = (
+        canonical(state["xraySetting"]) != canonical(plan.expected_saved)
+    )
+    existing_diagnostics = discover_temporary_leftovers(client)
+    if needs_panel_update or not existing_diagnostics:
+        confirm_restart("integrate", args.approve_restart)
+
+    if needs_panel_update:
+        state = _apply_panel_update(
             client, state, plan.proposed, "permanent DNS integration"
         )
     else:
         print("PASS: permanent DNS integration already matches the desired live state.")
 
-    print("PASS: Integrate changed only permanent DNS integration records.")
+    print("PASS: permanent DNS integration is applied; starting UDP/TCP verification.")
+    try:
+        if not existing_diagnostics:
+            command_tunnel_create(args, client, notify_restart=False)
+        command_tunnel_test(args, client)
+    except IntegrationError as exc:
+        raise IntegrationError(
+            "Permanent DNS integration is applied, but diagnostic Tunnel verification failed. "
+            "The diagnostic Tunnel and temporary rule were not automatically removed; "
+            f"inspect them with 'tunnel status' and remove explicitly if appropriate. Detail: {exc}"
+        ) from None
+
+    print("PASS: Integrate completed and UDP/TCP DNS self-tests succeeded.")
     return 0
 
 
 def command_remove(args, client: PanelAPI) -> int:
-    """Remove only permanent DNS integration records; leave diagnostic Tunnels alone."""
+    """Remove only resources selected by the desired Integrate plan and not used externally."""
     state = client.read_state()
     plan = build_remove_plan(state["xraySetting"])
     print("Directive: REMOVE")
     print_remove_plan(plan)
-    if args.plan_only:
-        print("Read-only plan: no panel mutation was sent.")
-        return 0
+    if plan.plan_blocked:
+        print("Remove stopped: the desired Integrate plan has blocking conflicts; no panel mutation was sent.")
+        return 2
+
     has_changes = bool(plan.route_indexes or plan.outbound_tags or plan.dns_server_indexes)
     if not has_changes:
-        print("Remove directive complete: no safe permanent removals are required; shared or ambiguous objects remain untouched.")
+        print("Remove complete: no unshared resources selected by the Integrate plan need removal.")
         return 0
+
     confirm_restart("remove", args.approve_restart)
+    config = copy.deepcopy(state["xraySetting"])
 
-    state = client.read_state()
-    plan = build_remove_plan(state["xraySetting"])
-    if plan.route_indexes:
-        config = copy.deepcopy(state["xraySetting"])
-        rules = object_list(config.setdefault("routing", {}), "rules", "routing.rules")
-        for index in sorted(plan.route_indexes, reverse=True):
-            if index >= len(rules):
-                raise IntegrationError("Routing rules changed after the Remove plan; re-plan before deletion")
-            del rules[index]
-        state = _apply_panel_update(client, state, config, "integration routing-rule removal")
+    routing = config.get("routing")
+    if not isinstance(routing, dict):
+        raise IntegrationError("routing changed before Remove could be applied")
+    rules = object_list(routing, "rules", "routing.rules")
+    for index in sorted(plan.route_indexes, reverse=True):
+        if index < 0 or index >= len(rules):
+            raise IntegrationError("Routing rules changed after the Remove plan; no removal was applied")
+        del rules[index]
 
-    state = client.read_state()
-    plan = build_remove_plan(state["xraySetting"])
-    if plan.outbound_tags:
-        config = copy.deepcopy(state["xraySetting"])
-        outbounds = object_list(config, "outbounds", "outbounds")
-        for tag in plan.outbound_tags:
-            matches = [item for item in outbounds if item.get("tag") == tag]
-            if len(matches) != 1 or not _outbound_matches_dns_endpoint(matches[0]):
-                raise IntegrationError(
-                    f"DNS outbound {tag!r} changed after the Remove plan; it was not deleted."
-                )
-            references = _outbound_reference_reasons(config, tag)
-            if references:
-                raise IntegrationError(
-                    f"DNS outbound {tag!r} gained references after planning: {', '.join(references)}"
-                )
-            outbounds.remove(matches[0])
-        state = _apply_panel_update(client, state, config, "unreferenced DNS outbound removal")
+    outbounds = object_list(config, "outbounds", "outbounds")
+    for tag in plan.outbound_tags:
+        matches = [
+            item for item in outbounds
+            if item.get("tag") == tag and _outbound_matches_dns_endpoint(item)
+        ]
+        if len(matches) != 1 or sum(1 for item in outbounds if item.get("tag") == tag) != 1:
+            raise IntegrationError(
+                f"Planned DNS outbound {tag!r} changed after planning; no removal was applied"
+            )
+        references = _outbound_reference_reasons(config, tag)
+        if references:
+            raise IntegrationError(
+                f"Planned DNS outbound {tag!r} gained external references after planning: {', '.join(references)}"
+            )
+        outbounds.remove(matches[0])
 
-    state = client.read_state()
-    plan = build_remove_plan(state["xraySetting"])
     if plan.dns_server_indexes:
-        config = copy.deepcopy(state["xraySetting"])
         dns = config.get("dns")
         if not isinstance(dns, dict):
-            raise IntegrationError("DNS settings changed after the Remove plan")
+            raise IntegrationError("DNS settings changed after the Remove plan; no removal was applied")
         servers = dns.get("servers", [])
         if not isinstance(servers, list):
-            raise IntegrationError("DNS servers changed after the Remove plan")
+            raise IntegrationError("DNS servers changed after the Remove plan; no removal was applied")
         for index in sorted(plan.dns_server_indexes, reverse=True):
-            if index < 0 or index >= len(servers) or _server_endpoint(servers[index]) != ("127.0.0.1", 5355):
-                raise IntegrationError("DNS servers changed after the Remove plan; re-plan before deletion")
-            if not _server_is_general(servers[index]) or _dns_server_reference_reasons(config, servers[index]):
-                raise IntegrationError("The local DNS server became scoped or shared; it was not deleted.")
+            if (
+                index < 0 or index >= len(servers)
+                or _server_endpoint(servers[index]) != ("127.0.0.1", 5355)
+                or not _server_is_general(servers[index])
+                or _dns_server_reference_reasons(config, servers[index])
+            ):
+                raise IntegrationError(
+                    "The planned local DNS server changed or gained external use; no removal was applied"
+                )
             del servers[index]
-        state = _apply_panel_update(client, state, config, "unshared DNS server removal")
 
+    _apply_panel_update(client, state, config, "permanent DNS integration removal")
     final_plan = build_remove_plan(client.read_state()["xraySetting"])
     print("Final Remove assessment:")
     print_remove_plan(final_plan)
-    print("PASS: Remove directive was recalculated from current live panel state; diagnostic Tunnel resources were not touched.")
+    print("PASS: Remove removed only unshared resources selected by the desired Integrate plan; diagnostic Tunnel resources were not touched.")
     return 0
 
 
-def command_tunnel_create(args, client: PanelAPI) -> int:
+def command_tunnel_create(args, client: PanelAPI, *, notify_restart: bool = True) -> int:
     """Create and retain one diagnostic Tunnel and its owned temporary rule."""
     existing = discover_temporary_leftovers(client)
     if existing:
@@ -2496,7 +2491,8 @@ def command_tunnel_create(args, client: PanelAPI) -> int:
     port = choose_temporary_tunnel_port(client.list_inbounds())
     expected = build_temporary_tunnel(port, rule_mode=rule_mode)
 
-    confirm_restart("tunnel create", args.approve_restart)
+    if notify_restart:
+        confirm_restart("tunnel create", args.approve_restart)
     if rule_mode == "added" or rules_need_repair:
         _add_temporary_dns_final_rule(client)
     created = client.add_inbound(expected)
@@ -2608,10 +2604,6 @@ def main() -> int:
         help="Deprecated compatibility flag; panel changes now print a restart notice without prompting",
     )
     parser.add_argument(
-        "--plan-only", action="store_true",
-        help="Print the selected directive's live-state plan without panel writes",
-    )
-    parser.add_argument(
         "action", nargs="+",
         help="integrate | remove | tunnel create|test|status|remove",
     )
@@ -2623,9 +2615,6 @@ def main() -> int:
         ("tunnel", "status"), ("tunnel", "remove"),
     }:
         parser.error("choose integrate, remove, or tunnel {create,test,status,remove}")
-    if args.plan_only and action not in {("integrate",), ("remove",)}:
-        parser.error("--plan-only applies only to integrate/remove")
-
     try:
         if os.geteuid() != 0:
             raise IntegrationError("Run this tool as root directly on the LucX-UI VPS")
@@ -2691,7 +2680,7 @@ def main() -> int:
         if endpoint.host_header:
             print("Panel domain validation: configured Host header and TLS SNI will be used.")
 
-        if action in {("integrate",), ("tunnel", "test")} and not args.plan_only:
+        if action in {("integrate",), ("tunnel", "test")}:
             check_plugin_health(args.plugin_service, args.plugin_status_url, args.plugin_port)
         if action in {("integrate",), ("remove",)}:
             check_xray_compatibility(args.xray_bin)
