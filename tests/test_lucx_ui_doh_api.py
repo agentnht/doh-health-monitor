@@ -210,6 +210,25 @@ class RemovePlannerTests(unittest.TestCase):
         self.assertEqual(plan.direct_final_rule_indexes, [])
         self.assertTrue(any("dns.rules[0].server" in item for item in plan.blockers))
 
+    def test_remove_preserves_loopback_allow_when_dns_outbound_is_still_shared(self):
+        config = add_complete_dns(base_config())
+        config["dns"]["servers"] = []
+        config["routing"]["rules"].append({
+            "type": "field",
+            "domain": ["internal.example"],
+            "outboundTag": "dns-out",
+        })
+        direct = next(item for item in config["outbounds"] if item.get("tag") == "direct")
+        direct["settings"]["finalRules"] = [
+            copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE),
+            {"action": "block", "ip": ["geoip:private"]},
+        ]
+
+        plan = api_tool.build_remove_plan(config)
+
+        self.assertIn("dns-out", plan.blockers[0])
+        self.assertEqual(plan.direct_final_rule_indexes, [])
+
     def test_blocking_scoped_dns_endpoint_stops_remove_planning(self):
         config = add_complete_dns(base_config())
         config["dns"]["servers"][0]["domains"] = ["domain:example.org"]
