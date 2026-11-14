@@ -2244,6 +2244,22 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in client.inbounds], [10])
         self.assertEqual(api_tool._temporary_final_rule_count(client.state["xraySetting"]), 0)
 
+    def test_duplicate_final_rules_do_not_block_safe_inbound_cleanup(self):
+        client = self.FakeClient(existing_rule=True)
+        client.state["xraySetting"]["outbounds"][0]["settings"]["finalRules"].append(
+            copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE)
+        )
+        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718", rule_mode="reused")
+        inbound = copy.deepcopy(expected)
+        inbound.update({"id": 10, "tag": "temporary-10"})
+        client.inbounds = [inbound]
+
+        with patch.object(api_tool, "wait_for_tunnel_port_closed"):
+            api_tool.cleanup_temporary_leftovers(client)
+
+        self.assertEqual(client.inbounds, [])
+        self.assertEqual(api_tool._temporary_final_rule_count(client.state["xraySetting"]), 2)
+
     def test_create_repairs_misordered_existing_dns_allow(self):
         client = self.FakeClient(existing_rule=True)
         direct = next(item for item in client.state["xraySetting"]["outbounds"] if item.get("tag") == "direct")
