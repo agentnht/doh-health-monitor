@@ -2242,9 +2242,9 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
     def test_unexpected_dns_failure_reports_type_and_message_after_cleanup(self):
         client = self.FakeClient()
         with tempfile.TemporaryDirectory() as directory:
-            with patch.object(api_tool, "choose_temporary_tunnel_port", return_value=15353), \\
-                 patch.object(api_tool, "wait_for_tunnel_listeners"), \\
-                 patch.object(api_tool, "wait_for_tunnel_port_closed"), \\
+            with patch.object(api_tool, "choose_temporary_tunnel_port", return_value=15353), \
+                 patch.object(api_tool, "wait_for_tunnel_listeners"), \
+                 patch.object(api_tool, "wait_for_tunnel_port_closed"), \
                  patch.object(api_tool, "run_tunnel_dns_self_test", side_effect=TimeoutError("probe timed out")):
                 with self.assertRaisesRegex(
                     api_tool.IntegrationError,
