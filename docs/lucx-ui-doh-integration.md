@@ -180,14 +180,7 @@ safely predict the panel's save behavior.
   cleanup does not skip the other. A recovery marker is retained if either
   resource cannot be verified absent. Permanent DNS changes are not rolled back
   automatically when the connectivity test fails.
-- The adapter retains a private pre-update API snapshot (mode \`0600\`) for
-  delayed rollback after successful read-back. Rollback removes only DNS
-  outbound/server/port-53 route objects that this operation actually created,
-  using their recorded before/after identity rather than assuming a fixed tag.
-  Reused objects are never treated as owned. If an added outbound was edited or
-  has acquired later routing/balancer references, rollback stops rather than
-  leaving broken links. Unrelated settings and current \`outboundTestUrl\`
-  metadata are preserved.
+- Panel configuration changes use live-state reconciliation only. The adapter must not write full before/after Xray snapshots, preserve old rule arrays for restoration, or create snapshot-based rollback state. After each API mutation it reads the current panel state and recalculates the selected Integrate/Remove plan. A partial operation is resumed by invoking the same desired action again; it never restores a historical configuration.
 - Panel Xray-settings and inbound API updates may each restart Xray; \`apply\`
   requires explicit restart approval. The adapter requires root on the
   LucX-UI VPS and a localhost/loopback panel API URL. It never writes SQLite or
@@ -212,8 +205,8 @@ not validate the current refactor.
 
 The current automated suite covers semantic reuse, nonstandard outbound tags,
 unique tag generation, balancer selectors/fallbacks, first-match routing
-conflicts, opaque recovery markers, independent cleanup, and dynamic-tag
-rollback. GitHub Actions results should be checked on the current PR head before
+conflicts, live-state replanning after partial operations, dependency-aware
+removal, and idempotent Integrate/Remove actions. GitHub Actions results should be checked on the current PR head before
 treating the refactor as CI-verified.
 
 **The current refactor has not yet been re-run through the live disposable
@@ -234,6 +227,10 @@ installed VPS binary was not cryptographically matched to the tag.
 - [Xray hot-diff section support](https://github.com/AlexeyLCP/lucx-ui/blob/v3.11.0-lucx.357/internal/xray/hot_diff.go)
 
 
-### Selective rollback
+### Plan-based removal and partial-operation recovery
 
-The delayed `rollback` action does not restore the entire pre-apply Xray snapshot. It identifies DNS integration objects created by this operation from the before/verified-after snapshots: the selected DNS outbound tag (which may be a generated name rather than `dns-out`), the local DNS server `127.0.0.1:5355`, and the generated global TCP/UDP port-53 route. Reused pre-existing objects are not owned and are never removed. Each created object is removed only if its current representation still exactly matches the verified after-snapshot. If an object was edited or a later routing rule/balancer now references the outbound, rollback stops rather than deleting it and leaving broken links. Objects already absent are treated as already removed. Unrelated current Xray settings, later panel changes, and current `outboundTestUrl` metadata are preserved. The resulting configuration is written and verified through the LucX-UI API, including the panel's DNS-rule normalization.
+Removing the integration is the inverse of integrating it; it is not a snapshot restore. The adapter rebuilds the canonical integration plan against current panel settings, finds the remaining integration-specific DNS outbound/server/port-53 route objects by semantic shape and relationships, checks all references, and removes only candidates that are no longer shared or used elsewhere. Remove the port-53 route first, verify it, then re-scan references before removing the outbound and local DNS server entry.
+
+After any interruption, invoke the same selected action again. Integrate adds only what is still missing. Remove deletes only what is still safely removable. The adapter never writes a full saved Xray configuration back to the panel and never overwrites later user changes. If a candidate is ambiguous or still referenced, it remains in place and is reported as a blocker.
+
+No full pre-change/post-change Xray snapshots, persistent ownership journals, or delayed snapshot-based rollback are part of this design. Every individual API mutation is followed by live read-back and replanning.
