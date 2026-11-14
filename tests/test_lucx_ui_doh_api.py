@@ -1970,36 +1970,35 @@ class DnsTunnelProbeTests(unittest.TestCase):
 
 class TemporaryTunnelOrchestrationTests(unittest.TestCase):
     class FakeClient:
-        def __init__(self, fail_delete=False):
-            self.inbounds = []
-            self.next_id = 1
-            self.fail_delete = fail_delete
-            self.add_calls = 0
-            self.deleted = []
-            self.events = []
+        def __init__(self, existing_rule=False):
+            config = base_config()
+            if existing_rule:
+                config["outbounds"][0]["settings"]["finalRules"] = [
+                    copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE)
+                ]
             self.state = {
-                "xraySetting": base_config(),
+                "xraySetting": config,
                 "outboundTestUrl": "https://example.invalid/",
             }
-            self.update_calls = 0
+            self.inbounds = []
+            self.next_id = 1
+            self.deleted = []
+            self.updates = 0
 
         def read_state(self):
             return copy.deepcopy(self.state)
 
         def update(self, config, outbound_test_url):
-            self.events.append("update")
             self.state = {
                 "xraySetting": api_tool.panel_normalize_dns_allow_rules(copy.deepcopy(config)),
                 "outboundTestUrl": outbound_test_url,
             }
-            self.update_calls += 1
+            self.updates += 1
 
         def list_inbounds(self):
             return copy.deepcopy(self.inbounds)
 
         def add_inbound(self, payload):
-            self.events.append("add-inbound")
-            self.add_calls += 1
             created = copy.deepcopy(payload)
             created["id"] = self.next_id
             created["tag"] = f"temporary-{self.next_id}"
@@ -2008,167 +2007,110 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
             return copy.deepcopy(created)
 
         def delete_inbound(self, inbound_id):
-            self.events.append("delete-inbound")
-            if self.fail_delete:
-                raise api_tool.IntegrationError("delete failed")
             self.deleted.append(inbound_id)
             self.inbounds = [item for item in self.inbounds if item.get("id") != inbound_id]
 
-    def test_tunnel_is_created_before_missing_rule_and_cleanup_is_rule_first(self):
+    def _args(self):
+        return SimpleNamespace(
+            approve_restart=True,
+            plugin_status_url="http://127.0.0.1:18765/status",
+        )
+
+    def test_create_retains_tunnel_and_added_rule_without_running_test_or_cleanup(self):
         client = self.FakeClient()
         with patch.object(api_tool, "choose_temporary_tunnel_port", return_value=15353), \
-             patch.object(api_tool, "wait_for_tunnel_listeners") as wait_for_listeners, \
-             patch.object(api_tool, "wait_for_tunnel_port_closed"), \
-             patch.object(api_tool, "run_tunnel_dns_self_test"):
-            api_tool.run_temporary_tunnel_test(client, "http://127.0.0.1:18765/status")
+             patch.object(api_tool, "wait_for_tunnel_listeners"), \
+             patch.object(api_tool, "confirm_restart"), \
+             patch.object(api_tool, "run_tunnel_dns_self_test") as probe:
+            self.assertEqual(api_tool.command_tunnel_create(self._args(), client), 0)
 
-        self.assertEqual(client.inbounds, [])
-        self.assertEqual(client.deleted, [1])
-        direct = next(item for item in client.state["xraySetting"]["outbounds"] if item.get("tag") == "direct")
-        self.assertNotIn(api_tool.TEMP_DNS_FINAL_RULE, direct["settings"].get("finalRules", []))
-        self.assertLess(client.events.index("add-inbound"), client.events.index("update"))
-        self.assertLess(client.events.index("update"), client.events.index("delete-inbound"))
-        self.assertEqual(client.update_calls, 2)
-        self.assertEqual(wait_for_listeners.call_count, 2)
-
-    def test_pre_existing_rule_is_reused_and_never_deleted(self):
-        client = self.FakeClient()
-        direct = next(item for item in client.state["xraySetting"]["outbounds"] if item.get("tag") == "direct")
-        existing = copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE)
-        direct["settings"]["finalRules"] = [existing]
-
-        with patch.object(api_tool, "choose_temporary_tunnel_port", return_value=15353), \
-             patch.object(api_tool, "wait_for_tunnel_listeners") as wait_for_listeners, \
-             patch.object(api_tool, "wait_for_tunnel_port_closed"), \
-             patch.object(api_tool, "run_tunnel_dns_self_test"):
-            api_tool.run_temporary_tunnel_test(client, "http://127.0.0.1:18765/status")
-
-        self.assertEqual(client.inbounds, [])
-        self.assertEqual(client.update_calls, 0)
-        self.assertEqual(wait_for_listeners.call_count, 1)
-        restored = next(item for item in client.state["xraySetting"]["outbounds"] if item.get("tag") == "direct")
-        self.assertEqual(restored["settings"]["finalRules"], [existing])
-
-    def test_legacy_tunnel_marker_recovers_its_rule_without_a_journal(self):
-        client = self.FakeClient()
-        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718")
-        old_tunnel = copy.deepcopy(expected)
-        old_tunnel.update({"id": 9, "tag": "temporary-9"})
-        user_inbound = {
-            "id": 10, "remark": "operator-owned", "protocol": "tunnel",
-            "listen": "127.0.0.1", "port": 15354, "settings": {"user": "owned"},
-        }
-        client.inbounds = [old_tunnel, user_inbound]
-        direct = next(item for item in client.state["xraySetting"]["outbounds"] if item.get("tag") == "direct")
-        original_rule = {"action": "block", "network": "tcp", "port": "25", "ip": ["192.0.2.1"]}
-        direct["settings"]["finalRules"] = [original_rule, copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE)]
-
-        with patch.object(api_tool, "wait_for_tunnel_port_closed"):
-            api_tool.cleanup_temporary_leftovers(client)
-
-        self.assertEqual(client.inbounds, [user_inbound])
-        direct = next(item for item in client.state["xraySetting"]["outbounds"] if item.get("tag") == "direct")
-        self.assertEqual(direct["settings"]["finalRules"], [original_rule])
-        self.assertLess(client.events.index("update"), client.events.index("delete-inbound"))
-
-    def test_reused_marker_cleanup_keeps_rule_and_deletes_only_tunnel(self):
-        client = self.FakeClient()
-        expected = api_tool.build_temporary_tunnel(
-            15353, "a1b2c3d4e5f60718", rule_mode="reused"
-        )
-        temporary = copy.deepcopy(expected)
-        temporary.update({"id": 4, "tag": "temporary-4"})
-        client.inbounds = [temporary]
-        direct = next(item for item in client.state["xraySetting"]["outbounds"] if item.get("tag") == "direct")
-        direct["settings"]["finalRules"] = [copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE)]
-
-        with patch.object(api_tool, "wait_for_tunnel_port_closed"):
-            api_tool.cleanup_temporary_leftovers(client)
-
-        self.assertEqual(client.inbounds, [])
-        self.assertEqual(client.update_calls, 0)
-        direct = next(item for item in client.state["xraySetting"]["outbounds"] if item.get("tag") == "direct")
-        self.assertEqual(direct["settings"]["finalRules"], [api_tool.TEMP_DNS_FINAL_RULE])
-
-    def test_orphan_rule_without_temporary_tunnel_is_treated_as_preexisting(self):
-        client = self.FakeClient()
-        direct = next(item for item in client.state["xraySetting"]["outbounds"] if item.get("tag") == "direct")
-        direct["settings"]["finalRules"] = [copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE)]
-
-        api_tool.cleanup_temporary_leftovers(client)
-
-        self.assertEqual(client.update_calls, 0)
-        self.assertEqual(client.inbounds, [])
-        self.assertEqual(
-            next(item for item in client.state["xraySetting"]["outbounds"] if item.get("tag") == "direct")["settings"]["finalRules"],
-            [api_tool.TEMP_DNS_FINAL_RULE],
-        )
-
-    def test_cleanup_failure_keeps_tunnel_when_owned_rule_cannot_be_removed(self):
-        class FailingRuleRemoval(self.FakeClient):
-            def update(self, config, outbound_test_url):
-                direct = next(item for item in config["outbounds"] if item.get("tag") == "direct")
-                if api_tool.TEMP_DNS_FINAL_RULE not in direct.get("settings", {}).get("finalRules", []):
-                    raise api_tool.IntegrationError("simulated rule update failure")
-                super().update(config, outbound_test_url)
-
-        client = FailingRuleRemoval()
-        expected = api_tool.build_temporary_tunnel(
-            15353, "a1b2c3d4e5f60718", rule_mode="added"
-        )
-        temporary = copy.deepcopy(expected)
-        temporary.update({"id": 5, "tag": "temporary-5"})
-        client.inbounds = [temporary]
-        direct = next(item for item in client.state["xraySetting"]["outbounds"] if item.get("tag") == "direct")
-        direct["settings"]["finalRules"] = [copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE)]
-
-        with self.assertRaises(api_tool.IntegrationError):
-            api_tool.cleanup_temporary_leftovers(client)
         self.assertEqual(len(client.inbounds), 1)
+        self.assertEqual(client.inbounds[0]["port"], 15353)
+        self.assertEqual(client.deleted, [])
+        self.assertEqual(
+            api_tool._temporary_final_rule_count(client.state["xraySetting"]), 1
+        )
+        probe.assert_not_called()
+
+    def test_test_only_probes_existing_tunnel_and_never_mutates_or_deletes(self):
+        client = self.FakeClient()
+        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718", rule_mode="added")
+        inbound = copy.deepcopy(expected)
+        inbound.update({"id": 7, "tag": "temporary-7"})
+        client.inbounds = [inbound]
+        direct = next(item for item in client.state["xraySetting"]["outbounds"] if item.get("tag") == "direct")
+        direct["settings"]["finalRules"] = [copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE)]
+        before_state = client.read_state()
+        before_inbounds = client.list_inbounds()
+
+        with patch.object(api_tool, "run_tunnel_dns_self_test") as probe:
+            self.assertEqual(api_tool.command_tunnel_test(self._args(), client), 0)
+
+        probe.assert_called_once_with(15353, self._args().plugin_status_url)
+        self.assertEqual(client.read_state(), before_state)
+        self.assertEqual(client.list_inbounds(), before_inbounds)
         self.assertEqual(client.deleted, [])
 
-    def test_dns_failure_still_cleans_owned_rule_and_tunnel(self):
+    def test_status_is_read_only(self):
         client = self.FakeClient()
-        with patch.object(api_tool, "choose_temporary_tunnel_port", return_value=15353), \
-             patch.object(api_tool, "wait_for_tunnel_listeners"), \
-             patch.object(api_tool, "wait_for_tunnel_port_closed"), \
-             patch.object(api_tool, "run_tunnel_dns_self_test", side_effect=api_tool.IntegrationError("probe failed")):
-            with self.assertRaisesRegex(api_tool.IntegrationError, "probe failed"):
-                api_tool.run_temporary_tunnel_test(client, "http://127.0.0.1:18765/status")
-        self.assertEqual(client.inbounds, [])
-        self.assertEqual(client.deleted, [1])
+        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718", rule_mode="reused")
+        inbound = copy.deepcopy(expected)
+        inbound.update({"id": 8, "tag": "temporary-8"})
+        client.inbounds = [inbound]
         direct = next(item for item in client.state["xraySetting"]["outbounds"] if item.get("tag") == "direct")
-        self.assertNotIn(api_tool.TEMP_DNS_FINAL_RULE, direct["settings"].get("finalRules", []))
+        direct["settings"]["finalRules"] = [copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE)]
+        before_state = client.read_state()
+        before_inbounds = client.list_inbounds()
 
-    def test_add_port_race_retries_another_candidate(self):
-        class RacingClient(self.FakeClient):
-            def add_inbound(self, payload):
-                if self.add_calls == 0:
-                    self.add_calls += 1
-                    self.events.append("add-inbound-failed")
-                    raise api_tool.IntegrationError("port collision")
-                return super().add_inbound(payload)
+        self.assertEqual(api_tool.command_tunnel_status(self._args(), client), 0)
 
-        client = RacingClient()
-        with patch.object(api_tool, "choose_temporary_tunnel_port", side_effect=[15353, 15354]), \
-             patch.object(api_tool, "_port_is_free_on_loopback", return_value=False), \
-             patch.object(api_tool, "wait_for_tunnel_listeners"), \
-             patch.object(api_tool, "wait_for_tunnel_port_closed"), \
-             patch.object(api_tool, "run_tunnel_dns_self_test"):
-            api_tool.run_temporary_tunnel_test(client, "http://127.0.0.1:18765/status")
-        self.assertEqual(client.add_calls, 2)
-        self.assertEqual(client.deleted, [1])
+        self.assertEqual(client.read_state(), before_state)
+        self.assertEqual(client.list_inbounds(), before_inbounds)
+        self.assertEqual(client.updates, 0)
+        self.assertEqual(client.deleted, [])
+
+    def test_remove_is_explicit_and_removes_only_added_rule_and_its_tunnel(self):
+        client = self.FakeClient()
+        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718", rule_mode="added")
+        inbound = copy.deepcopy(expected)
+        inbound.update({"id": 9, "tag": "temporary-9"})
+        client.inbounds = [inbound]
+        direct = next(item for item in client.state["xraySetting"]["outbounds"] if item.get("tag") == "direct")
+        direct["settings"]["finalRules"] = [copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE)]
+
+        with patch.object(api_tool, "confirm_restart"), \
+             patch.object(api_tool, "wait_for_tunnel_port_closed"):
+            self.assertEqual(api_tool.command_tunnel_remove(self._args(), client), 0)
+
         self.assertEqual(client.inbounds, [])
+        self.assertEqual(client.deleted, [9])
+        self.assertEqual(api_tool._temporary_final_rule_count(client.state["xraySetting"]), 0)
 
-    def test_exception_summary_redacts_common_credentials(self):
-        summary = api_tool._safe_exception_summary(
-            RuntimeError("Bearer abc123 token=secret-value https://user:pass@example.test/")
-        )
-        self.assertNotIn("abc123", summary)
-        self.assertNotIn("secret-value", summary)
-        self.assertNotIn("user:pass", summary)
-        self.assertIn("[redacted]", summary)
+    def test_remove_preserves_rule_marked_as_reused(self):
+        client = self.FakeClient(existing_rule=True)
+        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718", rule_mode="reused")
+        inbound = copy.deepcopy(expected)
+        inbound.update({"id": 10, "tag": "temporary-10"})
+        client.inbounds = [inbound]
 
+        with patch.object(api_tool, "confirm_restart"), \
+             patch.object(api_tool, "wait_for_tunnel_port_closed"):
+            self.assertEqual(api_tool.command_tunnel_remove(self._args(), client), 0)
+
+        self.assertEqual(client.inbounds, [])
+        self.assertEqual(client.deleted, [10])
+        self.assertEqual(api_tool._temporary_final_rule_count(client.state["xraySetting"]), 1)
+
+    def test_create_refuses_to_create_a_second_diagnostic_tunnel(self):
+        client = self.FakeClient()
+        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718", rule_mode="reused")
+        inbound = copy.deepcopy(expected)
+        inbound.update({"id": 11, "tag": "temporary-11"})
+        client.inbounds = [inbound]
+        with self.assertRaisesRegex(api_tool.IntegrationError, "already exists"):
+            api_tool.command_tunnel_create(self._args(), client)
+        self.assertEqual(len(client.inbounds), 1)
+        self.assertEqual(client.deleted, [])
 
 
 class TTYConfirmationTests(unittest.TestCase):
