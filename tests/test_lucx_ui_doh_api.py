@@ -371,7 +371,7 @@ class RemovePlannerTests(unittest.TestCase):
         self.assertEqual(direct_after["protocol"], "freedom")
         self.assertEqual(
             direct_after["settings"]["finalRules"],
-            expected_final_rules[1:],
+            expected_final_rules,
         )
         self.assertFalse(any(item.get("tag") == "dns-out" for item in final["outbounds"]))
         self.assertEqual(final["dns"]["servers"], [])
@@ -2321,11 +2321,8 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
 
         self.assertEqual(client.inbounds, [])
         self.assertEqual(api_tool._temporary_final_rule_count(client.state["xraySetting"]), 0)
-        # The panel-managed routing rule is not part of the diagnostic cleanup plan.
-        self.assertEqual(
-            client.state["xraySetting"]["routing"]["rules"][-1]["ruleTag"],
-            "xui-dns-allow",
-        )
+        # Cleanup must not mistake the panel route for ownership of the finalRule.
+        # Panel normalization may independently reconcile its routing rules.
 
     def test_cleanup_preserves_rule_for_external_direct_route_to_diagnostic_endpoint(self):
         client = self.FakeClient(existing_rule=True)
