@@ -3243,13 +3243,69 @@ def main() -> int:
                 )
             if resource_present or rule_present:
                 confirm_restart("cleanup", args.approve_restart)
-            removed = cleanup_temporary_tunnel(client, journal["inbound"], inbound_id)
-            if inbound_id is not None or removed:
-                wait_for_tunnel_port_closed(journal["inbound"]["port"])
+            cleanup_errors = []
+            try:
+                removed = cleanup_temporary_tunnel(client, journal["inbound"], inbound_id)
+                if inbound_id is not None or removed:
+                    wait_for_tunnel_port_closed(journal["inbound"]["port"])
+            except Exception as exc:
+                cleanup_errors.append("Tunnel: " + str(exc))
+
+            # Attempt both resource classes independently. A failure deleting
+            # the inbound must not skip removal of this run's owned finalRule.
             if final_rule is not None:
-                cleanup_temporary_dns_final_rule(client, final_rule)
+                try:
+                    cleanup_temporary_dns_final_rule(
+                        client, final_rule, journal["original_final_rules"]
+                    )
+                except Exception as exc:
+                    cleanup_errors.append("finalRule: " + str(exc))
+
+            try:
+                remaining_inbounds = [
+                    item for item in client.list_inbounds()
+                    if isinstance(item, dict)
+                    and (
+                        item.get("remark") == journal["inbound"]["remark"]
+                        or (
+                            inbound_id is not None
+                            and item.get("id") == inbound_id
+                        )
+                    )
+                ]
+                if remaining_inbounds:
+                    cleanup_errors.append("temporary Tunnel inbound remains after cleanup")
+            except Exception as exc:
+                cleanup_errors.append("Tunnel read-back: " + str(exc))
+
+            try:
+                current = client.get_snapshot()["xraySetting"]
+                direct = _direct_freedom_outbound(current)
+                final_rules = direct["settings"].get("finalRules", [])
+                if (
+                    not isinstance(final_rules, list)
+                    or any(
+                        isinstance(item, dict)
+                        and canonical(item) == canonical(TEMP_DNS_FINAL_RULE)
+                        for item in final_rules
+                    )
+                ):
+                    cleanup_errors.append("temporary DNS finalRule remains after cleanup")
+                elif not _is_subsequence(journal["original_final_rules"], final_rules):
+                    cleanup_errors.append(
+                        "original Freedom finalRules changed during cleanup; manual review required"
+                    )
+            except Exception as exc:
+                cleanup_errors.append("finalRule read-back: " + str(exc))
+
+            if cleanup_errors:
+                raise IntegrationError(
+                    "Temporary Tunnel cleanup incomplete; recovery journal retained at "
+                    f"{journal_path}. Details: {'; '.join(cleanup_errors)}"
+                )
             journal_path.unlink(missing_ok=True)
-            print("PASS: temporary Tunnel and DNS finalRule recovery cleanup verified; journal removed.")
+            print("PASS: temporary Tunnel inbound and 127.0.0.1:5355 TCP/UDP finalRule are absent; original finalRules preserved.")
+            print("PASS: recovery journal removed after both cleanup checks.")
             return 0
         return command_rollback(args, client)
     except IntegrationError as exc:
