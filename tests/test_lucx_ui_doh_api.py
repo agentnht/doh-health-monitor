@@ -435,7 +435,7 @@ class IntegrateOrchestrationTests(unittest.TestCase):
              patch.object(api_tool, "cleanup_temporary_leftovers") as cleanup:
             self.assertEqual(api_tool.command_integrate(self._args(), client), 0)
 
-        create.assert_called_once_with(self._args(), client, notify_restart=False)
+        create.assert_called_once_with(self._args(), client)
         test.assert_called_once_with(self._args(), client)
         cleanup.assert_called_once_with(client)
         self.assertEqual(client.reads, 1)
