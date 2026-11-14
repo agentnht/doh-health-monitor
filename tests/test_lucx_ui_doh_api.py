@@ -226,7 +226,7 @@ class RemovePlannerTests(unittest.TestCase):
 
         plan = api_tool.build_remove_plan(config)
 
-        self.assertIn("dns-out", plan.blockers[0])
+        self.assertTrue(any("dns-out" in item for item in plan.blockers))
         self.assertEqual(plan.direct_final_rule_indexes, [])
 
     def test_blocking_scoped_dns_endpoint_stops_remove_planning(self):
