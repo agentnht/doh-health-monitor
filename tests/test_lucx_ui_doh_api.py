@@ -2177,32 +2177,26 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
 
 
 class TTYConfirmationTests(unittest.TestCase):
-    def test_integrate_confirmation_uses_integrate_phrase(self):
-        with patch.object(api_tool, "read_tty_confirmation", return_value="INTEGRATE") as prompt:
-            api_tool.confirm_restart("integrate", False)
-        self.assertEqual(prompt.call_args.args[0], "Type INTEGRATE to continue: ")
+    def test_panel_change_only_prints_restart_notice_without_prompt(self):
+        for action in ("integrate", "remove", "tunnel create", "tunnel remove"):
+            with self.subTest(action=action), \
+                 patch.object(api_tool, "read_tty_confirmation") as prompt, \
+                 patch("builtins.print") as output:
+                api_tool.confirm_restart(action, False)
+            prompt.assert_not_called()
+            printed = " ".join(str(call.args[0]) for call in output.call_args_list if call.args)
+            self.assertIn("may automatically restart the Xray process", printed)
 
-    def test_remove_confirmation_uses_remove_phrase(self):
-        with patch.object(api_tool, "read_tty_confirmation", return_value="REMOVE") as prompt:
-            api_tool.confirm_restart("remove", False)
-        self.assertEqual(prompt.call_args.args[0], "Type REMOVE to continue: ")
+    def test_legacy_approval_flag_is_ignored(self):
+        with patch.object(api_tool, "read_tty_confirmation") as prompt, \
+             patch("builtins.print") as output:
+            api_tool.confirm_restart("tunnel create", True)
+        prompt.assert_not_called()
+        self.assertTrue(output.called)
 
-    def test_confirmation_uses_separate_non_seekable_tty_streams(self):
-        from unittest.mock import mock_open
-
-        tty_out = mock_open()
-        tty_in = mock_open(read_data="RISK\n")
-        with patch("builtins.open", side_effect=[tty_out.return_value, tty_in.return_value]) as mocked_open:
-            answer = api_tool.read_tty_confirmation("Type RISK: ")
-
-        self.assertEqual(answer, "RISK")
-        self.assertEqual(
-            [call.args[:2] for call in mocked_open.call_args_list],
-            [("/dev/tty", "w"), ("/dev/tty", "r")],
-        )
-        tty_out.return_value.write.assert_called_once_with("Type RISK: ")
-        tty_out.return_value.flush.assert_called_once()
-
+    def test_unknown_panel_action_is_rejected(self):
+        with self.assertRaisesRegex(api_tool.IntegrationError, "Unknown panel directive"):
+            api_tool.confirm_restart("unknown", False)
 
 
 class PanelCredentialTests(unittest.TestCase):
