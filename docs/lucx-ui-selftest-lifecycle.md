@@ -21,10 +21,10 @@ If the diagnostic Tunnel already exists, Integrate tests it rather than creating
 2. If that plan has blocking conflicts, stop without changing the panel.
 3. Match only the live resources selected by that plan: the selected global port-53 route, selected local DNS outbound, and one general DNS server entry for `127.0.0.1:5355`.
 4. Check references outside the plan. Preserve anything used by unrelated routing rules, balancers/selectors, observatory, proxy chaining, or DNS policy rules. Preserve scoped, duplicate, shared, and ambiguous entries.
-5. Treat the exact `direct.settings.finalRules` allow for TCP/UDP `127.0.0.1:5355` as an integration resource: remove it when no other DNS resource outside the Remove plan uses that endpoint. Keep the `direct` freedom outbound, `geoip:private` block, fallback allow, and all unrelated finalRules unchanged.
+5. Remove operates only on permanent DNS-plan resources: the selected port-53 route, DNS outbound, and DNS server. It must not inspect or modify inbounds or `direct.settings.finalRules`; diagnostic cleanup is Integrate's responsibility.
 6. Apply the safe removals in one panel update and verify the saved state through a fresh API read.
 
-Remove never creates, tests, or deletes diagnostic Tunnel resources. It does not infer ownership from permanent-object markers, journals, snapshots, or historical state.
+Remove never creates, tests, inspects, or deletes diagnostic Tunnel inbounds or diagnostic finalRules. It does not infer ownership from permanent-object markers, journals, snapshots, or historical state.
 
 ## Temporary staging diagnostics
 
