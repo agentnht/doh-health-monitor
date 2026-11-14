@@ -2155,7 +2155,7 @@ def run_tunnel_dns_self_test(port: int, status_url: str) -> None:
 def confirm_restart(action: str, approved_flag: bool = False) -> None:
     """Inform the operator about a possible panel-triggered Xray restart; never prompt."""
     del approved_flag  # Kept for CLI/API compatibility; confirmation is no longer required.
-    if action not in {"integrate", "remove", "tunnel create", "tunnel remove"}:
+    if action not in {"integrate", "remove"}:
         raise IntegrationError("Unknown panel directive")
     print()
     print("NOTICE: this LucX-UI panel change may automatically restart the Xray process.")
@@ -2525,8 +2525,8 @@ def command_integrate(args, client: PanelAPI) -> int:
     test_error = None
     try:
         if not existing_diagnostics:
-            command_tunnel_create(args, client, notify_restart=False)
-        command_tunnel_test(args, client)
+            ensure_diagnostic_tunnel(args, client, notify_restart=False)
+        test_diagnostic_tunnel(args, client)
     except IntegrationError as exc:
         test_error = exc
 
@@ -2631,7 +2631,7 @@ def command_remove(args, client: PanelAPI) -> int:
     return 0
 
 
-def command_tunnel_create(args, client: PanelAPI, *, notify_restart: bool = True) -> int:
+def ensure_diagnostic_tunnel(args, client: PanelAPI, *, notify_restart: bool = True) -> int:
     """Create and retain one diagnostic Tunnel and its owned temporary rule."""
     existing = discover_temporary_leftovers(client)
     if existing:
@@ -2674,7 +2674,7 @@ def command_tunnel_create(args, client: PanelAPI, *, notify_restart: bool = True
     return 0
 
 
-def command_tunnel_test(args, client: PanelAPI) -> int:
+def test_diagnostic_tunnel(args, client: PanelAPI) -> int:
     """Test an existing diagnostic Tunnel without changing any panel records."""
     resources = discover_temporary_leftovers(client)
     if len(resources) != 1:
@@ -2696,50 +2696,6 @@ def command_tunnel_test(args, client: PanelAPI) -> int:
         getattr(args, "plugin_status_url", DEFAULT_PLUGIN_STATUS_URL),
     )
     print("PASS: diagnostic Tunnel test completed; Tunnel and rule were left untouched.")
-    return 0
-
-
-def command_tunnel_status(args, client: PanelAPI) -> int:
-    """Read-only status of diagnostic Tunnel resources."""
-    resources = discover_temporary_leftovers(client)
-    state = client.read_state()
-    rule_count = _temporary_final_rule_count(state["xraySetting"])
-    print("Directive: TUNNEL STATUS (read-only)")
-    if not resources:
-        print("No diagnostic Tunnel inbound exists.")
-    for resource in resources:
-        print(
-            f"Tunnel: inbound ID {resource['inbound_id']}, loopback port {resource['port']}, "
-            f"rule mode {resource['rule_mode']}, marker {resource['expected']['remark']}"
-        )
-    print(f"Matching temporary finalRule count: {rule_count}")
-    print(
-        "Temporary DNS allow precedes matching blocks: "
-        + ("yes" if rule_count == 1 and _temporary_dns_allow_precedes_blocks(
-            _temporary_final_rules(state["xraySetting"])
-        ) else "no")
-    )
-    if rule_count:
-        usage = _diagnostic_external_use_reasons(
-            state["xraySetting"], resources, client.list_inbounds()
-        )
-        if usage["final_rule"]:
-            print("NOTICE: matching finalRule has external use: " + ", ".join(usage["final_rule"]))
-        else:
-            print("NOTICE: matching finalRule has no detected external use and is eligible for cleanup by Integrate.")
-    print("Read-only status: no panel mutation was sent.")
-    return 0
-
-
-def command_tunnel_remove(args, client: PanelAPI) -> int:
-    """Explicitly remove diagnostic resources created by tunnel create."""
-    resources = discover_temporary_leftovers(client)
-    if not resources:
-        print("No owned diagnostic Tunnel exists; no records were removed.")
-        return 0
-    confirm_restart("tunnel remove", args.approve_restart)
-    cleanup_temporary_leftovers(client)
-    print("PASS: explicitly requested diagnostic Tunnel cleanup completed.")
     return 0
 
 
@@ -2770,16 +2726,12 @@ def main() -> int:
     )
     parser.add_argument(
         "action", nargs="+",
-        help="integrate | remove | tunnel create|test|status|remove",
+        help="integrate | remove",
     )
     args = parser.parse_args()
     action = tuple(args.action)
-    if action not in {
-        ("integrate",), ("remove",),
-        ("tunnel", "create"), ("tunnel", "test"),
-        ("tunnel", "status"), ("tunnel", "remove"),
-    }:
-        parser.error("choose integrate, remove, or tunnel {create,test,status,remove}")
+    if action not in {("integrate",), ("remove",)}:
+        parser.error("choose integrate or remove")
     try:
         if os.geteuid() != 0:
             raise IntegrationError("Run this tool as root directly on the LucX-UI VPS")
@@ -2845,7 +2797,7 @@ def main() -> int:
         if endpoint.host_header:
             print("Panel domain validation: configured Host header and TLS SNI will be used.")
 
-        if action in {("integrate",), ("tunnel", "test")}:
+        if action == ("integrate",):
             check_plugin_health(args.plugin_service, args.plugin_status_url, args.plugin_port)
         if action in {("integrate",), ("remove",)}:
             check_xray_compatibility(args.xray_bin)
@@ -2862,13 +2814,7 @@ def main() -> int:
             return command_integrate(args, client)
         if action == ("remove",):
             return command_remove(args, client)
-        if action == ("tunnel", "create"):
-            return command_tunnel_create(args, client)
-        if action == ("tunnel", "test"):
-            return command_tunnel_test(args, client)
-        if action == ("tunnel", "status"):
-            return command_tunnel_status(args, client)
-        return command_tunnel_remove(args, client)
+        return command_remove(args, client)
     except IntegrationError as exc:
         print("ERROR:", exc, file=sys.stderr)
         return 2
