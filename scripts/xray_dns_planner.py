@@ -621,7 +621,7 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                     broad_compatible_routes.append((index, target))
                 else:
                     plan.blockers.append(
-                        f"Existing broad routing rule at routing.rules[{index}] uses incompatible outboundTag {target!r}; its balancerTag, if any, is not selected by Xray"
+                        f"Existing broad routing rule at routing.rules[{index}] uses incompatible outboundTag {target!r}; a new port-53 fallback would be shadowed and its balancerTag, if any, is not selected by Xray"
                     )
             elif isinstance(balancer, str):
                 selected, error = _resolve_balancer_dns_targets(balancer, balancers, outbound_index)
@@ -723,6 +723,7 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
                 )
     else:
         scoped_targets: set[str] = set()
+        scoped_target_order: list[str] = []
         for index, rule in enumerate(rules):
             if not rule_may_match_port53(rule):
                 continue
@@ -740,12 +741,17 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
             if isinstance(target, str):
                 if target in compatible:
                     scoped_targets.add(target)
+                    if target not in scoped_target_order:
+                        scoped_target_order.append(target)
             elif isinstance(balancer, str):
                 selected, resolve_error = _resolve_balancer_dns_targets(
                     balancer, balancers, outbound_index
                 )
                 if resolve_error is None and selected:
-                    scoped_targets.add(selected[0])
+                    resolved_target = selected[0]
+                    scoped_targets.add(resolved_target)
+                    if resolved_target not in scoped_target_order:
+                        scoped_target_order.append(resolved_target)
 
         broad_targets = {target for _index, target in broad_compatible_routes}
         covered_transports = {
@@ -778,11 +784,9 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
             # Every member was independently verified to perform the same
             # local DNS operation. Reuse the first matching existing policy
             # target and preserve all scoped rules without rewriting them.
-            chosen_tag = next(
-                target for rule in rules
-                for target in [rule.get("outboundTag") or rule.get("balancerTag")]
-                if target in scoped_targets
-            )
+            # Keep the first compatible target in routing order. For a
+            # balancer rule this is the resolved outbound tag, not balancerTag.
+            chosen_tag = scoped_target_order[0]
             if len(scoped_targets) > 1:
                 plan.warnings.append(
                     "Scoped port-53 rules use multiple equivalent local DNS targets; the first is reused for the global fallback"
@@ -869,7 +873,7 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
             if index > 0 and _rule_may_match_loopback_dns_without_port(rule)
         ]
         first_broad = min(broad_indexes, default=len(rules))
-        insert_at = max(1, last_scoped + 1)
+        insert_at = 0 if not rules else max(1, last_scoped + 1)
         if insert_at > first_broad:
             plan.blockers.append(
                 "Existing routing order has a broad rule before the position needed for a safe port-53 route; manual review required"
