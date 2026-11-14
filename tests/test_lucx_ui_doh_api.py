@@ -1940,7 +1940,7 @@ class DnsTunnelProbeTests(unittest.TestCase):
                 r"UDP Tunnel DNS self-test failed at 127\.0\.0\.1:15353: UDP response timeout",
             ):
                 api_tool.run_tunnel_dns_self_test(15353, "http://127.0.0.1:18765/status")
-        query.assert_called_once_with("127.0.0.1", 15353, tcp=False)
+        query.assert_called_once_with("127.0.0.1", 15353, tcp=False, name="example.com")
 
     def test_udp_timeout_reports_plugin_counter_delta(self):
         with patch.object(api_tool, "read_plugin_counters", side_effect=[(10, 0), (10, 0)]), \
@@ -1963,8 +1963,8 @@ class DnsTunnelProbeTests(unittest.TestCase):
             ):
                 api_tool.run_tunnel_dns_self_test(15353, "http://127.0.0.1:18765/status")
         self.assertEqual(query.call_count, 2)
-        self.assertEqual(query.call_args_list[0].kwargs, {"tcp": False})
-        self.assertEqual(query.call_args_list[1].kwargs, {"tcp": True})
+        self.assertEqual(query.call_args_list[0].kwargs, {"tcp": False, "name": "example.com"})
+        self.assertEqual(query.call_args_list[1].kwargs, {"tcp": True, "name": "www.example.com"})
 
     def test_query_dns_a_reports_udp_receive_timeout_with_endpoint(self):
         with patch.object(api_tool.socket, "socket") as socket_factory:
