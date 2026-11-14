@@ -2190,7 +2190,7 @@ def confirm_restart(action: str, approved_flag: bool) -> None:
     print("when Xray is running. This tool will not restart Xray directly.")
     if approved_flag:
         return
-    expected = {"apply": "APPLY", "rollback": "ROLLBACK", "cleanup": "CLEANUP"}.get(action)
+    expected = {"apply": "APPLY", "rollback": "ROLLBACK", "cleanup": "CLEANUP", "create-test": "CREATE TEST"}.get(action)
     if expected is None:
         raise IntegrationError("Unknown operation requiring restart approval")
     entered = read_tty_confirmation(f"Type {expected} to continue: ")
@@ -2595,6 +2595,134 @@ def cleanup_temporary_leftovers(client: PanelAPI, backup_dir: Path, discovered: 
     )
 
 
+def command_create_manual_tunnel(client: PanelAPI, backup_dir: Path) -> int:
+    """Create a verified loopback DNS Tunnel and retain it for manual inspection."""
+    snapshot = client.get_snapshot()
+    plan = build_plan(snapshot["xraySetting"])
+    print_plan(plan)
+    if plan.blockers:
+        return 2
+    if plan.changes:
+        raise IntegrationError(
+            "Permanent DNS integration is incomplete; run apply first. "
+            "create-test never changes permanent DNS settings."
+        )
+
+    leftovers = inspect_temporary_leftovers(client, backup_dir)
+    if leftovers["errors"]:
+        raise IntegrationError(
+            "Existing temporary Tunnel resources cannot be safely inspected: "
+            + "; ".join(leftovers["errors"])
+        )
+    if leftovers["tunnels"] or leftovers["final_rule_present"] or leftovers["journal_paths"]:
+        journals = ", ".join(str(path) for path in leftovers["journal_paths"])
+        detail = f" Recovery journal(s): {journals}." if journals else ""
+        raise IntegrationError(
+            "Temporary Tunnel/finalRule resources or recovery markers already exist. "
+            "Clean them up before creating another manual test." + detail
+        )
+
+    remaining = list(TUNNEL_PORT_CANDIDATES)
+    for attempt in range(3):
+        inbounds = client.list_inbounds()
+        port = choose_temporary_tunnel_port(inbounds, candidates=remaining)
+        remaining.remove(port)
+        expected = build_temporary_tunnel(port)
+        journal = _write_recovery_journal(
+            backup_dir, expected, None, "create-pending",
+            final_rule=TEMP_DNS_FINAL_RULE,
+        )
+        inbound_id = None
+        add_error = None
+        final_rule_attempted = [False]
+        try:
+            journal = _write_recovery_journal(
+                backup_dir, expected, None, "final-rule-create-pending",
+                final_rule=TEMP_DNS_FINAL_RULE,
+            )
+            install_temporary_dns_final_rule(
+                client, attempt_state=final_rule_attempted
+            )
+            journal = _write_recovery_journal(
+                backup_dir, expected, None, "final-rule-created",
+                final_rule=TEMP_DNS_FINAL_RULE,
+            )
+            try:
+                created = client.add_inbound(expected)
+            except IntegrationError as exc:
+                add_error = exc
+                raise
+            inbound_id = created["id"]
+            journal = _write_recovery_journal(
+                backup_dir, expected, inbound_id, "created",
+                final_rule=TEMP_DNS_FINAL_RULE,
+            )
+            current = client.list_inbounds()
+            verify_temporary_tunnel(current, expected, inbound_id)
+            wait_for_tunnel_listeners(port)
+            journal = _write_recovery_journal(
+                backup_dir, expected, inbound_id, "manual-inspection-ready",
+                final_rule=TEMP_DNS_FINAL_RULE,
+            )
+        except Exception as exc:
+            cleanup_errors = []
+            try:
+                removed = cleanup_temporary_tunnel(client, expected, inbound_id)
+                if inbound_id is not None or removed:
+                    wait_for_tunnel_port_closed(port)
+            except Exception as cleanup_exc:
+                cleanup_errors.append("Tunnel: " + str(cleanup_exc))
+            if final_rule_attempted[0]:
+                try:
+                    cleanup_temporary_dns_final_rule(client, TEMP_DNS_FINAL_RULE)
+                except Exception as cleanup_exc:
+                    cleanup_errors.append("finalRule: " + str(cleanup_exc))
+            if cleanup_errors:
+                try:
+                    journal = _write_recovery_journal(
+                        backup_dir, expected, inbound_id, "cleanup-required",
+                        final_rule=TEMP_DNS_FINAL_RULE,
+                    )
+                except Exception:
+                    pass
+                raise IntegrationError(
+                    f"Manual Tunnel creation failed and cleanup needs recovery. "
+                    f"Journal: {journal}. Details: {'; '.join(cleanup_errors)}"
+                ) from None
+            journal.unlink(missing_ok=True)
+            if add_error is not None and not _port_is_free_on_loopback(port) and attempt < 2:
+                print(
+                    f"NOTICE: port {port} was claimed during Tunnel creation; "
+                    "retrying with another free port."
+                )
+                continue
+            if isinstance(exc, IntegrationError):
+                raise
+            raise IntegrationError(
+                "Manual Tunnel creation failed; temporary resources were cleaned. "
+                f"Underlying error: {_safe_exception_summary(exc)}"
+            ) from None
+
+        print(f"PASS: manual DNS Tunnel is active on 127.0.0.1:{port} (TCP+UDP).")
+        print("The temporary Tunnel and finalRule are intentionally retained for manual testing.")
+        print(
+            "UDP test: "
+            f"dig @127.0.0.1 -p {port} example.com A +time=3 +tries=1"
+        )
+        print(
+            "TCP test: "
+            f"dig +tcp @127.0.0.1 -p {port} example.com A +time=3 +tries=1"
+        )
+        print("RECOVERY JOURNAL:", journal)
+        print(
+            "Cleanup command: "
+            f"sudo python3 {Path(__file__).resolve()} cleanup-test "
+            f"--recovery-journal {journal} --approve-restart"
+        )
+        return 0
+    raise IntegrationError("Manual Tunnel creation repeatedly lost a port-allocation race")
+
+
 def command_apply(
     args, client: PanelAPI, *, perform_preflight: bool = False
 ) -> int:
@@ -2803,7 +2931,7 @@ def main() -> int:
         action="store_true",
         help="Explicitly approve the full Xray restart that the panel API may perform",
     )
-    parser.add_argument("action", choices=("check", "plan", "apply", "rollback", "cleanup-test"))
+    parser.add_argument("action", choices=("check", "plan", "apply", "rollback", "create-test", "cleanup-test"))
     parser.add_argument("--recovery-journal", help="Private temporary Tunnel recovery journal for cleanup-test")
     parser.add_argument("--backup", help="Backup file required for rollback")
     args = parser.parse_args()
@@ -2898,6 +3026,9 @@ def main() -> int:
             return command_check_or_plan(args, client)
         if args.action == "apply":
             return command_apply(args, client, perform_preflight=True)
+        if args.action == "create-test":
+            confirm_restart("create-test", args.approve_restart)
+            return command_create_manual_tunnel(client, Path(args.backup_dir).expanduser())
         if args.action == "cleanup-test":
             journal_path = Path(args.recovery_journal).expanduser()
             journal = _load_recovery_journal(journal_path)
