@@ -1897,10 +1897,6 @@ def discover_temporary_leftovers(client: PanelAPI) -> list[dict]:
 def _diagnostic_external_use_reasons(config: dict, resources: list[dict], inbounds: list[dict]) -> dict:
     """Find live references outside the diagnostic plan; markers never imply ownership."""
     diagnostic_ids = {item["inbound_id"] for item in resources}
-    diagnostic_tags = {
-        item.get("tag") for item in resources
-        if isinstance(item.get("tag"), str) and item.get("tag")
-    }
     reasons = {"inbounds": {}, "final_rule": []}
 
     routing = config.get("routing", {})
