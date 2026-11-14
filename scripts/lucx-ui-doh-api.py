@@ -2001,8 +2001,13 @@ def run_temporary_tunnel_test(client: PanelAPI, status_url: str, backup_dir: Pat
         port = choose_temporary_tunnel_port(inbounds, candidates=remaining)
         remaining.remove(port)
         expected = build_temporary_tunnel(port)
+        # Read and validate the exact original Freedom rule set before writing
+        # a journal or changing Xray. The journal is the recovery authority.
+        original_final_rules = preflight_temporary_dns_final_rule(client)
         journal = _write_recovery_journal(
-            backup_dir, expected, None, "create-pending", final_rule=TEMP_DNS_FINAL_RULE
+            backup_dir, expected, None, "create-pending",
+            original_final_rules=original_final_rules,
+            final_rule=TEMP_DNS_FINAL_RULE,
         )
         inbound_id = None
         test_error = None
@@ -2012,13 +2017,15 @@ def run_temporary_tunnel_test(client: PanelAPI, status_url: str, backup_dir: Pat
         try:
             journal = _write_recovery_journal(
                 backup_dir, expected, None, "final-rule-create-pending",
+                original_final_rules=original_final_rules,
                 final_rule=TEMP_DNS_FINAL_RULE,
             )
             install_temporary_dns_final_rule(
-                client, attempt_state=final_rule_attempted
+                client, original_final_rules, attempt_state=final_rule_attempted
             )
             journal = _write_recovery_journal(
                 backup_dir, expected, None, "final-rule-created",
+                original_final_rules=original_final_rules,
                 final_rule=TEMP_DNS_FINAL_RULE,
             )
             try:
@@ -2027,13 +2034,14 @@ def run_temporary_tunnel_test(client: PanelAPI, status_url: str, backup_dir: Pat
                 add_error = exc
                 raise
             inbound_id = created["id"]
-            journal = _write_recovery_journal(backup_dir, expected, inbound_id, "created")
+            journal = _write_recovery_journal(
+                backup_dir, expected, inbound_id, "created",
+                original_final_rules=original_final_rules,
+                final_rule=TEMP_DNS_FINAL_RULE,
+            )
             current = client.list_inbounds()
             verify_temporary_tunnel(current, expected, inbound_id)
             wait_for_tunnel_listeners(port)
-            # The permanent port-53 -> dns-out rule routes the Tunnel's rewritten
-            # 127.0.0.1:53 destination to the plugin. No temporary Xray routing
-            # mutation or second Xray restart is necessary.
             run_tunnel_dns_self_test(port, status_url)
         except Exception as exc:
             test_error = exc
@@ -2053,7 +2061,7 @@ def run_temporary_tunnel_test(client: PanelAPI, status_url: str, backup_dir: Pat
             # must not prevent an attempt to remove the temporary finalRule.
             if final_rule_attempted[0]:
                 try:
-                    cleanup_temporary_dns_final_rule(client, TEMP_DNS_FINAL_RULE)
+                    cleanup_temporary_dns_final_rule(client, TEMP_DNS_FINAL_RULE, original_final_rules)
                 except Exception as exc:
                     cleanup_errors.append("finalRule: " + str(exc))
 
@@ -2062,6 +2070,7 @@ def run_temporary_tunnel_test(client: PanelAPI, status_url: str, backup_dir: Pat
                 try:
                     _write_recovery_journal(
                         backup_dir, expected, inbound_id, "cleanup-required",
+                        original_final_rules=original_final_rules,
                         final_rule=TEMP_DNS_FINAL_RULE,
                     )
                 except Exception:
@@ -2763,8 +2772,10 @@ def command_create_manual_tunnel(client: PanelAPI, backup_dir: Path) -> int:
         port = choose_temporary_tunnel_port(inbounds, candidates=remaining)
         remaining.remove(port)
         expected = build_temporary_tunnel(port)
+        original_final_rules = preflight_temporary_dns_final_rule(client)
         journal = _write_recovery_journal(
             backup_dir, expected, None, "create-pending",
+            original_final_rules=original_final_rules,
             final_rule=TEMP_DNS_FINAL_RULE,
         )
         inbound_id = None
@@ -2773,13 +2784,15 @@ def command_create_manual_tunnel(client: PanelAPI, backup_dir: Path) -> int:
         try:
             journal = _write_recovery_journal(
                 backup_dir, expected, None, "final-rule-create-pending",
+                original_final_rules=original_final_rules,
                 final_rule=TEMP_DNS_FINAL_RULE,
             )
             install_temporary_dns_final_rule(
-                client, attempt_state=final_rule_attempted
+                client, original_final_rules, attempt_state=final_rule_attempted
             )
             journal = _write_recovery_journal(
                 backup_dir, expected, None, "final-rule-created",
+                original_final_rules=original_final_rules,
                 final_rule=TEMP_DNS_FINAL_RULE,
             )
             try:
@@ -2790,6 +2803,7 @@ def command_create_manual_tunnel(client: PanelAPI, backup_dir: Path) -> int:
             inbound_id = created["id"]
             journal = _write_recovery_journal(
                 backup_dir, expected, inbound_id, "created",
+                original_final_rules=original_final_rules,
                 final_rule=TEMP_DNS_FINAL_RULE,
             )
             current = client.list_inbounds()
@@ -2797,6 +2811,7 @@ def command_create_manual_tunnel(client: PanelAPI, backup_dir: Path) -> int:
             wait_for_tunnel_listeners(port)
             journal = _write_recovery_journal(
                 backup_dir, expected, inbound_id, "manual-inspection-ready",
+                original_final_rules=original_final_rules,
                 final_rule=TEMP_DNS_FINAL_RULE,
             )
         except Exception as exc:
@@ -2809,13 +2824,16 @@ def command_create_manual_tunnel(client: PanelAPI, backup_dir: Path) -> int:
                 cleanup_errors.append("Tunnel: " + str(cleanup_exc))
             if final_rule_attempted[0]:
                 try:
-                    cleanup_temporary_dns_final_rule(client, TEMP_DNS_FINAL_RULE)
+                    cleanup_temporary_dns_final_rule(
+                        client, TEMP_DNS_FINAL_RULE, original_final_rules
+                    )
                 except Exception as cleanup_exc:
                     cleanup_errors.append("finalRule: " + str(cleanup_exc))
             if cleanup_errors:
                 try:
                     journal = _write_recovery_journal(
                         backup_dir, expected, inbound_id, "cleanup-required",
+                        original_final_rules=original_final_rules,
                         final_rule=TEMP_DNS_FINAL_RULE,
                     )
                 except Exception:
