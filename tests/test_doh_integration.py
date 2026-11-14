@@ -46,7 +46,18 @@ def sample_config() -> dict:
                 },
                 "sendThrough": "127.0.0.1",
             },
-            {"tag": "direct", "protocol": "freedom", "settings": {}},
+            {
+                "tag": "direct",
+                "protocol": "freedom",
+                "settings": {
+                    "finalRules": [{
+                        "action": "allow",
+                        "network": ["tcp", "udp"],
+                        "port": "5355",
+                        "ip": ["127.0.0.1"],
+                    }]
+                },
+            },
             {"tag": "dns-doqd", "protocol": "dns", "settings": {}},
             {"tag": "custom-out", "protocol": "blackhole", "settings": {}},
         ],
