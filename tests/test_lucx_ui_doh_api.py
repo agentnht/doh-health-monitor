@@ -366,7 +366,7 @@ class IntegrateOrchestrationTests(unittest.TestCase):
         test.assert_called_once_with(self._args(), client)
         cleanup.assert_called_once_with(client)
 
-    def test_integrate_leaves_diagnostic_resources_for_failed_self_test(self):
+    def test_integrate_attempts_cleanup_after_failed_self_test(self):
         client = self.FakePanel(base_config())
         with patch.object(api_tool, "discover_temporary_leftovers", return_value=[]), \
              patch.object(api_tool, "confirm_restart"), \
@@ -374,9 +374,21 @@ class IntegrateOrchestrationTests(unittest.TestCase):
              patch.object(api_tool, "command_tunnel_create"), \
              patch.object(api_tool, "command_tunnel_test", side_effect=api_tool.IntegrationError("UDP failed")), \
              patch.object(api_tool, "cleanup_temporary_leftovers") as cleanup:
-            with self.assertRaisesRegex(api_tool.IntegrationError, "left in place for investigation"):
+            with self.assertRaisesRegex(api_tool.IntegrationError, "self-test failed"):
                 api_tool.command_integrate(self._args(), client)
-        cleanup.assert_not_called()
+        cleanup.assert_called_once_with(client)
+
+    def test_integrate_reports_test_and_cleanup_failures_separately(self):
+        client = self.FakePanel(base_config())
+        with patch.object(api_tool, "discover_temporary_leftovers", return_value=[]), \
+             patch.object(api_tool, "confirm_restart"), \
+             patch.object(api_tool, "_apply_panel_update", return_value=client.state), \
+             patch.object(api_tool, "command_tunnel_create"), \
+             patch.object(api_tool, "command_tunnel_test", side_effect=api_tool.IntegrationError("UDP failed")), \
+             patch.object(api_tool, "cleanup_temporary_leftovers", side_effect=api_tool.IntegrationError("inbound retained")) as cleanup:
+            with self.assertRaisesRegex(api_tool.IntegrationError, "cleanup also failed"):
+                api_tool.command_integrate(self._args(), client)
+        cleanup.assert_called_once_with(client)
 
 
 class AdapterCLITests(unittest.TestCase):
@@ -2186,7 +2198,7 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
         self.assertEqual(client.deleted, [9])
         self.assertEqual(api_tool._temporary_final_rule_count(client.state["xraySetting"]), 0)
 
-    def test_remove_preserves_rule_marked_as_reused(self):
+    def test_remove_deletes_unreferenced_rule_even_when_marked_as_reused(self):
         client = self.FakeClient(existing_rule=True)
         expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718", rule_mode="reused")
         inbound = copy.deepcopy(expected)
@@ -2199,7 +2211,38 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
 
         self.assertEqual(client.inbounds, [])
         self.assertEqual(client.deleted, [10])
+        self.assertEqual(api_tool._temporary_final_rule_count(client.state["xraySetting"]), 0)
+
+    def test_cleanup_preserves_rule_when_direct_outbound_has_external_route_reference(self):
+        client = self.FakeClient(existing_rule=True)
+        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718", rule_mode="reused")
+        inbound = copy.deepcopy(expected)
+        inbound.update({"id": 10, "tag": "temporary-10"})
+        client.inbounds = [inbound]
+        client.state["xraySetting"]["routing"]["rules"].append({
+            "type": "field", "ip": ["127.0.0.1"], "port": "5355", "outboundTag": "direct"
+        })
+
+        with patch.object(api_tool, "wait_for_tunnel_port_closed"):
+            api_tool.cleanup_temporary_leftovers(client)
+
+        self.assertEqual(client.inbounds, [])
         self.assertEqual(api_tool._temporary_final_rule_count(client.state["xraySetting"]), 1)
+
+    def test_cleanup_preserves_inbound_referenced_by_non_diagnostic_route(self):
+        client = self.FakeClient(existing_rule=False)
+        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718", rule_mode="added")
+        inbound = copy.deepcopy(expected)
+        inbound.update({"id": 10, "tag": "temporary-10"})
+        client.inbounds = [inbound]
+        client.state["xraySetting"]["routing"]["rules"].append({
+            "type": "field", "inboundTag": ["temporary-10"], "outboundTag": "proxy"
+        })
+
+        api_tool.cleanup_temporary_leftovers(client)
+
+        self.assertEqual([item["id"] for item in client.inbounds], [10])
+        self.assertEqual(api_tool._temporary_final_rule_count(client.state["xraySetting"]), 0)
 
     def test_create_repairs_misordered_existing_dns_allow(self):
         client = self.FakeClient(existing_rule=True)
