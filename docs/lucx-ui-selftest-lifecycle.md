@@ -11,7 +11,7 @@ The operator selects exactly one directive:
 - **Integrate:** calculate which compatible integration objects are already present, reuse them, and add only the missing objects. Run the temporary UDP/TCP self-test as part of the integration procedure.
 - **Remove:** identify current objects that implement the integration, check their dependencies, and remove only those that can be safely detached. Remove does not create temporary test rules.
 
-There is no third "partial operation", "resume", or "recovery" directive. No operation ID, journal, or saved execution state is used. Each invocation is simply Integrate or Remove, planned afresh from the configuration that exists at that moment.
+Each invocation is one explicit Integrate or Remove directive, planned from the configuration that exists at that moment. No operation ID, journal, or saved execution state is used.
 
 The same semantic planner and object/reference analysis must be shared by both directives. Do not build separate tag-based heuristics for apply, uninstall, rollback, or cleanup.
 
@@ -23,7 +23,7 @@ The same semantic planner and object/reference analysis must be shared by both d
 4. Apply only changes belonging to the selected directive, one panel API mutation at a time.
 5. Read the panel state back after each mutation and verify its result before making a dependent change.
 
-A later invocation is not a continuation of an old operation: it is a new explicit Integrate or Remove request, and its plan is calculated from the then-current panel state. There is no restore-to-before behavior and no hidden automatic rollback. If a candidate is shared, ambiguous, or still referenced, the current plan leaves it untouched and reports why.
+Every invocation is a new explicit Integrate or Remove request, and its plan is calculated from the then-current panel state. There is no restore-to-before behavior or hidden automatic rollback. If a candidate is shared, ambiguous, or still referenced, the current plan leaves it untouched and reports why.
 
 The plan is the complete definition of what the selected directive should do against the current configuration.
 
@@ -150,7 +150,7 @@ These files are historical artifacts from the old implementation only. Do not us
 5. A unique integration route is removed first; the outbound is removed only after read-back and fresh zero-reference scan.
 6. Panel-owned `xui-dns-allow`, user routes, FakeDNS, and unrelated outbounds/DNS servers remain unchanged.
 7. Ambiguous/duplicate candidates are listed as blockers; no speculative deletion occurs.
-8. Each invocation accepts exactly one directive (Integrate or Remove) and computes its entire plan from current live config; there are no operation IDs or continuation/resume states.
+8. Each invocation accepts exactly one directive (Integrate or Remove) and computes its entire plan from current live config; no saved execution state is involved.
 9. No full Xray snapshots, historical rule arrays, mandatory journals, or snapshot-based rollback files are created or needed.
 10. Temporary test reuses pre-existing compatible rule and never deletes it as though it were newly added.
 11. Test creates Tunnel before any missing temporary allow rule; cleanup removes and verifies the rule before deleting Tunnel.
@@ -163,4 +163,4 @@ All Python compilation/unit tests/shell syntax checks and both GitHub Actions wo
 
 ## Next implementation work
 
-The current adapter still contains legacy backup/journal/rollback behavior. Remove that architecture rather than adapting it into a new journal format, continuation state, or a third recovery directive. Refactor `scripts/lucx-ui-doh-api.py`, `scripts/xray_dns_planner.py` if required, `tests/test_lucx_ui_doh_api.py`, and the API documentation around the single live-state reconciliation model above. Then run both GitHub workflows. Only after CI passes should the staging VPS run the new read-only plan/inspection and selected operation.
+The current adapter still contains legacy backup/journal/rollback behavior. Remove that architecture; do not replace it with another journal or saved execution state. Refactor `scripts/lucx-ui-doh-api.py`, `scripts/xray_dns_planner.py` if required, `tests/test_lucx_ui_doh_api.py`, and the API documentation around the single live-state reconciliation model above. Then run both GitHub workflows. Only after CI passes should the staging VPS run the new read-only plan/inspection and selected operation.
