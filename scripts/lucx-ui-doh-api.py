@@ -2502,7 +2502,7 @@ def command_integrate(args, client: PanelAPI) -> int:
 
 
 def command_remove(args, client: PanelAPI) -> int:
-    """Remove only resources selected by the desired Integrate plan and not used externally."""
+    """Remove unshared planned DNS resources; always preserve direct and its finalRules."""
     state = client.read_state()
     plan = build_remove_plan(state["xraySetting"])
     print("Directive: REMOVE")
@@ -2568,6 +2568,7 @@ def command_remove(args, client: PanelAPI) -> int:
     final_plan = build_remove_plan(after["xraySetting"])
     print("Final Remove assessment:")
     print_remove_plan(final_plan)
+    print("NOTE: the direct freedom outbound and its settings.finalRules are intentionally preserved by Remove.")
     print("PASS: Remove removed only unshared resources selected by the desired Integrate plan; diagnostic Tunnel resources were not touched.")
     return 0
 
