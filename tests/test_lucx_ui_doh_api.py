@@ -369,6 +369,24 @@ class IntegrateOrchestrationTests(unittest.TestCase):
                 api_tool.command_integrate(self._args(), client)
 
 
+class AdapterCLITests(unittest.TestCase):
+    def test_plan_only_is_not_a_supported_cli_option(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "lucx-ui-doh-api.py"),
+                "--plan-only",
+                "integrate",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unrecognized arguments", result.stderr)
+
+
 class SharedPlannerCLITests(unittest.TestCase):
     def _run(self, config):
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as handle:
