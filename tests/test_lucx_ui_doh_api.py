@@ -2334,6 +2334,44 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
         self.assertEqual(client.inbounds, [])
         self.assertEqual(api_tool._temporary_final_rule_count(client.state["xraySetting"]), 1)
 
+    def test_cleanup_removes_rule_when_direct_route_cannot_match_final_rule_endpoint(self):
+        client = self.FakeClient(existing_rule=True)
+        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718", rule_mode="reused")
+        inbound = copy.deepcopy(expected)
+        inbound.update({"id": 10, "tag": "temporary-10"})
+        client.inbounds = [inbound]
+        client.state["xraySetting"]["routing"]["rules"].append({
+            "type": "field",
+            "ip": ["203.0.113.10"],
+            "port": "443",
+            "outboundTag": "direct",
+        })
+
+        with patch.object(api_tool, "wait_for_tunnel_port_closed"):
+            api_tool.cleanup_temporary_leftovers(client)
+
+        self.assertEqual(client.inbounds, [])
+        self.assertEqual(api_tool._temporary_final_rule_count(client.state["xraySetting"]), 0)
+
+    def test_cleanup_removes_rule_when_direct_route_targets_loopback_on_other_port(self):
+        client = self.FakeClient(existing_rule=True)
+        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718", rule_mode="reused")
+        inbound = copy.deepcopy(expected)
+        inbound.update({"id": 10, "tag": "temporary-10"})
+        client.inbounds = [inbound]
+        client.state["xraySetting"]["routing"]["rules"].append({
+            "type": "field",
+            "ip": ["127.0.0.1"],
+            "port": "5353",
+            "outboundTag": "direct",
+        })
+
+        with patch.object(api_tool, "wait_for_tunnel_port_closed"):
+            api_tool.cleanup_temporary_leftovers(client)
+
+        self.assertEqual(client.inbounds, [])
+        self.assertEqual(api_tool._temporary_final_rule_count(client.state["xraySetting"]), 0)
+
     def test_cleanup_preserves_inbound_referenced_by_non_diagnostic_route(self):
         client = self.FakeClient(existing_rule=False)
         expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718", rule_mode="added")
