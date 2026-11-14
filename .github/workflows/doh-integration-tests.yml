@@ -1,0 +1,42 @@
+name: DoH integration tests
+
+on:
+  pull_request:
+    paths:
+      - "scripts/check-dns-integration.sh"
+      - "scripts/doh-integration-dry-run.py"
+      - "scripts/doh-integration-staging.py"
+      - "scripts/lucx-ui-doh-api.py"
+      - "scripts/xray_dns_planner.py"
+      - "tests/test_doh_integration.py"
+      - "tests/test_lucx_ui_doh_api.py"
+      - "docs/lucx-ui-doh-integration.md"
+      - ".github/workflows/doh-integration-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Compile Python tools and tests
+        run: >-
+          python -m py_compile
+          scripts/doh-integration-dry-run.py
+          scripts/doh-integration-staging.py
+          scripts/lucx-ui-doh-api.py
+          scripts/xray_dns_planner.py
+          tests/test_doh_integration.py
+          tests/test_lucx_ui_doh_api.py
+      - name: Run unit and synthetic SQLite lifecycle tests
+        run: python -m unittest discover -s tests -v
+      - name: Check shell syntax
+        run: bash -n scripts/check-dns-integration.sh
