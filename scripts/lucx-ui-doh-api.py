@@ -2639,7 +2639,7 @@ def main() -> int:
     parser.add_argument("--tls-name", help="Expected certificate IP or DNS name")
     parser.add_argument(
         "--approve-restart", action="store_true",
-        help="Explicitly approve panel API changes that may fully restart Xray",
+        help="Deprecated compatibility flag; panel changes now print a restart notice without prompting",
     )
     parser.add_argument(
         "--plan-only", action="store_true",
