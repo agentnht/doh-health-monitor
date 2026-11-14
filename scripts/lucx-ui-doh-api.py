@@ -2726,7 +2726,7 @@ def command_tunnel_status(args, client: PanelAPI) -> int:
         if usage["final_rule"]:
             print("NOTICE: matching finalRule has external use: " + ", ".join(usage["final_rule"]))
         else:
-            print("NOTICE: matching finalRule has no detected external use and is eligible for cleanup by Integrate/Remove.")
+            print("NOTICE: matching finalRule has no detected external use and is eligible for cleanup by Integrate.")
     print("Read-only status: no panel mutation was sent.")
     return 0
 
