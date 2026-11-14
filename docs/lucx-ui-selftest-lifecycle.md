@@ -1,166 +1,119 @@
-# LucX-UI panel reconciliation: integrate, remove, and self-test
+# LucX-UI panel reconciliation: Integrate and Remove
 
-**Authoritative design for PR #6.** This document supersedes earlier descriptions of snapshot-based rollback, journal-based ownership, and separate cleanup heuristics.
+**Authoritative design and handoff for PR #6.** This document describes the implementation in `scripts/lucx-ui-doh-api.py`. It supersedes the earlier backup, journal, snapshot-rollback, and separate test/cleanup workflows.
 
-## Only two panel directives
+## One model, two directives
 
-The adapter works from the live panel configuration. It never saves a full before/after Xray configuration snapshot and never tries to restore an old configuration.
+The panel adapter has exactly two directives:
 
-The operator selects exactly one directive:
+- **Integrate** — build the desired DNS integration plan from the current panel configuration, reuse compatible existing objects, add only missing permanent objects, then run the temporary UDP/TCP end-to-end test.
+- **Remove** — build the same semantic integration specification against current panel state, identify matching integration objects, inspect references, and remove only objects that are no longer shared or used elsewhere. Remove never creates temporary test resources.
 
-- **Integrate:** calculate which compatible integration objects are already present, reuse them, and add only the missing objects. Run the temporary UDP/TCP self-test as part of the integration procedure.
-- **Remove:** identify current objects that implement the integration, check their dependencies, and remove only those that can be safely detached. Remove does not create temporary test rules.
+Each invocation is one explicit directive. Its plan is calculated from the live configuration returned by LucX-UI immediately before the work. There is no operation ID, persistent execution state, recovery command, historical configuration restore, or partial-operation mode. The CLI accepts only `integrate` and `remove`; `--plan-only` previews either directive without panel writes.
 
-Each invocation is one explicit Integrate or Remove directive, planned from the configuration that exists at that moment. No operation ID, journal, or saved execution state is used.
+No full Xray snapshots, saved pre-change rule arrays, backup files, ownership journals, or rollback files are created or read by the adapter. If an API write cannot be verified, no old config is restored; the next Integrate or Remove invocation calculates a new plan from the current panel state.
 
-The same semantic planner and object/reference analysis must be shared by both directives. Do not build separate tag-based heuristics for apply, uninstall, rollback, or cleanup.
+## Shared semantic planning
 
-### Plan, execute, verify
+Both directives use `build_plan` and the shared `scripts/xray_dns_planner.py` semantic matchers. The plan recognizes DNS behavior by protocol, endpoint, transport, policy, route shape, and relationships, not by a fixed tag name.
 
-1. Read the current Xray configuration and inbounds through the LucX-UI API.
-2. Build the complete plan for the selected directive from that live state.
-3. Show planned changes and blockers. A read-only plan must not modify the panel.
-4. Apply only changes belonging to the selected directive, one panel API mutation at a time.
-5. Read the panel state back after each mutation and verify its result before making a dependent change.
+The Integrate plan:
 
-Every invocation is a new explicit Integrate or Remove request, and its plan is calculated from the then-current panel state. There is no restore-to-before behavior or hidden automatic rollback. If a candidate is shared, ambiguous, or still referenced, the current plan leaves it untouched and reports why.
+1. Read the current `xraySetting` and panel metadata through the LucX-UI API.
+2. Recognize compatible local DNS outbounds, general DNS server entries, and port-53 routing paths regardless of nonstandard outbound tags.
+3. Reuse compatible objects without editing them.
+4. Add only missing permanent DNS objects and preserve panel-owned `xui-dns-allow`, user routes, FakeDNS, unrelated outbounds, and DNS policies.
+5. Read the saved settings back through the panel API and verify the planned result.
 
-The plan is the complete definition of what the selected directive should do against the current configuration.
+The same semantic identity is used by Remove; it does not rely on a historical ownership list or assume that the generated tag `dns-out` was used.
 
-### Explicitly prohibited architecture
+## Integrate: temporary UDP/TCP self-test
 
-For panel Xray configuration changes, do not create or require:
-- a full pre-change or post-change Xray configuration snapshot;
-- a persistent copy of the old `finalRules`, routing rules, outbounds, or DNS arrays for restoration;
-- a recovery journal that is required to decide whether the next run can proceed;
-- a delayed snapshot-based `rollback` workflow.
+The test uses only a loopback Tunnel that rewrites DNS to `127.0.0.1:53`, allows TCP and UDP, and binds an available local port in the reserved test range. It verifies positive A answers over both transports and checks that the plugin query counter increases without increasing the failure counter.
 
-Do not restore an old configuration or overwrite current user changes. The inverse operation is **Remove integration**: it plans against the current state and removes the integration objects that remain safe to remove. Existing historical backup files on the staging VPS are legacy artifacts only; the new algorithm must not read them as its source of truth, create more of them, or depend on them.
+The order is deliberate:
 
-A small diagnostic record may be used only if it does not become an ownership database or a prerequisite for recalculating and executing the live-state plan.
+1. Read current `direct.settings.finalRules`. If the exact test allow rule exists once, classify it as **reused**. If it is absent, classify it as **added by this test**. Duplicates are an ambiguity and block the test.
+2. Create the unique Tunnel first, with the classification included in its reserved remark: `doh-health-monitor-selftest-added-<token>` or `...-reused-<token>`.
+3. Read back and verify the exact Tunnel identity and DNS rewrite settings.
+4. If the rule was absent, re-read the current config, add only that exact rule, and verify it through API read-back. If the rule was pre-existing, do not write or later delete it.
+5. Run UDP and TCP probes and validate plugin counters.
+6. Cleanup in strict order: remove and verify the rule only when this test added it; then delete the exact Tunnel and verify its absence and both TCP/UDP listeners are gone.
 
-## Integrating the permanent DNS path
+The Tunnel remark is a small live identity marker for this one temporary test relationship. It does not identify permanent integration objects and is not a separate journal. A legacy remark from the earlier adapter (`doh-health-monitor-selftest-<hex-token>`) is recognized as an old test Tunnel; the earlier implementation created its exact finalRule before the Tunnel and refused a rule that was already present, so that legacy Tunnel identifies the matching rule as test-added. A matching finalRule without any reserved Tunnel is treated as pre-existing/reused and is not deleted.
 
-- Inspect current inbounds, outbounds, DNS servers, routing rules, balancers, and references through the panel API.
-- Reuse compatible existing objects regardless of their tag/name where semantic behavior matches.
-- Add only missing objects in the planner's delta.
-- Choose new tags only for objects genuinely missing; preserve existing tags and user rule order.
-- Preserve unrelated objects, user routes, FakeDNS, AWG/subscription/sidecar-related config visible in the panel template.
-- Never create, edit, or delete the panel-managed `xui-dns-allow` rule.
-- A second integration plan after successful apply should report the target state already satisfied, with no duplicate objects and no further changes.
+If rule cleanup cannot be verified, the Tunnel is not deleted; its reserved remark remains available for the next Integrate or Remove invocation to re-plan from live API state. No filesystem marker, backup, or recovery mode is used.
 
-## Removing the permanent DNS path
+## Remove: semantic discovery and dependency checks
 
-Removal is the inverse desired-state operation, not a restore from a saved baseline.
+Remove does not create a Tunnel or a temporary finalRule. It first reconciles only verified leftover self-test Tunnels, then builds the permanent removal plan from the current panel settings.
 
-### Read-only discovery plan
+The planner identifies:
 
-1. Read the current live panel config.
-2. Build the canonical integration specification using the same planner as Integrate.
-3. Find candidate integration objects by their semantic fingerprints and relationships, not only by fixed tags:
-   - DNS outbound implementing the local DNS bridge to the plugin endpoint (for example, DNS rewrite to `127.0.0.1:5355`);
-   - DNS server entry pointing to the plugin endpoint with compatible behavior;
-   - port-53 TCP/UDP routing rule(s) directing DNS traffic to the candidate outbound;
-   - dynamically selected tags and supporting objects recognized by the planner.
-4. Treat generated tags/ruleTags (such as `dns-out` and `doh-health-monitor-dns-port53`) as supporting evidence, never as the only ownership test.
-5. Build the reference/dependency graph from the current config. Check routing rules, balancers, DNS references, observatory selectors, proxy chains, and every other supported use of candidate tags/objects.
-6. Produce a read-only removal plan listing each candidate, evidence for its integration role, references found, and whether it is safe to remove.
+- Global TCP/UDP port-53 route rules that route to a compatible local DoH outbound, including a DNS-only balancer path when every selected target is compatible.
+- Outbounds whose actual protocol/settings resolve to the plugin endpoint `127.0.0.1:5355`, regardless of their tag.
+- General (not domain-scoped or otherwise restricted) DNS server entries for `127.0.0.1:5355`.
 
-### Safe removal order
+Removal is dependency ordered and re-planned after every verified API write:
 
-1. Remove only verified integration-specific port-53 route(s); read back and verify they are absent.
-2. Recompute references against the new live config.
-3. Remove a candidate DNS outbound only if it is now unreferenced and the semantic evidence still identifies it as integration plumbing; read back.
-4. Recompute dependencies again.
-5. Remove a matching local DNS server entry only if it is not shared by unrelated DNS policy; read back.
-6. Re-read all relevant Xray settings and report what was removed, what remains shared/reused/ambiguous, and why.
+1. Remove only identified integration port-53 routes and verify the live read-back.
+2. Re-read the current panel config. Remove a matching DNS outbound only when it has no remaining routing-rule, balancer selector/fallback, observatory selector, proxySettings, or dialerProxy references.
+3. Re-read again. Remove the matching DNS server only when it is general and not referenced by any DNS policy rule.
+4. Read the final config and report remaining shared, scoped, duplicate, or ambiguous objects.
 
-Preserve shared, reused, and ambiguous objects. If a compatible object was present before installation but is now exclusively part of the integration path, it may be removed only when the current semantic/reference plan proves this is safe. If another user route, balancer, DNS policy, or proxy chain still relies on it, keep it. The Remove plan must list what is safe to delete and what remains blocked; speculative deletion is not.
+A shared or ambiguous object is preserved. Panel-owned `xui-dns-allow`, user routes, FakeDNS, unrelated outbounds, DNS entries, and the plugin's own TCP/UDP listeners on port 5355 are never cleanup targets. Remove may clear a previously-created test Tunnel, but it never creates temporary test rules.
 
-Do not bulk-delete by tag/prefix. Do not restore an old rules array. Do not create temporary rules during Remove. Every Remove invocation builds its complete plan from current live state.
+## CLI
 
-## Temporary end-to-end self-test
+Run on the LucX-UI VPS as root. Preview either directive without writing:
 
-The self-test is separate from permanent integration and uses at most two temporary objects:
+```bash
+sudo python3 scripts/lucx-ui-doh-api.py --plan-only integrate
+sudo python3 scripts/lucx-ui-doh-api.py --plan-only remove
+```
 
-1. a loopback-only Tunnel inbound with a unique remark;
-2. the exact temporary direct Freedom `finalRule` allowing TCP/UDP to `127.0.0.1:5355`, but only when that rule is actually missing from the live config.
+Execute only the selected directive after reviewing its plan:
 
-Exact rule shape:
+```bash
+sudo python3 scripts/lucx-ui-doh-api.py --approve-restart integrate
+sudo python3 scripts/lucx-ui-doh-api.py --approve-restart remove
+```
 
-~~~json
-{
-  "action": "allow",
-  "network": "tcp,udp",
-  "port": "5355",
-  "ip": ["127.0.0.1"]
-}
-~~~
+The panel API may restart Xray, so a mutating directive requires `--approve-restart` or interactive confirmation. Integrate checks plugin service, listeners, and status before changing the panel. Remove does not require a healthy/running plugin.
 
-### Test plan and execution
+## Known legacy staging VPS context
 
-- Read live inbounds and current `direct.settings.finalRules`.
-- Generate the desired test objects and compute the delta. An existing compatible rule is reused, not added or later treated as a new addition by the current invocation.
-- Verify the candidate Tunnel port is unused in panel inbounds and local TCP/UDP listeners.
-- Validate the direct Freedom outbound and insertion point; the temporary allow must precede matching block rules.
-- Create the temporary Tunnel first: listen only on `127.0.0.1`; rewrite DNS to `127.0.0.1:53`; `allowedNetwork=tcp,udp`; reserved temporary port; unique remark.
-- Read back and verify the exact Tunnel identity/settings.
-- Re-read live rules and recalculate the remaining delta. If relevant state changed, stop rather than overwrite it.
-- Add only the missing temporary allow rule, if it is still part of this invocation's delta.
-- Read back, run both UDP and TCP DNS probes, and validate plugin status/counters.
+This information is retained so a later session does not have to reconstruct the prior incident. It is not an input to the new algorithm.
 
-### Temporary test cleanup
+The previous command `sudo python3 scripts/lucx-ui-doh-api.py --approve-restart apply` stopped before permanent DNS changes because the old adapter required a valid format-2 recovery journal but found an old format-1 file.
 
-- Re-read live config and dependencies.
-- Remove only the temporary rule that the test operation actually added; do not delete a compatible rule that was already present/reused.
-- Verify the rule is absent and unrelated live rules are preserved.
-- Then delete the exact temporary Tunnel and verify it is absent and its TCP/UDP listeners are gone.
-- The required cleanup order is rule first, verify absence, then Tunnel. Apply this order every time; never delete the Tunnel while its temporary rule remains.
-- Never touch the plugin's own `127.0.0.1:5355` listeners.
-
-A reserved Tunnel remark identifies a temporary test inbound only; it is not an ownership database for permanent DNS objects. If the live panel state contains an ambiguous test object that the current Integrate plan cannot safely classify, report the blocker and do not guess or delete a pre-existing object.
-
-## Known legacy staging VPS state
-
-During the previous staging attempt, `sudo python3 scripts/lucx-ui-doh-api.py --approve-restart apply` did not reach permanent changes because the old implementation rejected a format-1 journal. This is historical context about the obsolete implementation, not a recovery mode required by the new design.
-
-Known old journal:
-- Path: `/root/.local/state/lucx-ui-doh/backups/recovery/lucx-doh-selftest-817de6b08c61fb60.json`
+Operator-provided old recovery file:
+- `/root/.local/state/lucx-ui-doh/backups/recovery/lucx-doh-selftest-817de6b08c61fb60.json`
 - format 1; state `manual-inspection-ready`; `inbound_id=1`
 - remark `doh-health-monitor-selftest-817de6b08c61fb60`
-- port 15353; expected Tunnel listen 127.0.0.1; rewrite 127.0.0.1:53; allowedNetwork tcp,udp
+- Tunnel port 15353; listen `127.0.0.1`; rewrite `127.0.0.1:53`; allowedNetwork `tcp,udp`
 - no `original_final_rules` field.
 
 Operator-provided listener output:
-- no listener on port 15353;
-- TCP and UDP listeners on `127.0.0.1:5355` belong to the DoH Health Monitor plugin and are expected. Never remove them.
+- No listener on port 15353 at the time of inspection. This did not establish whether the inbound still existed in the panel.
+- TCP and UDP listeners on `127.0.0.1:5355` belonged to the DoH Health Monitor plugin and are expected. Never remove them.
 
-Two old persistent backup files were observed:
-- `lucx-doh-20261112T110629Z-3fa53d.json`: before/after displayed baseline finalRules `[{"action":"block","ip":["geoip:private"]},{"action":"allow"}]`.
-- `lucx-doh-20261113T052003Z-69d995.json`: before included the temporary rule plus that baseline; after displayed the baseline without it.
+Two old backup files were also observed:
+- `lucx-doh-20261112T110629Z-3fa53d.json`: its displayed before/after `direct.finalRules` were the original private-block rule and generic allow.
+- `lucx-doh-20261113T052003Z-69d995.json`: its displayed before rules included the temporary test allow; its displayed after rules did not.
 
-These files are historical artifacts from the old implementation only. Do not use their content to decide current ownership, synthesize new journals, or restore any configuration. The next staging operation must inspect current inbounds and current `direct.settings.finalRules` through the panel API and calculate the selected action's plan from that live state. Legacy files must not block the new planner.
+The new adapter does not read these old files or use them to decide ownership. It discovers any remaining reserved Tunnel and its associated temporary test rule through the live panel APIs. If the old Tunnel exists and validates, its legacy remark permits cleanup of the rule that the old adapter had added. If no reserved Tunnel exists, an identical finalRule is treated as pre-existing and preserved; do not remove it based only on the old journal or backup files. The plugin listeners on 5355 are never touched.
 
-## Regression tests and acceptance criteria
+## Regression coverage and acceptance
 
-1. Compatible permanent DNS objects are reused; only missing objects are added; repeated Integrate is idempotent.
-2. Removal discovery finds generated-tag and renamed-but-semantically-equivalent integration objects.
-3. Removal does not delete a DNS outbound referenced by unrelated routing, balancer, proxy-chain, or observatory objects.
-4. A shared DNS server entry is preserved.
-5. A unique integration route is removed first; the outbound is removed only after read-back and fresh zero-reference scan.
-6. Panel-owned `xui-dns-allow`, user routes, FakeDNS, and unrelated outbounds/DNS servers remain unchanged.
-7. Ambiguous/duplicate candidates are listed as blockers; no speculative deletion occurs.
-8. Each invocation accepts exactly one directive (Integrate or Remove) and computes its entire plan from current live config; no saved execution state is involved.
-9. No full Xray snapshots, historical rule arrays, mandatory journals, or snapshot-based rollback files are created or needed.
-10. Temporary test reuses pre-existing compatible rule and never deletes it as though it were newly added.
-11. Test creates Tunnel before any missing temporary allow rule; cleanup removes and verifies the rule before deleting Tunnel.
-12. Every API mutation is read back before a dependent mutation; the selected directive reports its result and blockers. No old state is restored and no separate recovery action is created.
-13. Plugin listeners on 5355 are never mistaken for temporary Tunnel listeners.
-14. Both UDP and TCP probes pass before self-test success.
-15. Every panel API mutation is followed by read-back verification.
+The Python tests cover:
+- Idempotent Integrate and reuse of compatible permanent objects.
+- Nonstandard local DNS outbound tags and route relationship discovery.
+- Remove ordering: route first, fresh read/reference scan, outbound, then DNS server.
+- Preservation of outbound references from other routes, balancers, observatory, proxy chaining, and DNS policy rules.
+- Preservation of scoped, duplicate, shared, or ambiguous candidates.
+- Test rule reuse vs test-added ownership, Tunnel-first creation, rule-first cleanup, and legacy Tunnel-marker reconciliation.
+- Explicit confirmation phrases for Integrate and Remove.
+- Existing TLS identity, endpoint discovery, credentials, DNS protocol, and panel API safety checks.
 
-All Python compilation/unit tests/shell syntax checks and both GitHub Actions workflows must pass on the new head. A disposable staging panel must complete Integrate -> UDP/TCP self-test -> Remove with read-back after every mutation. Keep PR #6 open and Draft until code and staging validation pass. Panel API writes may restart Xray; retain explicit `--approve-restart`.
-
-## Next implementation work
-
-The current adapter still contains legacy backup/journal/rollback behavior. Remove that architecture; do not replace it with another journal or saved execution state. Refactor `scripts/lucx-ui-doh-api.py`, `scripts/xray_dns_planner.py` if required, `tests/test_lucx_ui_doh_api.py`, and the API documentation around the single live-state reconciliation model above. Then run both GitHub workflows. Only after CI passes should the staging VPS run the new read-only plan/inspection and selected operation.
+The GitHub Actions workflows must pass on the current PR head. A disposable staging panel must still complete the end-to-end cycle `Integrate → UDP/TCP self-test → Remove` before the PR is treated as production-ready. Keep PR #6 open and Draft until that staging cycle is confirmed.
