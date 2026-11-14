@@ -26,16 +26,9 @@ If the diagnostic Tunnel already exists, Integrate tests it rather than creating
 
 Remove never creates, tests, inspects, or deletes diagnostic Tunnel inbounds or diagnostic finalRules. It does not infer ownership from permanent-object markers, journals, snapshots, or historical state.
 
-## Temporary staging diagnostics
+## Diagnostic lifecycle
 
-These commands exist only to investigate LucX-UI/Xray behavior and are not intended as permanent product functionality. They will be removed from the project when staging debugging is complete.
-
-- `tunnel create`: create one loopback-only diagnostic Tunnel and add the temporary DNS allow rule only when needed. Leave both in place.
-- `tunnel test`: test an already-created Tunnel with positive UDP and TCP DNS A queries. It performs no panel writes and no cleanup.
-- `tunnel status`: inspect diagnostic resources without changing them.
-- `tunnel remove`: explicitly reconcile diagnostic resources using the same live external-reference check as Integrate. Remove each inbound/finalRule only if it has no use outside the diagnostic plan; preserve externally used or ambiguous resources.
-
-The staging-only commands do not automatically clean up after `tunnel test`; use `tunnel status` to inspect the state and invoke `tunnel remove` when explicit cleanup is intended. Integrate, by contrast, always attempts cleanup after its self-test attempt.
+The diagnostic Tunnel and temporary allow finalRule are internal resources used only by Integrate. Integrate ensures the Tunnel exists, runs positive UDP and TCP DNS A-answer probes, then attempts cleanup using live external-reference analysis. Each inbound/finalRule is removed only when it has no use outside the diagnostic plan; externally used or ambiguous resources are preserved. Cleanup is attempted after either successful or failed tests, and cleanup errors are reported separately.
 
 ## CLI
 
@@ -44,12 +37,6 @@ Run on the LucX-UI VPS as root:
 ```bash
 sudo python3 scripts/lucx-ui-doh-api.py integrate
 sudo python3 scripts/lucx-ui-doh-api.py remove
-
-# Temporary staging diagnostics only:
-sudo python3 scripts/lucx-ui-doh-api.py tunnel create
-sudo python3 scripts/lucx-ui-doh-api.py tunnel test
-sudo python3 scripts/lucx-ui-doh-api.py tunnel status
-sudo python3 scripts/lucx-ui-doh-api.py tunnel remove
 ```
 
 There is no `--plan-only` option. A panel update may automatically restart Xray; the adapter prints a NOTICE and does not ask for interactive confirmation. The legacy `--approve-restart` flag is not required.
