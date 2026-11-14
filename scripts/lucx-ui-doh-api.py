@@ -1183,6 +1183,14 @@ def build_plan(original: dict, *, require_api_rule: bool = True) -> Plan:
     cfg = copy.deepcopy(original)
     plan = Plan(proposed=cfg, expected_saved={})
 
+    # Check panel serialization hazards before semantic planning can return
+    # early on an unrelated DNS-routing incompatibility.
+    if _has_numeric_qtype_zero(original):
+        plan.blockers.append(
+            "Panel save would rewrite an existing numeric DNS qType 0 to string '0'; refusing to change an unrelated DNS setting"
+        )
+        return plan
+
     # A manually-persisted copy of the reserved self-test finalRule is not a
     # permanent integration object. Transfer it to the temporary test lifecycle.
     direct_matches = [
@@ -1232,11 +1240,6 @@ def build_plan(original: dict, *, require_api_rule: bool = True) -> Plan:
     if require_api_rule and (len(api_indexes) != 1 or api_indexes[0] != 0):
         plan.blockers.append(
             "LucX-UI requires its api-inbound -> api-outbound rule at routing.rules[0]; the panel would add or move it during save"
-        )
-
-    if _has_numeric_qtype_zero(original):
-        plan.blockers.append(
-            "Panel save would rewrite an existing numeric DNS qType 0 to string '0'; refusing to change an unrelated DNS setting"
         )
 
     # Verify the panel's DNS synchronization does not rewrite existing rules.
