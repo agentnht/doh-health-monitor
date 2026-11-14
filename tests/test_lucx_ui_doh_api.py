@@ -185,7 +185,9 @@ class AdditivePlannerTests(unittest.TestCase):
             "dns": {"servers": []},
         }
 
-        plan = api_tool.build_plan(original)
+        # This case exercises generic DNS planning with no LucX-UI API
+        # rule in the fixture; production API apply keeps that gate enabled.
+        plan = api_tool.build_plan(original, require_api_rule=False)
 
         self.assertFalse(plan.blockers)
         self.assertTrue(plan.changes)
@@ -856,7 +858,8 @@ class AdditivePlannerTests(unittest.TestCase):
 
         self.assertFalse(plan.blockers)
         self.assertTrue(any(
-            "already route TCP/UDP port 53 to compatible local DNS outbounds" in item
+            "Existing global TCP/UDP port-53 route already provides the local DNS path via"
+            in item
             for item in plan.warnings
         ))
         self.assertEqual(plan.proposed["routing"]["rules"][1], broad)
