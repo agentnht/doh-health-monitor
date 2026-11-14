@@ -2352,14 +2352,22 @@ def build_remove_plan(original: dict) -> RemovePlan:
         if not _global_port53_rule(rule):
             continue
         target = rule.get("outboundTag")
+        missing_target_marker = (
+            isinstance(target, str)
+            and target not in outbound_index
+            and (
+                target == DNS_PORT_RULE["outboundTag"]
+                or rule.get("ruleTag") == DNS_PORT_RULE.get("ruleTag")
+            )
+        )
         is_candidate = (
             isinstance(target, str)
             and (
                 target in unique_candidate_tags
                 # A stale global route can remain after its integration
-                # outbound was removed. The canonical Integrate plan reuses
-                # this tag only when it is free in the current live state.
-                or (target == integrate_spec.outbound_tag and target not in outbound_index)
+                # outbound was removed. Its canonical ruleTag/default target,
+                # together with the exact global port-53 shape, identifies it.
+                or missing_target_marker
             )
         )
         balancer_tag = rule.get("balancerTag")
