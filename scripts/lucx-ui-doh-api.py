@@ -1998,9 +1998,11 @@ def _recv_exact(connection: socket.socket, size: int) -> bytes:
     return b"".join(chunks)
 
 
-def query_dns_a(host: str, port: int, *, tcp: bool, timeout: float = 4.0) -> list[str]:
+def query_dns_a(
+    host: str, port: int, *, tcp: bool, name: str = "example.com", timeout: float = 4.0
+) -> list[str]:
     """Issue a DNS A query and require a positive answer over UDP or TCP."""
-    query_id, query = _dns_query_packet("example.com")
+    query_id, query = _dns_query_packet(name)
     endpoint = f"{host}:{port}"
     if tcp:
         try:
@@ -2066,7 +2068,7 @@ def run_tunnel_dns_self_test(port: int, status_url: str) -> None:
 
     endpoint = f"127.0.0.1:{port}"
     try:
-        udp_answers = query_dns_a("127.0.0.1", port, tcp=False)
+        udp_answers = query_dns_a("127.0.0.1", port, tcp=False, name="example.com")
     except IntegrationError as exc:
         try:
             after_queries, after_failures = read_plugin_counters(status_url)
@@ -2083,7 +2085,7 @@ def run_tunnel_dns_self_test(port: int, status_url: str) -> None:
     print("UDP A answers:", ", ".join(udp_answers))
 
     try:
-        tcp_answers = query_dns_a("127.0.0.1", port, tcp=True)
+        tcp_answers = query_dns_a("127.0.0.1", port, tcp=True, name="www.example.com")
     except IntegrationError as exc:
         try:
             after_queries, after_failures = read_plugin_counters(status_url)
