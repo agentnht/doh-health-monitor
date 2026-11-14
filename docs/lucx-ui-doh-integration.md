@@ -162,27 +162,21 @@ safely predict the panel's save behavior.
   \`scripts/doh-integration-staging.py\` clones a source SQLite DB into a
   separate staging file and supports dry-run, verify, apply, rollback, and
   cleanup against that staging file only. It never writes the source/live DB.
-- Before planning permanent changes, \`apply\` queries the panel API for leftover
-  inbounds with the reserved \`doh-health-monitor-selftest-\` remark prefix and
-  verifies the complete Tunnel identity/settings. It also checks for the exact
-  reserved \`allow/tcp,udp/5355/127.0.0.1\` entry in
-  \`direct.settings.finalRules\`. Only verified resources are deleted. A
-  malformed or ambiguous reserved object is preserved and blocks apply.
-  Recovery-journal files are treated as opaque private markers at this stage:
-  their contents are not read to decide what to delete. After both resource
-  classes are independently verified absent, stale marker files with the
-  reserved filename, owner, and mode are removed.
+- The only mutating panel directives are Integrate and Remove. Integrate
+  runs the temporary self-test internally; there are no standalone
+  create-test/cleanup-test/recovery directives. A reserved self-test Tunnel is
+  validated from the current panel state, not from a recovery journal.
 - The end-to-end self-test creates a loopback-only temporary \`tunnel\` inbound
   through the official inbound API, tests positive A answers over UDP and TCP,
   and verifies that the plugin query counter increases while failures remain
   zero. In its \`finally\` path, Tunnel deletion/listener verification and
   temporary \`finalRule\` deletion are attempted independently; failure of one
-  cleanup does not skip the other. A recovery marker is retained if either
-  resource cannot be verified absent. Permanent DNS changes are not rolled back
-  automatically when the connectivity test fails.
+  cleanup does not skip the other. If either resource cannot be verified
+  absent, Integrate reports the blocker; no journal or restore-to-before action
+  is created. Permanent DNS changes are not rolled back to an old snapshot.
 - Panel configuration changes use live-state reconciliation only. The adapter must not write full before/after Xray snapshots, preserve old rule arrays for restoration, or create snapshot-based rollback state. After each API mutation it reads the current panel state and verifies the planned effect. Every invocation is exactly one explicit Integrate or Remove directive with a fresh plan; there is no partial-operation, resume, or recovery mode. It never restores a historical configuration.
-- Panel Xray-settings and inbound API updates may each restart Xray; \`apply\`
-  requires explicit restart approval. The adapter requires root on the
+- Panel Xray-settings and inbound API updates may each restart Xray; both
+  Integrate and Remove require explicit restart approval. The adapter requires root on the
   LucX-UI VPS and a localhost/loopback panel API URL. It never writes SQLite or
   runtime Xray configuration directly.
 - The Xray template returned by LucX-UI may not contain all runtime-injected
@@ -205,8 +199,8 @@ not validate the current refactor.
 
 The current automated suite covers semantic reuse, nonstandard outbound tags,
 unique tag generation, balancer selectors/fallbacks, first-match routing
-conflicts, fresh planning for the two explicit directives, dependency-aware
-removal, and idempotent Integrate/Remove actions. GitHub Actions results should be checked on the current PR head before
+conflicts, the two mutating directives (Integrate/Remove), dependency-aware
+removal, temporary self-test cleanup, and idempotent planning. GitHub Actions results should be checked on the current PR head before
 treating the refactor as CI-verified.
 
 **The current refactor has not yet been re-run through the live disposable
