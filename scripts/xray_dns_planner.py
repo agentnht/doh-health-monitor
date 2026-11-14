@@ -38,6 +38,12 @@ DNS_ROUTE_RULE_TEMPLATE = {
     "port": "53",
     "type": "field",
 }
+DNS_FINAL_ALLOW_RULE_TEMPLATE = {
+    "action": "allow",
+    "network": ["tcp", "udp"],
+    "port": str(DNS_PORT),
+    "ip": [DNS_ADDRESS],
+}
 
 
 @dataclass
@@ -460,7 +466,125 @@ def _resolve_balancer_dns_targets(
     return selected, None
 
 
-def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
+def _final_rule_may_block_local_dns(rule: dict[str, Any]) -> bool:
+    """Whether a Freedom block rule could match the local DNS endpoint."""
+    if rule.get("action") != "block":
+        return False
+    networks = _tokens(rule.get("network"))
+    if networks and not networks.intersection({"tcp", "udp"}):
+        return False
+
+    port = rule.get("port")
+    if port is not None:
+        if isinstance(port, int) and not isinstance(port, bool):
+            if port != DNS_PORT:
+                return False
+        elif isinstance(port, str):
+            found = False
+            for part in port.split(","):
+                token = part.strip()
+                if not token:
+                    continue
+                if "-" in token:
+                    left, sep, right = token.partition("-")
+                    if not sep:
+                        return True
+                    try:
+                        start, end = int(left), int(right)
+                    except ValueError:
+                        return True
+                    found = found or start <= DNS_PORT <= end
+                else:
+                    try:
+                        found = found or int(token) == DNS_PORT
+                    except ValueError:
+                        return True
+            if not found:
+                return False
+        else:
+            return True
+
+    if "ip" not in rule:
+        return True
+    value = rule.get("ip")
+    values = [value] if isinstance(value, str) else value
+    if not isinstance(values, list) or not values:
+        return True
+    target = ipaddress.ip_address(DNS_ADDRESS)
+    for entry in values:
+        if not isinstance(entry, str):
+            return True
+        selector = entry.strip().lower()
+        if selector.startswith(("geoip:", "ext:")):
+            return True
+        try:
+            if target in ipaddress.ip_network(selector, strict=False):
+                return True
+        except ValueError:
+            return True
+    return False
+
+
+def _ensure_local_dns_final_allow(config: dict[str, Any], plan: DNSPlan) -> None:
+    """Insert the permanent narrow allow before any matching Freedom block."""
+    outbounds = config.get("outbounds", [])
+    if not isinstance(outbounds, list):
+        if plan.blockers:
+            return
+        raise ValueError("outbounds must be an array of objects")
+    direct = [
+        item for item in outbounds
+        if isinstance(item, dict)
+        and item.get("tag") == "direct"
+        and item.get("protocol") == "freedom"
+    ]
+    if len(direct) != 1:
+        plan.blockers.append(
+            "Xray DNS integration requires exactly one direct freedom outbound "
+            "to allow 127.0.0.1:5355 through Freedom finalRules"
+        )
+        return
+    settings = direct[0].get("settings")
+    if settings is None:
+        settings = {}
+        direct[0]["settings"] = settings
+    if not isinstance(settings, dict):
+        plan.blockers.append("direct outbound settings must be an object")
+        return
+    rules = settings.get("finalRules", [])
+    if not isinstance(rules, list) or any(not isinstance(item, dict) for item in rules):
+        plan.blockers.append("direct.settings.finalRules must be an array of objects")
+        return
+
+    exact_matches = [
+        index for index, item in enumerate(rules)
+        if item == DNS_FINAL_ALLOW_RULE_TEMPLATE
+    ]
+    if len(exact_matches) > 1:
+        plan.blockers.append("Duplicate permanent local DNS finalRules exist; manual review required")
+        return
+    first_block = next(
+        (index for index, item in enumerate(rules) if _final_rule_may_block_local_dns(item)),
+        len(rules),
+    )
+    if exact_matches:
+        if exact_matches[0] >= first_block:
+            plan.blockers.append(
+                "An existing direct.settings.finalRules allow for 127.0.0.1:5355 "
+                "is shadowed by an earlier matching block rule; manual review required"
+            )
+        return
+
+    rules.insert(first_block, copy.deepcopy(DNS_FINAL_ALLOW_RULE_TEMPLATE))
+    settings["finalRules"] = rules
+    plan.changes.append(
+        "ADD direct.settings.finalRules allow for 127.0.0.1:5355 before matching private-IP blocks"
+    )
+
+
+def build_dns_plan(
+    original: dict[str, Any], *, require_direct_freedom: bool = True
+) -> DNSPlan:
     """Analyze current Xray settings and add only the missing local DoH path."""
     if not isinstance(original, dict):
         raise ValueError("Xray config root must be an object")
@@ -923,6 +1047,9 @@ def build_dns_plan(original: dict[str, Any]) -> DNSPlan:
             plan.blockers.append(
                 f"routing.rules[{index}] matches DNS port 53 but has no outboundTag or balancerTag"
             )
+
+    if not plan.blockers and require_direct_freedom:
+        _ensure_local_dns_final_allow(cfg, plan)
 
     if plan.blockers:
         # Do not present a partially viable proposal as executable.
