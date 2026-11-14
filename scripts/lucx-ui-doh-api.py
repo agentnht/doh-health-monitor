@@ -26,6 +26,7 @@ import socket
 import sqlite3
 import ssl
 import stat
+import tempfile
 import struct
 import subprocess
 import sys
@@ -251,8 +252,8 @@ def _running_panel_context() -> tuple[dict[str, str], Path]:
         if preferred:
             matches = preferred
         if len(matches) > 1:
-            snapshots = {(tuple(sorted(item[0].items())), str(item[1])) for item in matches}
-            if len(snapshots) > 1:
+            context_values = {(tuple(sorted(item[0].items())), str(item[1])) for item in matches}
+            if len(context_values) > 1:
                 raise IntegrationError("Multiple LucX-UI processes have different runtime settings; specify --base-url and --panel-db")
         process_env, panel_cwd, _ = matches[0]
         env.update(process_env)
