@@ -540,8 +540,8 @@ def _ensure_local_dns_final_allow(config: dict[str, Any], plan: DNSPlan) -> None
     ]
     if len(direct) != 1:
         plan.blockers.append(
-            "Xray DNS integration requires exactly one direct freedom outbound "
-            "to allow 127.0.0.1:5355 through Freedom finalRules"
+            "Xray DNS integration requires exactly one direct outbound "
+            "(protocol freedom) to allow 127.0.0.1:5355 through Freedom finalRules"
         )
         return
     settings = direct[0].get("settings")
