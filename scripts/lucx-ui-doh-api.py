@@ -91,6 +91,22 @@ class IntegrationError(RuntimeError):
     pass
 
 
+def _safe_exception_summary(exc: Exception) -> str:
+    """Return useful exception diagnostics without exposing common credential forms."""
+    detail = str(exc).strip()
+    detail = re.sub(r"(?i)(bearer\\s+)[^\\s,;]+", r"\\1[redacted]", detail)
+    detail = re.sub(
+        r"(?i)\\b(token|password|passwd|authorization|apikey|secret)\\b([\\s:=]+)[^\\s,;]+",
+        r"\\1\\2[redacted]",
+        detail,
+    )
+    detail = re.sub(r"(https?://)[^/@\\s]+:[^/@\\s]+@", r"\\1[redacted]@", detail)
+    if len(detail) > 240:
+        detail = detail[:237] + "..."
+    exception_type = type(exc).__name__
+    return f"{exception_type}: {detail}" if detail else exception_type
+
+
 def parse_xray_version(output: str) -> str | None:
     """Extract the Xray core version without exposing command output."""
     match = re.search(r"\bXray\s+v?(\d+(?:\.\d+){1,3})\b", output, re.IGNORECASE)
@@ -1929,7 +1945,10 @@ def run_temporary_tunnel_test(client: PanelAPI, status_url: str, backup_dir: Pat
                 continue
             if isinstance(test_error, IntegrationError):
                 raise test_error
-            raise IntegrationError("Temporary Tunnel self-test failed; temporary inbound was cleaned up") from None
+            raise IntegrationError(
+                "Temporary Tunnel self-test failed; temporary inbound was cleaned up. "
+                f"Underlying error: {_safe_exception_summary(test_error)}"
+            ) from None
         print("PASS: temporary Tunnel inbound was removed and panel API read-back confirms absence.")
         print(f"PASS: temporary Tunnel TCP and UDP listeners are gone from port {port}.")
         return
