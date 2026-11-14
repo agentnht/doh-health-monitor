@@ -1248,35 +1248,6 @@ def _direct_freedom_outbound(config: dict) -> dict:
     return matches[0]
 
 
-def _ensure_permanent_dns_final_rule(config: dict) -> bool:
-    """Ensure 127.0.0.1:5355 is allowed before any matching Freedom block."""
-    direct = _direct_freedom_outbound(config)
-    settings = direct["settings"]
-    rules = settings.get("finalRules", [])
-    if not isinstance(rules, list) or any(not isinstance(item, dict) for item in rules):
-        raise IntegrationError("direct.settings.finalRules must be an array of objects")
-
-    matches = [
-        index for index, item in enumerate(rules)
-        if canonical(item) == canonical(DNS_FINAL_ALLOW_RULE)
-    ]
-    if len(matches) > 1:
-        raise IntegrationError("Duplicate permanent local DNS finalRules exist; refusing automatic planning")
-
-    insert_at = _temporary_dns_allow_insert_index(rules)
-    if matches:
-        if matches[0] >= insert_at:
-            raise IntegrationError(
-                "An existing direct.settings.finalRules allow for 127.0.0.1:5355 "
-                "is shadowed by an earlier matching block rule; manual review required"
-            )
-        return False
-
-    rules.insert(insert_at, copy.deepcopy(DNS_FINAL_ALLOW_RULE))
-    settings["finalRules"] = rules
-    return True
-
-
 def _remove_persistent_temporary_dns_rule(config: dict) -> bool:
     """Remove only the exact manually-installed rule now owned by the self-test."""
     direct = _direct_freedom_outbound(config)
@@ -1349,16 +1320,6 @@ def build_plan(original: dict, *, require_api_rule: bool = True) -> Plan:
     plan.blockers.extend(semantic.blockers)
     if plan.blockers:
         return plan
-
-    if require_api_rule:
-        try:
-            if _ensure_permanent_dns_final_rule(plan.proposed):
-                plan.changes.append(
-                    "ADD direct.settings.finalRules allow for 127.0.0.1:5355 before matching private-IP blocks"
-                )
-        except IntegrationError as exc:
-            plan.blockers.append(str(exc))
-            return plan
 
     proposed = plan.proposed
     outbounds = object_list(proposed, "outbounds", "outbounds")
