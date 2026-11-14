@@ -119,9 +119,8 @@ hard-coded LucX-UI version allowlist: the adapter must successfully read the
 Xray settings endpoint, decode `xraySetting`, preserve `outboundTestUrl`, and
 validate the configuration structure understood by its planner. Unknown or
 missing fields are a hard stop. The write/update endpoint cannot be safely
-probed without changing panel state; therefore `--plan-only integrate/remove` reports
-that write capability is unverified, and the update contract must first be
-validated on a separate staging panel. An unrecognized API response or
+probed without changing panel state; therefore the adapter does not expose a preview-only CLI mode. The update contract
+is validated by applying the selected plan and verifying the live read-back. An unrecognized API response or
 configuration structure remains a hard stop, because the adapter cannot
 safely predict the panel's save behavior.
 
@@ -162,24 +161,11 @@ safely predict the panel's save behavior.
   \`scripts/doh-integration-staging.py\` clones a source SQLite DB into a
   separate staging file and supports dry-run, verify, apply, rollback, and
   cleanup against that staging file only. It never writes the source/live DB.
-- The only mutating panel directives are Integrate and Remove. Integrate
-  runs the temporary self-test internally; there are no standalone
-  create-test/cleanup-test/recovery directives. Its reserved Tunnel remark
-  carries only whether the exact temporary rule was added or reused by that
-  self-test; no separate journal or saved config is created or read.
-- The end-to-end self-test creates a loopback-only temporary \`tunnel\` inbound
-  through the official inbound API, tests positive A answers over UDP and TCP,
-  and verifies that the plugin query counter increases while failures remain
-  zero. In its \`finally\` path, Tunnel deletion/listener verification and
-  temporary \`finalRule\` deletion are attempted independently; failure of one
-  cleanup does not skip the other. If either resource cannot be verified
-  absent, Integrate reports the blocker; no journal or restore-to-before action
-  is created. Permanent DNS changes are not rolled back to an old snapshot.
-- Panel configuration changes use live-state reconciliation only. The adapter must not write full before/after Xray snapshots, preserve old rule arrays for restoration, or create snapshot-based rollback state. After each API mutation it reads the current panel state and verifies the planned effect. Every invocation is exactly one explicit Integrate or Remove directive with a fresh plan. It never restores a historical configuration.
-- Panel Xray-settings and inbound API updates may each restart Xray; both
-  Integrate and Remove require explicit restart approval. The adapter requires root on the
-  LucX-UI VPS and a localhost/loopback panel API URL. It never writes SQLite or
-  runtime Xray configuration directly.
+- Permanent Integrate applies the shared desired-state plan and then ensures one diagnostic Tunnel exists before running the UDP/TCP DNS self-test. A successful or failed test leaves the diagnostic Tunnel and temporary rule in place; cleanup is explicit and never automatic.
+- The temporary diagnostic commands `tunnel create/test/status/remove` are staging-only debugging tools. Create leaves the Tunnel and temporary rule in place; test is read-only and probes positive A answers over UDP and TCP; status is read-only; remove performs explicit diagnostic cleanup. These commands are temporary and will be removed after staging investigation is complete.
+- Permanent Remove does not create, test, or remove diagnostic Tunnel resources. It builds the same desired-state plan as Integrate, identifies only matching live resources selected by that plan, checks for references outside the plan, and preserves shared/ambiguous resources. Safe route, outbound, and DNS-server removals are sent as one panel update and verified by live read-back.
+- Panel updates may automatically restart Xray. The adapter prints a notice; it does not require interactive confirmation or `--approve-restart`.
+- Panel configuration changes use live-state reconciliation only. Integrate and Remove each build their plan from one current live-state read. Every panel mutation is followed by a fresh read-back to verify the result.
 - The Xray template returned by LucX-UI may not contain all runtime-injected
   AWG, subscription, or sidecar objects. The planner does not claim to inspect
   those hidden runtime additions; it reports/uses what is present in the panel
@@ -205,9 +191,7 @@ The automated suite covers semantic reuse, nonstandard outbound tags, unique
  planning. GitHub Actions must pass on the current PR head before this refactor
  is treated as CI-verified.
 
-**The current refactor has not yet been re-run through the disposable staging
-panel cycle: `integrate` → UDP/TCP self-test → `remove`.** Do not interpret the
-earlier manual Tunnel validation as proof that the new code path has passed.
+At commit `eb232d26698bb7b9f2dbae03f7c7e91d796d251f`, the DoH integration-test workflow completed successfully, including Python compilation and the full unittest suite. The Go CI workflow was still running when this document was updated. The new end-to-end cycle on the staging VPS (`integrate` → UDP/TCP self-test → `remove`) has not yet been run; earlier manual Tunnel success does not validate this revised integration path.
 
 
 
@@ -229,4 +213,4 @@ Removing the integration is the inverse of integrating it; it is not a snapshot 
 
 Each invocation is a new explicit choice: Integrate or Remove. The selected directive builds its complete plan from the current panel state. Integrate reuses compatible records and adds missing ones. Remove deletes only verified integration candidates with no remaining dependencies. The adapter never writes a full saved Xray configuration back to the panel and never overwrites later user changes. If a candidate is ambiguous or still referenced, it remains in place and is reported as a blocker. The adapter exposes only the Integrate and Remove directives.
 
-No full pre-change/post-change Xray snapshots, persistent ownership journals, or delayed snapshot-based rollback are part of this design. The CLI has exactly two directives: `integrate` and `remove`; use `--plan-only` with either one for a read-only plan. Every individual API mutation is followed by live read-back and replanning.
+No full pre-change/post-change Xray snapshots, persistent ownership journals, or delayed snapshot-based rollback are part of this design. The permanent directives are `integrate` and `remove`; there is no `--plan-only` CLI option. Temporary diagnostic commands are separate and staging-only. Each permanent directive builds a fresh plan from one live-state read; a panel write is followed by live read-back.
