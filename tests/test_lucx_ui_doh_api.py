@@ -281,17 +281,16 @@ class RemovePlannerTests(unittest.TestCase):
             def list_inbounds(self):
                 return []
 
-        client = FakePanel(add_complete_dns(base_config()))
+        config = add_complete_dns(base_config())
+        config["dns"]["servers"] = ["127.0.0.1:5355"]
+        client = FakePanel(config)
         args = SimpleNamespace(plan_only=False, approve_restart=True)
 
         self.assertEqual(api_tool.command_remove(args, client), 0)
         final = client.read_state()["xraySetting"]
         self.assertFalse(any(api_tool._outbound_matches_dns_endpoint(item) for item in final["outbounds"]))
         self.assertFalse(any(api_tool._global_port53_rule(item) for item in final["routing"]["rules"]))
-        self.assertFalse(any(
-            api_tool._server_endpoint(item) == ("127.0.0.1", 5355)
-            for item in final["dns"]["servers"]
-        ))
+        self.assertEqual(final["dns"]["servers"], [])
         self.assertEqual(len(client.updates), 3)
 
 
