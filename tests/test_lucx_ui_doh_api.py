@@ -2227,6 +2227,54 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
             if not self.fail_delete:
                 self.inbounds = [x for x in self.inbounds if x["id"] != inbound_id]
 
+    def test_manual_create_retains_tunnel_and_recovery_journal(self):
+        client = self.FakeClient()
+        client.snapshot["xraySetting"] = add_complete_dns(base_config())
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(api_tool, "choose_temporary_tunnel_port", return_value=15353), \
+                 patch.object(api_tool, "wait_for_tunnel_listeners"):
+                self.assertEqual(
+                    api_tool.command_create_manual_tunnel(client, __import__("pathlib").Path(directory)),
+                    0,
+                )
+            self.assertEqual(len(client.inbounds), 1)
+            self.assertEqual(client.inbounds[0]["port"], 15353)
+            self.assertEqual(client.deleted, [])
+            direct = next(
+                item for item in client.snapshot["xraySetting"]["outbounds"]
+                if item.get("tag") == "direct"
+            )
+            self.assertIn(api_tool.TEMP_DNS_FINAL_RULE, direct["settings"]["finalRules"])
+            journals = list((__import__("pathlib").Path(directory) / "recovery").glob("*.json"))
+            self.assertEqual(len(journals), 1)
+            journal = api_tool._load_recovery_journal(journals[0])
+            self.assertEqual(journal["state"], "manual-inspection-ready")
+            self.assertEqual(journal["inbound_id"], 1)
+            self.assertEqual(journal["inbound"]["port"], 15353)
+
+    def test_manual_create_failure_cleans_tunnel_final_rule_and_journal(self):
+        client = self.FakeClient()
+        client.snapshot["xraySetting"] = add_complete_dns(base_config())
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(api_tool, "choose_temporary_tunnel_port", return_value=15353), \
+                 patch.object(api_tool, "wait_for_tunnel_listeners", side_effect=api_tool.IntegrationError("listener missing")), \
+                 patch.object(api_tool, "wait_for_tunnel_port_closed"):
+                with self.assertRaisesRegex(api_tool.IntegrationError, "listener missing"):
+                    api_tool.command_create_manual_tunnel(
+                        client, __import__("pathlib").Path(directory)
+                    )
+            self.assertEqual(client.inbounds, [])
+            self.assertEqual(client.deleted, [1])
+            direct = next(
+                item for item in client.snapshot["xraySetting"]["outbounds"]
+                if item.get("tag") == "direct"
+            )
+            self.assertNotIn(api_tool.TEMP_DNS_FINAL_RULE, direct["settings"].get("finalRules", []))
+            self.assertEqual(
+                list((__import__("pathlib").Path(directory) / "recovery").glob("*.json")),
+                [],
+            )
+
     def test_existing_final_rule_refusal_does_not_delete_unowned_rule(self):
         client = self.FakeClient()
         direct = next(
