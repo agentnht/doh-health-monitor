@@ -1921,12 +1921,21 @@ def _diagnostic_external_use_reasons(config: dict, resources: list[dict], inboun
             reasons["inbounds"][inbound.get("id")] = refs
 
     # finalRules are children of the direct outbound, not independently
-    # addressable resources: routing references can select the outbound, but
-    # cannot reference this exact diagnostic exception. In particular, the
-    # panel-managed xui-dns-allow route is not ownership or an external
-    # dependency of this temporary finalRule. The diagnostic plan is its only
-    # consumer, so a single matching rule is eligible for cleanup regardless
-    # of whether it existed before the diagnostic run.
+    # addressable resources. A route selecting direct is relevant only when
+    # its selectors can send the exact diagnostic endpoint through direct.
+    # LucX-UI's own xui-dns-allow route is deliberately excluded: it is a
+    # separate panel-managed routing object, not an external owner of the
+    # diagnostic finalRule.
+    for index, rule in enumerate(rules):
+        if (
+            not isinstance(rule, dict)
+            or rule.get("ruleTag") == DNS_ALLOW_TAG
+            or "direct" not in _tag_list(rule.get("outboundTag"))
+        ):
+            continue
+        if _routing_rule_may_use_temporary_dns_final_rule(rule):
+            reasons["final_rule"].append(f"routing.rules[{index}].outboundTag")
+
     return reasons
 
 
