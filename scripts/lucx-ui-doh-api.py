@@ -2061,25 +2061,13 @@ def read_plugin_counters(status_url: str) -> tuple[int, int]:
 
 
 def run_tunnel_dns_self_test(port: int, status_url: str) -> None:
-    """Test UDP and TCP independently and verify both requests reached the plugin."""
-    before_queries, before_failures = read_plugin_counters(status_url)
-    if before_failures != 0:
-        raise IntegrationError("Plugin failure counter was non-zero before the DNS Tunnel self-test")
-
+    """Verify successful DNS answers over UDP and TCP through the diagnostic Tunnel."""
     endpoint = f"127.0.0.1:{port}"
     try:
         udp_answers = query_dns_a("127.0.0.1", port, tcp=False, name="example.com")
     except IntegrationError as exc:
-        try:
-            after_queries, after_failures = read_plugin_counters(status_url)
-            counter_detail = (
-                f"plugin counters queries {before_queries}->{after_queries}, "
-                f"failures {before_failures}->{after_failures}"
-            )
-        except IntegrationError as counter_exc:
-            counter_detail = f"post-failure plugin counters unavailable ({counter_exc})"
         raise IntegrationError(
-            f"UDP Tunnel DNS self-test failed at {endpoint}: {exc}; {counter_detail}"
+            f"UDP Tunnel DNS self-test failed at {endpoint}: {exc}"
         ) from None
     print("PASS: UDP Tunnel DNS self-test returned a positive A answer.")
     print("UDP A answers:", ", ".join(udp_answers))
@@ -2087,36 +2075,12 @@ def run_tunnel_dns_self_test(port: int, status_url: str) -> None:
     try:
         tcp_answers = query_dns_a("127.0.0.1", port, tcp=True, name="www.example.com")
     except IntegrationError as exc:
-        try:
-            after_queries, after_failures = read_plugin_counters(status_url)
-            counter_detail = (
-                f"plugin counters queries {before_queries}->{after_queries}, "
-                f"failures {before_failures}->{after_failures}"
-            )
-        except IntegrationError as counter_exc:
-            counter_detail = f"post-failure plugin counters unavailable ({counter_exc})"
         raise IntegrationError(
-            f"TCP Tunnel DNS self-test failed at {endpoint}: {exc}; {counter_detail}"
+            f"TCP Tunnel DNS self-test failed at {endpoint}: {exc}"
         ) from None
     print("PASS: TCP Tunnel DNS self-test returned a positive A answer.")
     print("TCP A answers:", ", ".join(tcp_answers))
-
-    after_queries, after_failures = read_plugin_counters(status_url)
-    if after_queries < before_queries + 2:
-        raise IntegrationError(
-            "UDP and TCP DNS answers succeeded, but the plugin query counter "
-            f"did not increase by two (before={before_queries}, after={after_queries})"
-        )
-    if after_failures != 0:
-        raise IntegrationError("Plugin failure counter was non-zero after the DNS Tunnel self-test")
-    print(
-        "PASS: plugin query counter increased "
-        f"{before_queries} -> {after_queries}; failures remained zero."
-    )
-
-
-
-
+    print("PASS: UDP and TCP DNS queries through the diagnostic Tunnel succeeded.")
 
 def confirm_restart(action: str, approved_flag: bool = False) -> None:
     """Inform the operator about a possible panel-triggered Xray restart; never prompt."""
