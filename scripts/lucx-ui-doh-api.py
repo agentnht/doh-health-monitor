@@ -1651,12 +1651,12 @@ def cleanup_temporary_tunnel(client: PanelAPI, expected: dict, inbound_id: int |
             if isinstance(item, dict) and item.get("remark") == expected.get("remark")
         ]
         if len(matches) > 1:
-            raise IntegrationError("Multiple inbounds match the temporary Tunnel recovery marker; refusing deletion")
+            raise IntegrationError("Multiple inbounds match the reserved temporary Tunnel marker; refusing deletion")
         if not matches:
             return False
         inbound_id = matches[0].get("id")
         if isinstance(inbound_id, bool) or not isinstance(inbound_id, int) or inbound_id <= 0:
-            raise IntegrationError("Temporary Tunnel recovery match has no valid numeric ID")
+            raise IntegrationError("Reserved temporary Tunnel has no valid numeric ID")
     matches = [
         item for item in current
         if isinstance(item, dict)
@@ -1669,7 +1669,7 @@ def cleanup_temporary_tunnel(client: PanelAPI, expected: dict, inbound_id: int |
             for item in current
         ):
             raise IntegrationError(
-                "Temporary Tunnel recovery marker exists under a different ID; refusing deletion"
+                "Reserved temporary Tunnel remark exists under a different ID; refusing deletion"
             )
         return False
     verify_temporary_tunnel(current, expected, inbound_id)
@@ -1677,7 +1677,7 @@ def cleanup_temporary_tunnel(client: PanelAPI, expected: dict, inbound_id: int |
     remaining = client.list_inbounds()
     if any(isinstance(item, dict) and item.get("id") == inbound_id for item in remaining):
         raise IntegrationError(
-            f"Temporary Tunnel cleanup could not be verified; recovery required for inbound ID {inbound_id}"
+            f"Temporary Tunnel cleanup could not be verified for inbound ID {inbound_id}"
         )
     return True
 
@@ -1890,9 +1890,9 @@ def cleanup_temporary_leftovers(client: PanelAPI) -> None:
         raise IntegrationError(
             "Multiple temporary finalRules are present; refusing ambiguous test cleanup"
         )
-    if rule_count and len(added) > 1:
+    if rule_count and added and (len(added) > 1 or len(resources) > 1):
         raise IntegrationError(
-            "Multiple temporary Tunnels claim the same added test rule; refusing ambiguous cleanup"
+            "Multiple temporary Tunnels claim the same test rule; refusing ambiguous cleanup"
         )
     # Rule first, verify absent, then Tunnel. Reused pre-existing rules stay.
     if rule_count and len(added) == 1:
@@ -2335,6 +2335,14 @@ def build_remove_plan(original: dict) -> RemovePlan:
     if len(candidate_tags) != len(tags):
         result.blockers.append("A compatible local DNS outbound has no unique non-empty tag; it will be preserved.")
 
+    tag_counts = {}
+    for item in original_outbounds:
+        tag = item.get("tag")
+        if isinstance(tag, str):
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    unique_candidate_tags = {
+        tag for tag in candidate_tags if tag_counts.get(tag) == 1
+    }
     outbound_index = {
         item.get("tag"): item for item in original_outbounds
         if isinstance(item.get("tag"), str)
@@ -2343,7 +2351,16 @@ def build_remove_plan(original: dict) -> RemovePlan:
         if not _global_port53_rule(rule):
             continue
         target = rule.get("outboundTag")
-        is_candidate = isinstance(target, str) and target in candidate_tags
+        is_candidate = (
+            isinstance(target, str)
+            and (
+                target in unique_candidate_tags
+                # A stale global route can remain after its integration
+                # outbound was removed. The canonical Integrate plan reuses
+                # this tag only when it is free in the current live state.
+                or (target == integrate_spec.outbound_tag and target not in outbound_index)
+            )
+        )
         balancer_tag = rule.get("balancerTag")
         if not is_candidate and isinstance(balancer_tag, str):
             selected, error = _resolve_balancer_dns_targets(
@@ -2351,16 +2368,11 @@ def build_remove_plan(original: dict) -> RemovePlan:
             )
             is_candidate = (
                 error is None and bool(selected)
-                and set(selected).issubset(candidate_tags)
+                and set(selected).issubset(unique_candidate_tags)
             )
         if is_candidate:
             result.route_indexes.append(index)
 
-    tag_counts = {}
-    for item in original_outbounds:
-        tag = item.get("tag")
-        if isinstance(tag, str):
-            tag_counts[tag] = tag_counts.get(tag, 0) + 1
     ignored_routes = set(result.route_indexes)
     for tag in sorted(candidate_tags):
         if tag_counts.get(tag) != 1:
