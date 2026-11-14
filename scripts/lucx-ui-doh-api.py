@@ -94,13 +94,13 @@ class IntegrationError(RuntimeError):
 def _safe_exception_summary(exc: Exception) -> str:
     """Return useful exception diagnostics without exposing common credential forms."""
     detail = str(exc).strip()
-    detail = re.sub(r"(?i)(bearer\\s+)[^\\s,;]+", r"\\1[redacted]", detail)
+    detail = re.sub(r"(?i)(bearer\s+)[^\s,;]+", r"\1[redacted]", detail)
     detail = re.sub(
-        r"(?i)\\b(token|password|passwd|authorization|apikey|secret)\\b([\\s:=]+)[^\\s,;]+",
-        r"\\1\\2[redacted]",
+        r"(?i)\b(token|password|passwd|authorization|apikey|secret)\b([\s:=]+)[^\s,;]+",
+        r"\1\2[redacted]",
         detail,
     )
-    detail = re.sub(r"(https?://)[^/@\\s]+:[^/@\\s]+@", r"\\1[redacted]@", detail)
+    detail = re.sub(r"(https?://)[^/@\s]+:[^/@\s]+@", r"\1[redacted]@", detail)
     if len(detail) > 240:
         detail = detail[:237] + "..."
     exception_type = type(exc).__name__
