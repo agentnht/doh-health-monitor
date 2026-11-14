@@ -9,7 +9,7 @@ The panel adapter has exactly two directives:
 - **Integrate** — build the desired DNS integration plan from the current panel configuration, reuse compatible existing objects, add only missing permanent objects, then run the temporary UDP/TCP end-to-end test.
 - **Remove** — build the same semantic integration specification against current panel state, identify matching integration objects, inspect references, and remove only objects that are no longer shared or used elsewhere. Remove never creates temporary test resources.
 
-Each invocation is one explicit directive. Its plan is calculated from the live configuration returned by LucX-UI immediately before the work. There is no operation ID, persistent execution state, recovery command, historical configuration restore, or partial-operation mode. The CLI accepts only `integrate` and `remove`; `--plan-only` previews either directive without panel writes.
+Each invocation is one explicit directive. Its plan is calculated from the live configuration returned by LucX-UI immediately before the work. No operation ID, persistent execution state, recovery command, or historical configuration restore is part of the model. The CLI accepts only `integrate` and `remove`; `--plan-only` previews either directive without panel writes.
 
 No full Xray snapshots, saved pre-change rule arrays, backup files, ownership journals, or rollback files are created or read by the adapter. If an API write cannot be verified, no old config is restored; the next Integrate or Remove invocation calculates a new plan from the current panel state.
 
