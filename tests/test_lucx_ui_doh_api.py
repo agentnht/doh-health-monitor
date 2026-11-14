@@ -292,6 +292,43 @@ class RemovePlannerTests(unittest.TestCase):
         self.assertEqual(len(client.updates), 1)
         self.assertEqual(client.reads, 2)  # one plan read plus one verified read-back
 
+    def test_remove_preserves_direct_outbound_and_all_final_rules(self):
+        class FakePanel:
+            def __init__(self, config):
+                self.state = {
+                    "xraySetting": copy.deepcopy(config),
+                    "outboundTestUrl": "https://example.invalid/",
+                }
+
+            def read_state(self):
+                return copy.deepcopy(self.state)
+
+            def update(self, config, outbound_test_url):
+                self.state = {
+                    "xraySetting": api_tool.panel_normalize_dns_allow_rules(copy.deepcopy(config)),
+                    "outboundTestUrl": outbound_test_url,
+                }
+
+        config = add_complete_dns(base_config())
+        expected_final_rules = [
+            copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE),
+            {"action": "block", "ip": ["geoip:private"]},
+        ]
+        direct = next(item for item in config["outbounds"] if item.get("tag") == "direct")
+        direct["settings"]["finalRules"] = copy.deepcopy(expected_final_rules)
+        client = FakePanel(config)
+
+        result = api_tool.command_remove(SimpleNamespace(approve_restart=True), client)
+
+        self.assertEqual(result, 0)
+        final = client.state["xraySetting"]
+        direct_after = next(item for item in final["outbounds"] if item.get("tag") == "direct")
+        self.assertEqual(direct_after["protocol"], "freedom")
+        self.assertEqual(direct_after["settings"]["finalRules"], expected_final_rules)
+        self.assertFalse(any(item.get("tag") == "dns-out" for item in final["outbounds"]))
+        self.assertEqual(final["dns"]["servers"], [])
+        self.assertFalse(any(api_tool._global_port53_rule(item) for item in final["routing"]["rules"]))
+
     def test_remove_does_not_mutate_when_desired_plan_is_blocked(self):
         class FakePanel:
             def __init__(self, config):
