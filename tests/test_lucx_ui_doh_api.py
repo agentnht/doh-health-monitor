@@ -190,6 +190,73 @@ class RemovePlannerTests(unittest.TestCase):
         self.assertEqual(plan.dns_server_indexes, [])
         self.assertTrue(any("scoped" in item for item in plan.blockers))
 
+    def test_finds_general_string_dns_server_entry(self):
+        config = add_complete_dns(base_config())
+        config["dns"]["servers"] = ["127.0.0.1:5355"]
+
+        plan = api_tool.build_remove_plan(config)
+
+        self.assertEqual(plan.dns_server_indexes, [0])
+
+    def test_preserves_global_route_when_candidate_outbound_tag_is_ambiguous(self):
+        config = add_complete_dns(base_config())
+        duplicate = copy.deepcopy(config["outbounds"][-1])
+        config["outbounds"].append(duplicate)
+
+        plan = api_tool.build_remove_plan(config)
+
+        self.assertEqual(plan.route_indexes, [])
+        self.assertEqual(plan.outbound_tags, [])
+        self.assertTrue(any("duplicated" in item for item in plan.blockers))
+
+    def test_removes_stale_global_route_when_canonical_outbound_is_absent(self):
+        config = base_config()
+        config["routing"]["rules"].insert(1, copy.deepcopy(api_tool.DNS_PORT_RULE))
+
+        plan = api_tool.build_remove_plan(config)
+
+        self.assertEqual(plan.route_indexes, [1])
+        self.assertEqual(plan.outbound_tags, [])
+
+    def test_remove_completes_while_preserving_outbound_used_by_user_rule(self):
+        class FakePanel:
+            def __init__(self, config):
+                self.state = {
+                    "xraySetting": copy.deepcopy(config),
+                    "outboundTestUrl": "https://example.invalid/",
+                }
+                self.updates = []
+
+            def read_state(self):
+                return copy.deepcopy(self.state)
+
+            def update(self, config, outbound_test_url):
+                self.updates.append(copy.deepcopy(config))
+                self.state = {
+                    "xraySetting": api_tool.panel_normalize_dns_allow_rules(copy.deepcopy(config)),
+                    "outboundTestUrl": outbound_test_url,
+                }
+
+            def list_inbounds(self):
+                return []
+
+        config = add_complete_dns(base_config())
+        user_rule = {
+            "type": "field", "domain": ["internal.example"], "outboundTag": "dns-out"
+        }
+        config["routing"]["rules"].append(user_rule)
+        client = FakePanel(config)
+
+        result = api_tool.command_remove(
+            SimpleNamespace(plan_only=False, approve_restart=True), client
+        )
+
+        self.assertEqual(result, 0)
+        final = client.read_state()["xraySetting"]
+        self.assertTrue(any(item.get("tag") == "dns-out" for item in final["outbounds"]))
+        self.assertIn(user_rule, final["routing"]["rules"])
+        self.assertFalse(any(api_tool._global_port53_rule(item) for item in final["routing"]["rules"]))
+
     def test_remove_command_replans_after_each_verified_mutation(self):
         class FakePanel:
             def __init__(self, config):
