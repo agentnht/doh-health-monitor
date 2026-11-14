@@ -82,7 +82,7 @@ DNS_ALLOW_TAG = "xui-dns-allow"
 TEMP_DNS_FINAL_RULE = {
     "action": "allow",
     "network": "tcp,udp",
-    "port": "53",
+    "port": "5355",
     "ip": ["127.0.0.1"],
 }
 
@@ -929,7 +929,7 @@ def _ip_values(value: object) -> list[str]:
 
 
 def _final_rule_may_block_temporary_dns(rule: dict) -> bool:
-    """Whether an earlier Freedom block rule could match 127.0.0.1:53."""
+    """Whether an earlier Freedom block rule could match 127.0.0.1:5355."""
     if rule.get("action") != "block":
         return False
 
@@ -939,7 +939,7 @@ def _final_rule_may_block_temporary_dns(rule: dict) -> bool:
 
     if "port" in rule:
         port = rule.get("port")
-        if not _port_contains(port, 53):
+        if not _port_contains(port, 5355):
             # A well-formed, non-matching port selector cannot block this
             # endpoint. Unknown syntax is treated conservatively as a match.
             if isinstance(port, bool) or isinstance(port, (int,)):
@@ -1750,21 +1750,28 @@ def wait_for_tunnel_listeners(port: int, timeout: float = 20.0) -> None:
 
 def _write_recovery_journal(
     backup_dir: Path, expected: dict, inbound_id: int | None, state: str,
-    *, final_rule: dict | None = None,
+    *, original_final_rules: list[dict], final_rule: dict | None = None,
 ) -> Path:
     marker = expected["remark"].removeprefix(TUNNEL_REMARK_PREFIX)
+    if (
+        not isinstance(original_final_rules, list)
+        or any(not isinstance(item, dict) for item in original_final_rules)
+        or any(canonical(item) == canonical(TEMP_DNS_FINAL_RULE) for item in original_final_rules)
+    ):
+        raise IntegrationError("Cannot journal an invalid pre-test Freedom finalRules snapshot")
     journal_dir = backup_dir / "recovery"
     journal_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(journal_dir, 0o700)
     path = journal_dir / f"lucx-doh-selftest-{marker}.json"
     _write_private_json(path, {
-        "format": 1,
+        "format": 2,
         "kind": "temporary-tunnel-selftest",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "state": state,
         "inbound_id": inbound_id,
         "inbound": expected,
         "final_rule": copy.deepcopy(final_rule or TEMP_DNS_FINAL_RULE),
+        "original_final_rules": copy.deepcopy(original_final_rules),
     })
     return path
 
@@ -1781,7 +1788,7 @@ def _load_recovery_journal(path: Path) -> dict:
         raise IntegrationError("Cannot read the temporary Tunnel recovery journal") from None
     inbound = payload.get("inbound") if isinstance(payload, dict) else None
     if (
-        not isinstance(payload, dict) or payload.get("format") != 1
+        not isinstance(payload, dict) or payload.get("format") != 2
         or payload.get("kind") != "temporary-tunnel-selftest"
         or not isinstance(inbound, dict)
         or inbound.get("protocol") != "tunnel"
@@ -1798,11 +1805,17 @@ def _load_recovery_journal(path: Path) -> dict:
     ):
         raise IntegrationError("Recovery journal contains an invalid inbound ID")
     final_rule = payload.get("final_rule")
-    if final_rule is not None and (
+    original_final_rules = payload.get("original_final_rules")
+    if (
         not isinstance(final_rule, dict)
         or canonical(final_rule) != canonical(TEMP_DNS_FINAL_RULE)
+        or not isinstance(original_final_rules, list)
+        or any(not isinstance(item, dict) for item in original_final_rules)
+        or any(canonical(item) == canonical(TEMP_DNS_FINAL_RULE) for item in original_final_rules)
     ):
-        raise IntegrationError("Recovery journal temporary DNS finalRule identity is invalid")
+        raise IntegrationError(
+            "Recovery journal finalRule identity or original finalRules snapshot is invalid"
+        )
     return payload
 
 
@@ -1860,10 +1873,30 @@ def find_pending_recovery_journals(backup_dir: Path) -> list[Path]:
     return journals
 
 
+def preflight_temporary_dns_final_rule(client: PanelAPI) -> list[dict]:
+    """Validate ownership and conflicts before any Tunnel or config mutation."""
+    snapshot = client.get_snapshot()
+    direct = _direct_freedom_outbound(snapshot["xraySetting"])
+    settings = direct["settings"]
+    rules = settings.get("finalRules", [])
+    if not isinstance(rules, list) or any(not isinstance(item, dict) for item in rules):
+        raise IntegrationError("direct.settings.finalRules must be an array of objects")
+    if any(canonical(item) == canonical(TEMP_DNS_FINAL_RULE) for item in rules):
+        raise IntegrationError(
+            "Temporary DNS finalRule for 127.0.0.1:5355 is already present; "
+            "refusing to claim or remove a rule not created by this run"
+        )
+    # Calculate the insertion point during preflight so malformed or uncertain
+    # block selectors are handled before the Tunnel is created.
+    _temporary_dns_allow_insert_index(rules)
+    return copy.deepcopy(rules)
+
+
 def install_temporary_dns_final_rule(
-    client: PanelAPI, *, attempt_state: list[bool] | None = None
+    client: PanelAPI, original_final_rules: list[dict], *,
+    attempt_state: list[bool] | None = None,
 ) -> None:
-    """Install the reserved loopback finalRule and report when the API write is attempted."""
+    """Install the temporary plugin-port allow after verifying the preflight snapshot."""
     before = client.get_snapshot()
     config = copy.deepcopy(before["xraySetting"])
     direct = _direct_freedom_outbound(config)
@@ -1871,9 +1904,14 @@ def install_temporary_dns_final_rule(
     rules = settings.get("finalRules", [])
     if not isinstance(rules, list) or any(not isinstance(item, dict) for item in rules):
         raise IntegrationError("direct.settings.finalRules must be an array of objects")
+    if canonical(rules) != canonical(original_final_rules):
+        raise IntegrationError(
+            "direct.settings.finalRules changed after temporary DNS preflight; "
+            "refusing to overwrite concurrent panel changes"
+        )
     if any(canonical(item) == canonical(TEMP_DNS_FINAL_RULE) for item in rules):
         raise IntegrationError(
-            "Temporary DNS finalRule is already present after permanent-config normalization; refusing to claim ownership"
+            "Temporary DNS finalRule appeared after preflight; refusing to claim ownership"
         )
     insert_at = _temporary_dns_allow_insert_index(rules)
     rules.insert(insert_at, copy.deepcopy(TEMP_DNS_FINAL_RULE))
@@ -1898,7 +1936,9 @@ def install_temporary_dns_final_rule(
         )
 
 
-def cleanup_temporary_dns_final_rule(client: PanelAPI, final_rule: dict) -> bool:
+def cleanup_temporary_dns_final_rule(
+    client: PanelAPI, final_rule: dict, original_final_rules: list[dict]
+) -> bool:
     """Remove only this run's exact allow finalRule, preserving all current unrelated settings."""
     if canonical(final_rule) != canonical(TEMP_DNS_FINAL_RULE):
         raise IntegrationError("Refusing to remove an unrecognized temporary DNS finalRule")
@@ -1909,26 +1949,47 @@ def cleanup_temporary_dns_final_rule(client: PanelAPI, final_rule: dict) -> bool
     rules = settings.get("finalRules", [])
     if not isinstance(rules, list) or any(not isinstance(item, dict) for item in rules):
         raise IntegrationError("direct.settings.finalRules is not a valid array; recovery required")
+    if (
+        not isinstance(original_final_rules, list)
+        or any(not isinstance(item, dict) for item in original_final_rules)
+        or any(canonical(item) == canonical(final_rule) for item in original_final_rules)
+    ):
+        raise IntegrationError("Recovery snapshot for the original Freedom finalRules is invalid")
     matches = [i for i, item in enumerate(rules) if canonical(item) == canonical(final_rule)]
     if not matches:
         return False
-    # Every exact match is the reserved self-test object. Remove all such
-    # leftovers while preserving every non-matching user finalRule.
-    for index in reversed(matches):
-        del rules[index]
-    if rules:
-        settings["finalRules"] = rules
+    if len(matches) != 1:
+        raise IntegrationError(
+            "Multiple identical temporary DNS finalRules now exist; refusing to delete an ambiguous rule"
+        )
+
+    # Remove only our single exact rule. Preserve all later user additions, but
+    # refuse if any original rule was removed, modified, or reordered meanwhile.
+    restored_rules = copy.deepcopy(rules)
+    del restored_rules[matches[0]]
+    if not _is_subsequence(original_final_rules, restored_rules):
+        raise IntegrationError(
+            "direct.settings.finalRules changed during the Tunnel test; "
+            "refusing cleanup that could overwrite concurrent user changes"
+        )
+    if restored_rules:
+        settings["finalRules"] = restored_rules
     else:
         settings.pop("finalRules", None)
     client.update(config, current["outboundTestUrl"])
     restored = client.get_snapshot()
     restored_direct = _direct_freedom_outbound(restored["xraySetting"])
-    restored_rules = restored_direct["settings"].get("finalRules", [])
-    if not isinstance(restored_rules, list) or any(
-        isinstance(item, dict) and canonical(item) == canonical(final_rule)
-        for item in restored_rules
+    verified_rules = restored_direct["settings"].get("finalRules", [])
+    if (
+        not isinstance(verified_rules, list)
+        or any(not isinstance(item, dict) for item in verified_rules)
+        or any(canonical(item) == canonical(final_rule) for item in verified_rules)
+        or not _is_subsequence(original_final_rules, verified_rules)
     ):
-        raise IntegrationError("Panel read-back could not verify temporary DNS finalRule removal")
+        raise IntegrationError(
+            "Panel read-back could not verify temporary DNS finalRule removal "
+            "without changing the original finalRules"
+        )
     return True
 
 
