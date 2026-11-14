@@ -42,12 +42,7 @@ from urllib.request import HTTPSHandler, Request, build_opener, urlopen
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
-from xray_dns_planner import (
-    build_dns_plan,
-    _outbound_matches_dns_endpoint,
-    _server_endpoint,
-    DNS_FINAL_ALLOW_RULE_TEMPLATE,
-)
+from xray_dns_planner import build_dns_plan, _outbound_matches_dns_endpoint, _server_endpoint
 
 VERSION = "1.6.0"
 DEFAULT_PLUGIN_SERVICE = "lucx-plugin-doh-health-monitor"
@@ -87,12 +82,9 @@ DNS_ALLOW_TAG = "xui-dns-allow"
 TEMP_DNS_FINAL_RULE = {
     "action": "allow",
     "network": "tcp,udp",
-    "port": "5355",
+    "port": "53",
     "ip": ["127.0.0.1"],
 }
-# Kept separate from TEMP_DNS_FINAL_RULE, whose network value is a string;
-# this imported template is the persistent, permanent DNS endpoint exception.
-DNS_FINAL_ALLOW_RULE = DNS_FINAL_ALLOW_RULE_TEMPLATE
 
 
 class IntegrationError(RuntimeError):
@@ -937,7 +929,7 @@ def _ip_values(value: object) -> list[str]:
 
 
 def _final_rule_may_block_temporary_dns(rule: dict) -> bool:
-    """Whether an earlier Freedom block rule could match 127.0.0.1:5355."""
+    """Whether an earlier Freedom block rule could match 127.0.0.1:53."""
     if rule.get("action") != "block":
         return False
 
@@ -947,7 +939,7 @@ def _final_rule_may_block_temporary_dns(rule: dict) -> bool:
 
     if "port" in rule:
         port = rule.get("port")
-        if not _port_contains(port, 5355):
+        if not _port_contains(port, 53):
             # A well-formed, non-matching port selector cannot block this
             # endpoint. Unknown syntax is treated conservatively as a match.
             if isinstance(port, bool) or isinstance(port, (int,)):
@@ -1237,7 +1229,7 @@ def _direct_freedom_outbound(config: dict) -> dict:
     all_direct = [item for item in outbounds if item.get("tag") == "direct"]
     if len(matches) != 1 or len(all_direct) != 1:
         raise IntegrationError(
-            "DNS integration requires exactly one direct outbound using protocol freedom"
+            "Temporary DNS finalRule requires exactly one direct freedom outbound"
         )
     settings = matches[0].get("settings")
     if settings is None:
@@ -1309,7 +1301,7 @@ def build_plan(original: dict, *, require_api_rule: bool = True) -> Plan:
             return plan
 
     try:
-        semantic = build_dns_plan(cfg, require_direct_freedom=require_api_rule)
+        semantic = build_dns_plan(cfg)
     except (ValueError, TypeError) as exc:
         plan.blockers.append(f"Xray DNS inventory failed: {exc}")
         return plan
@@ -1397,9 +1389,6 @@ def build_plan(original: dict, *, require_api_rule: bool = True) -> Plan:
             else:
                 plan.warnings.append(
                     "LucX-UI manages xui-dns-allow for 127.0.0.1:5355 before geoip:private; the adapter will not write this rule itself"
-                )
-                plan.warnings.append(
-                    "Freedom finalRules also require a direct allow for 127.0.0.1:5355; the adapter adds it before matching block rules"
                 )
     except IntegrationError as exc:
         plan.blockers.append(str(exc))
@@ -2404,63 +2393,6 @@ def build_selective_rollback_config(current: dict, before: dict, after: dict) ->
                 raise IntegrationError("Global port-53 rule was modified after apply; refusing to delete it")
             current_rules.remove(present[0])
 
-    # Remove the permanent local-DNS Freedom exception only if this apply
-    # introduced it and the exact rule is still present. A modified or removed
-    # rule is left untouched; unrelated finalRules retain their order.
-    def direct_final_rules(config):
-        candidates = [
-            item for item in config.get("outbounds", [])
-            if isinstance(item, dict)
-            and item.get("tag") == "direct"
-            and item.get("protocol") == "freedom"
-        ] if isinstance(config.get("outbounds", []), list) else []
-        if len(candidates) != 1:
-            return None
-        settings = candidates[0].get("settings", {})
-        if not isinstance(settings, dict):
-            return None
-        rules = settings.get("finalRules", [])
-        return rules if isinstance(rules, list) and all(isinstance(x, dict) for x in rules) else None
-
-    before_final = direct_final_rules(before)
-    after_final = direct_final_rules(after)
-    current_final = direct_final_rules(result)
-    if before_final is not None and after_final is not None and current_final is not None:
-        before_allow_count = sum(
-            1 for rule in before_final
-            if canonical(rule) == canonical(DNS_FINAL_ALLOW_RULE)
-        )
-        after_allow_count = sum(
-            1 for rule in after_final
-            if canonical(rule) == canonical(DNS_FINAL_ALLOW_RULE)
-        )
-        current_allow_indices = [
-            index for index, rule in enumerate(current_final)
-            if canonical(rule) == canonical(DNS_FINAL_ALLOW_RULE)
-        ]
-        if after_allow_count > before_allow_count:
-            if after_allow_count - before_allow_count != 1:
-                raise IntegrationError(
-                    "Backup has ambiguous ownership of the permanent DNS finalRule; selective rollback refused"
-                )
-            if len(current_allow_indices) > 1:
-                raise IntegrationError(
-                    "Multiple permanent DNS finalRules now exist; selective rollback refused"
-                )
-            if current_allow_indices:
-                del current_final[current_allow_indices[0]]
-                direct = next(
-                    item for item in result["outbounds"]
-                    if isinstance(item, dict)
-                    and item.get("tag") == "direct"
-                    and item.get("protocol") == "freedom"
-                )
-                settings = direct["settings"]
-                if current_final:
-                    settings["finalRules"] = current_final
-                else:
-                    settings.pop("finalRules", None)
-
     # Do not remove an integration-created outbound if later user changes
     # introduced additional routing/balancer dependencies on its selected tag.
     if owned_dns:
@@ -2996,8 +2928,8 @@ def command_rollback(args, client: PanelAPI) -> int:
     )
     expected = panel_normalize_dns_allow_rules(rollback_config)
 
-    # Keep current panel metadata and all unrelated settings; remove only the
-    # unchanged DNS objects and local Freedom exception owned by this apply.
+    # Keep current panel metadata and all unrelated settings; only the three
+    # DNS objects owned by this apply are removed.
     confirm_restart("rollback", args.approve_restart)
     try:
         client.update(rollback_config, current["outboundTestUrl"])
@@ -3013,7 +2945,7 @@ def command_rollback(args, client: PanelAPI) -> int:
         return 2
 
     print("PASS: selective rollback verified through the panel API.")
-    print("Only unchanged DNS integration objects and the local 127.0.0.1:5355 Freedom allow rule introduced by this apply were removed.")
+    print("Only the unchanged DNS outbound, 127.0.0.1:5355 DNS server, and global port-53 rule introduced by this apply were removed.")
     print("Unrelated current panel settings and metadata were preserved.")
     try:
         remove_verified_backup(backup_path)
