@@ -11,9 +11,9 @@
 3. Stop without panel writes if the plan contains blocking conflicts.
 4. Apply only missing permanent DNS integration records. If no permanent changes are needed, leave the config unchanged.
 5. Ensure one diagnostic Tunnel exists (create it only if absent), then test positive DNS A answers over UDP and TCP.
-6. After successful UDP/TCP verification, remove the diagnostic Tunnel and any temporary finalRule created for this test. If verification fails, leave diagnostic resources in place for investigation. Preserve a finalRule that was reused rather than created by this diagnostic run.
+6. After the UDP/TCP self-test attempt, reconcile every diagnostic-plan resource against the current live configuration. For each matching inbound and finalRule, inspect references outside the diagnostic plan. Remove it only when no external use exists; preserve it when external use exists or dependency analysis is ambiguous. This decision is independent of whether the object existed before the run or was marked added/reused.
 
-If the diagnostic Tunnel already exists, Integrate tests it rather than creating a second one. After successful verification, Integrate cleans up the diagnostic Tunnel and only the temporary finalRule attributable to diagnostic creation; a reused rule is preserved. If the UDP/TCP self-test fails, the permanent DNS configuration remains applied and diagnostic resources remain available for inspection.
+If the diagnostic Tunnel already exists, Integrate tests it rather than creating a second one. Cleanup is attempted after both successful and failed tests. The permanent DNS integration remains applied if testing fails. If cleanup also fails, report that separately from the self-test result.
 
 ### Remove
 
@@ -32,9 +32,9 @@ These commands exist only to investigate LucX-UI/Xray behavior and are not inten
 - `tunnel create`: create one loopback-only diagnostic Tunnel and add the temporary DNS allow rule only when needed. Leave both in place.
 - `tunnel test`: test an already-created Tunnel with positive UDP and TCP DNS A queries. It performs no panel writes and no cleanup.
 - `tunnel status`: inspect diagnostic resources without changing them.
-- `tunnel remove`: explicitly remove the diagnostic Tunnel and only the temporary rule that the diagnostic tooling can safely identify as its own. A reused rule must be preserved.
+- `tunnel remove`: explicitly reconcile diagnostic resources using the same live external-reference check as Integrate. Remove each inbound/finalRule only if it has no use outside the diagnostic plan; preserve externally used or ambiguous resources.
 
-There is no automatic cleanup after a successful or failed test. Use `tunnel status` to inspect the current state and invoke `tunnel remove` only when explicit cleanup is intended.
+The staging-only commands do not automatically clean up after `tunnel test`; use `tunnel status` to inspect the state and invoke `tunnel remove` when explicit cleanup is intended. Integrate, by contrast, always attempts cleanup after its self-test attempt.
 
 ## CLI
 
@@ -56,11 +56,11 @@ There is no `--plan-only` option. A panel update may automatically restart Xray;
 ## Safety boundaries
 
 - No full Xray configuration snapshots, backup files, ownership journals, or snapshot-based rollback.
-- After a successful self-test, Integrate automatically cleans up diagnostic Tunnel resources; on failure they remain for inspection. Remove never touches diagnostic Tunnel resources.
+- Integrate attempts diagnostic cleanup after either self-test outcome. Each inbound and finalRule is removed only when the live configuration shows no external use outside the diagnostic plan; creation markers and pre-existence do not decide ownership. Remove never touches diagnostic Tunnel resources.
 - Remove uses the same desired-state planner as Integrate and preserves external/shared references.
 - Every panel write is verified by reading the current settings back through the LucX-UI API.
 - The adapter does not write the panel SQLite database or runtime Xray config directly.
-- A failed UDP/TCP self-test does not revert the permanent integration; inspect diagnostic resources and remove them explicitly after investigation.
+- A failed UDP/TCP self-test does not revert the permanent integration. Cleanup is still attempted; externally used or ambiguous diagnostic resources are reported and retained.
 
 ## Validation
 
