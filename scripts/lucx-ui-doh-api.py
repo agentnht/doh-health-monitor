@@ -2621,6 +2621,7 @@ def inspect_temporary_leftovers(client: PanelAPI, backup_dir: Path) -> dict:
 
     recovery_dir = backup_dir / "recovery"
     journal_paths = []
+    journal_records = []
     try:
         info = recovery_dir.lstat()
     except FileNotFoundError:
@@ -2647,14 +2648,35 @@ def inspect_temporary_leftovers(client: PanelAPI, backup_dir: Path) -> dict:
                         or stat.S_IMODE(file_info.st_mode) != 0o600
                     ):
                         raise IntegrationError("recovery marker is not a private regular file owned by the current user")
+                    payload = _load_recovery_journal(path)
+                    expected_name = (
+                        "lucx-doh-selftest-"
+                        + payload["inbound"]["remark"].removeprefix(TUNNEL_REMARK_PREFIX)
+                        + ".json"
+                    )
+                    if path.name != expected_name:
+                        raise IntegrationError("recovery journal filename does not match its Tunnel identity")
                     journal_paths.append(path)
+                    journal_records.append({"path": path, "payload": payload})
                 except (OSError, IntegrationError) as exc:
-                    errors.append(f"Recovery marker {path.name!r} cannot be safely removed: {exc}")
+                    errors.append(f"Recovery marker {path.name!r} cannot be safely used: {exc}")
+
+    if direct_rules_present and not journal_records:
+        errors.append(
+            "Temporary DNS finalRule exists without a valid recovery journal; "
+            "refusing to delete it without the original Freedom finalRules snapshot"
+        )
+    if direct_rules_present and len(journal_records) > 1:
+        errors.append(
+            "Multiple recovery journals claim the temporary DNS finalRule; "
+            "manual review is required before cleanup"
+        )
 
     return {
         "tunnels": tunnels,
         "final_rule_present": direct_rules_present,
         "journal_paths": journal_paths,
+        "journal_records": journal_records,
         "errors": errors,
     }
 
@@ -2675,10 +2697,21 @@ def cleanup_temporary_leftovers(client: PanelAPI, backup_dir: Path, discovered: 
             errors.append(f"Tunnel {expected['remark']}: {exc}")
 
     if discovered.get("final_rule_present"):
-        try:
-            cleanup_temporary_dns_final_rule(client, TEMP_DNS_FINAL_RULE)
-        except Exception as exc:
-            errors.append(f"temporary finalRule: {exc}")
+        records = discovered.get("journal_records", [])
+        if len(records) != 1:
+            errors.append(
+                "Temporary DNS finalRule cannot be safely cleaned without exactly one trusted recovery journal"
+            )
+        else:
+            payload = records[0]["payload"]
+            try:
+                cleanup_temporary_dns_final_rule(
+                    client,
+                    payload["final_rule"],
+                    payload["original_final_rules"],
+                )
+            except Exception as exc:
+                errors.append(f"temporary finalRule: {exc}")
 
     # Verify both resource classes independently, even when one cleanup failed.
     try:
@@ -2715,8 +2748,8 @@ def cleanup_temporary_leftovers(client: PanelAPI, backup_dir: Path, discovered: 
     if errors:
         raise IntegrationError("; ".join(errors))
 
-    # Journal filenames are only opaque recovery markers here. Resource identity
-    # was established from the live API; journal JSON is intentionally not read.
+    # Remove recovery journals only after the live API confirms both temporary
+    # resource classes are absent and every cleanup operation succeeded.
     for path in discovered.get("journal_paths", []):
         try:
             info = path.lstat()
