@@ -259,8 +259,10 @@ class RemovePlannerTests(unittest.TestCase):
                     "outboundTestUrl": "https://example.invalid/",
                 }
                 self.updates = []
+                self.reads = 0
 
             def read_state(self):
+                self.reads += 1
                 return copy.deepcopy(self.state)
 
             def update(self, config, outbound_test_url):
@@ -288,6 +290,7 @@ class RemovePlannerTests(unittest.TestCase):
         self.assertEqual(len(final["dns"]["servers"]), 1)
         self.assertFalse(any(api_tool._global_port53_rule(item) for item in final["routing"]["rules"]))
         self.assertEqual(len(client.updates), 1)
+        self.assertEqual(client.reads, 2)  # one plan read plus one verified read-back
 
     def test_remove_does_not_mutate_when_desired_plan_is_blocked(self):
         class FakePanel:
@@ -344,6 +347,7 @@ class IntegrateOrchestrationTests(unittest.TestCase):
 
         create.assert_called_once_with(self._args(), client, notify_restart=False)
         test.assert_called_once_with(self._args(), client)
+        self.assertEqual(client.reads, 1)
 
     def test_integrate_tests_existing_diagnostic_tunnel_without_recreating_it(self):
         client = self.FakePanel(base_config())
