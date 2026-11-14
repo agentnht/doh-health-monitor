@@ -1960,6 +1960,10 @@ def run_temporary_tunnel_test(client: PanelAPI, status_url: str) -> None:
                 # causes cleanup to inspect and remove the live delta.
                 rule_added_by_this_run = True
                 _add_temporary_dns_final_rule(client)
+                # The panel update may restart Xray. The initial listener check
+                # happened before this second config mutation, so wait for the
+                # temporary Tunnel to be live again before sending DNS traffic.
+                wait_for_tunnel_listeners(port)
             elif current_rule_count != 1:
                 raise IntegrationError(
                     "The pre-existing DNS finalRule disappeared while creating the test Tunnel"
