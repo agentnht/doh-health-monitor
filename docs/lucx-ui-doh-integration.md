@@ -191,7 +191,7 @@ The automated suite covers semantic reuse, nonstandard outbound tags, unique
  planning. GitHub Actions must pass on the current PR head before this refactor
  is treated as CI-verified.
 
-At commit `eb232d26698bb7b9f2dbae03f7c7e91d796d251f`, the DoH integration-test workflow completed successfully, including Python compilation and the full unittest suite. The Go CI workflow was still running when this document was updated. The new end-to-end cycle on the staging VPS (`integrate` → UDP/TCP self-test → `remove`) has not yet been run; earlier manual Tunnel success does not validate this revised integration path.
+At head commit `865a9ca6b3d095c5a427efb09e089a5f7a3a8ece`, both GitHub Actions workflows passed: the DoH integration-test workflow (Python compilation and full unittest suite) and the general Go CI workflow (go vet, go test, and Linux amd64 build). The new end-to-end cycle on the staging VPS (`integrate` → UDP/TCP self-test → `remove`) has not yet been run; earlier manual Tunnel success does not validate this revised integration path.
 
 
 
