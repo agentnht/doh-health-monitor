@@ -210,6 +210,46 @@ class RemovePlannerTests(unittest.TestCase):
         self.assertEqual(plan.direct_final_rule_indexes, [])
         self.assertTrue(any("dns.rules[0].server" in item for item in plan.blockers))
 
+    def test_remove_cleans_orphaned_loopback_allow_and_keeps_direct(self):
+        class FakePanel:
+            def __init__(self, config):
+                self.state = {
+                    "xraySetting": copy.deepcopy(config),
+                    "outboundTestUrl": "https://example.invalid/",
+                }
+
+            def read_state(self):
+                return copy.deepcopy(self.state)
+
+            def update(self, config, outbound_test_url):
+                self.state = {
+                    "xraySetting": api_tool.panel_normalize_dns_allow_rules(copy.deepcopy(config)),
+                    "outboundTestUrl": outbound_test_url,
+                }
+
+        config = base_config()
+        original_direct = next(item for item in config["outbounds"] if item.get("tag") == "direct")
+        original_direct["settings"]["finalRules"] = [
+            copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE),
+            {"action": "block", "ip": ["geoip:private"]},
+        ]
+        client = FakePanel(config)
+
+        plan = api_tool.build_remove_plan(config)
+        self.assertEqual(plan.direct_final_rule_indexes, [0])
+
+        result = api_tool.command_remove(SimpleNamespace(approve_restart=True), client)
+
+        self.assertEqual(result, 0)
+        direct_after = next(
+            item for item in client.state["xraySetting"]["outbounds"]
+            if item.get("tag") == "direct"
+        )
+        self.assertEqual(
+            direct_after["settings"]["finalRules"],
+            [{"action": "block", "ip": ["geoip:private"]}],
+        )
+
     def test_remove_preserves_loopback_allow_when_dns_outbound_is_still_shared(self):
         config = add_complete_dns(base_config())
         config["dns"]["servers"] = []
