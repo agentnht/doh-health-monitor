@@ -1,6 +1,6 @@
 # LucX-UI panel reconciliation: Integrate and Remove
 
-**Current design for PR #6.** This document describes the permanent DNS workflow and the separate temporary staging diagnostics.
+**Current design for PR #6.** This document describes the permanent DNS workflow and its internal diagnostic Tunnel lifecycle.
 
 ## Permanent directives
 
@@ -52,4 +52,4 @@ There is no `--plan-only` option. A panel update may automatically restart Xray;
 
 ## Validation
 
-On code/test commit `2c4ec9d134100454ff737f80da58999648275387`, the DoH integration tests workflow passed (Python compilation and full unittest suite, including direct-finalRule removal and external-use cases). General Go CI is still in progress. The revised Remove and live-reference cleanup have not yet been exercised on the staging VPS.
+Staging validation completed on 2026-11-15 with LucX-UI `3.11.0-lucx.357` and Xray `26.10.21`: Integrate passed positive UDP and TCP DNS A-answer tests, then removed the diagnostic finalRule and Tunnel inbound with panel API read-back. A subsequent Remove removed only the permanent DNS route, outbound, and DNS server. The baseline code commit `db40f1c6f16cf6743b9deba32075420a84fc48e7` passed both DoH integration tests and Go CI. The follow-up change that removes the standalone staging CLI commands is validated separately by its own CI.
