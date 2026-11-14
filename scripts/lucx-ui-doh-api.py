@@ -2469,8 +2469,8 @@ def command_remove(args, client: PanelAPI) -> int:
                 )
             del servers[index]
 
-    _apply_panel_update(client, state, config, "permanent DNS integration removal")
-    final_plan = build_remove_plan(client.read_state()["xraySetting"])
+    after = _apply_panel_update(client, state, config, "permanent DNS integration removal")
+    final_plan = build_remove_plan(after["xraySetting"])
     print("Final Remove assessment:")
     print_remove_plan(final_plan)
     print("PASS: Remove removed only unshared resources selected by the desired Integrate plan; diagnostic Tunnel resources were not touched.")
