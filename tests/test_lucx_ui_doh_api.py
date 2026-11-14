@@ -430,8 +430,8 @@ class IntegrateOrchestrationTests(unittest.TestCase):
         with patch.object(api_tool, "discover_temporary_leftovers", return_value=[]), \
              patch.object(api_tool, "confirm_restart"), \
              patch.object(api_tool, "_apply_panel_update", return_value=client.state), \
-             patch.object(api_tool, "command_tunnel_create") as create, \
-             patch.object(api_tool, "command_tunnel_test") as test, \
+             patch.object(api_tool, "ensure_diagnostic_tunnel") as create, \
+             patch.object(api_tool, "test_diagnostic_tunnel") as test, \
              patch.object(api_tool, "cleanup_temporary_leftovers") as cleanup:
             self.assertEqual(api_tool.command_integrate(self._args(), client), 0)
 
@@ -446,8 +446,8 @@ class IntegrateOrchestrationTests(unittest.TestCase):
         with patch.object(api_tool, "discover_temporary_leftovers", return_value=existing), \
              patch.object(api_tool, "confirm_restart"), \
              patch.object(api_tool, "_apply_panel_update", return_value=client.state), \
-             patch.object(api_tool, "command_tunnel_create") as create, \
-             patch.object(api_tool, "command_tunnel_test") as test, \
+             patch.object(api_tool, "ensure_diagnostic_tunnel") as create, \
+             patch.object(api_tool, "test_diagnostic_tunnel") as test, \
              patch.object(api_tool, "cleanup_temporary_leftovers") as cleanup:
             self.assertEqual(api_tool.command_integrate(self._args(), client), 0)
 
@@ -460,8 +460,8 @@ class IntegrateOrchestrationTests(unittest.TestCase):
         with patch.object(api_tool, "discover_temporary_leftovers", return_value=[]), \
              patch.object(api_tool, "confirm_restart"), \
              patch.object(api_tool, "_apply_panel_update", return_value=client.state), \
-             patch.object(api_tool, "command_tunnel_create"), \
-             patch.object(api_tool, "command_tunnel_test", side_effect=api_tool.IntegrationError("UDP failed")), \
+             patch.object(api_tool, "ensure_diagnostic_tunnel"), \
+             patch.object(api_tool, "test_diagnostic_tunnel", side_effect=api_tool.IntegrationError("UDP failed")), \
              patch.object(api_tool, "cleanup_temporary_leftovers") as cleanup:
             with self.assertRaisesRegex(api_tool.IntegrationError, "self-test failed"):
                 api_tool.command_integrate(self._args(), client)
@@ -472,8 +472,8 @@ class IntegrateOrchestrationTests(unittest.TestCase):
         with patch.object(api_tool, "discover_temporary_leftovers", return_value=[]), \
              patch.object(api_tool, "confirm_restart"), \
              patch.object(api_tool, "_apply_panel_update", return_value=client.state), \
-             patch.object(api_tool, "command_tunnel_create"), \
-             patch.object(api_tool, "command_tunnel_test", side_effect=api_tool.IntegrationError("UDP failed")), \
+             patch.object(api_tool, "ensure_diagnostic_tunnel"), \
+             patch.object(api_tool, "test_diagnostic_tunnel", side_effect=api_tool.IntegrationError("UDP failed")), \
              patch.object(api_tool, "cleanup_temporary_leftovers", side_effect=api_tool.IntegrationError("inbound retained")) as cleanup:
             with self.assertRaisesRegex(api_tool.IntegrationError, "cleanup also failed"):
                 api_tool.command_integrate(self._args(), client)
@@ -2223,7 +2223,7 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
              patch.object(api_tool, "wait_for_tunnel_listeners"), \
              patch.object(api_tool, "confirm_restart"), \
              patch.object(api_tool, "run_tunnel_dns_self_test") as probe:
-            self.assertEqual(api_tool.command_tunnel_create(self._args(), client), 0)
+            self.assertEqual(api_tool.ensure_diagnostic_tunnel(self._args(), client), 0)
 
         self.assertEqual(len(client.inbounds), 1)
         self.assertEqual(client.inbounds[0]["port"], 15353)
@@ -2245,62 +2245,12 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
         before_inbounds = client.list_inbounds()
 
         with patch.object(api_tool, "run_tunnel_dns_self_test") as probe:
-            self.assertEqual(api_tool.command_tunnel_test(self._args(), client), 0)
+            self.assertEqual(api_tool.test_diagnostic_tunnel(self._args(), client), 0)
 
         probe.assert_called_once_with(15353, self._args().plugin_status_url)
         self.assertEqual(client.read_state(), before_state)
         self.assertEqual(client.list_inbounds(), before_inbounds)
         self.assertEqual(client.deleted, [])
-
-    def test_status_is_read_only(self):
-        client = self.FakeClient()
-        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718", rule_mode="reused")
-        inbound = copy.deepcopy(expected)
-        inbound.update({"id": 8, "tag": "temporary-8"})
-        client.inbounds = [inbound]
-        direct = next(item for item in client.state["xraySetting"]["outbounds"] if item.get("tag") == "direct")
-        direct["settings"]["finalRules"] = [copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE)]
-        before_state = client.read_state()
-        before_inbounds = client.list_inbounds()
-
-        self.assertEqual(api_tool.command_tunnel_status(self._args(), client), 0)
-
-        self.assertEqual(client.read_state(), before_state)
-        self.assertEqual(client.list_inbounds(), before_inbounds)
-        self.assertEqual(client.updates, 0)
-        self.assertEqual(client.deleted, [])
-
-    def test_remove_is_explicit_and_removes_only_added_rule_and_its_tunnel(self):
-        client = self.FakeClient()
-        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718", rule_mode="added")
-        inbound = copy.deepcopy(expected)
-        inbound.update({"id": 9, "tag": "temporary-9"})
-        client.inbounds = [inbound]
-        direct = next(item for item in client.state["xraySetting"]["outbounds"] if item.get("tag") == "direct")
-        direct["settings"]["finalRules"] = [copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE)]
-
-        with patch.object(api_tool, "confirm_restart"), \
-             patch.object(api_tool, "wait_for_tunnel_port_closed"):
-            self.assertEqual(api_tool.command_tunnel_remove(self._args(), client), 0)
-
-        self.assertEqual(client.inbounds, [])
-        self.assertEqual(client.deleted, [9])
-        self.assertEqual(api_tool._temporary_final_rule_count(client.state["xraySetting"]), 0)
-
-    def test_remove_deletes_unreferenced_rule_even_when_marked_as_reused(self):
-        client = self.FakeClient(existing_rule=True)
-        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718", rule_mode="reused")
-        inbound = copy.deepcopy(expected)
-        inbound.update({"id": 10, "tag": "temporary-10"})
-        client.inbounds = [inbound]
-
-        with patch.object(api_tool, "confirm_restart"), \
-             patch.object(api_tool, "wait_for_tunnel_port_closed"):
-            self.assertEqual(api_tool.command_tunnel_remove(self._args(), client), 0)
-
-        self.assertEqual(client.inbounds, [])
-        self.assertEqual(client.deleted, [10])
-        self.assertEqual(api_tool._temporary_final_rule_count(client.state["xraySetting"]), 0)
 
     def test_cleanup_removes_reused_rule_even_with_panel_dns_allow_route(self):
         client = self.FakeClient(existing_rule=True)
@@ -2425,7 +2375,7 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
         with patch.object(api_tool, "choose_temporary_tunnel_port", return_value=15353), \
              patch.object(api_tool, "wait_for_tunnel_listeners"), \
              patch.object(api_tool, "confirm_restart"):
-            self.assertEqual(api_tool.command_tunnel_create(self._args(), client), 0)
+            self.assertEqual(api_tool.ensure_diagnostic_tunnel(self._args(), client), 0)
 
         rules = api_tool._temporary_final_rules(client.state["xraySetting"])
         self.assertEqual(rules[0], api_tool.TEMP_DNS_FINAL_RULE)
@@ -2441,7 +2391,7 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
         inbound.update({"id": 11, "tag": "temporary-11"})
         client.inbounds = [inbound]
         with self.assertRaisesRegex(api_tool.IntegrationError, "already exists"):
-            api_tool.command_tunnel_create(self._args(), client)
+            api_tool.ensure_diagnostic_tunnel(self._args(), client)
         self.assertEqual(len(client.inbounds), 1)
         self.assertEqual(client.deleted, [])
 
@@ -2458,14 +2408,14 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
         ]
         with patch.object(api_tool, "run_tunnel_dns_self_test") as probe:
             with self.assertRaisesRegex(api_tool.IntegrationError, "before blocking finalRules"):
-                api_tool.command_tunnel_test(self._args(), client)
+                api_tool.test_diagnostic_tunnel(self._args(), client)
         probe.assert_not_called()
         self.assertEqual(client.deleted, [])
 
 
 class TTYConfirmationTests(unittest.TestCase):
     def test_panel_change_only_prints_restart_notice_without_prompt(self):
-        for action in ("integrate", "remove", "tunnel create", "tunnel remove"):
+        for action in ("integrate", "remove"):
             with self.subTest(action=action), \
                  patch.object(api_tool, "read_tty_confirmation") as prompt, \
                  patch("builtins.print") as output:
