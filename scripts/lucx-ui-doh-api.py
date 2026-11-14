@@ -2636,7 +2636,7 @@ def ensure_diagnostic_tunnel(args, client: PanelAPI, *, notify_restart: bool = T
     existing = discover_temporary_leftovers(client)
     if existing:
         raise IntegrationError(
-            "A diagnostic Tunnel already exists; inspect it with 'tunnel status' or remove it explicitly with 'tunnel remove'"
+            "A diagnostic Tunnel already exists; Integrate will test and clean it up"
         )
     state = client.read_state()
     rule_count = _temporary_final_rule_count(state["xraySetting"])
@@ -2651,7 +2651,7 @@ def ensure_diagnostic_tunnel(args, client: PanelAPI, *, notify_restart: bool = T
     expected = build_temporary_tunnel(port, rule_mode=rule_mode)
 
     if notify_restart:
-        confirm_restart("tunnel create", args.approve_restart)
+        confirm_restart("integrate", args.approve_restart)
     if rule_mode == "added" or rules_need_repair:
         _add_temporary_dns_final_rule(client)
     created = client.add_inbound(expected)
@@ -2667,7 +2667,7 @@ def ensure_diagnostic_tunnel(args, client: PanelAPI, *, notify_restart: bool = T
         print("PASS: existing matching finalRule is already before matching blocks and was reused.")
 
     print(
-        f"PASS: diagnostic Tunnel created and retained (inbound ID {inbound_id}, "
+        f"PASS: diagnostic Tunnel created for verification (inbound ID {inbound_id}, "
         f"loopback port {port}, rule mode {rule_mode})."
     )
     print("No DNS test was run and no diagnostic record was deleted.")
@@ -2680,7 +2680,7 @@ def test_diagnostic_tunnel(args, client: PanelAPI) -> int:
     if len(resources) != 1:
         raise IntegrationError(
             f"Expected exactly one diagnostic Tunnel, found {len(resources)}; "
-            "create one with 'tunnel create' first."
+            "Integrate must ensure one before testing."
         )
     resource = resources[0]
     state = client.read_state()
@@ -2695,7 +2695,7 @@ def test_diagnostic_tunnel(args, client: PanelAPI) -> int:
         resource["port"],
         getattr(args, "plugin_status_url", DEFAULT_PLUGIN_STATUS_URL),
     )
-    print("PASS: diagnostic Tunnel test completed; Tunnel and rule were left untouched.")
+    print("PASS: diagnostic Tunnel UDP/TCP probe completed.")
     return 0
 
 
