@@ -2191,6 +2191,7 @@ class RemovePlan:
     route_indexes: list[int] = field(default_factory=list)
     outbound_tags: list[str] = field(default_factory=list)
     dns_server_indexes: list[int] = field(default_factory=list)
+    direct_final_rule_indexes: list[int] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     plan_blocked: bool = False
@@ -2392,7 +2393,79 @@ def build_remove_plan(original: dict) -> RemovePlan:
             "The planned local DNS endpoint has multiple or scoped DNS server entries; they are ambiguous or shared and will be preserved."
         )
 
-    if not (result.route_indexes or result.outbound_tags or result.dns_server_indexes):
+    # The exact loopback allow exception is part of the local DNS integration
+    # plan, not part of the direct outbound itself. Remove only that exact
+    # finalRule when the corresponding local DNS path is being removed; keep
+    # the direct outbound and every unrelated finalRule untouched.
+    direct_candidates = [
+        item for item in outbounds
+        if item.get("tag") == "direct" and item.get("protocol") == "freedom"
+    ]
+    direct_tag_count = sum(1 for item in outbounds if item.get("tag") == "direct")
+    if direct_tag_count > 1 or (direct_tag_count == 1 and len(direct_candidates) != 1):
+        result.blockers.append(
+            "The direct outbound is duplicated or not a freedom outbound; preserving its finalRules."
+        )
+    elif direct_candidates:
+        direct_settings = direct_candidates[0].get("settings", {})
+        if not isinstance(direct_settings, dict):
+            result.blockers.append(
+                "direct.settings is not an object; preserving its finalRules."
+            )
+        else:
+            final_rules = direct_settings.get("finalRules", [])
+            if not isinstance(final_rules, list) or any(not isinstance(rule, dict) for rule in final_rules):
+                result.blockers.append(
+                    "direct.settings.finalRules is malformed; preserving the rules."
+                )
+            else:
+                diagnostic_allow_indexes = [
+                    index for index, rule in enumerate(final_rules)
+                    if canonical(rule) == canonical(TEMP_DNS_FINAL_RULE)
+                ]
+                if len(diagnostic_allow_indexes) > 1:
+                    result.blockers.append(
+                        "Multiple exact 127.0.0.1:5355 allow finalRules exist; preserving the ambiguous rules."
+                    )
+                elif diagnostic_allow_indexes:
+                    external_dns_servers = [
+                        index for index, server in enumerate(servers)
+                        if _server_endpoint(server) == ("127.0.0.1", 5355)
+                        and index not in result.dns_server_indexes
+                    ]
+                    external_dns_refs = [
+                        f"dns.servers[{index}]"
+                        for index in external_dns_servers
+                    ]
+                    for index, server in enumerate(servers):
+                        if _server_endpoint(server) != ("127.0.0.1", 5355):
+                            continue
+                        references = _dns_server_reference_reasons(original, server)
+                        external_dns_refs.extend(
+                            f"{reason} (dns.servers[{index}])" for reason in references
+                        )
+                    external_outbounds = [
+                        item.get("tag") for item in outbounds
+                        if item.get("tag") != target_tag
+                        and _outbound_matches_dns_endpoint(item)
+                    ]
+                    external_dns_refs.extend(
+                        f"outbounds[{tag!r}] also targets 127.0.0.1:5355"
+                        for tag in external_outbounds
+                    )
+                    if external_dns_refs:
+                        result.blockers.append(
+                            "The 127.0.0.1:5355 allow finalRule is still needed by DNS resources outside the Remove plan: "
+                            + ", ".join(external_dns_refs)
+                            + "; it will be preserved."
+                        )
+                    elif result.outbound_tags or result.dns_server_indexes or result.route_indexes:
+                        result.direct_final_rule_indexes.extend(diagnostic_allow_indexes)
+
+    if not (
+        result.route_indexes or result.outbound_tags
+        or result.dns_server_indexes or result.direct_final_rule_indexes
+    ):
         result.warnings.append(
             "No unshared resources selected by the desired Integrate plan are removable."
         )
@@ -2408,11 +2481,18 @@ def print_remove_plan(plan: RemovePlan) -> None:
         print("Planned outbound removals:")
         for tag in plan.outbound_tags:
             print(f"  - outbound {tag!r} (local DoH endpoint, no remaining references)")
+    if plan.direct_final_rule_indexes:
+        print("Planned direct finalRule removals:")
+        for index in plan.direct_final_rule_indexes:
+            print(f"  - outbounds[direct].settings.finalRules[{index}] (127.0.0.1:5355 allow exception)")
     if plan.dns_server_indexes:
         print("Planned DNS server removals:")
         for index in plan.dns_server_indexes:
             print(f"  - dns.servers[{index}] (127.0.0.1:5355, not shared)")
-    if not (plan.route_indexes or plan.outbound_tags or plan.dns_server_indexes):
+    if not (
+        plan.route_indexes or plan.outbound_tags
+        or plan.dns_server_indexes or plan.direct_final_rule_indexes
+    ):
         print("No safe permanent DNS integration objects are currently removable.")
     for warning in plan.warnings:
         print("  NOTE: " + warning)
@@ -2511,7 +2591,10 @@ def command_remove(args, client: PanelAPI) -> int:
         print("Remove stopped: the desired Integrate plan has blocking conflicts; no panel mutation was sent.")
         return 2
 
-    has_changes = bool(plan.route_indexes or plan.outbound_tags or plan.dns_server_indexes)
+    has_changes = bool(
+        plan.route_indexes or plan.outbound_tags
+        or plan.dns_server_indexes or plan.direct_final_rule_indexes
+    )
     if not has_changes:
         print("Remove complete: no unshared resources selected by the Integrate plan need removal.")
         return 0
@@ -2545,6 +2628,27 @@ def command_remove(args, client: PanelAPI) -> int:
             )
         outbounds.remove(matches[0])
 
+    if plan.direct_final_rule_indexes:
+        direct_matches = [
+            item for item in outbounds
+            if item.get("tag") == "direct" and item.get("protocol") == "freedom"
+        ]
+        if len(direct_matches) != 1:
+            raise IntegrationError("The direct freedom outbound changed after planning; no finalRule was removed")
+        direct_settings = direct_matches[0].get("settings")
+        final_rules = direct_settings.get("finalRules") if isinstance(direct_settings, dict) else None
+        if not isinstance(final_rules, list) or any(not isinstance(rule, dict) for rule in final_rules):
+            raise IntegrationError("direct.settings.finalRules changed after planning; no finalRule was removed")
+        matches = [
+            index for index, rule in enumerate(final_rules)
+            if canonical(rule) == canonical(TEMP_DNS_FINAL_RULE)
+        ]
+        if len(matches) != len(plan.direct_final_rule_indexes) or len(matches) != 1:
+            raise IntegrationError("The planned 127.0.0.1:5355 allow finalRule changed after planning; no removal was applied")
+        del final_rules[matches[0]]
+        if not final_rules:
+            direct_settings.pop("finalRules", None)
+
     if plan.dns_server_indexes:
         dns = config.get("dns")
         if not isinstance(dns, dict):
@@ -2568,7 +2672,7 @@ def command_remove(args, client: PanelAPI) -> int:
     final_plan = build_remove_plan(after["xraySetting"])
     print("Final Remove assessment:")
     print_remove_plan(final_plan)
-    print("NOTE: the direct freedom outbound and its settings.finalRules are intentionally preserved by Remove.")
+    print("NOTE: the direct freedom outbound and unrelated finalRules were preserved; only the planned 127.0.0.1:5355 allow exception was removed when unshared.")
     print("PASS: Remove removed only unshared resources selected by the desired Integrate plan; diagnostic Tunnel resources were not touched.")
     return 0
 
