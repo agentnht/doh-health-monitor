@@ -169,7 +169,8 @@ class TemporaryDNSFinalRuleTests(unittest.TestCase):
                             for x in plan.changes))
         rules = plan.proposed["outbounds"][0]["settings"]["finalRules"]
         self.assertEqual(rules, [
-            {"action": "block", "network": "tcp", "port": "25", "ip": ["192.0.2.1"]}
+            {"action": "block", "network": "tcp", "port": "25", "ip": ["192.0.2.1"]},
+            api_tool.DNS_FINAL_ALLOW_RULE,
         ])
 
     def test_cleanup_removes_all_exact_reserved_temporary_rules(self):
@@ -1196,7 +1197,13 @@ class AdditivePlannerTests(unittest.TestCase):
         before = copy.deepcopy(original)
         plan = api_tool.build_plan(original)
         self.assertFalse(plan.blockers)
-        self.assertEqual(plan.proposed["outbounds"][:len(before["outbounds"])], before["outbounds"])
+        expected_original_outbounds = copy.deepcopy(before["outbounds"])
+        direct = next(item for item in expected_original_outbounds if item.get("tag") == "direct")
+        direct["settings"]["finalRules"] = [copy.deepcopy(api_tool.DNS_FINAL_ALLOW_RULE)]
+        self.assertEqual(
+            plan.proposed["outbounds"][:len(before["outbounds"])],
+            expected_original_outbounds,
+        )
         added = plan.proposed["outbounds"][-1]
         self.assertEqual(added["tag"], "dns-out-doh-health-monitor")
         self.assertEqual(added["settings"]["rewritePort"], 5355)
@@ -1324,7 +1331,10 @@ class AdditivePlannerTests(unittest.TestCase):
         plan = api_tool.build_plan(original)
         self.assertFalse(plan.blockers)
         retained = [x for x in plan.proposed["outbounds"] if x.get("tag") != "dns-out"]
-        self.assertEqual(retained, before_outbounds)
+        expected_outbounds = copy.deepcopy(before_outbounds)
+        direct = next(item for item in expected_outbounds if item.get("tag") == "direct")
+        direct["settings"]["finalRules"] = [copy.deepcopy(api_tool.DNS_FINAL_ALLOW_RULE)]
+        self.assertEqual(retained, expected_outbounds)
         retained_rules = [
             x for x in plan.proposed["routing"]["rules"]
             if not api_tool._global_port53_rule(x)
