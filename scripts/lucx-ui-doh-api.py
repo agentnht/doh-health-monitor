@@ -1957,16 +1957,18 @@ def cleanup_temporary_leftovers(client: PanelAPI) -> None:
     live_inbounds = client.list_inbounds()
     usage = _diagnostic_external_use_reasons(state["xraySetting"], resources, live_inbounds)
     rule_count = _temporary_final_rule_count(state["xraySetting"])
-    if rule_count > 1:
-        raise IntegrationError(
-            "Multiple identical diagnostic finalRules exist; refusing ambiguous cleanup"
-        )
+    cleanup_errors = []
 
-    # Remove a plan-exclusive rule first and verify by API read-back. Its prior
-    # presence and the Tunnel's added/reused marker are deliberately irrelevant.
-    if rule_count and not usage["final_rule"]:
-        _remove_temporary_dns_final_rule(client)
-        print("PASS: diagnostic finalRule had no external references and was removed.")
+    # Each planned resource is assessed independently. Ambiguous rules do not
+    # prevent safe removal of an unrelated, unreferenced diagnostic inbound.
+    if rule_count > 1:
+        print("NOTICE: multiple identical diagnostic finalRules exist; preserving the ambiguous rule set.")
+    elif rule_count and not usage["final_rule"]:
+        try:
+            _remove_temporary_dns_final_rule(client)
+            print("PASS: diagnostic finalRule had no external references and was removed.")
+        except IntegrationError as exc:
+            cleanup_errors.append(f"finalRule cleanup: {exc}")
     elif rule_count:
         print(
             "NOTICE: diagnostic finalRule retained because it has external use: "
@@ -1982,19 +1984,24 @@ def cleanup_temporary_leftovers(client: PanelAPI) -> None:
                 "has external references: " + ", ".join(external_refs)
             )
             continue
-        removed = cleanup_temporary_tunnel(
-            client, resource["expected"], inbound_id
-        )
-        if removed:
-            wait_for_tunnel_port_closed(resource["port"])
-            print(f"PASS: diagnostic Tunnel inbound ID {inbound_id} had no external references and was removed.")
+        try:
+            removed = cleanup_temporary_tunnel(
+                client, resource["expected"], inbound_id
+            )
+            if removed:
+                wait_for_tunnel_port_closed(resource["port"])
+                print(f"PASS: diagnostic Tunnel inbound ID {inbound_id} had no external references and was removed.")
+        except IntegrationError as exc:
+            cleanup_errors.append(f"inbound ID {inbound_id} cleanup: {exc}")
 
     remaining = discover_temporary_leftovers(client)
     if remaining:
         retained = ", ".join(str(item["inbound_id"]) for item in remaining)
-        print(f"NOTICE: diagnostic Tunnel inbound(s) retained due to external use or already-reported cleanup: {retained}")
+        print(f"NOTICE: diagnostic Tunnel inbound(s) retained due to external use or cleanup error: {retained}")
     else:
         print("PASS: diagnostic Tunnel cleanup completed from live-state dependency analysis.")
+    if cleanup_errors:
+        raise IntegrationError("; ".join(cleanup_errors))
 
 
 def _dns_query_packet(name: str) -> tuple[int, bytes]:
