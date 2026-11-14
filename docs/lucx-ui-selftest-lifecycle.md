@@ -2,35 +2,30 @@
 
 **Authoritative design for PR #6.** This document supersedes earlier descriptions of snapshot-based rollback, journal-based ownership, and separate cleanup heuristics.
 
-## One principle for every panel operation
+## Only two panel directives
 
 The adapter works from the live panel configuration. It never saves a full before/after Xray configuration snapshot and never tries to restore an old configuration.
 
-The operator chooses the desired action:
+The operator selects exactly one directive:
 
-- **Integrate:** calculate which compatible integration objects are already present, reuse them, and add only the missing objects.
-- **Remove integration:** identify the current objects that implement the integration, check their dependencies, and remove only those that can be safely detached.
-- **Self-test:** temporarily add only the missing test objects, run UDP/TCP checks, and remove only the temporary objects introduced for that test.
+- **Integrate:** calculate which compatible integration objects are already present, reuse them, and add only the missing objects. Run the temporary UDP/TCP self-test as part of the integration procedure.
+- **Remove:** identify current objects that implement the integration, check their dependencies, and remove only those that can be safely detached. Remove does not create temporary test rules.
 
-The same semantic planner and object/reference analysis must be shared by all three paths. Do not build separate tag-based heuristics for apply, uninstall, rollback, and cleanup.
+There is no third "partial operation", "resume", or "recovery" directive. No operation ID, journal, or saved execution state is used. Each invocation is simply Integrate or Remove, planned afresh from the configuration that exists at that moment.
 
-### Reconcile from live state — including after partial operations
+The same semantic planner and object/reference analysis must be shared by both directives. Do not build separate tag-based heuristics for apply, uninstall, rollback, or cleanup.
 
-Every invocation follows this loop:
+### Plan, execute, verify
 
 1. Read the current Xray configuration and inbounds through the LucX-UI API.
-2. Build a plan for the selected action using the current live state.
-3. Show the planned changes and blockers. A read-only plan must not modify the panel.
-4. Apply the selected safe change(s), one mutation at a time.
-5. Read the panel state back after each mutation and verify the expected result.
-6. Recalculate the remaining plan from the new live state. Continue until the requested state is reached or a genuine ambiguity/dependency blocker remains.
+2. Build the complete plan for the selected directive from that live state.
+3. Show planned changes and blockers. A read-only plan must not modify the panel.
+4. Apply only changes belonging to the selected directive, one panel API mutation at a time.
+5. Read the panel state back after each mutation and verify its result before making a dependent change.
 
-If execution stops halfway through, do not roll back to a historical configuration. On the next invocation, read the actual current state and recalculate the plan:
-- **Integrate again** to add only the remaining missing compatible objects.
-- **Remove again** to remove only the remaining safe integration objects.
-- Do not undo a successful earlier step just because a later step failed.
+A later invocation is not a continuation of an old operation: it is a new explicit Integrate or Remove request, and its plan is calculated from the then-current panel state. There is no restore-to-before behavior and no hidden automatic rollback. If a candidate is shared, ambiguous, or still referenced, the current plan leaves it untouched and reports why.
 
-This makes both actions idempotent and self-healing after interruption. The plan is the recovery mechanism.
+The plan is the complete definition of what the selected directive should do against the current configuration.
 
 ### Explicitly prohibited architecture
 
@@ -80,7 +75,7 @@ Removal is the inverse desired-state operation, not a restore from a saved basel
 5. Remove a matching local DNS server entry only if it is not shared by unrelated DNS policy; read back.
 6. Re-read all relevant Xray settings and report what was removed, what remains shared/reused/ambiguous, and why.
 
-Preserve shared, reused, and ambiguous objects. If a compatible object was present before installation but is now exclusively part of the integration path, it may be removed only when the current semantic/reference plan proves this is safe. If another user route, balancer, DNS policy, or proxy chain still relies on it, keep it. Partial removal is acceptable and must be reported clearly; speculative deletion is not.
+Preserve shared, reused, and ambiguous objects. If a compatible object was present before installation but is now exclusively part of the integration path, it may be removed only when the current semantic/reference plan proves this is safe. If another user route, balancer, DNS policy, or proxy chain still relies on it, keep it. The Remove plan must list what is safe to delete and what remains blocked; speculative deletion is not.
 
 Do not bulk-delete by tag/prefix. Do not restore an old rules array. Do not create temporary rules during Remove integration. The next Remove invocation simply replans from live state and continues.
 
@@ -114,7 +109,7 @@ Exact rule shape:
 - Add only the missing temporary allow rule, if it is still part of this invocation's delta.
 - Read back, run both UDP and TCP DNS probes, and validate plugin status/counters.
 
-### Test cleanup
+### Temporary test cleanup
 
 - Re-read live config and dependencies.
 - Remove only the temporary rule that the test operation actually added; do not delete a compatible rule that was already present/reused.
@@ -123,7 +118,7 @@ Exact rule shape:
 - This order ensures interruption after rule removal leaves a discoverable Tunnel, rather than an orphan rule with no associated test inbound.
 - Never touch the plugin's own `127.0.0.1:5355` listeners.
 
-A reserved Tunnel remark is an identity clue for that temporary inbound, not an ownership database for permanent DNS objects. If a partial test leaves ambiguous state that cannot be resolved from the live panel config and the current test plan, stop and report it; do not guess or delete a pre-existing object.
+A reserved Tunnel remark identifies a temporary test inbound only; it is not an ownership database for permanent DNS objects. If the live panel state contains an ambiguous test object that the current Integrate plan cannot safely classify, report the blocker and do not guess or delete a pre-existing object.
 
 ## Known legacy staging VPS state
 
@@ -155,11 +150,11 @@ These files are historical artifacts from the old implementation only. Do not us
 5. A unique integration route is removed first; the outbound is removed only after read-back and fresh zero-reference scan.
 6. Panel-owned `xui-dns-allow`, user routes, FakeDNS, and unrelated outbounds/DNS servers remain unchanged.
 7. Ambiguous/duplicate candidates are listed as blockers; no speculative deletion occurs.
-8. Partial Integrate followed by Integrate adds only missing objects; partial Remove followed by Remove continues only remaining safe removals.
+8. Each new Integrate or Remove invocation computes its entire plan from the current live config; it does not load or continue a prior execution.
 9. No full Xray snapshots, historical rule arrays, mandatory journals, or snapshot-based rollback files are created or needed.
 10. Temporary test reuses pre-existing compatible rule and never deletes it as though it were newly added.
 11. Test creates Tunnel before any missing temporary allow rule; cleanup removes and verifies the rule before deleting Tunnel.
-12. Failures at every mutation boundary are covered: the next invocation replans from live state and converges without restoring an old snapshot.
+12. Every API mutation is read back before a dependent mutation; an invocation reports success only for the requested plan it completed, otherwise it reports the blocking error without restoring old state.
 13. Plugin listeners on 5355 are never mistaken for temporary Tunnel listeners.
 14. Both UDP and TCP probes pass before self-test success.
 15. Every panel API mutation is followed by read-back verification.
@@ -168,4 +163,4 @@ All Python compilation/unit tests/shell syntax checks and both GitHub Actions wo
 
 ## Next implementation work
 
-The current adapter still contains legacy backup/journal/rollback behavior. Remove that architecture rather than adapting it into a new journal format. Refactor `scripts/lucx-ui-doh-api.py`, `scripts/xray_dns_planner.py` if required, `tests/test_lucx_ui_doh_api.py`, and the API documentation around the single live-state reconciliation model above. Then run both GitHub workflows. Only after CI passes should the staging VPS run the new read-only plan/inspection and selected operation.
+The current adapter still contains legacy backup/journal/rollback behavior. Remove that architecture rather than adapting it into a new journal format or adding a resume/recovery mode. Refactor `scripts/lucx-ui-doh-api.py`, `scripts/xray_dns_planner.py` if required, `tests/test_lucx_ui_doh_api.py`, and the API documentation around the single live-state reconciliation model above. Then run both GitHub workflows. Only after CI passes should the staging VPS run the new read-only plan/inspection and selected operation.
