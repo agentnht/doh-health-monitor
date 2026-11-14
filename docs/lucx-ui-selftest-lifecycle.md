@@ -11,9 +11,9 @@
 3. Stop without panel writes if the plan contains blocking conflicts.
 4. Apply only missing permanent DNS integration records. If no permanent changes are needed, leave the config unchanged.
 5. Ensure one diagnostic Tunnel exists (create it only if absent), then test positive DNS A answers over UDP and TCP.
-6. Leave the diagnostic Tunnel and temporary rule in place after success or failure. There is no automatic cleanup and no rollback to an old config.
+6. After successful UDP/TCP verification, remove the diagnostic Tunnel and any temporary finalRule created for this test. If verification fails, leave diagnostic resources in place for investigation. Preserve a finalRule that was reused rather than created by this diagnostic run.
 
-If the diagnostic Tunnel already exists, Integrate tests it rather than creating a second one. If the UDP/TCP self-test fails, the permanent DNS configuration remains applied and the diagnostic resources remain available for inspection.
+If the diagnostic Tunnel already exists, Integrate tests it rather than creating a second one. After successful verification, Integrate cleans up the diagnostic Tunnel and only the temporary finalRule attributable to diagnostic creation; a reused rule is preserved. If the UDP/TCP self-test fails, the permanent DNS configuration remains applied and diagnostic resources remain available for inspection.
 
 ### Remove
 
@@ -56,11 +56,11 @@ There is no `--plan-only` option. A panel update may automatically restart Xray;
 ## Safety boundaries
 
 - No full Xray configuration snapshots, backup files, ownership journals, or snapshot-based rollback.
-- Integrate and Remove do not automatically clean up diagnostic Tunnel resources.
+- After a successful self-test, Integrate automatically cleans up diagnostic Tunnel resources; on failure they remain for inspection. Remove never touches diagnostic Tunnel resources.
 - Remove uses the same desired-state planner as Integrate and preserves external/shared references.
 - Every panel write is verified by reading the current settings back through the LucX-UI API.
 - The adapter does not write the panel SQLite database or runtime Xray config directly.
-- A failed UDP/TCP self-test does not revert the permanent integration; inspect and clean up diagnostic resources explicitly.
+- A failed UDP/TCP self-test does not revert the permanent integration; inspect diagnostic resources and remove them explicitly after investigation.
 
 ## Validation
 
