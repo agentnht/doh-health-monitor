@@ -77,7 +77,7 @@ Production-адаптер не запрашивает Bearer-токен у оп�
 
 Автоматические тесты покрывают повторное использование совместимых объектов, нестандартные outbound-теги, генерацию уникальных тегов, selector/fallback balancer, порядок маршрутизации и конфликты, обе директивы, проверку зависимостей при Remove, live-state cleanup временных ресурсов и отсутствие snapshot/journal/rollback-механизма. Результаты GitHub Actions нужно проверять именно на актуальном head PR.
 
-GitHub Actions для head PR `865a9ca6b3d095c5a427efb09e089a5f7a3a8ece`: оба workflow — DoH integration tests и общий Go CI — завершились успешно. DoH workflow включает компиляцию Python-инструментов и полный Python unittest suite; Go CI включает go vet, go test и сборку Linux amd64. Новый end-to-end сценарий Integrate → UDP/TCP self-test → Remove на staging VPS после этих изменений ещё не запускался.
+GitHub Actions для кода на commit `865a9ca6b3d095c5a427efb09e089a5f7a3a8ece`: оба workflow — DoH integration tests и общий Go CI — завершились успешно. Последующие коммиты в PR меняли только документацию. DoH workflow включает компиляцию Python-инструментов и полный Python unittest suite; Go CI включает go vet, go test и сборку Linux amd64. Новый end-to-end сценарий Integrate → UDP/TCP self-test → Remove на staging VPS после этих изменений ещё не запускался.
 
 ## Изученные ссылки на исходный код
 
