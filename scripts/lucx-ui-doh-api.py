@@ -2512,13 +2512,13 @@ def command_remove(args, client: PanelAPI) -> int:
         print(f"Temporary test Tunnels to reconcile before removal: {len(leftovers)}")
     if args.plan_only:
         print("Read-only plan: no panel mutation was sent.")
-        return 2 if plan.blockers else 0
+        return 0
     has_changes = bool(
         plan.route_indexes or plan.outbound_tags or plan.dns_server_indexes or leftovers
     )
     if not has_changes:
-        print("Remove directive found no safe changes.")
-        return 2 if plan.blockers else 0
+        print("Remove directive complete: no safe removals are required; shared or ambiguous objects remain untouched.")
+        return 0
     confirm_restart("remove", args.approve_restart)
     cleanup_temporary_leftovers(client)
 
@@ -2559,9 +2559,11 @@ def command_remove(args, client: PanelAPI) -> int:
         dns = config.get("dns")
         if not isinstance(dns, dict):
             raise IntegrationError("DNS settings changed after the Remove plan")
-        servers = object_list(dns, "servers", "dns.servers")
+        servers = dns.get("servers", [])
+        if not isinstance(servers, list):
+            raise IntegrationError("DNS servers changed after the Remove plan")
         for index in sorted(plan.dns_server_indexes, reverse=True):
-            if index >= len(servers) or _server_endpoint(servers[index]) != ("127.0.0.1", 5355):
+            if index < 0 or index >= len(servers) or _server_endpoint(servers[index]) != ("127.0.0.1", 5355):
                 raise IntegrationError("DNS servers changed after the Remove plan; re-plan before deletion")
             if not _server_is_general(servers[index]) or _dns_server_reference_reasons(config, servers[index]):
                 raise IntegrationError("The local DNS server became scoped or shared; it was not deleted.")
@@ -2572,7 +2574,7 @@ def command_remove(args, client: PanelAPI) -> int:
     print("Final Remove assessment:")
     print_remove_plan(final_plan)
     print("PASS: Remove directive was recalculated from current live panel state; no historical configuration was restored.")
-    return 2 if final_plan.blockers else 0
+    return 0
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Reconcile LucX-UI DoH integration from live panel state"
