@@ -1920,34 +1920,13 @@ def _diagnostic_external_use_reasons(config: dict, resources: list[dict], inboun
         if refs:
             reasons["inbounds"][inbound.get("id")] = refs
 
-    direct_refs = _outbound_reference_reasons(config, "direct")
-    for ref in direct_refs:
-        if not ref.startswith("routing.rules["):
-            # Non-route uses are not readily attributable to one destination;
-            # preserve the rule conservatively when such a use exists.
-            reasons["final_rule"].append(ref)
-    for index, rule in enumerate(rules):
-        if (
-            not isinstance(rule, dict)
-            or "direct" not in _tag_list(rule.get("outboundTag"))
-        ):
-            continue
-        # A route is an external consumer of this specific finalRule only when
-        # its destination selectors may include the rule's 127.0.0.1:5355
-        # TCP/UDP endpoint. Merely selecting the direct outbound is not enough.
-        if _routing_rule_may_use_temporary_dns_final_rule(rule):
-            reasons["final_rule"].append(f"routing.rules[{index}].outboundTag")
-
-    outbounds = object_list(config, "outbounds", "outbounds")
-    if outbounds and outbounds[0].get("tag") == "direct":
-        for inbound in inbounds:
-            if not isinstance(inbound, dict) or inbound.get("id") in diagnostic_ids:
-                continue
-            reasons["final_rule"].append(
-                f"default outbound direct may serve inbound ID {inbound.get('id')}"
-            )
-            break
-
+    # finalRules are children of the direct outbound, not independently
+    # addressable resources: routing references can select the outbound, but
+    # cannot reference this exact diagnostic exception. In particular, the
+    # panel-managed xui-dns-allow route is not ownership or an external
+    # dependency of this temporary finalRule. The diagnostic plan is its only
+    # consumer, so a single matching rule is eligible for cleanup regardless
+    # of whether it existed before the diagnostic run.
     return reasons
 
 
