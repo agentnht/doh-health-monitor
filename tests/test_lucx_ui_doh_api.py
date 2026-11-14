@@ -284,7 +284,7 @@ class RemovePlannerTests(unittest.TestCase):
         )
 
         self.assertEqual(result, 0)
-        final = client.read_state()["xraySetting"]
+        final = client.state["xraySetting"]
         self.assertTrue(any(item.get("tag") == "dns-out" for item in final["outbounds"]))
         self.assertIn(user_rule, final["routing"]["rules"])
         self.assertEqual(len(final["dns"]["servers"]), 1)
