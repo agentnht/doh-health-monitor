@@ -65,4 +65,4 @@ There is no `--plan-only` option. A panel update may automatically restart Xray;
 
 ## Validation
 
-On current PR head `ffc9167cb5d042763ff3d4f5d1c31d2ddf36a975`, the DoH integration tests workflow passed (Python compilation and full unittest suite); general Go CI is still in progress. The revised live-reference cleanup has not yet been exercised on the staging VPS.
+On code/test commit `2c4ec9d134100454ff737f80da58999648275387`, the DoH integration tests workflow passed (Python compilation and full unittest suite, including direct-finalRule removal and external-use cases). General Go CI is still in progress. The revised Remove and live-reference cleanup have not yet been exercised on the staging VPS.
