@@ -215,11 +215,20 @@ class TransformTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             planner.transform(cfg)
 
-    def test_duplicate_local_dns_server_is_rejected(self):
+    def test_duplicate_general_local_dns_servers_are_preserved_without_adding_another(self):
         cfg = copy.deepcopy(self.original)
-        cfg["dns"]["servers"].append(copy.deepcopy(cfg["dns"]["servers"][0]))
-        with self.assertRaises(RuntimeError):
-            planner.transform(cfg)
+        duplicate = copy.deepcopy(cfg["dns"]["servers"][0])
+        cfg["dns"]["servers"].append(duplicate)
+
+        proposed, changes = planner.transform(cfg)
+
+        self.assertEqual(changes, [])
+        self.assertEqual(proposed["dns"]["servers"], cfg["dns"]["servers"])
+        self.assertEqual(
+            sum(1 for item in proposed["dns"]["servers"]
+                if item.get("address") == "127.0.0.1" and item.get("port") == 5355),
+            2,
+        )
 
     def test_duplicate_allow_rule_is_rejected(self):
         cfg = copy.deepcopy(self.original)
