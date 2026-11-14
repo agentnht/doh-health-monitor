@@ -11,6 +11,10 @@ on:
       - "tests/test_doh_integration.py"
       - "tests/test_lucx_ui_doh_api.py"
       - "docs/lucx-ui-doh-integration.md"
+      - "docs/lucx-ui-doh-integration-ru.md"
+      - "docs/lucx-ui-selftest-lifecycle.md"
+      - "README.md"
+      - "CHANGELOG.md"
       - ".github/workflows/doh-integration-tests.yml"
   workflow_dispatch:
 
