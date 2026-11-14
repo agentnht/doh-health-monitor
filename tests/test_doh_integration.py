@@ -185,6 +185,34 @@ class TransformTests(unittest.TestCase):
         self.assertEqual(active[0]["outboundTag"], "dns-out")
         self.assertTrue(changes)
 
+    def test_missing_freedom_final_rule_is_added_before_private_block(self):
+        cfg = copy.deepcopy(self.original)
+        direct = next(item for item in cfg["outbounds"] if item.get("tag") == "direct")
+        direct["settings"]["finalRules"] = [
+            {"action": "block", "ip": ["geoip:private"]},
+            {"action": "block", "network": "tcp", "port": "25"},
+        ]
+
+        proposed, changes = planner.transform(cfg)
+
+        final_rules = next(
+            item for item in proposed["outbounds"] if item.get("tag") == "direct"
+        )["settings"]["finalRules"]
+        self.assertEqual(
+            final_rules,
+            [
+                {
+                    "action": "allow",
+                    "network": ["tcp", "udp"],
+                    "port": "5355",
+                    "ip": ["127.0.0.1"],
+                },
+                {"action": "block", "ip": ["geoip:private"]},
+                {"action": "block", "network": "tcp", "port": "25"},
+            ],
+        )
+        self.assertTrue(any("direct.settings.finalRules" in change for change in changes))
+
     def test_missing_allow_rule_is_added_before_private_block(self):
         cfg = copy.deepcopy(self.original)
         cfg["routing"]["rules"] = [
