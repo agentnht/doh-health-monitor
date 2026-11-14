@@ -1887,42 +1887,116 @@ def discover_temporary_leftovers(client: PanelAPI) -> list[dict]:
             "expected": expected,
             "inbound_id": inbound_id,
             "port": port,
+            "tag": item.get("tag"),
             "rule_mode": mode,
             "legacy": legacy,
         })
     return resources
 
 
+def _diagnostic_external_use_reasons(config: dict, resources: list[dict], inbounds: list[dict]) -> dict:
+    """Find live references outside the diagnostic plan; markers never imply ownership."""
+    diagnostic_ids = {item["inbound_id"] for item in resources}
+    diagnostic_tags = {
+        item.get("tag") for item in resources
+        if isinstance(item.get("tag"), str) and item.get("tag")
+    }
+    reasons = {"inbounds": {}, "final_rule": []}
+
+    routing = config.get("routing", {})
+    if not isinstance(routing, dict):
+        raise IntegrationError("routing must be an object before diagnostic dependency analysis")
+    rules = routing.get("rules", [])
+    if not isinstance(rules, list):
+        raise IntegrationError("routing.rules must be an array before diagnostic dependency analysis")
+
+    for inbound in inbounds:
+        if not isinstance(inbound, dict) or inbound.get("id") in diagnostic_ids:
+            continue
+        tag = inbound.get("tag")
+        if not isinstance(tag, str) or not tag:
+            continue
+        refs = [
+            f"routing.rules[{index}].inboundTag"
+            for index, rule in enumerate(rules)
+            if isinstance(rule, dict) and tag in _as_tokens(rule.get("inboundTag"))
+        ]
+        if refs:
+            reasons["inbounds"][inbound.get("id")] = refs
+
+    direct_refs = _outbound_reference_reasons(config, "direct")
+    for ref in direct_refs:
+        if not ref.startswith("routing.rules["):
+            reasons["final_rule"].append(ref)
+    for index, rule in enumerate(rules):
+        if not isinstance(rule, dict) or "direct" not in _tag_list(rule.get("outboundTag")):
+            continue
+        selected = _as_tokens(rule.get("inboundTag"))
+        # An unscoped route, or one that also matches a non-diagnostic inbound,
+        # is an external consumer of direct's finalRules.
+        if not selected or selected - diagnostic_tags:
+            reasons["final_rule"].append(f"routing.rules[{index}].outboundTag")
+
+    outbounds = object_list(config, "outbounds", "outbounds")
+    if outbounds and outbounds[0].get("tag") == "direct":
+        for inbound in inbounds:
+            if not isinstance(inbound, dict) or inbound.get("id") in diagnostic_ids:
+                continue
+            reasons["final_rule"].append(
+                f"default outbound direct may serve inbound ID {inbound.get('id')}"
+            )
+            break
+
+    return reasons
+
+
 def cleanup_temporary_leftovers(client: PanelAPI) -> None:
-    """Reconcile abandoned temporary resources from live state; no journal."""
+    """Reconcile diagnostic resources from live state and remove only plan-exclusive objects."""
     resources = discover_temporary_leftovers(client)
     if not resources:
         return
     state = client.read_state()
+    live_inbounds = client.list_inbounds()
+    usage = _diagnostic_external_use_reasons(state["xraySetting"], resources, live_inbounds)
     rule_count = _temporary_final_rule_count(state["xraySetting"])
-    added = [item for item in resources if item["rule_mode"] == "added"]
-    if rule_count > 1 and added:
+    if rule_count > 1:
         raise IntegrationError(
-            "Multiple temporary finalRules are present; refusing ambiguous test cleanup"
+            "Multiple identical diagnostic finalRules exist; refusing ambiguous cleanup"
         )
-    if rule_count and added and (len(added) > 1 or len(resources) > 1):
-        raise IntegrationError(
-            "Multiple temporary Tunnels claim the same test rule; refusing ambiguous cleanup"
-        )
-    # Rule first, verify absent, then Tunnel. Reused pre-existing rules stay.
-    if rule_count and len(added) == 1:
+
+    # Remove a plan-exclusive rule first and verify by API read-back. Its prior
+    # presence and the Tunnel's added/reused marker are deliberately irrelevant.
+    if rule_count and not usage["final_rule"]:
         _remove_temporary_dns_final_rule(client)
-    elif rule_count and not added:
-        print("NOTICE: matching finalRule has only a reused-rule Tunnel marker; preserving it.")
+        print("PASS: diagnostic finalRule had no external references and was removed.")
+    elif rule_count:
+        print(
+            "NOTICE: diagnostic finalRule retained because it has external use: "
+            + ", ".join(usage["final_rule"])
+        )
+
     for resource in resources:
+        inbound_id = resource["inbound_id"]
+        external_refs = usage["inbounds"].get(inbound_id, [])
+        if external_refs:
+            print(
+                f"NOTICE: diagnostic Tunnel inbound ID {inbound_id} retained because it "
+                "has external references: " + ", ".join(external_refs)
+            )
+            continue
         removed = cleanup_temporary_tunnel(
-            client, resource["expected"], resource["inbound_id"]
+            client, resource["expected"], inbound_id
         )
         if removed:
             wait_for_tunnel_port_closed(resource["port"])
-    if discover_temporary_leftovers(client):
-        raise IntegrationError("One or more reserved temporary Tunnel inbounds remain after cleanup")
-    print("PASS: abandoned temporary test resources were reconciled from live panel state.")
+            print(f"PASS: diagnostic Tunnel inbound ID {inbound_id} had no external references and was removed.")
+
+    remaining = discover_temporary_leftovers(client)
+    if remaining:
+        retained = ", ".join(str(item["inbound_id"]) for item in remaining)
+        print(f"NOTICE: diagnostic Tunnel inbound(s) retained due to external use or already-reported cleanup: {retained}")
+    else:
+        print("PASS: diagnostic Tunnel cleanup completed from live-state dependency analysis.")
 
 
 def _dns_query_packet(name: str) -> tuple[int, bytes]:
@@ -2368,7 +2442,7 @@ def _apply_panel_update(client: PanelAPI, before: dict, config: dict, label: str
 
 
 def command_integrate(args, client: PanelAPI) -> int:
-    """Apply permanent DNS integration, test it, then clean up diagnostic resources on success."""
+    """Apply permanent DNS integration, run diagnostics, then reconcile plan-exclusive resources."""
     state = client.read_state()
     plan = build_plan(state["xraySetting"])
     print("Directive: INTEGRATE")
@@ -2391,26 +2465,37 @@ def command_integrate(args, client: PanelAPI) -> int:
         print("PASS: permanent DNS integration already matches the desired live state.")
 
     print("PASS: permanent DNS integration is applied; starting UDP/TCP verification.")
+    test_error = None
     try:
         if not existing_diagnostics:
             command_tunnel_create(args, client, notify_restart=False)
         command_tunnel_test(args, client)
     except IntegrationError as exc:
-        raise IntegrationError(
-            "Permanent DNS integration is applied, but diagnostic Tunnel verification failed. "
-            "Diagnostic resources were left in place for investigation; inspect them with "
-            f"'tunnel status'. Detail: {exc}"
-        ) from None
+        test_error = exc
 
+    cleanup_error = None
     try:
         cleanup_temporary_leftovers(client)
     except IntegrationError as exc:
+        cleanup_error = exc
+
+    if test_error and cleanup_error:
         raise IntegrationError(
-            "UDP/TCP DNS self-tests succeeded, but diagnostic Tunnel cleanup could not be "
-            f"verified. Inspect the remaining resources with 'tunnel status'. Detail: {exc}"
+            "Permanent DNS integration remains applied. UDP/TCP self-test failed: "
+            f"{test_error}. Diagnostic cleanup also failed: {cleanup_error}"
+        ) from None
+    if test_error:
+        raise IntegrationError(
+            "Permanent DNS integration remains applied, but UDP/TCP self-test failed: "
+            f"{test_error}. Cleanup was attempted using live external-reference analysis."
+        ) from None
+    if cleanup_error:
+        raise IntegrationError(
+            "UDP/TCP DNS self-tests succeeded, but diagnostic cleanup could not be completed: "
+            f"{cleanup_error}"
         ) from None
 
-    print("PASS: diagnostic Tunnel cleanup completed after successful UDP/TCP verification.")
+    print("PASS: diagnostic cleanup completed using live external-reference analysis.")
     print("PASS: Integrate completed and UDP/TCP DNS self-tests succeeded.")
     return 0
 
@@ -2574,8 +2659,14 @@ def command_tunnel_status(args, client: PanelAPI) -> int:
             _temporary_final_rules(state["xraySetting"])
         ) else "no")
     )
-    if rule_count and not any(item["rule_mode"] == "added" for item in resources):
-        print("NOTICE: matching rule is not owned by a current diagnostic Tunnel; it will be preserved.")
+    if rule_count:
+        usage = _diagnostic_external_use_reasons(
+            state["xraySetting"], resources, client.list_inbounds()
+        )
+        if usage["final_rule"]:
+            print("NOTICE: matching finalRule has external use: " + ", ".join(usage["final_rule"]))
+        else:
+            print("NOTICE: matching finalRule has no detected external use and is eligible for cleanup by Integrate/Remove.")
     print("Read-only status: no panel mutation was sent.")
     return 0
 
