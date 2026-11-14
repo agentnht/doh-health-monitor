@@ -294,14 +294,10 @@ class AdditivePlannerTests(unittest.TestCase):
             [unrelated, api_tool.DNS_FINAL_ALLOW_RULE, private_block],
         )
         self.assertTrue(any("direct.settings.finalRules" in item for item in plan.changes))
-        self.assertTrue(api_tool._temporary_dns_allow_precedes_blocks(
-            direct["settings"]["finalRules"]
-            if api_tool.canonical(api_tool.DNS_FINAL_ALLOW_RULE) == api_tool.canonical(api_tool.TEMP_DNS_FINAL_RULE)
-            else [
-                api_tool.TEMP_DNS_FINAL_RULE,
-                *direct["settings"]["finalRules"],
-            ]
-        ) if False else True)
+        self.assertLess(
+            direct["settings"]["finalRules"].index(api_tool.DNS_FINAL_ALLOW_RULE),
+            direct["settings"]["finalRules"].index(private_block),
+        )
 
     def test_reuses_existing_freedom_dns_allow_before_private_final_block(self):
         original = base_config()
