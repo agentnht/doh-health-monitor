@@ -1,8 +1,8 @@
 # LucX-UI / DoH Health Monitor integration notes
 
-This document records the integration shape inspected and validated for the
-DoH Health Monitor 2.0.1 release line. It is implementation guidance, not an
-installer and not authorization to change a production panel.
+This document records the integration and removal model for the
+DoH Health Monitor 2.0.1 release line. Panel operations are planned from live
+state; this document is guidance, not authorization to change a production panel.
 
 ## Validated target environment
 
