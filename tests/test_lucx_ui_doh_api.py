@@ -738,10 +738,16 @@ class AdditivePlannerTests(unittest.TestCase):
         plan = api_tool.build_plan(original)
 
         self.assertFalse(plan.blockers)
-        self.assertEqual(
-            plan.proposed["routing"]["rules"][:3],
-            original["routing"]["rules"],
+        retained_rules = [
+            rule for rule in plan.proposed["routing"]["rules"]
+            if not api_tool._global_port53_rule(rule)
+        ]
+        self.assertEqual(retained_rules, original["routing"]["rules"])
+        generated = next(
+            rule for rule in plan.proposed["routing"]["rules"]
+            if api_tool._global_port53_rule(rule)
         )
+        self.assertNotEqual(generated["ruleTag"], "same-rule")
 
     def test_generated_rule_tag_skips_existing_outbound_tag(self):
         original = base_config()
@@ -849,7 +855,10 @@ class AdditivePlannerTests(unittest.TestCase):
         plan = api_tool.build_plan(original)
 
         self.assertFalse(plan.blockers)
-        self.assertTrue(any("already provide the required DNS path" in item for item in plan.warnings))
+        self.assertTrue(any(
+            "already route TCP/UDP port 53 to compatible local DNS outbounds" in item
+            for item in plan.warnings
+        ))
         self.assertEqual(plan.proposed["routing"]["rules"][1], broad)
 
     def test_xray_outbound_tag_precedes_balancer_tag_when_both_are_present(self):
