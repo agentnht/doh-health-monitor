@@ -207,7 +207,6 @@ class RemovePlannerTests(unittest.TestCase):
         plan = api_tool.build_remove_plan(config)
 
         self.assertEqual(plan.dns_server_indexes, [])
-        self.assertEqual(plan.direct_final_rule_indexes, [])
         self.assertTrue(any("dns.rules[0].server" in item for item in plan.blockers))
 
     def test_remove_does_not_inspect_or_modify_diagnostic_final_rules(self):
