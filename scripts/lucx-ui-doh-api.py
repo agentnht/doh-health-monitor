@@ -2675,8 +2675,7 @@ def main() -> int:
         return 2
     except KeyboardInterrupt:
         print(
-            "
-Interrupted. No old configuration will be restored. Invoke Integrate or Remove again "
+            "\nInterrupted. No old configuration will be restored. Invoke Integrate or Remove again "
             "to build a fresh plan from current panel state.",
             file=sys.stderr,
         )
