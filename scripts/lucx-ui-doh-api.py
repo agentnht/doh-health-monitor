@@ -2053,14 +2053,34 @@ def run_tunnel_dns_self_test(port: int, status_url: str) -> None:
     try:
         udp_answers = query_dns_a("127.0.0.1", port, tcp=False)
     except IntegrationError as exc:
-        raise IntegrationError(f"UDP Tunnel DNS self-test failed at {endpoint}: {exc}") from None
+        try:
+            after_queries, after_failures = read_plugin_counters(status_url)
+            counter_detail = (
+                f"plugin counters queries {before_queries}->{after_queries}, "
+                f"failures {before_failures}->{after_failures}"
+            )
+        except IntegrationError as counter_exc:
+            counter_detail = f"post-failure plugin counters unavailable ({counter_exc})"
+        raise IntegrationError(
+            f"UDP Tunnel DNS self-test failed at {endpoint}: {exc}; {counter_detail}"
+        ) from None
     print("PASS: UDP Tunnel DNS self-test returned a positive A answer.")
     print("UDP A answers:", ", ".join(udp_answers))
 
     try:
         tcp_answers = query_dns_a("127.0.0.1", port, tcp=True)
     except IntegrationError as exc:
-        raise IntegrationError(f"TCP Tunnel DNS self-test failed at {endpoint}: {exc}") from None
+        try:
+            after_queries, after_failures = read_plugin_counters(status_url)
+            counter_detail = (
+                f"plugin counters queries {before_queries}->{after_queries}, "
+                f"failures {before_failures}->{after_failures}"
+            )
+        except IntegrationError as counter_exc:
+            counter_detail = f"post-failure plugin counters unavailable ({counter_exc})"
+        raise IntegrationError(
+            f"TCP Tunnel DNS self-test failed at {endpoint}: {exc}; {counter_detail}"
+        ) from None
     print("PASS: TCP Tunnel DNS self-test returned a positive A answer.")
     print("TCP A answers:", ", ".join(tcp_answers))
 
@@ -2496,6 +2516,13 @@ def command_tunnel_create(args, client: PanelAPI) -> int:
     rule_count = _temporary_final_rule_count(state["xraySetting"])
     if rule_count > 1:
         raise IntegrationError("Multiple matching temporary finalRules exist; refusing ambiguous Tunnel creation")
+    if rule_count == 1 and not _temporary_dns_allow_precedes_blocks(
+        _temporary_final_rules(state["xraySetting"])
+    ):
+        raise IntegrationError(
+            "An exact matching temporary finalRule exists, but a blocking finalRule precedes it; "
+            "refusing to treat this rule as usable or reorder a pre-existing rule."
+        )
     rule_mode = "reused" if rule_count == 1 else "added"
     port = choose_temporary_tunnel_port(client.list_inbounds())
     expected = build_temporary_tunnel(port, rule_mode=rule_mode)
@@ -2530,6 +2557,14 @@ def command_tunnel_test(args, client: PanelAPI) -> int:
             "create one with 'tunnel create' first."
         )
     resource = resources[0]
+    state = client.read_state()
+    rules = _temporary_final_rules(state["xraySetting"])
+    rule_count = _temporary_final_rule_count(state["xraySetting"])
+    if rule_count != 1 or not _temporary_dns_allow_precedes_blocks(rules):
+        raise IntegrationError(
+            "The direct outbound does not have exactly one usable temporary DNS allow "
+            "before blocking finalRules; no DNS packet was sent."
+        )
     run_tunnel_dns_self_test(
         resource["port"],
         getattr(args, "plugin_status_url", DEFAULT_PLUGIN_STATUS_URL),
@@ -2552,6 +2587,12 @@ def command_tunnel_status(args, client: PanelAPI) -> int:
             f"rule mode {resource['rule_mode']}, marker {resource['expected']['remark']}"
         )
     print(f"Matching temporary finalRule count: {rule_count}")
+    print(
+        "Temporary DNS allow precedes matching blocks: "
+        + ("yes" if rule_count == 1 and _temporary_dns_allow_precedes_blocks(
+            _temporary_final_rules(state["xraySetting"])
+        ) else "no")
+    )
     if rule_count and not any(item["rule_mode"] == "added" for item in resources):
         print("NOTICE: matching rule is not owned by a current diagnostic Tunnel; it will be preserved.")
     print("Read-only status: no panel mutation was sent.")
