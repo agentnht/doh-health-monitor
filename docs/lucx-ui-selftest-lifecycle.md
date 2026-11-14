@@ -64,4 +64,4 @@ There is no `--plan-only` option. A panel update may automatically restart Xray;
 
 ## Validation
 
-Both GitHub Actions workflows passed on code commit `865a9ca6b3d095c5a427efb09e089a5f7a3a8ece`: DoH integration tests (Python compilation and full unittest suite) and general Go CI (go vet, go test, and Linux amd64 build). Subsequent commits updated documentation only. The revised Integrate → UDP/TCP self-test → Remove sequence has not yet been exercised on the staging VPS.
+Both GitHub Actions workflows passed on code commit `0b355bfe155e135d7b4cbe0904d3f4062f225208`: DoH integration tests (Python compilation and full unittest suite) and general Go CI (go vet, go test, and Linux amd64 build). Subsequent commits updated documentation only. The revised Integrate → UDP/TCP self-test → Remove sequence has not yet been exercised on the staging VPS.
