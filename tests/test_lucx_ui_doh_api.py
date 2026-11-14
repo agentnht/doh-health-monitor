@@ -1925,6 +1925,15 @@ class DnsTunnelProbeTests(unittest.TestCase):
                 api_tool.run_tunnel_dns_self_test(15353, "http://127.0.0.1:18765/status")
         query.assert_called_once_with("127.0.0.1", 15353, tcp=False)
 
+    def test_udp_timeout_reports_plugin_counter_delta(self):
+        with patch.object(api_tool, "read_plugin_counters", side_effect=[(10, 0), (10, 0)]), \
+             patch.object(api_tool, "query_dns_a", side_effect=api_tool.IntegrationError("UDP response timeout")):
+            with self.assertRaisesRegex(
+                api_tool.IntegrationError,
+                r"plugin counters queries 10->10, failures 0->0",
+            ):
+                api_tool.run_tunnel_dns_self_test(15353, "http://127.0.0.1:18765/status")
+
     def test_tcp_probe_failure_is_reported_separately_after_udp_passes(self):
         with patch.object(api_tool, "read_plugin_counters", return_value=(10, 0)), \
              patch.object(
@@ -2110,6 +2119,23 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
         with self.assertRaisesRegex(api_tool.IntegrationError, "already exists"):
             api_tool.command_tunnel_create(self._args(), client)
         self.assertEqual(len(client.inbounds), 1)
+        self.assertEqual(client.deleted, [])
+
+    def test_test_refuses_rule_behind_block_without_sending_dns_packet(self):
+        client = self.FakeClient(existing_rule=True)
+        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718", rule_mode="reused")
+        inbound = copy.deepcopy(expected)
+        inbound.update({"id": 12, "tag": "temporary-12"})
+        client.inbounds = [inbound]
+        direct = next(item for item in client.state["xraySetting"]["outbounds"] if item.get("tag") == "direct")
+        direct["settings"]["finalRules"] = [
+            {"action": "block", "ip": ["geoip:private"]},
+            copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE),
+        ]
+        with patch.object(api_tool, "run_tunnel_dns_self_test") as probe:
+            with self.assertRaisesRegex(api_tool.IntegrationError, "before blocking finalRules"):
+                api_tool.command_tunnel_test(self._args(), client)
+        probe.assert_not_called()
         self.assertEqual(client.deleted, [])
 
 
