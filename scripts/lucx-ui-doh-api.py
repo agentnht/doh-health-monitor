@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Safe additive LucX-UI DoH integration through the panel API.
+"""Live-state LucX-UI DoH reconciliation with exactly two directives: integrate and remove.
 
 The adapter never writes the panel SQLite database or runtime Xray config.
 When --base-url is omitted, it reads only endpoint settings from SQLite in
@@ -29,10 +29,8 @@ import stat
 import struct
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit, urlunsplit
@@ -42,9 +40,12 @@ from urllib.request import HTTPSHandler, Request, build_opener, urlopen
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
-from xray_dns_planner import build_dns_plan, _outbound_matches_dns_endpoint, _server_endpoint
+from xray_dns_planner import (
+    build_dns_plan, _outbound_matches_dns_endpoint, _server_endpoint,
+    _server_is_general, _resolve_balancer_dns_targets,
+)
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 DEFAULT_PLUGIN_SERVICE = "lucx-plugin-doh-health-monitor"
 DEFAULT_PLUGIN_STATUS_URL = "http://127.0.0.1:18765/status"
 DEFAULT_PLUGIN_PORT = 5355
@@ -867,7 +868,7 @@ def check_xray_compatibility(explicit_binary: str | None = None) -> str | None:
         print("Xray version: present in the informational verified-version list.")
     else:
         print("NOTICE: Xray version is not in the informational verified-version list.")
-    print("Xray version does not block check/plan; compatibility is assessed through panel API")
+    print("Xray version does not block Integrate/Remove; compatibility is assessed through panel API")
     print("response parsing, configuration validation, conflict detection, and read-back.")
     return version
 
@@ -1218,6 +1219,7 @@ class Plan:
     changes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
+    outbound_tag: str | None = None
 
 
 def _direct_freedom_outbound(config: dict) -> dict:
@@ -1240,24 +1242,7 @@ def _direct_freedom_outbound(config: dict) -> dict:
     return matches[0]
 
 
-def _remove_persistent_temporary_dns_rule(config: dict) -> bool:
-    """Remove only the exact manually-installed rule now owned by the self-test."""
-    direct = _direct_freedom_outbound(config)
-    settings = direct["settings"]
-    rules = settings.get("finalRules", [])
-    if not isinstance(rules, list) or any(not isinstance(item, dict) for item in rules):
-        raise IntegrationError("direct.settings.finalRules must be an array of objects")
-    matches = [i for i, item in enumerate(rules) if canonical(item) == canonical(TEMP_DNS_FINAL_RULE)]
-    if len(matches) > 1:
-        raise IntegrationError("Duplicate temporary DNS finalRules exist; refusing automatic cleanup")
-    if matches:
-        del rules[matches[0]]
-        if rules:
-            settings["finalRules"] = rules
-        else:
-            settings.pop("finalRules", None)
-        return True
-    return False
+
 
 
 def build_plan(original: dict, *, require_api_rule: bool = True) -> Plan:
@@ -1276,30 +1261,6 @@ def build_plan(original: dict, *, require_api_rule: bool = True) -> Plan:
         )
         return plan
 
-    # A manually-persisted copy of the reserved self-test finalRule is not a
-    # permanent integration object. Transfer it to the temporary test lifecycle.
-    direct_matches = [
-        item for item in cfg.get("outbounds", [])
-        if isinstance(item, dict) and item.get("tag") == "direct"
-    ] if isinstance(cfg.get("outbounds", []), list) else []
-    if any(
-        isinstance(item.get("settings"), dict)
-        and isinstance(item["settings"].get("finalRules", []), list)
-        and any(
-            isinstance(rule, dict) and canonical(rule) == canonical(TEMP_DNS_FINAL_RULE)
-            for rule in item["settings"].get("finalRules", [])
-        )
-        for item in direct_matches
-    ):
-        try:
-            if _remove_persistent_temporary_dns_rule(cfg):
-                plan.changes.append(
-                    "REMOVE manually-persisted temporary DNS allow finalRule; it will exist only during the Tunnel self-test"
-                )
-        except IntegrationError as exc:
-            plan.blockers.append(str(exc))
-            return plan
-
     try:
         semantic = build_dns_plan(cfg)
     except (ValueError, TypeError) as exc:
@@ -1307,6 +1268,7 @@ def build_plan(original: dict, *, require_api_rule: bool = True) -> Plan:
         return plan
 
     plan.proposed = semantic.proposed
+    plan.outbound_tag = semantic.outbound_tag
     plan.changes.extend(semantic.changes)
     plan.warnings.extend(semantic.warnings)
     plan.blockers.extend(semantic.blockers)
@@ -1396,12 +1358,7 @@ def build_plan(original: dict, *, require_api_rule: bool = True) -> Plan:
     return plan
 
 
-def _is_subsequence(old: list, new: list) -> bool:
-    cursor = 0
-    for item in new:
-        if cursor < len(old) and canonical(old[cursor]) == canonical(item):
-            cursor += 1
-    return cursor == len(old)
+
 
 
 def parse_api_response(body: bytes) -> dict:
@@ -1476,7 +1433,7 @@ class PanelAPI:
             raise IntegrationError("Panel API response exceeded the size limit")
         return parse_api_response(body)
 
-    def get_snapshot(self) -> dict:
+    def read_state(self) -> dict:
         envelope = self._post("")
         payload = envelope.get("obj")
         if isinstance(payload, str):
@@ -1625,15 +1582,20 @@ def choose_temporary_tunnel_port(inbounds: list[dict], candidates=TUNNEL_PORT_CA
     raise IntegrationError("No free loopback TCP+UDP port is available for the temporary Tunnel test")
 
 
-def build_temporary_tunnel(port: int, run_id: str | None = None) -> dict:
-    """Build a loopback-only Tunnel that forwards DNS to the plugin's local resolver."""
+def build_temporary_tunnel(
+    port: int, run_id: str | None = None, *, rule_mode: str | None = None
+) -> dict:
+    """Build a loopback-only DNS Tunnel; rule_mode records only the test delta."""
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
         raise IntegrationError("Invalid temporary Tunnel port")
     marker = run_id or secrets.token_hex(8)
     if not re.fullmatch(r"[a-f0-9]{8,32}", marker):
         raise IntegrationError("Invalid temporary Tunnel run marker")
+    if rule_mode not in {None, "added", "reused"}:
+        raise IntegrationError("Invalid temporary DNS rule mode")
+    remark_suffix = f"{rule_mode}-" if rule_mode else ""
     return {
-        "remark": TUNNEL_REMARK_PREFIX + marker,
+        "remark": TUNNEL_REMARK_PREFIX + remark_suffix + marker,
         "protocol": "tunnel",
         "listen": "127.0.0.1",
         "port": port,
@@ -1748,75 +1710,7 @@ def wait_for_tunnel_listeners(port: int, timeout: float = 20.0) -> None:
     )
 
 
-def _write_recovery_journal(
-    backup_dir: Path, expected: dict, inbound_id: int | None, state: str,
-    *, original_final_rules: list[dict], final_rule: dict | None = None,
-) -> Path:
-    marker = expected["remark"].removeprefix(TUNNEL_REMARK_PREFIX)
-    if (
-        not isinstance(original_final_rules, list)
-        or any(not isinstance(item, dict) for item in original_final_rules)
-        or any(canonical(item) == canonical(TEMP_DNS_FINAL_RULE) for item in original_final_rules)
-    ):
-        raise IntegrationError("Cannot journal an invalid pre-test Freedom finalRules snapshot")
-    journal_dir = backup_dir / "recovery"
-    journal_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(journal_dir, 0o700)
-    path = journal_dir / f"lucx-doh-selftest-{marker}.json"
-    _write_private_json(path, {
-        "format": 2,
-        "kind": "temporary-tunnel-selftest",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "state": state,
-        "inbound_id": inbound_id,
-        "inbound": expected,
-        "final_rule": copy.deepcopy(final_rule or TEMP_DNS_FINAL_RULE),
-        "original_final_rules": copy.deepcopy(original_final_rules),
-    })
-    return path
 
-
-def _load_recovery_journal(path: Path) -> dict:
-    try:
-        info = path.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
-            raise IntegrationError("Recovery journal must be a private regular file owned by the current user with mode 0600")
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except IntegrationError:
-        raise
-    except (OSError, json.JSONDecodeError):
-        raise IntegrationError("Cannot read the temporary Tunnel recovery journal") from None
-    inbound = payload.get("inbound") if isinstance(payload, dict) else None
-    if (
-        not isinstance(payload, dict) or payload.get("format") != 2
-        or payload.get("kind") != "temporary-tunnel-selftest"
-        or not isinstance(inbound, dict)
-        or inbound.get("protocol") != "tunnel"
-        or not str(inbound.get("remark", "")).startswith(TUNNEL_REMARK_PREFIX)
-        or inbound.get("listen") != "127.0.0.1"
-        or isinstance(inbound.get("port"), bool)
-        or not isinstance(inbound.get("port"), int)
-        or not 1 <= inbound["port"] <= 65535
-    ):
-        raise IntegrationError("Recovery journal format or temporary Tunnel identity is invalid")
-    inbound_id = payload.get("inbound_id")
-    if inbound_id is not None and (
-        isinstance(inbound_id, bool) or not isinstance(inbound_id, int) or inbound_id <= 0
-    ):
-        raise IntegrationError("Recovery journal contains an invalid inbound ID")
-    final_rule = payload.get("final_rule")
-    original_final_rules = payload.get("original_final_rules")
-    if (
-        not isinstance(final_rule, dict)
-        or canonical(final_rule) != canonical(TEMP_DNS_FINAL_RULE)
-        or not isinstance(original_final_rules, list)
-        or any(not isinstance(item, dict) for item in original_final_rules)
-        or any(canonical(item) == canonical(TEMP_DNS_FINAL_RULE) for item in original_final_rules)
-    ):
-        raise IntegrationError(
-            "Recovery journal finalRule identity or original finalRules snapshot is invalid"
-        )
-    return payload
 
 
 def listener_output_has_port(output: str, port: int) -> bool:
@@ -1857,253 +1751,264 @@ def wait_for_tunnel_port_closed(port: int, timeout: float = 10.0) -> None:
     )
 
 
-def find_pending_recovery_journals(backup_dir: Path) -> list[Path]:
-    recovery_dir = backup_dir / "recovery"
-    try:
-        info = recovery_dir.lstat()
-    except FileNotFoundError:
-        return []
-    except OSError:
-        raise IntegrationError("Could not inspect the temporary Tunnel recovery directory") from None
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
-        raise IntegrationError("Temporary Tunnel recovery directory must be a private directory owned by the current user with mode 0700")
-    journals = sorted(recovery_dir.glob("lucx-doh-selftest-*.json"))
-    for journal in journals:
-        _load_recovery_journal(journal)
-    return journals
 
 
-def preflight_temporary_dns_final_rule(client: PanelAPI) -> list[dict]:
-    """Validate ownership and conflicts before any Tunnel or config mutation."""
-    snapshot = client.get_snapshot()
-    direct = _direct_freedom_outbound(snapshot["xraySetting"])
-    settings = direct["settings"]
-    rules = settings.get("finalRules", [])
-    if not isinstance(rules, list) or any(not isinstance(item, dict) for item in rules):
-        raise IntegrationError("direct.settings.finalRules must be an array of objects")
-    if any(canonical(item) == canonical(TEMP_DNS_FINAL_RULE) for item in rules):
-        raise IntegrationError(
-            "Temporary DNS finalRule for 127.0.0.1:5355 is already present; "
-            "refusing to claim or remove a rule not created by this run"
-        )
-    # Calculate the insertion point during preflight so malformed or uncertain
-    # block selectors are handled before the Tunnel is created.
-    _temporary_dns_allow_insert_index(rules)
-    return copy.deepcopy(rules)
+
+def _temporary_remark_parts(remark: str) -> tuple[str, str, bool]:
+    """Return (rule_mode, token, legacy); old markers imply a rule was added."""
+    if not isinstance(remark, str) or not remark.startswith(TUNNEL_REMARK_PREFIX):
+        raise IntegrationError("Not a reserved temporary Tunnel remark")
+    suffix = remark[len(TUNNEL_REMARK_PREFIX):]
+    for mode in ("added", "reused"):
+        prefix = mode + "-"
+        if suffix.startswith(prefix):
+            token = suffix[len(prefix):]
+            if re.fullmatch(r"[a-f0-9]{8,32}", token):
+                return mode, token, False
+            raise IntegrationError("Temporary Tunnel marker has an invalid token")
+    # The previous implementation created the exact finalRule before the
+    # Tunnel and refused a pre-existing match; an old marker therefore proves
+    # that the rule belonged to that test.
+    if re.fullmatch(r"[a-f0-9]{8,32}", suffix):
+        return "added", suffix, True
+    raise IntegrationError("Temporary Tunnel marker is malformed")
 
 
-def install_temporary_dns_final_rule(
-    client: PanelAPI, original_final_rules: list[dict], *,
-    attempt_state: list[bool] | None = None,
-) -> None:
-    """Install the temporary plugin-port allow after verifying the preflight snapshot."""
-    before = client.get_snapshot()
-    config = copy.deepcopy(before["xraySetting"])
+def _temporary_final_rules(config: dict) -> list[dict]:
     direct = _direct_freedom_outbound(config)
-    settings = direct["settings"]
-    rules = settings.get("finalRules", [])
+    rules = direct["settings"].get("finalRules", [])
     if not isinstance(rules, list) or any(not isinstance(item, dict) for item in rules):
         raise IntegrationError("direct.settings.finalRules must be an array of objects")
-    if canonical(rules) != canonical(original_final_rules):
-        raise IntegrationError(
-            "direct.settings.finalRules changed after temporary DNS preflight; "
-            "refusing to overwrite concurrent panel changes"
-        )
+    return rules
+
+
+def _temporary_final_rule_count(config: dict) -> int:
+    return sum(
+        canonical(item) == canonical(TEMP_DNS_FINAL_RULE)
+        for item in _temporary_final_rules(config)
+    )
+
+
+def _add_temporary_dns_final_rule(client: PanelAPI) -> None:
+    """Add the exact test allow to the current live config; save no baseline."""
+    state = client.read_state()
+    config = copy.deepcopy(state["xraySetting"])
+    direct = _direct_freedom_outbound(config)
+    rules = _temporary_final_rules(config)
     if any(canonical(item) == canonical(TEMP_DNS_FINAL_RULE) for item in rules):
         raise IntegrationError(
-            "Temporary DNS finalRule appeared after preflight; refusing to claim ownership"
+            "Temporary finalRule appeared after the test plan was built; refusing to claim it"
         )
     insert_at = _temporary_dns_allow_insert_index(rules)
     rules.insert(insert_at, copy.deepcopy(TEMP_DNS_FINAL_RULE))
-    settings["finalRules"] = rules
-    # Mark ownership only after the existing-rule guard, immediately before
-    # the API write. If the API response is lost after commit, finally cleanup
-    # must still run; if the guard refused an existing entry, it must not.
-    if attempt_state is not None:
-        attempt_state[0] = True
-    client.update(config, before["outboundTestUrl"])
-    after = client.get_snapshot()
-    after_direct = _direct_freedom_outbound(after["xraySetting"])
-    after_rules = after_direct["settings"].get("finalRules", [])
+    direct["settings"]["finalRules"] = rules
+    client.update(config, state["outboundTestUrl"])
+    after = client.read_state()
+    after_rules = _temporary_final_rules(after["xraySetting"])
     if (
-        not isinstance(after_rules, list)
-        or any(not isinstance(item, dict) for item in after_rules)
+        _temporary_final_rule_count(after["xraySetting"]) != 1
         or not _temporary_dns_allow_precedes_blocks(after_rules)
     ):
         raise IntegrationError(
-            "Panel read-back did not confirm the temporary DNS allow rule precedes "
-            "all matching Freedom block rules"
+            "Panel read-back did not confirm exactly one temporary DNS allow before matching block rules"
         )
 
 
-def cleanup_temporary_dns_final_rule(
-    client: PanelAPI, final_rule: dict, original_final_rules: list[dict]
-) -> bool:
-    """Remove only this run's exact allow finalRule, preserving all current unrelated settings."""
-    if canonical(final_rule) != canonical(TEMP_DNS_FINAL_RULE):
-        raise IntegrationError("Refusing to remove an unrecognized temporary DNS finalRule")
-    current = client.get_snapshot()
-    config = copy.deepcopy(current["xraySetting"])
+def _remove_temporary_dns_final_rule(client: PanelAPI) -> bool:
+    """Remove one exact test rule from the latest live config; preserve other live rules."""
+    state = client.read_state()
+    config = copy.deepcopy(state["xraySetting"])
     direct = _direct_freedom_outbound(config)
-    settings = direct["settings"]
-    rules = settings.get("finalRules", [])
-    if not isinstance(rules, list) or any(not isinstance(item, dict) for item in rules):
-        raise IntegrationError("direct.settings.finalRules is not a valid array; recovery required")
-    if (
-        not isinstance(original_final_rules, list)
-        or any(not isinstance(item, dict) for item in original_final_rules)
-        or any(canonical(item) == canonical(final_rule) for item in original_final_rules)
-    ):
-        raise IntegrationError("Recovery snapshot for the original Freedom finalRules is invalid")
-    matches = [i for i, item in enumerate(rules) if canonical(item) == canonical(final_rule)]
+    rules = _temporary_final_rules(config)
+    matches = [
+        index for index, item in enumerate(rules)
+        if canonical(item) == canonical(TEMP_DNS_FINAL_RULE)
+    ]
     if not matches:
-        if not _is_subsequence(original_final_rules, rules):
-            raise IntegrationError(
-                "direct.settings.finalRules changed during the Tunnel test; "
-                "the temporary rule is already absent, but original user rules were modified"
-            )
         return False
     if len(matches) != 1:
         raise IntegrationError(
-            "Multiple identical temporary DNS finalRules now exist; refusing to delete an ambiguous rule"
+            "Multiple identical temporary finalRules exist; refusing ambiguous deletion"
         )
-
-    # Remove only our single exact rule. Preserve all later user additions, but
-    # refuse if any original rule was removed, modified, or reordered meanwhile.
-    restored_rules = copy.deepcopy(rules)
-    del restored_rules[matches[0]]
-    if not _is_subsequence(original_final_rules, restored_rules):
-        raise IntegrationError(
-            "direct.settings.finalRules changed during the Tunnel test; "
-            "refusing cleanup that could overwrite concurrent user changes"
-        )
-    if restored_rules:
-        settings["finalRules"] = restored_rules
+    del rules[matches[0]]
+    if rules:
+        direct["settings"]["finalRules"] = rules
     else:
-        settings.pop("finalRules", None)
-    client.update(config, current["outboundTestUrl"])
-    restored = client.get_snapshot()
-    restored_direct = _direct_freedom_outbound(restored["xraySetting"])
-    verified_rules = restored_direct["settings"].get("finalRules", [])
-    if (
-        not isinstance(verified_rules, list)
-        or any(not isinstance(item, dict) for item in verified_rules)
-        or any(canonical(item) == canonical(final_rule) for item in verified_rules)
-        or not _is_subsequence(original_final_rules, verified_rules)
-    ):
-        raise IntegrationError(
-            "Panel read-back could not verify temporary DNS finalRule removal "
-            "without changing the original finalRules"
-        )
+        direct["settings"].pop("finalRules", None)
+    _apply_panel_update(client, state, config, "temporary DNS rule removal")
+    after = client.read_state()
+    if _temporary_final_rule_count(after["xraySetting"]):
+        raise IntegrationError("Panel read-back still contains the temporary DNS finalRule")
     return True
 
 
-def run_temporary_tunnel_test(client: PanelAPI, status_url: str, backup_dir: Path) -> None:
-    """Create, verify, probe, and always clean up one temporary loopback DNS Tunnel."""
+def discover_temporary_leftovers(client: PanelAPI) -> list[dict]:
+    """Find reserved self-test Tunnels through the live inbound API only."""
+    resources = []
+    seen_ids = set()
+    for item in client.list_inbounds():
+        remark = item.get("remark")
+        if not isinstance(remark, str) or not remark.startswith(TUNNEL_REMARK_PREFIX):
+            continue
+        mode, token, legacy = _temporary_remark_parts(remark)
+        inbound_id = item.get("id")
+        port = item.get("port")
+        if (
+            isinstance(inbound_id, bool) or not isinstance(inbound_id, int)
+            or inbound_id <= 0 or inbound_id in seen_ids
+            or isinstance(port, bool) or not isinstance(port, int)
+            or not 1 <= port <= 65535
+        ):
+            raise IntegrationError(
+                f"Reserved temporary Tunnel {remark!r} has an invalid or ambiguous identity"
+            )
+        seen_ids.add(inbound_id)
+        expected = build_temporary_tunnel(
+            port, token, rule_mode=None if legacy else mode
+        )
+        verify_temporary_tunnel([item], expected, inbound_id)
+        resources.append({
+            "expected": expected,
+            "inbound_id": inbound_id,
+            "port": port,
+            "rule_mode": mode,
+            "legacy": legacy,
+        })
+    return resources
+
+
+def cleanup_temporary_leftovers(client: PanelAPI) -> None:
+    """Reconcile abandoned temporary resources from live state; no journal."""
+    resources = discover_temporary_leftovers(client)
+    if not resources:
+        return
+    state = client.read_state()
+    rule_count = _temporary_final_rule_count(state["xraySetting"])
+    added = [item for item in resources if item["rule_mode"] == "added"]
+    if rule_count > 1 and added:
+        raise IntegrationError(
+            "Multiple temporary finalRules are present; refusing ambiguous test cleanup"
+        )
+    if rule_count and len(added) > 1:
+        raise IntegrationError(
+            "Multiple temporary Tunnels claim the same added test rule; refusing ambiguous cleanup"
+        )
+    # Rule first, verify absent, then Tunnel. Reused pre-existing rules stay.
+    if rule_count and len(added) == 1:
+        _remove_temporary_dns_final_rule(client)
+    elif rule_count and not added:
+        print("NOTICE: matching finalRule has only a reused-rule Tunnel marker; preserving it.")
+    for resource in resources:
+        removed = cleanup_temporary_tunnel(
+            client, resource["expected"], resource["inbound_id"]
+        )
+        if removed:
+            wait_for_tunnel_port_closed(resource["port"])
+    if discover_temporary_leftovers(client):
+        raise IntegrationError("One or more reserved temporary Tunnel inbounds remain after cleanup")
+    print("PASS: abandoned temporary test resources were reconciled from live panel state.")
+
+
+def run_temporary_tunnel_test(client: PanelAPI, status_url: str) -> None:
+    """Test UDP/TCP DNS through a temporary Tunnel, then remove only this run's delta."""
+    cleanup_temporary_leftovers(client)
     remaining = list(TUNNEL_PORT_CANDIDATES)
     for attempt in range(3):
-        inbounds = client.list_inbounds()
-        port = choose_temporary_tunnel_port(inbounds, candidates=remaining)
-        remaining.remove(port)
-        expected = build_temporary_tunnel(port)
-        # Read and validate the exact original Freedom rule set before writing
-        # a journal or changing Xray. The journal is the recovery authority.
-        original_final_rules = preflight_temporary_dns_final_rule(client)
-        journal = _write_recovery_journal(
-            backup_dir, expected, None, "create-pending",
-            original_final_rules=original_final_rules,
-            final_rule=TEMP_DNS_FINAL_RULE,
+        state_before = client.read_state()
+        original_rules = _temporary_final_rules(state_before["xraySetting"])
+        rule_count = sum(
+            canonical(item) == canonical(TEMP_DNS_FINAL_RULE)
+            for item in original_rules
         )
+        if rule_count > 1:
+            raise IntegrationError(
+                "Duplicate temporary finalRules already exist; refusing an ambiguous test"
+            )
+        rule_mode = "reused" if rule_count == 1 else "added"
+        if rule_mode == "added":
+            _temporary_dns_allow_insert_index(original_rules)
+
+        port = choose_temporary_tunnel_port(
+            client.list_inbounds(), candidates=remaining
+        )
+        remaining.remove(port)
+        expected = build_temporary_tunnel(port, rule_mode=rule_mode)
         inbound_id = None
-        test_error = None
-        cleanup_error = None
         add_error = None
-        final_rule_attempted = [False]
+        rule_added_by_this_run = False
+        test_error = None
+        cleanup_errors = []
         try:
-            journal = _write_recovery_journal(
-                backup_dir, expected, None, "final-rule-create-pending",
-                original_final_rules=original_final_rules,
-                final_rule=TEMP_DNS_FINAL_RULE,
-            )
-            install_temporary_dns_final_rule(
-                client, original_final_rules, attempt_state=final_rule_attempted
-            )
-            journal = _write_recovery_journal(
-                backup_dir, expected, None, "final-rule-created",
-                original_final_rules=original_final_rules,
-                final_rule=TEMP_DNS_FINAL_RULE,
-            )
             try:
                 created = client.add_inbound(expected)
             except IntegrationError as exc:
                 add_error = exc
                 raise
             inbound_id = created["id"]
-            journal = _write_recovery_journal(
-                backup_dir, expected, inbound_id, "created",
-                original_final_rules=original_final_rules,
-                final_rule=TEMP_DNS_FINAL_RULE,
-            )
-            current = client.list_inbounds()
-            verify_temporary_tunnel(current, expected, inbound_id)
+            verify_temporary_tunnel(client.list_inbounds(), expected, inbound_id)
             wait_for_tunnel_listeners(port)
+
+            state_after_tunnel = client.read_state()
+            current_rule_count = _temporary_final_rule_count(state_after_tunnel["xraySetting"])
+            if rule_mode == "added":
+                if current_rule_count:
+                    raise IntegrationError(
+                        "Panel finalRules changed while creating the test Tunnel; refusing to claim the new rule"
+                    )
+                # Set ownership before the API call so a lost response still
+                # causes cleanup to inspect and remove the live delta.
+                rule_added_by_this_run = True
+                _add_temporary_dns_final_rule(client)
+            elif current_rule_count != 1:
+                raise IntegrationError(
+                    "The pre-existing DNS finalRule disappeared while creating the test Tunnel"
+                )
+
             run_tunnel_dns_self_test(port, status_url)
         except Exception as exc:
             test_error = exc
         finally:
-            cleanup_errors = []
-            try:
-                removed = cleanup_temporary_tunnel(client, expected, inbound_id)
-                # If the add request failed and no matching panel object exists,
-                # a listener may belong to the process that won the port race.
-                # Never wait for or interfere with that external listener.
-                if inbound_id is not None or removed:
-                    wait_for_tunnel_port_closed(port)
-            except Exception as exc:
-                cleanup_errors.append("Tunnel: " + str(exc))
-
-            # Cleanup is deliberately independent: a failed inbound deletion
-            # must not prevent an attempt to remove the temporary finalRule.
-            if final_rule_attempted[0]:
+            # Do not delete the Tunnel unless its newly-added rule was removed
+            # and verified first.
+            if rule_added_by_this_run:
                 try:
-                    cleanup_temporary_dns_final_rule(client, TEMP_DNS_FINAL_RULE, original_final_rules)
+                    _remove_temporary_dns_final_rule(client)
                 except Exception as exc:
-                    cleanup_errors.append("finalRule: " + str(exc))
-
-            if cleanup_errors:
-                cleanup_error = IntegrationError("; ".join(cleanup_errors))
+                    cleanup_errors.append("temporary finalRule: " + str(exc))
+            if not cleanup_errors:
                 try:
-                    _write_recovery_journal(
-                        backup_dir, expected, inbound_id, "cleanup-required",
-                        original_final_rules=original_final_rules,
-                        final_rule=TEMP_DNS_FINAL_RULE,
-                    )
-                except Exception:
-                    pass
-            else:
-                journal.unlink(missing_ok=True)
-        if cleanup_error:
+                    removed = cleanup_temporary_tunnel(client, expected, inbound_id)
+                    if inbound_id is not None or removed:
+                        wait_for_tunnel_port_closed(port)
+                except Exception as exc:
+                    cleanup_errors.append("Tunnel: " + str(exc))
+
+        if cleanup_errors:
             raise IntegrationError(
-                f"Temporary Tunnel/finalRule cleanup failed; recovery journal retained at {journal}. "
-                f"Resource marker: {expected['remark']}; inbound ID: {inbound_id or 'unknown'}; "
-                f"details: {cleanup_error}"
+                "Temporary self-test cleanup could not be verified. "
+                f"Tunnel marker: {expected['remark']}; details: {'; '.join(cleanup_errors)}. "
+                "Run Integrate or Remove again to re-plan from live panel state."
             ) from None
-        if test_error:
+        if test_error is not None:
             if add_error is not None and not _port_is_free_on_loopback(port) and attempt < 2:
-                print(f"NOTICE: port {port} was claimed during Tunnel creation; retrying with another free port.")
+                print(
+                    f"NOTICE: port {port} was claimed during Tunnel creation; "
+                    "retrying with another free port."
+                )
                 continue
             if isinstance(test_error, IntegrationError):
                 raise test_error
             raise IntegrationError(
-                "Temporary Tunnel self-test failed; temporary inbound was cleaned up. "
+                "Temporary Tunnel self-test failed; live-state cleanup was attempted. "
                 f"Underlying error: {_safe_exception_summary(test_error)}"
             ) from None
-        print("PASS: temporary Tunnel inbound was removed and panel API read-back confirms absence.")
-        print(f"PASS: temporary Tunnel TCP and UDP listeners are gone from port {port}.")
+        print("PASS: temporary Tunnel is absent and its TCP/UDP listeners are gone.")
+        if rule_added_by_this_run:
+            print("PASS: the temporary DNS finalRule added by this test is absent.")
+        else:
+            print("PASS: the pre-existing DNS finalRule was reused and preserved.")
         return
     raise IntegrationError("Temporary Tunnel creation repeatedly lost a port-allocation race")
-
-
 
 
 def _dns_query_packet(name: str) -> tuple[int, bytes]:
@@ -2274,63 +2179,7 @@ def run_tunnel_dns_self_test(port: int, status_url: str) -> None:
     )
 
 
-def _default_backup_dir() -> Path:
-    return Path.home() / ".local" / "state" / "lucx-ui-doh" / "backups"
 
-
-def _write_private_json(path: Path, value: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(path.parent, 0o700)
-    fd, tmp_name = tempfile.mkstemp(prefix=".doh-backup-", dir=str(path.parent))
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(value, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_name, path)
-        os.chmod(path, 0o600)
-    except Exception:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
-
-
-def create_backup(snapshot: dict, backup_dir: Path) -> Path:
-    backup_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(backup_dir, 0o700)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    path = backup_dir / f"lucx-doh-{stamp}-{secrets.token_hex(3)}.json"
-    data = {
-        "format": 1,
-        "tool_version": VERSION,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "before": snapshot,
-        "after": None,
-        "state": "before-update",
-    }
-    _write_private_json(path, data)
-    return path
-
-
-def load_backup(path: Path) -> dict:
-    try:
-        mode = stat.S_IMODE(path.stat().st_mode)
-        if mode & 0o077:
-            raise IntegrationError("Backup permissions are broader than 0600; refusing to read it")
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except IntegrationError:
-        raise
-    except (OSError, json.JSONDecodeError):
-        raise IntegrationError("Cannot read backup file") from None
-    if not isinstance(data, dict) or data.get("format") != 1:
-        raise IntegrationError("Unsupported or invalid backup file")
-    if not isinstance(data.get("before"), dict):
-        raise IntegrationError("Backup does not contain a valid pre-update snapshot")
-    return data
 
 
 def confirm_restart(action: str, approved_flag: bool) -> None:
@@ -2339,800 +2188,409 @@ def confirm_restart(action: str, approved_flag: bool) -> None:
     print("when Xray is running. This tool will not restart Xray directly.")
     if approved_flag:
         return
-    expected = {"apply": "APPLY", "rollback": "ROLLBACK", "cleanup": "CLEANUP", "create-test": "CREATE TEST"}.get(action)
+    expected = {"integrate": "INTEGRATE", "remove": "REMOVE"}.get(action)
     if expected is None:
-        raise IntegrationError("Unknown operation requiring restart approval")
+        raise IntegrationError("Unknown panel directive")
     entered = read_tty_confirmation(f"Type {expected} to continue: ")
     if entered != expected:
-        raise IntegrationError("Operator confirmation did not match; no API update was sent")
+        raise IntegrationError("Operator confirmation did not match; no panel update was sent")
 
 
 def print_plan(plan: Plan) -> None:
     if plan.changes:
-        print("Proposed additions:")
+        print("Planned integration additions:")
         for change in plan.changes:
             print("  + " + change)
     else:
-        print("No DNS integration additions are required.")
+        print("No permanent DNS integration additions are required.")
     for warning in plan.warnings:
         print("  NOTE: " + warning)
     for blocker in plan.blockers:
         print("  BLOCK: " + blocker)
     if plan.blockers:
-        print("Result: NOT SAFE TO APPLY automatically")
+        print("Result: Integrate plan has blockers; no panel mutation is permitted.")
     elif plan.changes:
-        print("Result: additive plan ready")
+        print("Result: Integrate plan is ready.")
     else:
-        print("Result: already integrated; no update or restart required")
+        print("Result: permanent integration is already present.")
 
 
+@dataclass
+class RemovePlan:
+    route_indexes: list[int] = field(default_factory=list)
+    outbound_tags: list[str] = field(default_factory=list)
+    dns_server_indexes: list[int] = field(default_factory=list)
+    blockers: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
-def build_selective_rollback_config(current: dict, before: dict, after: dict) -> dict:
-    """Remove only unchanged DNS objects introduced by this apply; preserve later edits."""
-    result = copy.deepcopy(current)
 
-    def tagged(items, tag):
-        return [item for item in items if isinstance(item, dict) and item.get("tag") == tag]
+def _tag_list(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str) and item]
+    return []
 
-    current_outbounds = object_list(result, "outbounds", "outbounds")
-    before_outbounds = object_list(before, "outbounds", "before.outbounds")
-    after_outbounds = object_list(after, "outbounds", "after.outbounds")
-    before_tags = {
-        item.get("tag") for item in before_outbounds
-        if isinstance(item.get("tag"), str) and item.get("tag")
-    }
-    # A DNS outbound is owned only when this apply introduced its tag. The
-    # preferred name may have been occupied, so rollback must not assume dns-out.
-    owned_dns = [
-        item for item in after_outbounds
-        if isinstance(item.get("tag"), str)
-        and item.get("tag") not in before_tags
-        and _outbound_matches_dns_endpoint(item)
+
+def _outbound_reference_reasons(
+    config: dict, tag: str, *, ignored_route_indexes: set[int] | None = None
+) -> list[str]:
+    """Find every supported current-state reference to one outbound tag."""
+    ignored = ignored_route_indexes or set()
+    reasons = []
+    routing = config.get("routing", {})
+    if not isinstance(routing, dict):
+        raise IntegrationError("routing must be an object before checking outbound references")
+    rules = routing.get("rules", [])
+    if not isinstance(rules, list):
+        raise IntegrationError("routing.rules must be an array before checking outbound references")
+    for index, rule in enumerate(rules):
+        if index in ignored or not isinstance(rule, dict):
+            continue
+        if tag in _tag_list(rule.get("outboundTag")):
+            reasons.append(f"routing.rules[{index}].outboundTag")
+    balancers = routing.get("balancers", [])
+    if not isinstance(balancers, list):
+        raise IntegrationError("routing.balancers must be an array")
+    for index, balancer in enumerate(balancers):
+        if not isinstance(balancer, dict):
+            continue
+        selectors = _tag_list(balancer.get("selector"))
+        if balancer.get("fallbackTag") == tag or any(tag.startswith(x) for x in selectors):
+            reasons.append(f"routing.balancers[{index}]")
+    for section_name in ("observatory", "burstObservatory"):
+        section = routing.get(section_name, config.get(section_name, {}))
+        if not isinstance(section, dict):
+            continue
+        if any(tag.startswith(prefix) for prefix in _tag_list(section.get("subjectSelector"))):
+            reasons.append(section_name + ".subjectSelector")
+    outbounds = config.get("outbounds", [])
+    if not isinstance(outbounds, list):
+        raise IntegrationError("outbounds must be an array")
+    for index, outbound in enumerate(outbounds):
+        if not isinstance(outbound, dict) or outbound.get("tag") == tag:
+            continue
+        proxy_settings = outbound.get("proxySettings")
+        if isinstance(proxy_settings, dict) and proxy_settings.get("tag") == tag:
+            reasons.append(f"outbounds[{index}].proxySettings.tag")
+        stream = outbound.get("streamSettings")
+        sockopt = stream.get("sockopt") if isinstance(stream, dict) else None
+        if isinstance(sockopt, dict) and sockopt.get("dialerProxy") == tag:
+            reasons.append(f"outbounds[{index}].streamSettings.sockopt.dialerProxy")
+    return reasons
+
+
+def _dns_server_reference_reasons(config: dict, server: object) -> list[str]:
+    dns = config.get("dns", {})
+    if not isinstance(dns, dict):
+        raise IntegrationError("dns must be an object before checking DNS server references")
+    rules = dns.get("rules", [])
+    if not isinstance(rules, list):
+        raise IntegrationError("dns.rules must be an array before checking DNS server references")
+    server_tag = server.get("tag") if isinstance(server, dict) else None
+    endpoint = _server_endpoint(server)
+    reasons = []
+    for index, rule in enumerate(rules):
+        if not isinstance(rule, dict):
+            continue
+        for value in _tag_list(rule.get("server")):
+            matches_tag = isinstance(server_tag, str) and value == server_tag
+            matches_endpoint = _server_endpoint(value) == endpoint if endpoint else False
+            if matches_tag or matches_endpoint:
+                reasons.append(f"dns.rules[{index}].server")
+                break
+    return reasons
+
+
+def build_remove_plan(original: dict) -> RemovePlan:
+    """Plan Remove from live state using the same semantic DNS planner as Integrate."""
+    if not isinstance(original, dict):
+        raise IntegrationError("xraySetting must be a JSON object")
+    integrate_spec = build_plan(original, require_api_rule=False)
+    result = RemovePlan()
+    if integrate_spec.blockers:
+        result.warnings.append(
+            "The Integrate planner reports current-state conflicts; Remove will act only on independently verified semantic matches."
+        )
+
+    original_outbounds = original.get("outbounds", [])
+    if not isinstance(original_outbounds, list) or any(not isinstance(item, dict) for item in original_outbounds):
+        raise IntegrationError("outbounds must be an array of objects")
+    routing = original.get("routing", {})
+    if not isinstance(routing, dict):
+        raise IntegrationError("routing must be an object")
+    rules = routing.get("rules", [])
+    if not isinstance(rules, list) or any(not isinstance(item, dict) for item in rules):
+        raise IntegrationError("routing.rules must be an array of objects")
+    balancers = routing.get("balancers", [])
+    if not isinstance(balancers, list) or any(not isinstance(item, dict) for item in balancers):
+        raise IntegrationError("routing.balancers must be an array of objects")
+
+    candidates = [
+        item for item in original_outbounds if _outbound_matches_dns_endpoint(item)
     ]
-    if len(owned_dns) > 1:
-        raise IntegrationError("Backup has ambiguous ownership of added local DNS outbounds; selective rollback refused")
-    if owned_dns:
-        owned = owned_dns[0]
-        owned_tag = owned.get("tag")
-        present = tagged(current_outbounds, owned_tag)
-        if present:
-            if len(present) != 1 or canonical(present[0]) != canonical(owned):
-                raise IntegrationError(
-                    f"Added DNS outbound {owned_tag} was modified after apply; refusing to delete it"
-                )
-            current_outbounds.remove(present[0])
+    tags = [item.get("tag") for item in candidates]
+    candidate_tags = {tag for tag in tags if isinstance(tag, str) and tag}
+    if len(candidate_tags) != len(tags):
+        result.blockers.append("A compatible local DNS outbound has no unique non-empty tag; it will be preserved.")
 
-    before_dns = before.get("dns", {})
-    after_dns = after.get("dns", {})
-    current_dns = result.get("dns", {})
-    if not isinstance(before_dns, dict) or not isinstance(after_dns, dict) or not isinstance(current_dns, dict):
-        raise IntegrationError("DNS settings are not objects; selective rollback refused")
-    before_servers = before_dns.get("servers", [])
-    after_servers = after_dns.get("servers", [])
-    current_servers = current_dns.get("servers", [])
-    if not all(isinstance(items, list) for items in (before_servers, after_servers, current_servers)):
-        raise IntegrationError("DNS server lists are invalid; selective rollback refused")
-
-    def targets_local_dns(server):
-        address = ""
-        port = None
-        if isinstance(server, str):
-            address = server
-        elif isinstance(server, dict):
-            address = server.get("address", "") if isinstance(server.get("address", ""), str) else ""
-            port = server.get("port")
-        return _split_ip_address(address, port) == ("127.0.0.1", 5355)
-
-    if not any(targets_local_dns(item) for item in before_servers):
-        owned_servers = [item for item in after_servers if targets_local_dns(item)]
-        if owned_servers:
-            if len(owned_servers) != 1:
-                raise IntegrationError("Backup has ambiguous ownership of the local DNS server; selective rollback refused")
-            present = [item for item in current_servers if targets_local_dns(item)]
-            if present:
-                if len(present) != 1 or canonical(present[0]) != canonical(owned_servers[0]):
-                    raise IntegrationError("DNS server 127.0.0.1:5355 was modified after apply; refusing to delete it")
-                current_servers.remove(present[0])
-
-    # Undo only empty container keys introduced by this integration. Do not
-    # erase an originally-present DNS object or any later DNS settings.
-    if "dns" not in before and current_dns == {"servers": []}:
-        result.pop("dns", None)
-    elif (
-        isinstance(before_dns, dict)
-        and "servers" not in before_dns
-        and current_dns.get("servers") == []
-        and set(current_dns) == {"servers"}
-    ):
-        current_dns.pop("servers", None)
-
-    before_routing = before.get("routing", {})
-    after_routing = after.get("routing", {})
-    current_routing = result.get("routing", {})
-    if not all(isinstance(item, dict) for item in (before_routing, after_routing, current_routing)):
-        raise IntegrationError("Routing settings are not objects; selective rollback refused")
-    before_rules = before_routing.get("rules", [])
-    after_rules = after_routing.get("rules", [])
-    current_rules = current_routing.get("rules", [])
-    if not all(isinstance(items, list) for items in (before_rules, after_rules, current_rules)):
-        raise IntegrationError("Routing rule lists are invalid; selective rollback refused")
-
-    before_port53 = [rule for rule in before_rules if isinstance(rule, dict) and _global_port53_rule(rule)]
-    after_port53 = [rule for rule in after_rules if isinstance(rule, dict) and _global_port53_rule(rule)]
-    if not before_port53 and after_port53:
-        if len(after_port53) != 1:
-            raise IntegrationError("Backup has ambiguous ownership of the port-53 DNS rule; selective rollback refused")
-        present = [rule for rule in current_rules if isinstance(rule, dict) and _global_port53_rule(rule)]
-        if present:
-            if len(present) != 1 or canonical(present[0]) != canonical(after_port53[0]):
-                raise IntegrationError("Global port-53 rule was modified after apply; refusing to delete it")
-            current_rules.remove(present[0])
-
-    # Do not remove an integration-created outbound if later user changes
-    # introduced additional routing/balancer dependencies on its selected tag.
-    if owned_dns:
-        owned_tag = owned_dns[0].get("tag")
-        remaining_rule_refs = [
-            index for index, rule in enumerate(current_rules)
-            if isinstance(rule, dict) and rule.get("outboundTag") == owned_tag
-        ]
-        remaining_balancer_refs = []
-        balancers = current_routing.get("balancers", [])
-        if isinstance(balancers, list):
-            for index, balancer in enumerate(balancers):
-                if not isinstance(balancer, dict):
-                    continue
-                selectors = balancer.get("selector", [])
-                if isinstance(selectors, str):
-                    selectors = [selectors]
-                fallback_tag = balancer.get("fallbackTag")
-                if (
-                    fallback_tag == owned_tag
-                    or (
-                        isinstance(selectors, list)
-                        and any(
-                            isinstance(selector, str) and owned_tag.startswith(selector)
-                            for selector in selectors
-                        )
-                    )
-                ):
-                    remaining_balancer_refs.append(index)
-        remaining_observatory_refs = []
-        for section_name in ("observatory", "burstObservatory"):
-            section = current_routing.get(section_name, result.get(section_name, {}))
-            if not isinstance(section, dict):
-                continue
-            selectors = section.get("subjectSelector", [])
-            if isinstance(selectors, str):
-                selectors = [selectors]
-            if isinstance(selectors, list) and any(
-                isinstance(selector, str) and owned_tag.startswith(selector)
-                for selector in selectors
-            ):
-                remaining_observatory_refs.append(section_name)
-
-        remaining_outbound_refs = []
-        for index, outbound in enumerate(current_outbounds):
-            if not isinstance(outbound, dict) or outbound.get("tag") == owned_tag:
-                continue
-            proxy_settings = outbound.get("proxySettings")
-            if isinstance(proxy_settings, dict) and proxy_settings.get("tag") == owned_tag:
-                remaining_outbound_refs.append(index)
-            stream_settings = outbound.get("streamSettings")
-            if isinstance(stream_settings, dict):
-                sockopt = stream_settings.get("sockopt")
-                if isinstance(sockopt, dict) and sockopt.get("dialerProxy") == owned_tag:
-                    remaining_outbound_refs.append(index)
-
-        if (
-            remaining_rule_refs
-            or remaining_balancer_refs
-            or remaining_observatory_refs
-            or remaining_outbound_refs
-        ):
-            raise IntegrationError(
-                f"Added DNS outbound {owned_tag} now has additional user references "
-                "(routing rules, balancers, observatory, or outbound chaining); "
-                "selective rollback refused to leave broken links"
+    outbound_index = {
+        item.get("tag"): item for item in original_outbounds
+        if isinstance(item.get("tag"), str)
+    }
+    for index, rule in enumerate(rules):
+        if not _global_port53_rule(rule):
+            continue
+        target = rule.get("outboundTag")
+        is_candidate = isinstance(target, str) and target in candidate_tags
+        balancer_tag = rule.get("balancerTag")
+        if not is_candidate and isinstance(balancer_tag, str):
+            selected, error = _resolve_balancer_dns_targets(
+                balancer_tag, balancers, outbound_index
             )
+            is_candidate = (
+                error is None and bool(selected)
+                and set(selected).issubset(candidate_tags)
+            )
+        if is_candidate:
+            result.route_indexes.append(index)
 
+    tag_counts = {}
+    for item in original_outbounds:
+        tag = item.get("tag")
+        if isinstance(tag, str):
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    ignored_routes = set(result.route_indexes)
+    for tag in sorted(candidate_tags):
+        if tag_counts.get(tag) != 1:
+            result.blockers.append(
+                f"DNS outbound tag {tag!r} is duplicated; it cannot be removed unambiguously."
+            )
+            continue
+        references = _outbound_reference_reasons(
+            original, tag, ignored_route_indexes=ignored_routes
+        )
+        if references:
+            result.blockers.append(
+                f"DNS outbound {tag!r} is still referenced by: {', '.join(references)}; it will be preserved."
+            )
+        else:
+            result.outbound_tags.append(tag)
+
+    dns = original.get("dns", {})
+    if dns is not None and not isinstance(dns, dict):
+        raise IntegrationError("dns must be an object")
+    servers = dns.get("servers", []) if isinstance(dns, dict) else []
+    if not isinstance(servers, list) or any(not isinstance(item, (dict, str)) for item in servers):
+        raise IntegrationError("dns.servers must be an array of objects or address strings")
+    endpoint_indexes = [
+        index for index, server in enumerate(servers)
+        if _server_endpoint(server) == ("127.0.0.1", 5355)
+    ]
+    general_indexes = [index for index in endpoint_indexes if _server_is_general(servers[index])]
+    for index in sorted(set(endpoint_indexes) - set(general_indexes)):
+        result.blockers.append(
+            f"dns.servers[{index}] targets 127.0.0.1:5355 but is scoped; it will be preserved."
+        )
+    if len(general_indexes) > 1:
+        result.blockers.append(
+            "Multiple general DNS server entries target 127.0.0.1:5355; ownership is ambiguous and all are preserved."
+        )
+    elif len(general_indexes) == 1:
+        index = general_indexes[0]
+        references = _dns_server_reference_reasons(original, servers[index])
+        if references:
+            result.blockers.append(
+                f"dns.servers[{index}] is still referenced by: {', '.join(references)}; it will be preserved."
+            )
+        else:
+            result.dns_server_indexes.append(index)
+
+    if not (result.route_indexes or result.outbound_tags or result.dns_server_indexes):
+        result.warnings.append("No unambiguous, removable permanent DNS integration objects were found.")
     return result
 
 
-def _snapshot_equal(a: dict, b: dict) -> bool:
-    return (
-        canonical(a.get("xraySetting")) == canonical(b.get("xraySetting"))
-        and a.get("outboundTestUrl") == b.get("outboundTestUrl")
-    )
+def print_remove_plan(plan: RemovePlan) -> None:
+    if plan.route_indexes:
+        print("Planned route removals:")
+        for index in plan.route_indexes:
+            print(f"  - routing.rules[{index}] (global TCP/UDP port 53 -> local DNS path)")
+    if plan.outbound_tags:
+        print("Planned outbound removals:")
+        for tag in plan.outbound_tags:
+            print(f"  - outbound {tag!r} (local DoH endpoint, no remaining references)")
+    if plan.dns_server_indexes:
+        print("Planned DNS server removals:")
+        for index in plan.dns_server_indexes:
+            print(f"  - dns.servers[{index}] (127.0.0.1:5355, not shared)")
+    if not (plan.route_indexes or plan.outbound_tags or plan.dns_server_indexes):
+        print("No safe permanent DNS integration objects are currently removable.")
+    for warning in plan.warnings:
+        print("  NOTE: " + warning)
+    for blocker in plan.blockers:
+        print("  KEEP: " + blocker)
 
 
-def command_check_or_plan(args, client: PanelAPI) -> int:
-    snapshot = client.get_snapshot()
-    plan = build_plan(snapshot["xraySetting"])
-    print("Source: LucX-UI panel API")
-    print("API capability: Xray settings read endpoint and response schema are supported.")
-    print("API capability: xraySetting and outboundTestUrl metadata were decoded.")
-    print("API update endpoint: not probed by a write in read-only mode; validate on staging before production apply.")
-    print("Mode: CHECK / READ-ONLY FROM ADAPTER")
-    if getattr(args, "base_url", None):
-        print("Panel URL was supplied explicitly; SQLite endpoint discovery was skipped.")
-    else:
-        print("Panel endpoint settings were read from SQLite in mode=ro; the database was not modified.")
-    print("Runtime Xray files are not opened.")
-    print_plan(plan)
-    return 2 if plan.blockers else 0
-
-
-def remove_verified_backup(path: Path) -> bool:
-    """Delete a backup only after the caller has verified apply or rollback."""
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        return False
-    except OSError:
-        raise IntegrationError(
-            "Verified operation completed, but its private backup could not be deleted; remove it manually"
-        ) from None
-    return True
-
-
-def inspect_temporary_leftovers(client: PanelAPI, backup_dir: Path) -> dict:
-    """Discover reserved self-test resources through panel APIs, never journal contents."""
-    inbounds = client.list_inbounds()
-    tunnels = []
-    errors = []
-    seen_ids = set()
-    for item in inbounds:
-        remark = item.get("remark")
-        if not isinstance(remark, str) or not remark.startswith(TUNNEL_REMARK_PREFIX):
-            continue
-        inbound_id = item.get("id")
-        port = item.get("port")
-        marker = remark[len(TUNNEL_REMARK_PREFIX):]
-        try:
-            if isinstance(inbound_id, bool) or not isinstance(inbound_id, int) or inbound_id <= 0:
-                raise IntegrationError("reserved Tunnel has no valid numeric ID")
-            if inbound_id in seen_ids:
-                raise IntegrationError("duplicate inbound ID in panel response")
-            seen_ids.add(inbound_id)
-            if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
-                raise IntegrationError("reserved Tunnel has an invalid port")
-            expected = build_temporary_tunnel(port, marker)
-            verify_temporary_tunnel([item], expected, inbound_id)
-            tunnels.append({"expected": expected, "inbound_id": inbound_id, "port": port})
-        except IntegrationError as exc:
-            errors.append(f"Tunnel marker {remark!r} was not removed because its identity could not be verified: {exc}")
-
-    snapshot = client.get_snapshot()
-    outbounds = snapshot["xraySetting"].get("outbounds", [])
-    direct_rules_present = False
-    if isinstance(outbounds, list):
-        for outbound in outbounds:
-            if not isinstance(outbound, dict) or outbound.get("tag") != "direct":
-                continue
-            settings = outbound.get("settings")
-            if isinstance(settings, dict) and isinstance(settings.get("finalRules", []), list):
-                if any(
-                    isinstance(rule, dict) and canonical(rule) == canonical(TEMP_DNS_FINAL_RULE)
-                    for rule in settings.get("finalRules", [])
-                ):
-                    direct_rules_present = True
-                    break
-    if direct_rules_present:
-        try:
-            _direct_freedom_outbound(snapshot["xraySetting"])
-        except IntegrationError as exc:
-            errors.append(f"Temporary finalRule exists but its owning direct outbound is ambiguous: {exc}")
-
-    recovery_dir = backup_dir / "recovery"
-    journal_paths = []
-    journal_records = []
-    try:
-        info = recovery_dir.lstat()
-    except FileNotFoundError:
-        info = None
-    except OSError:
-        errors.append("Could not inspect the temporary Tunnel recovery directory")
-        info = None
-    if info is not None:
-        if (
-            not stat.S_ISDIR(info.st_mode)
-            or info.st_uid != os.geteuid()
-            or stat.S_IMODE(info.st_mode) != 0o700
-        ):
-            errors.append(
-                "Temporary Tunnel recovery directory must be a private directory owned by the current user with mode 0700"
-            )
-        else:
-            for path in sorted(recovery_dir.glob("lucx-doh-selftest-*.json")):
-                try:
-                    file_info = path.lstat()
-                    if (
-                        not stat.S_ISREG(file_info.st_mode)
-                        or file_info.st_uid != os.geteuid()
-                        or stat.S_IMODE(file_info.st_mode) != 0o600
-                    ):
-                        raise IntegrationError("recovery marker is not a private regular file owned by the current user")
-                    payload = _load_recovery_journal(path)
-                    expected_name = (
-                        "lucx-doh-selftest-"
-                        + payload["inbound"]["remark"].removeprefix(TUNNEL_REMARK_PREFIX)
-                        + ".json"
-                    )
-                    if path.name != expected_name:
-                        raise IntegrationError("recovery journal filename does not match its Tunnel identity")
-                    journal_paths.append(path)
-                    journal_records.append({"path": path, "payload": payload})
-                except (OSError, IntegrationError) as exc:
-                    errors.append(f"Recovery marker {path.name!r} cannot be safely used: {exc}")
-
-    if direct_rules_present and not journal_records:
-        errors.append(
-            "Temporary DNS finalRule exists without a valid recovery journal; "
-            "refusing to delete it without the original Freedom finalRules snapshot"
-        )
-    if direct_rules_present and len(journal_records) > 1:
-        errors.append(
-            "Multiple recovery journals claim the temporary DNS finalRule; "
-            "manual review is required before cleanup"
-        )
-
-    return {
-        "tunnels": tunnels,
-        "final_rule_present": direct_rules_present,
-        "journal_paths": journal_paths,
-        "journal_records": journal_records,
-        "errors": errors,
-    }
-
-
-def cleanup_temporary_leftovers(client: PanelAPI, backup_dir: Path, discovered: dict) -> None:
-    """Independently remove verified reserved resources, then clear opaque journal markers."""
-    errors = list(discovered.get("errors", []))
-
-    for resource in discovered.get("tunnels", []):
-        expected = resource["expected"]
-        inbound_id = resource["inbound_id"]
-        port = resource["port"]
-        try:
-            removed = cleanup_temporary_tunnel(client, expected, inbound_id)
-            if removed:
-                wait_for_tunnel_port_closed(port)
-        except Exception as exc:
-            errors.append(f"Tunnel {expected['remark']}: {exc}")
-
-    if discovered.get("final_rule_present"):
-        records = discovered.get("journal_records", [])
-        if len(records) != 1:
-            errors.append(
-                "Temporary DNS finalRule cannot be safely cleaned without exactly one trusted recovery journal"
-            )
-        else:
-            payload = records[0]["payload"]
-            try:
-                cleanup_temporary_dns_final_rule(
-                    client,
-                    payload["final_rule"],
-                    payload["original_final_rules"],
-                )
-            except Exception as exc:
-                errors.append(f"temporary finalRule: {exc}")
-
-    # Verify both resource classes independently, even when one cleanup failed.
-    try:
-        remaining = [
-            item for item in client.list_inbounds()
-            if isinstance(item.get("remark"), str)
-            and item["remark"].startswith(TUNNEL_REMARK_PREFIX)
-        ]
-        if remaining:
-            errors.append("One or more reserved temporary Tunnel inbounds remain after cleanup")
-    except Exception as exc:
-        errors.append(f"Could not verify temporary Tunnel absence: {exc}")
-
-    try:
-        current = client.get_snapshot()["xraySetting"]
-        outbounds = current.get("outbounds", [])
-        still_present = False
-        if isinstance(outbounds, list):
-            for outbound in outbounds:
-                if not isinstance(outbound, dict) or outbound.get("tag") != "direct":
-                    continue
-                settings = outbound.get("settings")
-                final_rules = settings.get("finalRules", []) if isinstance(settings, dict) else []
-                if isinstance(final_rules, list) and any(
-                    isinstance(rule, dict) and canonical(rule) == canonical(TEMP_DNS_FINAL_RULE)
-                    for rule in final_rules
-                ):
-                    still_present = True
-        if still_present:
-            errors.append("Temporary DNS finalRule remains after cleanup")
-    except Exception as exc:
-        errors.append(f"Could not verify temporary finalRule absence: {exc}")
-
-    if errors:
-        raise IntegrationError("; ".join(errors))
-
-    # Remove recovery journals only after the live API confirms both temporary
-    # resource classes are absent and every cleanup operation succeeded.
-    for path in discovered.get("journal_paths", []):
-        try:
-            info = path.lstat()
-            if (
-                stat.S_ISREG(info.st_mode)
-                and info.st_uid == os.geteuid()
-                and stat.S_IMODE(info.st_mode) == 0o600
-            ):
-                path.unlink()
-            else:
-                raise IntegrationError("recovery marker permissions changed during cleanup")
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            raise IntegrationError(f"Resources were cleaned but recovery marker {path.name!r} could not be removed: {exc}") from None
-
-    print(
-        "PASS: pre-existing temporary Tunnel/finalRule resources were checked through the panel API; "
-        "verified leftovers and opaque recovery markers were cleaned."
-    )
-
-
-def command_create_manual_tunnel(client: PanelAPI, backup_dir: Path) -> int:
-    """Create a verified loopback DNS Tunnel and retain it for manual inspection."""
-    snapshot = client.get_snapshot()
-    plan = build_plan(snapshot["xraySetting"])
-    print_plan(plan)
-    if plan.blockers:
-        return 2
-    if plan.changes:
-        raise IntegrationError(
-            "Permanent DNS integration is incomplete; run apply first. "
-            "create-test never changes permanent DNS settings."
-        )
-
-    leftovers = inspect_temporary_leftovers(client, backup_dir)
-    if leftovers["errors"]:
-        raise IntegrationError(
-            "Existing temporary Tunnel resources cannot be safely inspected: "
-            + "; ".join(leftovers["errors"])
-        )
-    if leftovers["tunnels"] or leftovers["final_rule_present"] or leftovers["journal_paths"]:
-        journals = ", ".join(str(path) for path in leftovers["journal_paths"])
-        detail = f" Recovery journal(s): {journals}." if journals else ""
-        raise IntegrationError(
-            "Temporary Tunnel/finalRule resources or recovery markers already exist. "
-            "Clean them up before creating another manual test." + detail
-        )
-
-    remaining = list(TUNNEL_PORT_CANDIDATES)
-    for attempt in range(3):
-        inbounds = client.list_inbounds()
-        port = choose_temporary_tunnel_port(inbounds, candidates=remaining)
-        remaining.remove(port)
-        expected = build_temporary_tunnel(port)
-        original_final_rules = preflight_temporary_dns_final_rule(client)
-        journal = _write_recovery_journal(
-            backup_dir, expected, None, "create-pending",
-            original_final_rules=original_final_rules,
-            final_rule=TEMP_DNS_FINAL_RULE,
-        )
-        inbound_id = None
-        add_error = None
-        final_rule_attempted = [False]
-        try:
-            journal = _write_recovery_journal(
-                backup_dir, expected, None, "final-rule-create-pending",
-                original_final_rules=original_final_rules,
-                final_rule=TEMP_DNS_FINAL_RULE,
-            )
-            install_temporary_dns_final_rule(
-                client, original_final_rules, attempt_state=final_rule_attempted
-            )
-            journal = _write_recovery_journal(
-                backup_dir, expected, None, "final-rule-created",
-                original_final_rules=original_final_rules,
-                final_rule=TEMP_DNS_FINAL_RULE,
-            )
-            try:
-                created = client.add_inbound(expected)
-            except IntegrationError as exc:
-                add_error = exc
-                raise
-            inbound_id = created["id"]
-            journal = _write_recovery_journal(
-                backup_dir, expected, inbound_id, "created",
-                original_final_rules=original_final_rules,
-                final_rule=TEMP_DNS_FINAL_RULE,
-            )
-            current = client.list_inbounds()
-            verify_temporary_tunnel(current, expected, inbound_id)
-            wait_for_tunnel_listeners(port)
-            journal = _write_recovery_journal(
-                backup_dir, expected, inbound_id, "manual-inspection-ready",
-                original_final_rules=original_final_rules,
-                final_rule=TEMP_DNS_FINAL_RULE,
-            )
-        except Exception as exc:
-            cleanup_errors = []
-            try:
-                removed = cleanup_temporary_tunnel(client, expected, inbound_id)
-                if inbound_id is not None or removed:
-                    wait_for_tunnel_port_closed(port)
-            except Exception as cleanup_exc:
-                cleanup_errors.append("Tunnel: " + str(cleanup_exc))
-            if final_rule_attempted[0]:
-                try:
-                    cleanup_temporary_dns_final_rule(
-                        client, TEMP_DNS_FINAL_RULE, original_final_rules
-                    )
-                except Exception as cleanup_exc:
-                    cleanup_errors.append("finalRule: " + str(cleanup_exc))
-            if cleanup_errors:
-                try:
-                    journal = _write_recovery_journal(
-                        backup_dir, expected, inbound_id, "cleanup-required",
-                        original_final_rules=original_final_rules,
-                        final_rule=TEMP_DNS_FINAL_RULE,
-                    )
-                except Exception:
-                    pass
-                raise IntegrationError(
-                    f"Manual Tunnel creation failed and cleanup needs recovery. "
-                    f"Journal: {journal}. Details: {'; '.join(cleanup_errors)}"
-                ) from None
-            journal.unlink(missing_ok=True)
-            if add_error is not None and not _port_is_free_on_loopback(port) and attempt < 2:
-                print(
-                    f"NOTICE: port {port} was claimed during Tunnel creation; "
-                    "retrying with another free port."
-                )
-                continue
-            if isinstance(exc, IntegrationError):
-                raise
-            raise IntegrationError(
-                "Manual Tunnel creation failed; temporary resources were cleaned. "
-                f"Underlying error: {_safe_exception_summary(exc)}"
-            ) from None
-
-        print(f"PASS: manual DNS Tunnel is active on 127.0.0.1:{port} (TCP+UDP).")
-        print("The temporary Tunnel and finalRule are intentionally retained for manual testing.")
-        print(
-            "UDP test: "
-            f"dig @127.0.0.1 -p {port} example.com A +time=3 +tries=1"
-        )
-        print(
-            "TCP test: "
-            f"dig +tcp @127.0.0.1 -p {port} example.com A +time=3 +tries=1"
-        )
-        print("RECOVERY JOURNAL:", journal)
-        print(
-            "Cleanup command: "
-            f"sudo python3 {Path(__file__).resolve()} cleanup-test "
-            f"--recovery-journal {journal} --approve-restart"
-        )
-        return 0
-    raise IntegrationError("Manual Tunnel creation repeatedly lost a port-allocation race")
-
-
-def command_apply(
-    args, client: PanelAPI, *, perform_preflight: bool = False
-) -> int:
-    backup_dir = Path(args.backup_dir).expanduser()
-
-    # First discover and clean only leftovers bearing our reserved identity.
-    # No recovery journal contents or system logs are read for this decision.
-    leftovers = inspect_temporary_leftovers(client, backup_dir)
-    has_leftovers = bool(
-        leftovers["tunnels"] or leftovers["final_rule_present"]
-    )
-    cleanup_approved = False
-    if has_leftovers:
-        confirm_restart("apply", args.approve_restart)
-        cleanup_approved = True
-    try:
-        cleanup_temporary_leftovers(client, backup_dir, leftovers)
-    except IntegrationError as exc:
-        print("ERROR: previous temporary self-test resources could not be safely cleaned.")
-        print("No permanent DNS integration changes were attempted.")
-        print("Reason:", exc)
-        return 2
-
-    # A stale Tunnel/finalRule must be cleaned even if the plugin is currently
-    # unhealthy. Only after cleanup do we enforce the normal apply preflight.
-    if perform_preflight:
-        check_plugin_health(args.plugin_service, args.plugin_status_url, args.plugin_port)
-        check_xray_compatibility(args.xray_bin)
-
-    snapshot = client.get_snapshot()
-    plan = build_plan(snapshot["xraySetting"])
-    print_plan(plan)
-    if plan.blockers:
-        return 2
-    if not plan.changes:
-        print("No permanent Xray settings update is required.")
-        if not cleanup_approved:
-            confirm_restart("apply", args.approve_restart)
-        try:
-            run_temporary_tunnel_test(
-                client,
-                getattr(args, "plugin_status_url", DEFAULT_PLUGIN_STATUS_URL),
-                backup_dir,
-            )
-        except IntegrationError as exc:
-            print("ERROR: existing DNS integration failed the end-to-end Tunnel test.")
-            print("No permanent Xray settings update was required.")
-            print("Reason:", exc)
-            return 2
-        return 0
-
-    if not cleanup_approved:
-        confirm_restart("apply", args.approve_restart)
-    backup_path = create_backup(snapshot, backup_dir)
-    print("Private backup created (mode 0600):", backup_path)
-
+def _apply_panel_update(client: PanelAPI, before: dict, config: dict, label: str) -> dict:
+    """Apply one live-state delta and verify it by a fresh panel API read."""
+    expected = panel_normalize_dns_allow_rules(config)
     api_error = None
     try:
-        client.update(plan.proposed, snapshot["outboundTestUrl"])
+        client.update(config, before["outboundTestUrl"])
     except IntegrationError as exc:
-        api_error = str(exc)
-
-    try:
-        after = client.get_snapshot()
-    except IntegrationError:
-        print("ERROR: read-back verification could not be completed.")
-        print("The pre-update backup is preserved; do not retry blindly.")
-        print("Backup:", backup_path)
-        if api_error:
-            print("API update result: " + api_error)
-        return 2
-
-    backup_data = load_backup(backup_path)
-    backup_data["after"] = after
-    backup_data["state"] = "update-attempted"
-    _write_private_json(backup_path, backup_data)
-
-    expected = plan.expected_saved
+        api_error = exc
+    after = client.read_state()
     if canonical(after["xraySetting"]) != canonical(expected):
-        print("ERROR: panel read-back differs from the predicted additive result.")
-        print("No automatic rollback was attempted.")
-        print("Review the panel state; guarded rollback is available only while the current template still matches the saved after-snapshot.")
-        print("Backup:", backup_path)
+        message = f"{label} read-back does not match the planned live-state change."
         if api_error:
-            print("API update result: " + api_error)
-        return 2
-
-    backup_data["state"] = "applied-and-verified"
-    _write_private_json(backup_path, backup_data)
+            message += " The panel update also reported an error."
+        message += " No old config was restored; invoke Integrate or Remove again to re-plan from current state."
+        raise IntegrationError(message)
     if api_error:
-        print("ERROR: panel returned an update error although read-back matches the proposed configuration.")
-        print("Check panel/Xray status before taking further action.")
-        print("Backup:", backup_path)
+        print(f"NOTICE: {label} returned an API error, but live read-back confirms the requested state.")
+    else:
+        print(f"PASS: {label} verified by panel API read-back.")
+    return after
+
+
+def command_integrate(args, client: PanelAPI) -> int:
+    state = client.read_state()
+    plan = build_plan(state["xraySetting"])
+    leftovers = discover_temporary_leftovers(client)
+    print("Directive: INTEGRATE")
+    print_plan(plan)
+    if leftovers:
+        print(f"Temporary test Tunnels to reconcile first: {len(leftovers)}")
+    if args.plan_only:
+        print("Read-only plan: no panel mutation was sent.")
+        return 2 if plan.blockers else 0
+    if plan.blockers:
         return 2
+    confirm_restart("integrate", args.approve_restart)
+    cleanup_temporary_leftovers(client)
 
-    print("PASS: panel API read-back matches the predicted additive configuration.")
-    print("Existing outbounds, DNS entries, and user routing rules were preserved by the predicted transformation.")
-    print("Persistent rollback snapshot retained (mode 0600):", backup_path)
-    print("Use the rollback action with this backup path to undo the integration later.")
-    print("Rollback removes only unchanged DNS integration objects owned by this apply; unrelated later panel changes are preserved.")
-    print("Check Xray status in LucX-UI; a running core may have been fully restarted by the panel.")
-
-    try:
-        run_temporary_tunnel_test(
-            client,
-            getattr(args, "plugin_status_url", DEFAULT_PLUGIN_STATUS_URL),
-            Path(args.backup_dir).expanduser(),
+    state = client.read_state()
+    plan = build_plan(state["xraySetting"])
+    print_plan(plan)
+    if plan.blockers:
+        return 2
+    if canonical(state["xraySetting"]) != canonical(plan.expected_saved):
+        state = _apply_panel_update(
+            client, state, plan.proposed, "permanent DNS integration"
         )
-    except IntegrationError as exc:
-        print("ERROR: permanent DNS integration was applied, but the end-to-end Tunnel test did not pass.")
-        print("The persistent rollback snapshot is retained; no automatic rollback was attempted.")
-        print("Reason:", exc)
-        print("Backup:", backup_path)
-        return 2
-    return 0
+    else:
+        print("PASS: permanent DNS integration already matches the desired live state.")
 
-
-def command_rollback(args, client: PanelAPI) -> int:
-    backup_path = Path(args.backup).expanduser()
-    backup_data = load_backup(backup_path)
-    after = backup_data.get("after")
-    if not isinstance(after, dict):
-        raise IntegrationError("Backup has no verified after-snapshot; selective rollback is unavailable")
-
-    before = backup_data["before"]
-    current = client.get_snapshot()
-    rollback_config = build_selective_rollback_config(
-        current["xraySetting"], before["xraySetting"], after["xraySetting"]
+    run_temporary_tunnel_test(
+        client, getattr(args, "plugin_status_url", DEFAULT_PLUGIN_STATUS_URL)
     )
-    expected = panel_normalize_dns_allow_rules(rollback_config)
-
-    # Keep current panel metadata and all unrelated settings; only the three
-    # DNS objects owned by this apply are removed.
-    confirm_restart("rollback", args.approve_restart)
-    try:
-        client.update(rollback_config, current["outboundTestUrl"])
-    except IntegrationError as exc:
-        print("ERROR: panel reported a selective rollback update error: " + str(exc))
-        print("The backup remains available:", backup_path)
-        return 2
-
-    restored = client.get_snapshot()
-    if canonical(restored["xraySetting"]) != canonical(expected):
-        print("ERROR: selective rollback read-back differs from the expected panel-normalized configuration.")
-        print("No further update was sent. Backup:", backup_path)
-        return 2
-
-    print("PASS: selective rollback verified through the panel API.")
-    print("Only the unchanged DNS outbound, 127.0.0.1:5355 DNS server, and global port-53 rule introduced by this apply were removed.")
-    print("Unrelated current panel settings and metadata were preserved.")
-    try:
-        remove_verified_backup(backup_path)
-        print("Temporary rollback backup deleted after successful restoration.")
-    except IntegrationError as exc:
-        print("WARNING:", exc)
-        print("Backup retained at:", backup_path)
-    print("The panel may have fully restarted Xray while applying selective rollback.")
+    print("PASS: Integrate directive completed from the current live panel state.")
     return 0
 
 
+def command_remove(args, client: PanelAPI) -> int:
+    state = client.read_state()
+    plan = build_remove_plan(state["xraySetting"])
+    leftovers = discover_temporary_leftovers(client)
+    print("Directive: REMOVE")
+    print_remove_plan(plan)
+    if leftovers:
+        print(f"Temporary test Tunnels to reconcile before removal: {len(leftovers)}")
+    if args.plan_only:
+        print("Read-only plan: no panel mutation was sent.")
+        return 2 if plan.blockers else 0
+    has_changes = bool(
+        plan.route_indexes or plan.outbound_tags or plan.dns_server_indexes or leftovers
+    )
+    if not has_changes:
+        print("Remove directive found no safe changes.")
+        return 2 if plan.blockers else 0
+    confirm_restart("remove", args.approve_restart)
+    cleanup_temporary_leftovers(client)
+
+    state = client.read_state()
+    plan = build_remove_plan(state["xraySetting"])
+    if plan.route_indexes:
+        config = copy.deepcopy(state["xraySetting"])
+        rules = object_list(config.setdefault("routing", {}), "rules", "routing.rules")
+        for index in sorted(plan.route_indexes, reverse=True):
+            if index >= len(rules):
+                raise IntegrationError("Routing rules changed after the Remove plan; re-plan before deletion")
+            del rules[index]
+        state = _apply_panel_update(client, state, config, "integration routing-rule removal")
+
+    state = client.read_state()
+    plan = build_remove_plan(state["xraySetting"])
+    if plan.outbound_tags:
+        config = copy.deepcopy(state["xraySetting"])
+        outbounds = object_list(config, "outbounds", "outbounds")
+        for tag in plan.outbound_tags:
+            matches = [item for item in outbounds if item.get("tag") == tag]
+            if len(matches) != 1 or not _outbound_matches_dns_endpoint(matches[0]):
+                raise IntegrationError(
+                    f"DNS outbound {tag!r} changed after the Remove plan; it was not deleted."
+                )
+            references = _outbound_reference_reasons(config, tag)
+            if references:
+                raise IntegrationError(
+                    f"DNS outbound {tag!r} gained references after planning: {', '.join(references)}"
+                )
+            outbounds.remove(matches[0])
+        state = _apply_panel_update(client, state, config, "unreferenced DNS outbound removal")
+
+    state = client.read_state()
+    plan = build_remove_plan(state["xraySetting"])
+    if plan.dns_server_indexes:
+        config = copy.deepcopy(state["xraySetting"])
+        dns = config.get("dns")
+        if not isinstance(dns, dict):
+            raise IntegrationError("DNS settings changed after the Remove plan")
+        servers = object_list(dns, "servers", "dns.servers")
+        for index in sorted(plan.dns_server_indexes, reverse=True):
+            if index >= len(servers) or _server_endpoint(servers[index]) != ("127.0.0.1", 5355):
+                raise IntegrationError("DNS servers changed after the Remove plan; re-plan before deletion")
+            if not _server_is_general(servers[index]) or _dns_server_reference_reasons(config, servers[index]):
+                raise IntegrationError("The local DNS server became scoped or shared; it was not deleted.")
+            del servers[index]
+        state = _apply_panel_update(client, state, config, "unshared DNS server removal")
+
+    final_plan = build_remove_plan(client.read_state()["xraySetting"])
+    print("Final Remove assessment:")
+    print_remove_plan(final_plan)
+    print("PASS: Remove directive was recalculated from current live panel state; no historical configuration was restored.")
+    return 2 if final_plan.blockers else 0
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Safe additive DoH integration for LucX-UI using its panel API"
+        description="Reconcile LucX-UI DoH integration from live panel state"
     )
+    parser.add_argument("--base-url", help="Panel URL; auto-detected from local SQLite when omitted")
+    parser.add_argument("--panel-db", help="Custom LucX-UI SQLite path for read-only URL discovery")
     parser.add_argument(
-        "--base-url",
-        help="Panel origin plus any web base path; auto-detected from local SQLite when omitted",
-    )
-    parser.add_argument(
-        "--panel-db",
-        help="Custom LucX-UI SQLite database path for read-only URL discovery (default: /etc/x-ui/x-ui.db)",
-    )
-    parser.add_argument(
-        "--panel-auth-file",
-        default=str(DEFAULT_PANEL_AUTH_FILE),
-        help="Root-only local credential store used only when the installer token file is unavailable",
+        "--panel-auth-file", default=str(DEFAULT_PANEL_AUTH_FILE),
+        help="Root-only local credential store",
     )
     parser.add_argument("--timeout", type=float, default=15.0)
-    parser.add_argument("--plugin-service", default=DEFAULT_PLUGIN_SERVICE,
-                        help="systemd unit for DoH Health Monitor")
-    parser.add_argument("--plugin-status-url", default=DEFAULT_PLUGIN_STATUS_URL,
-                        help="local DoH Health Monitor status endpoint")
-    parser.add_argument("--plugin-port", type=int, default=DEFAULT_PLUGIN_PORT,
-                        help="local DoH Health Monitor TCP/UDP listener port")
-    parser.add_argument("--xray-bin", help="Path to local Xray executable (auto-detected when omitted)")
-    # Kept as a compatibility alias for older deployment commands; version is informational.
-    parser.add_argument("--allow-untested-xray", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--allow-insecure-http", action="store_true", help="Allow non-loopback HTTP (not recommended)")
+    parser.add_argument("--plugin-service", default=DEFAULT_PLUGIN_SERVICE)
+    parser.add_argument("--plugin-status-url", default=DEFAULT_PLUGIN_STATUS_URL)
+    parser.add_argument("--plugin-port", type=int, default=DEFAULT_PLUGIN_PORT)
+    parser.add_argument("--xray-bin", help="Path to local Xray executable")
+    parser.add_argument("--allow-insecure-http", action="store_true")
     parser.add_argument(
-        "--tls-mode",
-        choices=("auto", "http", "ip", "domain"),
-        default="auto",
-        help="TLS identity mode for explicit/overridden endpoints: auto, http, ip, or domain",
+        "--tls-mode", choices=("auto", "http", "ip", "domain"), default="auto",
+        help="TLS identity mode for explicit/overridden endpoints",
+    )
+    parser.add_argument("--tls-name", help="Expected certificate IP or DNS name")
+    parser.add_argument(
+        "--approve-restart", action="store_true",
+        help="Explicitly approve panel API changes that may fully restart Xray",
     )
     parser.add_argument(
-        "--tls-name",
-        help="Expected certificate IP (for --tls-mode ip) or DNS name (for --tls-mode domain)",
+        "--plan-only", action="store_true",
+        help="Print the selected directive's live-state plan without panel writes",
     )
-    parser.add_argument(
-        "--backup-dir",
-        default=str(_default_backup_dir()),
-        help="Local directory for 0600 backups (default: user state directory)",
-    )
-    parser.add_argument(
-        "--approve-restart",
-        action="store_true",
-        help="Explicitly approve the full Xray restart that the panel API may perform",
-    )
-    parser.add_argument("action", choices=("check", "plan", "apply", "rollback", "create-test", "cleanup-test"))
-    parser.add_argument("--recovery-journal", help="Private temporary Tunnel recovery journal for cleanup-test")
-    parser.add_argument("--backup", help="Backup file required for rollback")
+    parser.add_argument("action", choices=("integrate", "remove"))
     args = parser.parse_args()
-
-    if args.action == "rollback" and not args.backup:
-        parser.error("rollback requires --backup")
-    if args.action == "cleanup-test" and not args.recovery_journal:
-        parser.error("cleanup-test requires --recovery-journal")
-    if args.action != "cleanup-test" and args.recovery_journal:
-        parser.error("--recovery-journal is only valid with cleanup-test")
 
     try:
         if os.geteuid() != 0:
@@ -3146,12 +2604,11 @@ def main() -> int:
         )
         if args.base_url and urlsplit(args.base_url).scheme == "https" and args.tls_mode == "auto":
             raise IntegrationError(
-                "An explicit HTTPS --base-url requires --tls-mode ip/domain and --tls-name; "
-                "certificate identity cannot be inferred from a loopback URL"
+                "An explicit HTTPS --base-url requires --tls-mode ip/domain and --tls-name"
             )
         if args.tls_mode == "http":
             if urlsplit(endpoint.base_url).scheme != "http" or args.tls_name:
-                raise IntegrationError("--tls-mode http requires an HTTP --base-url and no --tls-name")
+                raise IntegrationError("--tls-mode http requires an HTTP URL and no --tls-name")
             endpoint = PanelEndpoint(endpoint.base_url, endpoint.host_header)
         elif args.tls_mode in {"ip", "domain"}:
             if urlsplit(endpoint.base_url).scheme != "https" or not args.tls_name:
@@ -3161,9 +2618,7 @@ def main() -> int:
                     expected_ip = str(ipaddress.ip_address(args.tls_name))
                 except ValueError:
                     raise IntegrationError("--tls-name must be an IP address for --tls-mode ip") from None
-                endpoint = PanelEndpoint(
-                    endpoint.base_url, endpoint.host_header, "localhost", expected_ip
-                )
+                endpoint = PanelEndpoint(endpoint.base_url, endpoint.host_header, "localhost", expected_ip)
             else:
                 parsed_name = urlsplit("//" + args.tls_name)
                 try:
@@ -3190,6 +2645,7 @@ def main() -> int:
                 )
         elif args.tls_name:
             raise IntegrationError("--tls-name requires --tls-mode ip or domain")
+
         if not panel_api_is_local(endpoint.base_url):
             raise IntegrationError("Panel API URL must use localhost/loopback; run the adapter on the target VPS")
         parsed_endpoint = urlsplit(endpoint.base_url)
@@ -3200,130 +2656,31 @@ def main() -> int:
         )
         if endpoint.host_header:
             print("Panel domain validation: configured Host header and TLS SNI will be used.")
-        if args.action not in {"cleanup-test", "apply"}:
+
+        if args.action == "integrate" and not args.plan_only:
             check_plugin_health(args.plugin_service, args.plugin_status_url, args.plugin_port)
-            check_xray_compatibility(args.xray_bin)
+        check_xray_compatibility(args.xray_bin)
+
         token = resolve_panel_api_token(Path(args.panel_auth_file))
         client = PanelAPI(
-            endpoint.base_url,
-            token,
-            timeout=args.timeout,
+            endpoint.base_url, token, timeout=args.timeout,
             allow_insecure_http=args.allow_insecure_http,
             host_header=endpoint.host_header,
             tls_server_name=endpoint.tls_server_name,
             tls_verify_ip=endpoint.tls_verify_ip,
         )
-        if args.action in {"check", "plan"}:
-            return command_check_or_plan(args, client)
-        if args.action == "apply":
-            return command_apply(args, client, perform_preflight=True)
-        if args.action == "create-test":
-            confirm_restart("create-test", args.approve_restart)
-            return command_create_manual_tunnel(client, Path(args.backup_dir).expanduser())
-        if args.action == "cleanup-test":
-            journal_path = Path(args.recovery_journal).expanduser()
-            journal = _load_recovery_journal(journal_path)
-            inbound_id = journal.get("inbound_id")
-            before_cleanup = client.list_inbounds()
-            if inbound_id is not None:
-                resource_present = any(
-                    isinstance(item, dict) and item.get("id") == inbound_id
-                    for item in before_cleanup
-                )
-            else:
-                resource_present = any(
-                    isinstance(item, dict) and item.get("remark") == journal["inbound"]["remark"]
-                    for item in before_cleanup
-                )
-            final_rule = journal.get("final_rule")
-            rule_present = False
-            if final_rule is not None:
-                current_snapshot = client.get_snapshot()
-                current_direct = _direct_freedom_outbound(current_snapshot["xraySetting"])
-                current_final_rules = current_direct["settings"].get("finalRules", [])
-                rule_present = isinstance(current_final_rules, list) and any(
-                    isinstance(item, dict)
-                    and canonical(item) == canonical(final_rule)
-                    for item in current_final_rules
-                )
-            if resource_present or rule_present:
-                confirm_restart("cleanup", args.approve_restart)
-            cleanup_errors = []
-            try:
-                removed = cleanup_temporary_tunnel(client, journal["inbound"], inbound_id)
-                if inbound_id is not None or removed:
-                    wait_for_tunnel_port_closed(journal["inbound"]["port"])
-            except Exception as exc:
-                cleanup_errors.append("Tunnel: " + str(exc))
-
-            # Attempt both resource classes independently. A failure deleting
-            # the inbound must not skip removal of this run's owned finalRule.
-            if final_rule is not None:
-                try:
-                    cleanup_temporary_dns_final_rule(
-                        client, final_rule, journal["original_final_rules"]
-                    )
-                except Exception as exc:
-                    cleanup_errors.append("finalRule: " + str(exc))
-
-            try:
-                remaining_inbounds = [
-                    item for item in client.list_inbounds()
-                    if isinstance(item, dict)
-                    and (
-                        item.get("remark") == journal["inbound"]["remark"]
-                        or (
-                            inbound_id is not None
-                            and item.get("id") == inbound_id
-                        )
-                    )
-                ]
-                if remaining_inbounds:
-                    cleanup_errors.append("temporary Tunnel inbound remains after cleanup")
-            except Exception as exc:
-                cleanup_errors.append("Tunnel read-back: " + str(exc))
-
-            try:
-                current = client.get_snapshot()["xraySetting"]
-                direct = _direct_freedom_outbound(current)
-                final_rules = direct["settings"].get("finalRules", [])
-                if (
-                    not isinstance(final_rules, list)
-                    or any(
-                        isinstance(item, dict)
-                        and canonical(item) == canonical(TEMP_DNS_FINAL_RULE)
-                        for item in final_rules
-                    )
-                ):
-                    cleanup_errors.append("temporary DNS finalRule remains after cleanup")
-                elif not _is_subsequence(journal["original_final_rules"], final_rules):
-                    cleanup_errors.append(
-                        "original Freedom finalRules changed during cleanup; manual review required"
-                    )
-            except Exception as exc:
-                cleanup_errors.append("finalRule read-back: " + str(exc))
-
-            if cleanup_errors:
-                raise IntegrationError(
-                    "Temporary Tunnel cleanup incomplete; recovery journal retained at "
-                    f"{journal_path}. Details: {'; '.join(cleanup_errors)}"
-                )
-            journal_path.unlink(missing_ok=True)
-            print("PASS: temporary Tunnel inbound and 127.0.0.1:5355 TCP/UDP finalRule are absent; original finalRules preserved.")
-            print("PASS: recovery journal removed after both cleanup checks.")
-            return 0
-        return command_rollback(args, client)
+        return command_integrate(args, client) if args.action == "integrate" else command_remove(args, client)
     except IntegrationError as exc:
         print("ERROR:", exc, file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         print(
-            "\nInterrupted. If a temporary Tunnel was being tested, its finally cleanup was attempted; "
-            "inspect any recovery journal before retrying.",
+            "
+Interrupted. No old configuration will be restored. Invoke Integrate or Remove again "
+            "to build a fresh plan from current panel state.",
             file=sys.stderr,
         )
         return 130
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
