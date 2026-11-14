@@ -1923,13 +1923,20 @@ def _diagnostic_external_use_reasons(config: dict, resources: list[dict], inboun
     direct_refs = _outbound_reference_reasons(config, "direct")
     for ref in direct_refs:
         if not ref.startswith("routing.rules["):
+            # Non-route uses are not readily attributable to one destination;
+            # preserve the rule conservatively when such a use exists.
             reasons["final_rule"].append(ref)
     for index, rule in enumerate(rules):
-        if not isinstance(rule, dict) or "direct" not in _tag_list(rule.get("outboundTag")):
+        if (
+            not isinstance(rule, dict)
+            or "direct" not in _tag_list(rule.get("outboundTag"))
+        ):
             continue
-        # No routing rule is part of the diagnostic resource plan. Any
-        # route selecting direct is therefore an external consumer.
-        reasons["final_rule"].append(f"routing.rules[{index}].outboundTag")
+        # A route is an external consumer of this specific finalRule only when
+        # its destination selectors may include the rule's 127.0.0.1:5355
+        # TCP/UDP endpoint. Merely selecting the direct outbound is not enough.
+        if _routing_rule_may_use_temporary_dns_final_rule(rule):
+            reasons["final_rule"].append(f"routing.rules[{index}].outboundTag")
 
     outbounds = object_list(config, "outbounds", "outbounds")
     if outbounds and outbounds[0].get("tag") == "direct":
@@ -2203,6 +2210,60 @@ def _tag_list(value: object) -> list[str]:
     if isinstance(value, list):
         return [item for item in value if isinstance(item, str) and item]
     return []
+
+
+def _port_selector_may_match(value: object, wanted: int) -> bool:
+    """Return whether a routing port selector may include one destination port."""
+    if isinstance(value, list):
+        return not value or any(_port_selector_may_match(item, wanted) for item in value)
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, int):
+        return value == wanted
+    if not isinstance(value, str):
+        return True
+    if _port_contains(value, wanted):
+        return True
+    # A syntactically valid selector that excludes the target is conclusive.
+    if re.fullmatch(
+        r"\\s*\\d+(?:\\s*-\\s*\\d+)?(?:\\s*,\\s*\\d+(?:\\s*-\\s*\\d+)?)*\\s*",
+        value,
+    ):
+        return False
+    # Unknown Xray selector syntax is kept conservatively.
+    return True
+
+
+def _ip_selector_may_match_loopback(value: object) -> bool:
+    """Return whether an Xray IP selector may include 127.0.0.1."""
+    values = _ip_values(value)
+    if not values:
+        return True
+    target = ipaddress.ip_address("127.0.0.1")
+    for item in values:
+        selector = item.strip().lower()
+        if selector.startswith(("geoip:", "ext:")):
+            # Geodata and external selectors are not expanded here.
+            return True
+        try:
+            if target in ipaddress.ip_network(selector, strict=False):
+                return True
+        except ValueError:
+            # Unknown selector syntax must not make cleanup destructive.
+            return True
+    return False
+
+
+def _routing_rule_may_use_temporary_dns_final_rule(rule: dict) -> bool:
+    """Whether a route selecting direct could send TCP/UDP to 127.0.0.1:5355."""
+    networks = _as_tokens(rule.get("network"))
+    if networks and not networks.intersection({"tcp", "udp"}):
+        return False
+    if "port" in rule and not _port_selector_may_match(rule.get("port"), 5355):
+        return False
+    if "ip" in rule and not _ip_selector_may_match_loopback(rule.get("ip")):
+        return False
+    return True
 
 
 def _outbound_reference_reasons(
