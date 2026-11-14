@@ -210,7 +210,7 @@ class RemovePlannerTests(unittest.TestCase):
         self.assertEqual(plan.direct_final_rule_indexes, [])
         self.assertTrue(any("dns.rules[0].server" in item for item in plan.blockers))
 
-    def test_remove_cleans_orphaned_loopback_allow_and_keeps_direct(self):
+    def test_remove_does_not_inspect_or_modify_diagnostic_final_rules(self):
         class FakePanel:
             def __init__(self, config):
                 self.state = {
@@ -227,16 +227,20 @@ class RemovePlannerTests(unittest.TestCase):
                     "outboundTestUrl": outbound_test_url,
                 }
 
-        config = base_config()
-        original_direct = next(item for item in config["outbounds"] if item.get("tag") == "direct")
-        original_direct["settings"]["finalRules"] = [
-            copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE),
+        config = add_complete_dns(base_config())
+        direct = next(item for item in config["outbounds"] if item.get("tag") == "direct")
+        diagnostic_rule = copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE)
+        direct["settings"]["finalRules"] = [
+            diagnostic_rule,
             {"action": "block", "ip": ["geoip:private"]},
         ]
         client = FakePanel(config)
 
         plan = api_tool.build_remove_plan(config)
-        self.assertEqual(plan.direct_final_rule_indexes, [0])
+        self.assertEqual(plan.route_indexes, [1])
+        self.assertEqual(plan.outbound_tags, ["dns-out"])
+        self.assertEqual(plan.dns_server_indexes, [0])
+        self.assertFalse(hasattr(plan, "direct_final_rule_indexes"))
 
         result = api_tool.command_remove(SimpleNamespace(approve_restart=True), client)
 
@@ -247,27 +251,8 @@ class RemovePlannerTests(unittest.TestCase):
         )
         self.assertEqual(
             direct_after["settings"]["finalRules"],
-            [{"action": "block", "ip": ["geoip:private"]}],
+            [diagnostic_rule, {"action": "block", "ip": ["geoip:private"]}],
         )
-
-    def test_remove_preserves_loopback_allow_when_dns_outbound_is_still_shared(self):
-        config = add_complete_dns(base_config())
-        config["dns"]["servers"] = []
-        config["routing"]["rules"].append({
-            "type": "field",
-            "domain": ["internal.example"],
-            "outboundTag": "dns-out",
-        })
-        direct = next(item for item in config["outbounds"] if item.get("tag") == "direct")
-        direct["settings"]["finalRules"] = [
-            copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE),
-            {"action": "block", "ip": ["geoip:private"]},
-        ]
-
-        plan = api_tool.build_remove_plan(config)
-
-        self.assertTrue(any("dns-out" in item for item in plan.blockers))
-        self.assertEqual(plan.direct_final_rule_indexes, [])
 
     def test_blocking_scoped_dns_endpoint_stops_remove_planning(self):
         config = add_complete_dns(base_config())
