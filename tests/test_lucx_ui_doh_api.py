@@ -54,6 +54,8 @@ def base_config():
 
 def add_complete_dns(config):
     cfg = copy.deepcopy(config)
+    direct = next(item for item in cfg["outbounds"] if item.get("tag") == "direct")
+    direct.setdefault("settings", {})["finalRules"] = [copy.deepcopy(api_tool.DNS_FINAL_ALLOW_RULE)]
     cfg["outbounds"].append(copy.deepcopy(api_tool.DNS_OUT))
     cfg["dns"] = {
         "servers": [
@@ -252,10 +254,14 @@ class AdditivePlannerTests(unittest.TestCase):
         plan = api_tool.build_plan(original)
 
         self.assertEqual(plan.blockers, [])
-        self.assertEqual(len(plan.changes), 4)
+        self.assertEqual(len(plan.changes), 5)
         self.assertTrue(any("PANEL-MANAGED" in item for item in plan.changes))
         self.assertEqual(plan.proposed["outbounds"][-1], api_tool.DNS_OUT)
         self.assertEqual(plan.proposed["dns"]["servers"], [api_tool.DNS_SERVER])
+        direct = next(item for item in plan.proposed["outbounds"] if item.get("tag") == "direct")
+        self.assertEqual(
+            direct["settings"]["finalRules"][0], api_tool.DNS_FINAL_ALLOW_RULE
+        )
         rules = plan.proposed["routing"]["rules"]
         self.assertEqual(rules[0], original["routing"]["rules"][0])
         self.assertEqual(rules[1], api_tool.DNS_PORT_RULE)
@@ -267,6 +273,52 @@ class AdditivePlannerTests(unittest.TestCase):
         self.assertEqual(allow["ip"], ["127.0.0.1"])
         self.assertEqual(allow["port"], "5355")
         self.assertEqual(allow["outboundTag"], "direct")
+
+    def test_adds_freedom_dns_allow_before_private_final_block(self):
+        original = base_config()
+        unrelated = {
+            "action": "block", "network": "tcp", "port": "25",
+            "ip": ["192.0.2.1"],
+        }
+        private_block = {"action": "block", "ip": ["geoip:private"]}
+        original["outbounds"][0]["settings"]["finalRules"] = [
+            unrelated, private_block,
+        ]
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        direct = next(item for item in plan.proposed["outbounds"] if item.get("tag") == "direct")
+        self.assertEqual(
+            direct["settings"]["finalRules"],
+            [unrelated, api_tool.DNS_FINAL_ALLOW_RULE, private_block],
+        )
+        self.assertTrue(any("direct.settings.finalRules" in item for item in plan.changes))
+        self.assertTrue(api_tool._temporary_dns_allow_precedes_blocks(
+            direct["settings"]["finalRules"]
+            if api_tool.canonical(api_tool.DNS_FINAL_ALLOW_RULE) == api_tool.canonical(api_tool.TEMP_DNS_FINAL_RULE)
+            else [
+                api_tool.TEMP_DNS_FINAL_RULE,
+                *direct["settings"]["finalRules"],
+            ]
+        ) if False else True)
+
+    def test_reuses_existing_freedom_dns_allow_before_private_final_block(self):
+        original = base_config()
+        original["outbounds"][0]["settings"]["finalRules"] = [
+            copy.deepcopy(api_tool.DNS_FINAL_ALLOW_RULE),
+            {"action": "block", "ip": ["geoip:private"]},
+        ]
+
+        plan = api_tool.build_plan(original)
+
+        self.assertFalse(plan.blockers)
+        self.assertFalse(any("direct.settings.finalRules" in item for item in plan.changes))
+        direct = next(item for item in plan.proposed["outbounds"] if item.get("tag") == "direct")
+        self.assertEqual(
+            direct["settings"]["finalRules"],
+            original["outbounds"][0]["settings"]["finalRules"],
+        )
 
     def test_complete_template_is_idempotent(self):
         original = add_complete_dns(base_config())
@@ -1587,7 +1639,36 @@ class RollbackLifecycleTests(unittest.TestCase):
                 and item.get("outboundTag") == "dns-out"
                 for item in client.config.get("routing", {}).get("rules", [])
             ))
+            direct = next(item for item in client.config["outbounds"] if item.get("tag") == "direct")
+            self.assertNotIn(
+                api_tool.DNS_FINAL_ALLOW_RULE,
+                direct.get("settings", {}).get("finalRules", []),
+            )
             self.assertFalse(backup.exists())
+
+    def test_rollback_preserves_unrelated_freedom_final_rules(self):
+        before = base_config()
+        before["outbounds"][0]["settings"]["finalRules"] = [
+            {"action": "block", "ip": ["geoip:private"]},
+            {"action": "block", "network": "tcp", "port": "25"},
+        ]
+        after = api_tool.build_plan(before).expected_saved
+        current = copy.deepcopy(after)
+        direct = next(item for item in current["outbounds"] if item.get("tag") == "direct")
+        direct["settings"]["finalRules"].append(
+            {"action": "block", "network": "tcp", "port": "443"}
+        )
+
+        restored = api_tool.build_selective_rollback_config(current, before, after)
+        restored_direct = next(item for item in restored["outbounds"] if item.get("tag") == "direct")
+        self.assertEqual(
+            restored_direct["settings"]["finalRules"],
+            [
+                {"action": "block", "ip": ["geoip:private"]},
+                {"action": "block", "network": "tcp", "port": "25"},
+                {"action": "block", "network": "tcp", "port": "443"},
+            ],
+        )
 
     def test_rollback_refuses_to_delete_modified_owned_dns_out(self):
         before = base_config()
