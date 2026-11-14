@@ -2239,6 +2239,35 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
             self.assertEqual(client.inbounds, [])
             self.assertEqual(client.deleted, [1])
 
+    def test_unexpected_dns_failure_reports_type_and_message_after_cleanup(self):
+        client = self.FakeClient()
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(api_tool, "choose_temporary_tunnel_port", return_value=15353), \\
+                 patch.object(api_tool, "wait_for_tunnel_listeners"), \\
+                 patch.object(api_tool, "wait_for_tunnel_port_closed"), \\
+                 patch.object(api_tool, "run_tunnel_dns_self_test", side_effect=TimeoutError("probe timed out")):
+                with self.assertRaisesRegex(
+                    api_tool.IntegrationError,
+                    r"Underlying error: TimeoutError: probe timed out",
+                ):
+                    api_tool.run_temporary_tunnel_test(
+                        client,
+                        "http://127.0.0.1:18765/status",
+                        __import__("pathlib").Path(directory),
+                    )
+            self.assertEqual(client.inbounds, [])
+            self.assertEqual(client.deleted, [1])
+
+    def test_exception_summary_redacts_common_credentials(self):
+        summary = api_tool._safe_exception_summary(
+            RuntimeError("Bearer abc123 token=secret-value https://user:pass@example.test/")
+        )
+        self.assertNotIn("abc123", summary)
+        self.assertNotIn("secret-value", summary)
+        self.assertNotIn("user:pass", summary)
+        self.assertIn("[redacted]", summary)
+
+
     def test_cleanup_failure_retains_recovery_journal_and_fails(self):
         client = self.FakeClient(fail_delete=True)
         with tempfile.TemporaryDirectory() as directory:
