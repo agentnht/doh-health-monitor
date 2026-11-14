@@ -119,7 +119,7 @@ hard-coded LucX-UI version allowlist: the adapter must successfully read the
 Xray settings endpoint, decode `xraySetting`, preserve `outboundTestUrl`, and
 validate the configuration structure understood by its planner. Unknown or
 missing fields are a hard stop. The write/update endpoint cannot be safely
-probed without changing panel state; therefore read-only `check`/`plan` reports
+probed without changing panel state; therefore `--plan-only integrate/remove` reports
 that write capability is unverified, and the update contract must first be
 validated on a separate staging panel. An unrecognized API response or
 configuration structure remains a hard stop, because the adapter cannot
