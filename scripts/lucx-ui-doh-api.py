@@ -2116,23 +2116,14 @@ def run_tunnel_dns_self_test(port: int, status_url: str) -> None:
 
 
 
-def confirm_restart(action: str, approved_flag: bool) -> None:
-    print()
-    print("WARNING: LucX-UI panel API changes can cause a full Xray process restart")
-    print("when Xray is running. This tool will not restart Xray directly.")
-    if approved_flag:
-        return
-    expected = {
-        "integrate": "INTEGRATE",
-        "remove": "REMOVE",
-        "tunnel create": "TUNNEL CREATE",
-        "tunnel remove": "TUNNEL REMOVE",
-    }.get(action)
-    if expected is None:
+def confirm_restart(action: str, approved_flag: bool = False) -> None:
+    """Inform the operator about a possible panel-triggered Xray restart; never prompt."""
+    del approved_flag  # Kept for CLI/API compatibility; confirmation is no longer required.
+    if action not in {"integrate", "remove", "tunnel create", "tunnel remove"}:
         raise IntegrationError("Unknown panel directive")
-    entered = read_tty_confirmation(f"Type {expected} to continue: ")
-    if entered != expected:
-        raise IntegrationError("Operator confirmation did not match; no panel update was sent")
+    print()
+    print("NOTICE: this LucX-UI panel change may automatically restart the Xray process.")
+    print("The restart is performed by LucX-UI; this tool does not restart Xray directly.")
 
 
 def print_plan(plan: Plan) -> None:
