@@ -164,8 +164,9 @@ safely predict the panel's save behavior.
   cleanup against that staging file only. It never writes the source/live DB.
 - The only mutating panel directives are Integrate and Remove. Integrate
   runs the temporary self-test internally; there are no standalone
-  create-test/cleanup-test/recovery directives. A reserved self-test Tunnel is
-  validated from the current panel state, not from a recovery journal.
+  create-test/cleanup-test/recovery directives. Its reserved Tunnel remark
+  carries only whether the exact temporary rule was added or reused by that
+  self-test; no separate journal or saved config is created or read.
 - The end-to-end self-test creates a loopback-only temporary \`tunnel\` inbound
   through the official inbound API, tests positive A answers over UDP and TCP,
   and verifies that the plugin query counter increases while failures remain
@@ -197,14 +198,15 @@ Earlier iterations were tested against read-only panel settings and separate
 staging/test copies. Those results predate the shared semantic planner and do
 not validate the current refactor.
 
-The current automated suite covers semantic reuse, nonstandard outbound tags,
-unique tag generation, balancer selectors/fallbacks, first-match routing
-conflicts, the two mutating directives (Integrate/Remove), dependency-aware
-removal, temporary self-test cleanup, and idempotent planning. GitHub Actions results should be checked on the current PR head before
-treating the refactor as CI-verified.
+The automated suite covers semantic reuse, nonstandard outbound tags, unique
+ tag generation, balancer selectors/fallbacks, first-match routing conflicts,
+ both directives (Integrate/Remove), dependency-aware removal, live-state
+ temporary test cleanup, legacy Tunnel-marker recognition, and idempotent
+ planning. GitHub Actions must pass on the current PR head before this refactor
+ is treated as CI-verified.
 
-**The current refactor has not yet been re-run through the live disposable
-staging panel apply → UDP/TCP self-test → cleanup cycle.** Do not interpret the
+**The current refactor has not yet been re-run through the disposable staging
+panel cycle: `integrate` → UDP/TCP self-test → `remove`.** Do not interpret the
 earlier manual Tunnel validation as proof that the new code path has passed.
 
 
@@ -223,8 +225,8 @@ installed VPS binary was not cryptographically matched to the tag.
 
 ### The Remove directive
 
-Removing the integration is the inverse of integrating it; it is not a snapshot restore. The adapter rebuilds the canonical integration plan against current panel settings, finds the remaining integration-specific DNS outbound/server/port-53 route objects by semantic shape and relationships, checks all references, and removes only candidates that are no longer shared or used elsewhere. Remove the port-53 route first, verify it, then re-scan references before removing the outbound and local DNS server entry.
+Removing the integration is the inverse of integrating it; it is not a snapshot restore. The adapter builds the same canonical integration specification used by Integrate against current panel settings. It finds matching global TCP/UDP port-53 routes, local DNS outbounds, and the general `127.0.0.1:5355` DNS server entry by semantic shape and relationships. It removes matching routes first, verifies the panel read-back, then re-plans and checks every remaining outbound reference (routing rules, balancers/selectors, observatory, proxy chaining) before deleting an outbound. DNS server entries are removed only when general and not referenced by DNS policy. Shared, scoped, duplicate, or ambiguous objects remain.
 
 Each invocation is a new explicit choice: Integrate or Remove. The selected directive builds its complete plan from the current panel state. Integrate reuses compatible records and adds missing ones. Remove deletes only verified integration candidates with no remaining dependencies. The adapter never writes a full saved Xray configuration back to the panel and never overwrites later user changes. If a candidate is ambiguous or still referenced, it remains in place and is reported as a blocker. The adapter exposes only the Integrate and Remove directives.
 
-No full pre-change/post-change Xray snapshots, persistent ownership journals, or delayed snapshot-based rollback are part of this design. Every individual API mutation is followed by live read-back and replanning.
+No full pre-change/post-change Xray snapshots, persistent ownership journals, or delayed snapshot-based rollback are part of this design. The CLI has exactly two directives: `integrate` and `remove`; use `--plan-only` with either one for a read-only plan. Every individual API mutation is followed by live read-back and replanning.
