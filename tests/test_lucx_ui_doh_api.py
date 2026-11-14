@@ -481,6 +481,24 @@ class IntegrateOrchestrationTests(unittest.TestCase):
 
 
 class AdapterCLITests(unittest.TestCase):
+    def test_staging_tunnel_subcommands_are_not_public_cli_actions(self):
+        for subcommand in ("create", "test", "status", "remove"):
+            with self.subTest(subcommand=subcommand):
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(ROOT / "scripts" / "lucx-ui-doh-api.py"),
+                        "tunnel",
+                        subcommand,
+                    ],
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("choose integrate or remove", result.stderr)
+
     def test_plan_only_is_not_a_supported_cli_option(self):
         result = subprocess.run(
             [
@@ -2427,7 +2445,7 @@ class TTYConfirmationTests(unittest.TestCase):
     def test_legacy_approval_flag_is_ignored(self):
         with patch.object(api_tool, "read_tty_confirmation") as prompt, \
              patch("builtins.print") as output:
-            api_tool.confirm_restart("tunnel create", True)
+            api_tool.confirm_restart("integrate", True)
         prompt.assert_not_called()
         self.assertTrue(output.called)
 
