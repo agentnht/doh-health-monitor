@@ -2525,7 +2525,7 @@ def command_integrate(args, client: PanelAPI) -> int:
     test_error = None
     try:
         if not existing_diagnostics:
-            ensure_diagnostic_tunnel(args, client, notify_restart=False)
+            ensure_diagnostic_tunnel(args, client)
         test_diagnostic_tunnel(args, client)
     except IntegrationError as exc:
         test_error = exc
@@ -2631,7 +2631,7 @@ def command_remove(args, client: PanelAPI) -> int:
     return 0
 
 
-def ensure_diagnostic_tunnel(args, client: PanelAPI, *, notify_restart: bool = True) -> int:
+def ensure_diagnostic_tunnel(args, client: PanelAPI) -> int:
     """Create and retain one diagnostic Tunnel and its owned temporary rule."""
     existing = discover_temporary_leftovers(client)
     if existing:
@@ -2650,8 +2650,6 @@ def ensure_diagnostic_tunnel(args, client: PanelAPI, *, notify_restart: bool = T
     port = choose_temporary_tunnel_port(client.list_inbounds())
     expected = build_temporary_tunnel(port, rule_mode=rule_mode)
 
-    if notify_restart:
-        confirm_restart("integrate", args.approve_restart)
     if rule_mode == "added" or rules_need_repair:
         _add_temporary_dns_final_rule(client)
     created = client.add_inbound(expected)
