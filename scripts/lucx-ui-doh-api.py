@@ -2453,6 +2453,17 @@ def build_remove_plan(original: dict) -> RemovePlan:
                         f"outbounds[{tag!r}] also targets 127.0.0.1:5355"
                         for tag in external_outbounds
                     )
+                    if (
+                        target_tag not in result.outbound_tags
+                        and any(
+                            item.get("tag") == target_tag
+                            and _outbound_matches_dns_endpoint(item)
+                            for item in outbounds
+                        )
+                    ):
+                        external_dns_refs.append(
+                            f"outbound {target_tag!r} is retained for external routing use"
+                        )
                     if external_dns_refs:
                         result.blockers.append(
                             "The 127.0.0.1:5355 allow finalRule is still needed by DNS resources outside the Remove plan: "
