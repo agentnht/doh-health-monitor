@@ -2368,7 +2368,7 @@ def _apply_panel_update(client: PanelAPI, before: dict, config: dict, label: str
 
 
 def command_integrate(args, client: PanelAPI) -> int:
-    """Apply permanent DNS integration, then verify UDP/TCP through a retained diagnostic Tunnel."""
+    """Apply permanent DNS integration, test it, then clean up diagnostic resources on success."""
     state = client.read_state()
     plan = build_plan(state["xraySetting"])
     print("Directive: INTEGRATE")
@@ -2398,10 +2398,19 @@ def command_integrate(args, client: PanelAPI) -> int:
     except IntegrationError as exc:
         raise IntegrationError(
             "Permanent DNS integration is applied, but diagnostic Tunnel verification failed. "
-            "The diagnostic Tunnel and temporary rule were not automatically removed; "
-            f"inspect them with 'tunnel status' and remove explicitly if appropriate. Detail: {exc}"
+            "Diagnostic resources were left in place for investigation; inspect them with "
+            f"'tunnel status'. Detail: {exc}"
         ) from None
 
+    try:
+        cleanup_temporary_leftovers(client)
+    except IntegrationError as exc:
+        raise IntegrationError(
+            "UDP/TCP DNS self-tests succeeded, but diagnostic Tunnel cleanup could not be "
+            f"verified. Inspect the remaining resources with 'tunnel status'. Detail: {exc}"
+        ) from None
+
+    print("PASS: diagnostic Tunnel cleanup completed after successful UDP/TCP verification.")
     print("PASS: Integrate completed and UDP/TCP DNS self-tests succeeded.")
     return 0
 
