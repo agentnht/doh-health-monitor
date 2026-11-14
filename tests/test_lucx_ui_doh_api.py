@@ -148,7 +148,7 @@ class TemporaryDNSFinalRuleTests(unittest.TestCase):
 
     def test_temporary_dns_allow_precedes_any_matching_block_rule(self):
         rules = [
-            {"action": "block", "port": "53"},
+            {"action": "block", "port": "5355"},
             {"action": "block", "ip": ["geoip:private"]},
         ]
         self.assertEqual(api_tool._temporary_dns_allow_insert_index(rules), 0)
@@ -1469,7 +1469,7 @@ class ApplyBackupLifecycleTests(unittest.TestCase):
             self.assertEqual(len(backups), 1)
             self.assertEqual(api_tool.load_backup(backups[0])["state"], "applied-and-verified")
 
-    def test_precleanup_treats_recovery_journals_as_opaque_markers(self):
+    def test_precleanup_refuses_unreadable_recovery_journal(self):
         class ReadOnlyClient:
             def list_inbounds(self):
                 return []
@@ -1488,11 +1488,12 @@ class ApplyBackupLifecycleTests(unittest.TestCase):
             journal.write_text("do not parse this", encoding="utf-8")
             journal.chmod(0o600)
             discovered = api_tool.inspect_temporary_leftovers(ReadOnlyClient(), backup_dir)
-            self.assertEqual(discovered["errors"], [])
+            self.assertTrue(discovered["errors"])
             self.assertEqual(discovered["tunnels"], [])
             self.assertFalse(discovered["final_rule_present"])
-            api_tool.cleanup_temporary_leftovers(ReadOnlyClient(), backup_dir, discovered)
-            self.assertFalse(journal.exists())
+            with self.assertRaises(api_tool.IntegrationError):
+                api_tool.cleanup_temporary_leftovers(ReadOnlyClient(), backup_dir, discovered)
+            self.assertTrue(journal.exists())
 
     def test_apply_retains_snapshot_when_readback_does_not_match(self):
         initial = base_config()
@@ -2387,10 +2388,7 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
             self.assertEqual(client.update_calls, 0)
             self.assertEqual(client.add_calls, 0)
             self.assertEqual(client.inbounds, [])
-            self.assertEqual(
-                list((__import__("pathlib").Path(directory) / "recovery").iterdir()),
-                [],
-            )
+            self.assertFalse((__import__("pathlib").Path(directory) / "recovery").exists())
 
     def test_success_path_always_removes_tunnel_and_journal(self):
         client = self.FakeClient()
@@ -2481,17 +2479,18 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
         }
         client.inbounds = [temporary, user_owned]
         direct = next(item for item in client.snapshot["xraySetting"]["outbounds"] if item.get("tag") == "direct")
-        direct["settings"]["finalRules"] = [
-            copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE),
+        original_final_rules = [
             {"action": "block", "network": "tcp", "port": "25", "ip": ["192.0.2.1"]},
         ]
+        direct["settings"]["finalRules"] = copy.deepcopy(original_final_rules)
+        api_tool.install_temporary_dns_final_rule(client, original_final_rules)
         with tempfile.TemporaryDirectory() as directory:
             backup_dir = __import__("pathlib").Path(directory)
-            recovery = backup_dir / "recovery"
-            recovery.mkdir(mode=0o700)
-            opaque = recovery / "lucx-doh-selftest-old-marker.json"
-            opaque.write_text("not parsed", encoding="utf-8")
-            opaque.chmod(0o600)
+            api_tool._write_recovery_journal(
+                backup_dir, expected, 9, "cleanup-required",
+                original_final_rules=original_final_rules,
+                final_rule=api_tool.TEMP_DNS_FINAL_RULE,
+            )
 
             discovered = api_tool.inspect_temporary_leftovers(client, backup_dir)
             self.assertEqual(discovered["errors"], [])
@@ -2506,16 +2505,22 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
             )
             self.assertEqual(
                 restored_direct["settings"]["finalRules"],
-                [{"action": "block", "network": "tcp", "port": "25", "ip": ["192.0.2.1"]}],
+                original_final_rules,
             )
-            self.assertFalse(opaque.exists())
+            self.assertEqual(list((backup_dir / "recovery").glob("*.json")), [])
 
     def test_precleanup_removes_final_rule_when_no_tunnel_exists(self):
         client = self.FakeClient()
-        direct = next(item for item in client.snapshot["xraySetting"]["outbounds"] if item.get("tag") == "direct")
-        direct["settings"]["finalRules"] = [copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE)]
+        original_final_rules = []
+        api_tool.install_temporary_dns_final_rule(client, original_final_rules)
+        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718")
         with tempfile.TemporaryDirectory() as directory:
             backup_dir = __import__("pathlib").Path(directory)
+            api_tool._write_recovery_journal(
+                backup_dir, expected, None, "final-rule-created",
+                original_final_rules=original_final_rules,
+                final_rule=api_tool.TEMP_DNS_FINAL_RULE,
+            )
             discovered = api_tool.inspect_temporary_leftovers(client, backup_dir)
             self.assertEqual(discovered["tunnels"], [])
             self.assertTrue(discovered["final_rule_present"])
@@ -2526,17 +2531,23 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
             )
             self.assertNotIn("finalRules", restored_direct["settings"])
 
-    def test_precleanup_does_not_delete_malformed_reserved_tunnel_but_cleans_rule(self):
+    def test_precleanup_does_not_delete_malformed_reserved_tunnel_but_cleans_owned_rule(self):
         client = self.FakeClient()
-        unsafe = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718")
+        expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718")
+        original_final_rules = []
+        api_tool.install_temporary_dns_final_rule(client, original_final_rules)
+        unsafe = copy.deepcopy(expected)
         unsafe["settings"] = json.dumps({"rewriteAddress": "192.0.2.1", "rewritePort": 53})
         unsafe.update({"id": 9, "tag": "temporary-9"})
         client.inbounds = [unsafe]
-        direct = next(item for item in client.snapshot["xraySetting"]["outbounds"] if item.get("tag") == "direct")
-        direct["settings"]["finalRules"] = [copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE)]
 
         with tempfile.TemporaryDirectory() as directory:
             backup_dir = __import__("pathlib").Path(directory)
+            api_tool._write_recovery_journal(
+                backup_dir, expected, 9, "cleanup-required",
+                original_final_rules=original_final_rules,
+                final_rule=api_tool.TEMP_DNS_FINAL_RULE,
+            )
             discovered = api_tool.inspect_temporary_leftovers(client, backup_dir)
             self.assertTrue(discovered["errors"])
             self.assertTrue(discovered["final_rule_present"])
