@@ -77,7 +77,7 @@ Removal is the inverse desired-state operation, not a restore from a saved basel
 
 Preserve shared, reused, and ambiguous objects. If a compatible object was present before installation but is now exclusively part of the integration path, it may be removed only when the current semantic/reference plan proves this is safe. If another user route, balancer, DNS policy, or proxy chain still relies on it, keep it. The Remove plan must list what is safe to delete and what remains blocked; speculative deletion is not.
 
-Do not bulk-delete by tag/prefix. Do not restore an old rules array. Do not create temporary rules during Remove integration. The next Remove invocation simply replans from live state and continues.
+Do not bulk-delete by tag/prefix. Do not restore an old rules array. Do not create temporary rules during Remove. Every Remove invocation builds its complete plan from current live state.
 
 ## Temporary end-to-end self-test
 
