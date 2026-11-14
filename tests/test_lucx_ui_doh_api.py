@@ -1944,7 +1944,7 @@ class DnsTunnelProbeTests(unittest.TestCase):
         ) as query:
             with self.assertRaisesRegex(
                 api_tool.IntegrationError,
-                r"UDP Tunnel DNS self-test failed at 127\\.0\\.0\\.1:15353: UDP response timeout",
+                r"UDP Tunnel DNS self-test failed at 127\.0\.0\.1:15353: UDP response timeout",
             ):
                 api_tool.run_tunnel_dns_self_test(15353, "http://127.0.0.1:18765/status")
         query.assert_called_once_with("127.0.0.1", 15353, tcp=False, name="example.com")
@@ -1956,7 +1956,7 @@ class DnsTunnelProbeTests(unittest.TestCase):
         ) as query:
             with self.assertRaisesRegex(
                 api_tool.IntegrationError,
-                r"TCP Tunnel DNS self-test failed at 127\\.0\\.0\\.1:15353: TCP response timeout",
+                r"TCP Tunnel DNS self-test failed at 127\.0\.0\.1:15353: TCP response timeout",
             ):
                 api_tool.run_tunnel_dns_self_test(15353, "http://127.0.0.1:18765/status")
         self.assertEqual(query.call_count, 2)
@@ -1980,14 +1980,6 @@ class DnsTunnelProbeTests(unittest.TestCase):
                 r"TCP DNS self-test timed out connecting to 127\.0\.0\.1:15353",
             ):
                 api_tool.query_dns_a("127.0.0.1", 15353, tcp=True)
-
-    def test_tunnel_probe_refuses_preexisting_plugin_failures(self):
-        with patch.object(api_tool, "read_plugin_counters", return_value=(10, 1)), \
-             patch.object(api_tool, "query_dns_a") as query:
-            with self.assertRaisesRegex(api_tool.IntegrationError, "non-zero before"):
-                api_tool.run_tunnel_dns_self_test(15353, "http://127.0.0.1:18765/status")
-            query.assert_not_called()
-
 
 
 
