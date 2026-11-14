@@ -104,6 +104,57 @@ class TemporaryDNSFinalRuleTests(unittest.TestCase):
         self.assertEqual(restored, config["outbounds"][0]["settings"]["finalRules"])
         self.assertEqual(client.updates, 2)
 
+    def test_temporary_dns_allow_is_inserted_before_private_ip_block(self):
+        unrelated_before = {
+            "action": "block", "network": "tcp", "port": "25",
+            "ip": ["192.0.2.1"],
+        }
+        private_block = {
+            "action": "block", "ip": ["geoip:private"],
+        }
+        unrelated_after = {
+            "action": "block", "network": "tcp", "port": "443",
+            "ip": ["192.0.2.1"],
+        }
+        config = base_config()
+        original_rules = [
+            unrelated_before, private_block, unrelated_after,
+        ]
+        config["outbounds"][0]["settings"]["finalRules"] = copy.deepcopy(original_rules)
+        client = self.FakePanel(config)
+
+        api_tool.install_temporary_dns_final_rule(client)
+
+        rules = client.snapshot["xraySetting"]["outbounds"][0]["settings"]["finalRules"]
+        self.assertEqual(
+            rules,
+            [
+                unrelated_before,
+                api_tool.TEMP_DNS_FINAL_RULE,
+                private_block,
+                unrelated_after,
+            ],
+        )
+        self.assertTrue(api_tool._temporary_dns_allow_precedes_blocks(rules))
+
+        self.assertTrue(api_tool.cleanup_temporary_dns_final_rule(
+            client, api_tool.TEMP_DNS_FINAL_RULE
+        ))
+        restored = client.snapshot["xraySetting"]["outbounds"][0]["settings"]["finalRules"]
+        self.assertEqual(restored, original_rules)
+
+    def test_temporary_dns_allow_precedes_any_matching_block_rule(self):
+        rules = [
+            {"action": "block", "port": "5355"},
+            {"action": "block", "ip": ["geoip:private"]},
+        ]
+        self.assertEqual(api_tool._temporary_dns_allow_insert_index(rules), 0)
+        self.assertTrue(api_tool._final_rule_may_block_temporary_dns(rules[0]))
+        self.assertFalse(api_tool._final_rule_may_block_temporary_dns({
+            "action": "block", "network": "tcp", "port": "25",
+            "ip": ["192.0.2.1"],
+        }))
+
     def test_plan_removes_manually_persisted_temporary_rule(self):
         config = base_config()
         config["outbounds"][0]["settings"]["finalRules"] = [
