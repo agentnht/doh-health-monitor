@@ -2226,7 +2226,7 @@ def _port_selector_may_match(value: object, wanted: int) -> bool:
         return True
     # A syntactically valid selector that excludes the target is conclusive.
     if re.fullmatch(
-        r"\\s*\\d+(?:\\s*-\\s*\\d+)?(?:\\s*,\\s*\\d+(?:\\s*-\\s*\\d+)?)*\\s*",
+        r"\s*\d+(?:\s*-\s*\d+)?(?:\s*,\s*\d+(?:\s*-\s*\d+)?)*\s*",
         value,
     ):
         return False
