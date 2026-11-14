@@ -2033,19 +2033,39 @@ def _recv_exact(connection: socket.socket, size: int) -> bytes:
 def query_dns_a(host: str, port: int, *, tcp: bool, timeout: float = 4.0) -> list[str]:
     """Issue a DNS A query and require a positive answer over UDP or TCP."""
     query_id, query = _dns_query_packet("example.com")
+    endpoint = f"{host}:{port}"
     if tcp:
-        with socket.create_connection((host, port), timeout=timeout) as connection:
+        try:
+            connection_context = socket.create_connection((host, port), timeout=timeout)
+        except TimeoutError:
+            raise IntegrationError(f"TCP DNS self-test timed out connecting to {endpoint}") from None
+        with connection_context as connection:
             connection.settimeout(timeout)
-            connection.sendall(struct.pack("!H", len(query)) + query)
-            response_length = struct.unpack("!H", _recv_exact(connection, 2))[0]
+            try:
+                connection.sendall(struct.pack("!H", len(query)) + query)
+            except TimeoutError:
+                raise IntegrationError(f"TCP DNS self-test timed out sending the query to {endpoint}") from None
+            try:
+                response_length = struct.unpack("!H", _recv_exact(connection, 2))[0]
+            except TimeoutError:
+                raise IntegrationError(f"TCP DNS self-test timed out waiting for the response length from {endpoint}") from None
             if response_length < 12 or response_length > 65535:
                 raise IntegrationError("DNS TCP self-test returned an invalid response length")
-            response = _recv_exact(connection, response_length)
+            try:
+                response = _recv_exact(connection, response_length)
+            except TimeoutError:
+                raise IntegrationError(f"TCP DNS self-test timed out reading the response body from {endpoint}") from None
     else:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as connection:
             connection.settimeout(timeout)
-            connection.sendto(query, (host, port))
-            response, source = connection.recvfrom(65535)
+            try:
+                connection.sendto(query, (host, port))
+            except TimeoutError:
+                raise IntegrationError(f"UDP DNS self-test timed out sending the query to {endpoint}") from None
+            try:
+                response, source = connection.recvfrom(65535)
+            except TimeoutError:
+                raise IntegrationError(f"UDP DNS self-test timed out waiting for a response from {endpoint}") from None
             if source[0] != host or source[1] != port:
                 raise IntegrationError("DNS UDP self-test response came from an unexpected endpoint")
     return _parse_dns_a_response(response, query_id)
@@ -2071,24 +2091,38 @@ def read_plugin_counters(status_url: str) -> tuple[int, int]:
 
 
 def run_tunnel_dns_self_test(port: int, status_url: str) -> None:
-    """Require positive UDP+TCP A answers and a corresponding plugin query-counter increase."""
+    """Test UDP and TCP independently and verify both requests reached the plugin."""
     before_queries, before_failures = read_plugin_counters(status_url)
     if before_failures != 0:
         raise IntegrationError("Plugin failure counter was non-zero before the DNS Tunnel self-test")
-    udp_answers = query_dns_a("127.0.0.1", port, tcp=False)
-    tcp_answers = query_dns_a("127.0.0.1", port, tcp=True)
+
+    endpoint = f"127.0.0.1:{port}"
+    try:
+        udp_answers = query_dns_a("127.0.0.1", port, tcp=False)
+    except IntegrationError as exc:
+        raise IntegrationError(f"UDP Tunnel DNS self-test failed at {endpoint}: {exc}") from None
+    print("PASS: UDP Tunnel DNS self-test returned a positive A answer.")
+    print("UDP A answers:", ", ".join(udp_answers))
+
+    try:
+        tcp_answers = query_dns_a("127.0.0.1", port, tcp=True)
+    except IntegrationError as exc:
+        raise IntegrationError(f"TCP Tunnel DNS self-test failed at {endpoint}: {exc}") from None
+    print("PASS: TCP Tunnel DNS self-test returned a positive A answer.")
+    print("TCP A answers:", ", ".join(tcp_answers))
+
     after_queries, after_failures = read_plugin_counters(status_url)
     if after_queries < before_queries + 2:
-        raise IntegrationError("UDP and TCP Tunnel queries did not both increment the plugin query counter")
+        raise IntegrationError(
+            "UDP and TCP DNS answers succeeded, but the plugin query counter "
+            f"did not increase by two (before={before_queries}, after={after_queries})"
+        )
     if after_failures != 0:
         raise IntegrationError("Plugin failure counter was non-zero after the DNS Tunnel self-test")
-    print("PASS: temporary Tunnel returned positive DNS A answers over UDP and TCP.")
     print(
         "PASS: plugin query counter increased "
         f"{before_queries} -> {after_queries}; failures remained zero."
     )
-    print("UDP A answers:", ", ".join(udp_answers))
-    print("TCP A answers:", ", ".join(tcp_answers))
 
 
 def _default_backup_dir() -> Path:
