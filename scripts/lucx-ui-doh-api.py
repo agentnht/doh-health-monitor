@@ -2300,13 +2300,18 @@ def build_remove_plan(original: dict) -> RemovePlan:
     ]
     if len(general_indexes) == 1 and len(endpoint_indexes) == 1:
         index = general_indexes[0]
-        references = _dns_server_reference_reasons(original, servers[index])
-        if references:
+        if target_tag not in result.outbound_tags:
             result.blockers.append(
-                f"Planned DNS server at dns.servers[{index}] is used outside the integration plan by: {', '.join(references)}; it will be preserved."
+                f"Planned DNS server at dns.servers[{index}] is retained because its matching outbound {target_tag!r} is shared or ambiguous."
             )
         else:
-            result.dns_server_indexes.append(index)
+            references = _dns_server_reference_reasons(original, servers[index])
+            if references:
+                result.blockers.append(
+                    f"Planned DNS server at dns.servers[{index}] is used outside the integration plan by: {', '.join(references)}; it will be preserved."
+                )
+            else:
+                result.dns_server_indexes.append(index)
     elif endpoint_indexes:
         result.blockers.append(
             "The planned local DNS endpoint has multiple or scoped DNS server entries; they are ambiguous or shared and will be preserved."
