@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live-state LucX-UI DoH reconciliation with exactly two directives: integrate and remove.
+"""Live-state LucX-UI DoH reconciliation plus temporary, explicit Tunnel diagnostics.
 
 The adapter never writes the panel SQLite database or runtime Xray config.
 When --base-url is omitted, it reads only endpoint settings from SQLite in
@@ -1910,112 +1910,6 @@ def cleanup_temporary_leftovers(client: PanelAPI) -> None:
     print("PASS: abandoned temporary test resources were reconciled from live panel state.")
 
 
-def run_temporary_tunnel_test(client: PanelAPI, status_url: str) -> None:
-    """Test UDP/TCP DNS through a temporary Tunnel, then remove only this run's delta."""
-    cleanup_temporary_leftovers(client)
-    remaining = list(TUNNEL_PORT_CANDIDATES)
-    for attempt in range(3):
-        state_before = client.read_state()
-        original_rules = _temporary_final_rules(state_before["xraySetting"])
-        rule_count = sum(
-            canonical(item) == canonical(TEMP_DNS_FINAL_RULE)
-            for item in original_rules
-        )
-        if rule_count > 1:
-            raise IntegrationError(
-                "Duplicate temporary finalRules already exist; refusing an ambiguous test"
-            )
-        rule_mode = "reused" if rule_count == 1 else "added"
-        if rule_mode == "added":
-            _temporary_dns_allow_insert_index(original_rules)
-
-        port = choose_temporary_tunnel_port(
-            client.list_inbounds(), candidates=remaining
-        )
-        remaining.remove(port)
-        expected = build_temporary_tunnel(port, rule_mode=rule_mode)
-        inbound_id = None
-        add_error = None
-        rule_added_by_this_run = False
-        test_error = None
-        cleanup_errors = []
-        try:
-            try:
-                created = client.add_inbound(expected)
-            except IntegrationError as exc:
-                add_error = exc
-                raise
-            inbound_id = created["id"]
-            verify_temporary_tunnel(client.list_inbounds(), expected, inbound_id)
-            wait_for_tunnel_listeners(port)
-
-            state_after_tunnel = client.read_state()
-            current_rule_count = _temporary_final_rule_count(state_after_tunnel["xraySetting"])
-            if rule_mode == "added":
-                if current_rule_count:
-                    raise IntegrationError(
-                        "Panel finalRules changed while creating the test Tunnel; refusing to claim the new rule"
-                    )
-                # Set ownership before the API call so a lost response still
-                # causes cleanup to inspect and remove the live delta.
-                rule_added_by_this_run = True
-                _add_temporary_dns_final_rule(client)
-                # The panel update may restart Xray. The initial listener check
-                # happened before this second config mutation, so wait for the
-                # temporary Tunnel to be live again before sending DNS traffic.
-                wait_for_tunnel_listeners(port)
-            elif current_rule_count != 1:
-                raise IntegrationError(
-                    "The pre-existing DNS finalRule disappeared while creating the test Tunnel"
-                )
-
-            run_tunnel_dns_self_test(port, status_url)
-        except Exception as exc:
-            test_error = exc
-        finally:
-            # Do not delete the Tunnel unless its newly-added rule was removed
-            # and verified first.
-            if rule_added_by_this_run:
-                try:
-                    _remove_temporary_dns_final_rule(client)
-                except Exception as exc:
-                    cleanup_errors.append("temporary finalRule: " + str(exc))
-            if not cleanup_errors:
-                try:
-                    removed = cleanup_temporary_tunnel(client, expected, inbound_id)
-                    if inbound_id is not None or removed:
-                        wait_for_tunnel_port_closed(port)
-                except Exception as exc:
-                    cleanup_errors.append("Tunnel: " + str(exc))
-
-        if cleanup_errors:
-            raise IntegrationError(
-                "Temporary self-test cleanup could not be verified. "
-                f"Tunnel marker: {expected['remark']}; details: {'; '.join(cleanup_errors)}. "
-                "Run Integrate or Remove again to re-plan from live panel state."
-            ) from None
-        if test_error is not None:
-            if add_error is not None and not _port_is_free_on_loopback(port) and attempt < 2:
-                print(
-                    f"NOTICE: port {port} was claimed during Tunnel creation; "
-                    "retrying with another free port."
-                )
-                continue
-            if isinstance(test_error, IntegrationError):
-                raise test_error
-            raise IntegrationError(
-                "Temporary Tunnel self-test failed; live-state cleanup was attempted. "
-                f"Underlying error: {_safe_exception_summary(test_error)}"
-            ) from None
-        print("PASS: temporary Tunnel is absent and its TCP/UDP listeners are gone.")
-        if rule_added_by_this_run:
-            print("PASS: the temporary DNS finalRule added by this test is absent.")
-        else:
-            print("PASS: the pre-existing DNS finalRule was reused and preserved.")
-        return
-    raise IntegrationError("Temporary Tunnel creation repeatedly lost a port-allocation race")
-
-
 def _dns_query_packet(name: str) -> tuple[int, bytes]:
     if not isinstance(name, str) or not name or len(name) > 253:
         raise IntegrationError("Invalid DNS self-test hostname")
@@ -2193,7 +2087,12 @@ def confirm_restart(action: str, approved_flag: bool) -> None:
     print("when Xray is running. This tool will not restart Xray directly.")
     if approved_flag:
         return
-    expected = {"integrate": "INTEGRATE", "remove": "REMOVE"}.get(action)
+    expected = {
+        "integrate": "INTEGRATE",
+        "remove": "REMOVE",
+        "tunnel create": "TUNNEL CREATE",
+        "tunnel remove": "TUNNEL REMOVE",
+    }.get(action)
     if expected is None:
         raise IntegrationError("Unknown panel directive")
     entered = read_tty_confirmation(f"Type {expected} to continue: ")
@@ -2488,20 +2387,17 @@ def _apply_panel_update(client: PanelAPI, before: dict, config: dict, label: str
 
 
 def command_integrate(args, client: PanelAPI) -> int:
+    """Apply only permanent DNS integration records; never touch diagnostic Tunnels."""
     state = client.read_state()
     plan = build_plan(state["xraySetting"])
-    leftovers = discover_temporary_leftovers(client)
     print("Directive: INTEGRATE")
     print_plan(plan)
-    if leftovers:
-        print(f"Temporary test Tunnels to reconcile first: {len(leftovers)}")
     if args.plan_only:
         print("Read-only plan: no panel mutation was sent.")
         return 2 if plan.blockers else 0
     if plan.blockers:
         return 2
     confirm_restart("integrate", args.approve_restart)
-    cleanup_temporary_leftovers(client)
 
     state = client.read_state()
     plan = build_plan(state["xraySetting"])
@@ -2509,38 +2405,30 @@ def command_integrate(args, client: PanelAPI) -> int:
     if plan.blockers:
         return 2
     if canonical(state["xraySetting"]) != canonical(plan.expected_saved):
-        state = _apply_panel_update(
+        _apply_panel_update(
             client, state, plan.proposed, "permanent DNS integration"
         )
     else:
         print("PASS: permanent DNS integration already matches the desired live state.")
 
-    run_temporary_tunnel_test(
-        client, getattr(args, "plugin_status_url", DEFAULT_PLUGIN_STATUS_URL)
-    )
-    print("PASS: Integrate directive completed from the current live panel state.")
+    print("PASS: Integrate changed only permanent DNS integration records.")
     return 0
 
 
 def command_remove(args, client: PanelAPI) -> int:
+    """Remove only permanent DNS integration records; leave diagnostic Tunnels alone."""
     state = client.read_state()
     plan = build_remove_plan(state["xraySetting"])
-    leftovers = discover_temporary_leftovers(client)
     print("Directive: REMOVE")
     print_remove_plan(plan)
-    if leftovers:
-        print(f"Temporary test Tunnels to reconcile before removal: {len(leftovers)}")
     if args.plan_only:
         print("Read-only plan: no panel mutation was sent.")
         return 0
-    has_changes = bool(
-        plan.route_indexes or plan.outbound_tags or plan.dns_server_indexes or leftovers
-    )
+    has_changes = bool(plan.route_indexes or plan.outbound_tags or plan.dns_server_indexes)
     if not has_changes:
-        print("Remove directive complete: no safe removals are required; shared or ambiguous objects remain untouched.")
+        print("Remove directive complete: no safe permanent removals are required; shared or ambiguous objects remain untouched.")
         return 0
     confirm_restart("remove", args.approve_restart)
-    cleanup_temporary_leftovers(client)
 
     state = client.read_state()
     plan = build_remove_plan(state["xraySetting"])
@@ -2593,8 +2481,95 @@ def command_remove(args, client: PanelAPI) -> int:
     final_plan = build_remove_plan(client.read_state()["xraySetting"])
     print("Final Remove assessment:")
     print_remove_plan(final_plan)
-    print("PASS: Remove directive was recalculated from current live panel state; no historical configuration was restored.")
+    print("PASS: Remove directive was recalculated from current live panel state; diagnostic Tunnel resources were not touched.")
     return 0
+
+
+def command_tunnel_create(args, client: PanelAPI) -> int:
+    """Create and retain one diagnostic Tunnel and its owned temporary rule."""
+    existing = discover_temporary_leftovers(client)
+    if existing:
+        raise IntegrationError(
+            "A diagnostic Tunnel already exists; inspect it with 'tunnel status' or remove it explicitly with 'tunnel remove'"
+        )
+    state = client.read_state()
+    rule_count = _temporary_final_rule_count(state["xraySetting"])
+    if rule_count > 1:
+        raise IntegrationError("Multiple matching temporary finalRules exist; refusing ambiguous Tunnel creation")
+    rule_mode = "reused" if rule_count == 1 else "added"
+    port = choose_temporary_tunnel_port(client.list_inbounds())
+    expected = build_temporary_tunnel(port, rule_mode=rule_mode)
+
+    confirm_restart("tunnel create", args.approve_restart)
+    created = client.add_inbound(expected)
+    inbound_id = created["id"]
+    verify_temporary_tunnel(client.list_inbounds(), expected, inbound_id)
+    wait_for_tunnel_listeners(port)
+
+    if rule_mode == "added":
+        _add_temporary_dns_final_rule(client)
+        wait_for_tunnel_listeners(port)
+        print("PASS: diagnostic finalRule was added and verified.")
+    else:
+        print("PASS: existing matching finalRule is reused and will be preserved.")
+
+    print(
+        f"PASS: diagnostic Tunnel created and retained (inbound ID {inbound_id}, "
+        f"loopback port {port}, rule mode {rule_mode})."
+    )
+    print("No DNS test was run and no diagnostic record was deleted.")
+    return 0
+
+
+def command_tunnel_test(args, client: PanelAPI) -> int:
+    """Test an existing diagnostic Tunnel without changing any panel records."""
+    resources = discover_temporary_leftovers(client)
+    if len(resources) != 1:
+        raise IntegrationError(
+            f"Expected exactly one diagnostic Tunnel, found {len(resources)}; "
+            "create one with 'tunnel create' first."
+        )
+    resource = resources[0]
+    run_tunnel_dns_self_test(
+        resource["port"],
+        getattr(args, "plugin_status_url", DEFAULT_PLUGIN_STATUS_URL),
+    )
+    print("PASS: diagnostic Tunnel test completed; Tunnel and rule were left untouched.")
+    return 0
+
+
+def command_tunnel_status(args, client: PanelAPI) -> int:
+    """Read-only status of diagnostic Tunnel resources."""
+    resources = discover_temporary_leftovers(client)
+    state = client.read_state()
+    rule_count = _temporary_final_rule_count(state["xraySetting"])
+    print("Directive: TUNNEL STATUS (read-only)")
+    if not resources:
+        print("No diagnostic Tunnel inbound exists.")
+    for resource in resources:
+        print(
+            f"Tunnel: inbound ID {resource['inbound_id']}, loopback port {resource['port']}, "
+            f"rule mode {resource['rule_mode']}, marker {resource['expected']['remark']}"
+        )
+    print(f"Matching temporary finalRule count: {rule_count}")
+    if rule_count and not any(item["rule_mode"] == "added" for item in resources):
+        print("NOTICE: matching rule is not owned by a current diagnostic Tunnel; it will be preserved.")
+    print("Read-only status: no panel mutation was sent.")
+    return 0
+
+
+def command_tunnel_remove(args, client: PanelAPI) -> int:
+    """Explicitly remove diagnostic resources created by tunnel create."""
+    resources = discover_temporary_leftovers(client)
+    if not resources:
+        print("No owned diagnostic Tunnel exists; no records were removed.")
+        return 0
+    confirm_restart("tunnel remove", args.approve_restart)
+    cleanup_temporary_leftovers(client)
+    print("PASS: explicitly requested diagnostic Tunnel cleanup completed.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Reconcile LucX-UI DoH integration from live panel state"
@@ -2624,8 +2599,20 @@ def main() -> int:
         "--plan-only", action="store_true",
         help="Print the selected directive's live-state plan without panel writes",
     )
-    parser.add_argument("action", choices=("integrate", "remove"))
+    parser.add_argument(
+        "action", nargs="+",
+        help="integrate | remove | tunnel create|test|status|remove",
+    )
     args = parser.parse_args()
+    action = tuple(args.action)
+    if action not in {
+        ("integrate",), ("remove",),
+        ("tunnel", "create"), ("tunnel", "test"),
+        ("tunnel", "status"), ("tunnel", "remove"),
+    }:
+        parser.error("choose integrate, remove, or tunnel {create,test,status,remove}")
+    if args.plan_only and action not in {("integrate",), ("remove",)}:
+        parser.error("--plan-only applies only to integrate/remove")
 
     try:
         if os.geteuid() != 0:
@@ -2692,9 +2679,10 @@ def main() -> int:
         if endpoint.host_header:
             print("Panel domain validation: configured Host header and TLS SNI will be used.")
 
-        if args.action == "integrate" and not args.plan_only:
+        if action in {("integrate",), ("tunnel", "test")} and not args.plan_only:
             check_plugin_health(args.plugin_service, args.plugin_status_url, args.plugin_port)
-        check_xray_compatibility(args.xray_bin)
+        if action in {("integrate",), ("remove",)}:
+            check_xray_compatibility(args.xray_bin)
 
         token = resolve_panel_api_token(Path(args.panel_auth_file))
         client = PanelAPI(
@@ -2704,7 +2692,17 @@ def main() -> int:
             tls_server_name=endpoint.tls_server_name,
             tls_verify_ip=endpoint.tls_verify_ip,
         )
-        return command_integrate(args, client) if args.action == "integrate" else command_remove(args, client)
+        if action == ("integrate",):
+            return command_integrate(args, client)
+        if action == ("remove",):
+            return command_remove(args, client)
+        if action == ("tunnel", "create"):
+            return command_tunnel_create(args, client)
+        if action == ("tunnel", "test"):
+            return command_tunnel_test(args, client)
+        if action == ("tunnel", "status"):
+            return command_tunnel_status(args, client)
+        return command_tunnel_remove(args, client)
     except IntegrationError as exc:
         print("ERROR:", exc, file=sys.stderr)
         return 2
