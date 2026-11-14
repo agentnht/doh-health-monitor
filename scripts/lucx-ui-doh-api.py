@@ -1796,12 +1796,27 @@ def _add_temporary_dns_final_rule(client: PanelAPI) -> None:
     config = copy.deepcopy(state["xraySetting"])
     direct = _direct_freedom_outbound(config)
     rules = _temporary_final_rules(config)
-    if any(canonical(item) == canonical(TEMP_DNS_FINAL_RULE) for item in rules):
+    matches = [
+        index for index, item in enumerate(rules)
+        if canonical(item) == canonical(TEMP_DNS_FINAL_RULE)
+    ]
+    if len(matches) > 1:
         raise IntegrationError(
-            "Temporary finalRule appeared after the test plan was built; refusing to claim it"
+            "Multiple identical temporary finalRules exist; refusing ambiguous repair"
         )
-    insert_at = _temporary_dns_allow_insert_index(rules)
-    rules.insert(insert_at, copy.deepcopy(TEMP_DNS_FINAL_RULE))
+    if matches:
+        # This exact rule is the diagnostic exception. If an earlier version
+        # appended it after geoip:private, move only this rule before the first
+        # matching block; retain every other operator rule and its relative order.
+        current_index = matches[0]
+        if _temporary_dns_allow_precedes_blocks(rules):
+            return
+        rule = rules.pop(current_index)
+        insert_at = _temporary_dns_allow_insert_index(rules)
+        rules.insert(insert_at, rule)
+    else:
+        insert_at = _temporary_dns_allow_insert_index(rules)
+        rules.insert(insert_at, copy.deepcopy(TEMP_DNS_FINAL_RULE))
     direct["settings"]["finalRules"] = rules
     client.update(config, state["outboundTestUrl"])
     after = client.read_state()
@@ -2516,29 +2531,28 @@ def command_tunnel_create(args, client: PanelAPI) -> int:
     rule_count = _temporary_final_rule_count(state["xraySetting"])
     if rule_count > 1:
         raise IntegrationError("Multiple matching temporary finalRules exist; refusing ambiguous Tunnel creation")
-    if rule_count == 1 and not _temporary_dns_allow_precedes_blocks(
-        _temporary_final_rules(state["xraySetting"])
-    ):
-        raise IntegrationError(
-            "An exact matching temporary finalRule exists, but a blocking finalRule precedes it; "
-            "refusing to treat this rule as usable or reorder a pre-existing rule."
-        )
     rule_mode = "reused" if rule_count == 1 else "added"
+    rules_need_repair = (
+        rule_count == 1
+        and not _temporary_dns_allow_precedes_blocks(_temporary_final_rules(state["xraySetting"]))
+    )
     port = choose_temporary_tunnel_port(client.list_inbounds())
     expected = build_temporary_tunnel(port, rule_mode=rule_mode)
 
     confirm_restart("tunnel create", args.approve_restart)
+    if rule_mode == "added" or rules_need_repair:
+        _add_temporary_dns_final_rule(client)
     created = client.add_inbound(expected)
     inbound_id = created["id"]
     verify_temporary_tunnel(client.list_inbounds(), expected, inbound_id)
     wait_for_tunnel_listeners(port)
 
     if rule_mode == "added":
-        _add_temporary_dns_final_rule(client)
-        wait_for_tunnel_listeners(port)
-        print("PASS: diagnostic finalRule was added and verified.")
+        print("PASS: diagnostic DNS allow finalRule was added before matching blocks.")
+    elif rules_need_repair:
+        print("PASS: existing diagnostic DNS allow finalRule was moved before matching blocks; all other rules were preserved.")
     else:
-        print("PASS: existing matching finalRule is reused and will be preserved.")
+        print("PASS: existing matching finalRule is already before matching blocks and was reused.")
 
     print(
         f"PASS: diagnostic Tunnel created and retained (inbound ID {inbound_id}, "
