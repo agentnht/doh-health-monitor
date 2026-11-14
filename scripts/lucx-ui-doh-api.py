@@ -928,6 +928,75 @@ def _ip_values(value: object) -> list[str]:
     return []
 
 
+def _final_rule_may_block_temporary_dns(rule: dict) -> bool:
+    """Whether an earlier Freedom block rule could match 127.0.0.1:5355."""
+    if rule.get("action") != "block":
+        return False
+
+    networks = _as_tokens(rule.get("network"))
+    if networks and not networks.intersection({"tcp", "udp"}):
+        return False
+
+    if "port" in rule:
+        port = rule.get("port")
+        if not _port_contains(port, 5355):
+            # A well-formed, non-matching port selector cannot block this
+            # endpoint. Unknown syntax is treated conservatively as a match.
+            if isinstance(port, bool) or isinstance(port, (int,)):
+                return False
+            if isinstance(port, str) and re.fullmatch(
+                r"\s*\d+(?:\s*-\s*\d+)?(?:\s*,\s*\d+(?:\s*-\s*\d+)?)*\s*",
+                port,
+            ):
+                return False
+
+    # An omitted IP selector matches every destination. For explicit selectors,
+    # recognize loopback/private geodata and CIDRs containing 127.0.0.1.
+    # Unknown selector formats are treated as potentially matching so we never
+    # place the temporary allow after a block that might shadow it.
+    if "ip" not in rule:
+        return True
+    values = _ip_values(rule.get("ip"))
+    if not values:
+        return True
+    target = ipaddress.ip_address("127.0.0.1")
+    for value in values:
+        selector = value.strip().lower()
+        if selector.startswith(("geoip:", "ext:")):
+            return True
+        try:
+            if target in ipaddress.ip_network(selector, strict=False):
+                return True
+        except ValueError:
+            return True
+    return False
+
+
+def _temporary_dns_allow_insert_index(rules: list[dict]) -> int:
+    """Place the temporary allow immediately before the first matching block."""
+    for index, rule in enumerate(rules):
+        if _final_rule_may_block_temporary_dns(rule):
+            return index
+    # If no explicit rule blocks this target, the allow can follow user rules
+    # and still precedes Xray's built-in default private-IP safety rule.
+    return len(rules)
+
+
+def _temporary_dns_allow_precedes_blocks(rules: list[dict]) -> bool:
+    """Verify that no explicit block capable of matching the test target wins first."""
+    matches = [
+        index for index, rule in enumerate(rules)
+        if canonical(rule) == canonical(TEMP_DNS_FINAL_RULE)
+    ]
+    if len(matches) != 1:
+        return False
+    allow_index = matches[0]
+    return not any(
+        _final_rule_may_block_temporary_dns(rule)
+        for rule in rules[:allow_index]
+    )
+
+
 def _is_api_rule(rule: dict) -> bool:
     if rule.get("outboundTag") != "api":
         return False
@@ -1806,7 +1875,8 @@ def install_temporary_dns_final_rule(
         raise IntegrationError(
             "Temporary DNS finalRule is already present after permanent-config normalization; refusing to claim ownership"
         )
-    rules.append(copy.deepcopy(TEMP_DNS_FINAL_RULE))
+    insert_at = _temporary_dns_allow_insert_index(rules)
+    rules.insert(insert_at, copy.deepcopy(TEMP_DNS_FINAL_RULE))
     settings["finalRules"] = rules
     # Mark ownership only after the existing-rule guard, immediately before
     # the API write. If the API response is lost after commit, finally cleanup
@@ -1817,11 +1887,15 @@ def install_temporary_dns_final_rule(
     after = client.get_snapshot()
     after_direct = _direct_freedom_outbound(after["xraySetting"])
     after_rules = after_direct["settings"].get("finalRules", [])
-    if not isinstance(after_rules, list) or sum(
-        1 for item in after_rules
-        if isinstance(item, dict) and canonical(item) == canonical(TEMP_DNS_FINAL_RULE)
-    ) != 1:
-        raise IntegrationError("Panel read-back did not confirm the temporary DNS finalRule")
+    if (
+        not isinstance(after_rules, list)
+        or any(not isinstance(item, dict) for item in after_rules)
+        or not _temporary_dns_allow_precedes_blocks(after_rules)
+    ):
+        raise IntegrationError(
+            "Panel read-back did not confirm the temporary DNS allow rule precedes "
+            "all matching Freedom block rules"
+        )
 
 
 def cleanup_temporary_dns_final_rule(client: PanelAPI, final_rule: dict) -> bool:
