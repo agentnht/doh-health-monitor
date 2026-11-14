@@ -42,7 +42,12 @@ from urllib.request import HTTPSHandler, Request, build_opener, urlopen
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
-from xray_dns_planner import build_dns_plan, _outbound_matches_dns_endpoint, _server_endpoint
+from xray_dns_planner import (
+    build_dns_plan,
+    _outbound_matches_dns_endpoint,
+    _server_endpoint,
+    DNS_FINAL_ALLOW_RULE_TEMPLATE,
+)
 
 VERSION = "1.6.0"
 DEFAULT_PLUGIN_SERVICE = "lucx-plugin-doh-health-monitor"
@@ -85,15 +90,9 @@ TEMP_DNS_FINAL_RULE = {
     "port": "5355",
     "ip": ["127.0.0.1"],
 }
-# Permanent Freedom exception for the DNS outbound's local UDP/TCP endpoint.
-# The array spelling is intentionally distinct from TEMP_DNS_FINAL_RULE so
-# temporary cleanup can never mistake the persistent integration rule for its own.
-DNS_FINAL_ALLOW_RULE = {
-    "action": "allow",
-    "network": ["tcp", "udp"],
-    "port": "5355",
-    "ip": ["127.0.0.1"],
-}
+# Kept separate from TEMP_DNS_FINAL_RULE, whose network value is a string;
+# this imported template is the persistent, permanent DNS endpoint exception.
+DNS_FINAL_ALLOW_RULE = DNS_FINAL_ALLOW_RULE_TEMPLATE
 
 
 class IntegrationError(RuntimeError):
@@ -1238,7 +1237,7 @@ def _direct_freedom_outbound(config: dict) -> dict:
     all_direct = [item for item in outbounds if item.get("tag") == "direct"]
     if len(matches) != 1 or len(all_direct) != 1:
         raise IntegrationError(
-            "Temporary DNS finalRule requires exactly one direct freedom outbound"
+            "DNS integration requires exactly one direct outbound using protocol freedom"
         )
     settings = matches[0].get("settings")
     if settings is None:
@@ -1339,7 +1338,7 @@ def build_plan(original: dict, *, require_api_rule: bool = True) -> Plan:
             return plan
 
     try:
-        semantic = build_dns_plan(cfg)
+        semantic = build_dns_plan(cfg, require_direct_freedom=require_api_rule)
     except (ValueError, TypeError) as exc:
         plan.blockers.append(f"Xray DNS inventory failed: {exc}")
         return plan
@@ -1351,14 +1350,15 @@ def build_plan(original: dict, *, require_api_rule: bool = True) -> Plan:
     if plan.blockers:
         return plan
 
-    try:
-        if _ensure_permanent_dns_final_rule(plan.proposed):
-            plan.changes.append(
-                "ADD direct.settings.finalRules allow for 127.0.0.1:5355 before matching private-IP blocks"
-            )
-    except IntegrationError as exc:
-        plan.blockers.append(str(exc))
-        return plan
+    if require_api_rule:
+        try:
+            if _ensure_permanent_dns_final_rule(plan.proposed):
+                plan.changes.append(
+                    "ADD direct.settings.finalRules allow for 127.0.0.1:5355 before matching private-IP blocks"
+                )
+        except IntegrationError as exc:
+            plan.blockers.append(str(exc))
+            return plan
 
     proposed = plan.proposed
     outbounds = object_list(proposed, "outbounds", "outbounds")
