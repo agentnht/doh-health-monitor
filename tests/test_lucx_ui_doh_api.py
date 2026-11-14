@@ -2318,21 +2318,30 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
         self.assertEqual(client.deleted, [10])
         self.assertEqual(api_tool._temporary_final_rule_count(client.state["xraySetting"]), 0)
 
-    def test_cleanup_preserves_rule_when_direct_outbound_has_external_route_reference(self):
+    def test_cleanup_removes_reused_rule_even_with_panel_dns_allow_route(self):
         client = self.FakeClient(existing_rule=True)
         expected = api_tool.build_temporary_tunnel(15353, "a1b2c3d4e5f60718", rule_mode="reused")
         inbound = copy.deepcopy(expected)
         inbound.update({"id": 10, "tag": "temporary-10"})
         client.inbounds = [inbound]
         client.state["xraySetting"]["routing"]["rules"].append({
-            "type": "field", "ip": ["127.0.0.1"], "port": "5355", "outboundTag": "direct"
+            "type": "field",
+            "ip": ["127.0.0.1"],
+            "port": "5355",
+            "outboundTag": "direct",
+            "ruleTag": "xui-dns-allow",
         })
 
         with patch.object(api_tool, "wait_for_tunnel_port_closed"):
             api_tool.cleanup_temporary_leftovers(client)
 
         self.assertEqual(client.inbounds, [])
-        self.assertEqual(api_tool._temporary_final_rule_count(client.state["xraySetting"]), 1)
+        self.assertEqual(api_tool._temporary_final_rule_count(client.state["xraySetting"]), 0)
+        # The panel-managed routing rule is not part of the diagnostic cleanup plan.
+        self.assertEqual(
+            client.state["xraySetting"]["routing"]["rules"][-1]["ruleTag"],
+            "xui-dns-allow",
+        )
 
     def test_cleanup_removes_rule_when_direct_route_cannot_match_final_rule_endpoint(self):
         client = self.FakeClient(existing_rule=True)
