@@ -207,6 +207,7 @@ class RemovePlannerTests(unittest.TestCase):
         plan = api_tool.build_remove_plan(config)
 
         self.assertEqual(plan.dns_server_indexes, [])
+        self.assertEqual(plan.direct_final_rule_indexes, [])
         self.assertTrue(any("dns.rules[0].server" in item for item in plan.blockers))
 
     def test_blocking_scoped_dns_endpoint_stops_remove_planning(self):
@@ -292,7 +293,7 @@ class RemovePlannerTests(unittest.TestCase):
         self.assertEqual(len(client.updates), 1)
         self.assertEqual(client.reads, 2)  # one plan read plus one verified read-back
 
-    def test_remove_preserves_direct_outbound_and_all_final_rules(self):
+    def test_remove_preserves_direct_but_deletes_unshared_loopback_allow(self):
         class FakePanel:
             def __init__(self, config):
                 self.state = {
@@ -313,6 +314,7 @@ class RemovePlannerTests(unittest.TestCase):
         expected_final_rules = [
             copy.deepcopy(api_tool.TEMP_DNS_FINAL_RULE),
             {"action": "block", "ip": ["geoip:private"]},
+            {"action": "allow"},
         ]
         direct = next(item for item in config["outbounds"] if item.get("tag") == "direct")
         direct["settings"]["finalRules"] = copy.deepcopy(expected_final_rules)
@@ -324,10 +326,17 @@ class RemovePlannerTests(unittest.TestCase):
         final = client.state["xraySetting"]
         direct_after = next(item for item in final["outbounds"] if item.get("tag") == "direct")
         self.assertEqual(direct_after["protocol"], "freedom")
-        self.assertEqual(direct_after["settings"]["finalRules"], expected_final_rules)
+        self.assertEqual(
+            direct_after["settings"]["finalRules"],
+            expected_final_rules[1:],
+        )
         self.assertFalse(any(item.get("tag") == "dns-out" for item in final["outbounds"]))
         self.assertEqual(final["dns"]["servers"], [])
         self.assertFalse(any(api_tool._global_port53_rule(item) for item in final["routing"]["rules"]))
+        self.assertFalse(any(
+            item.get("ruleTag") == api_tool.DNS_ALLOW_TAG
+            for item in final["routing"]["rules"]
+        ))
 
     def test_remove_does_not_mutate_when_desired_plan_is_blocked(self):
         class FakePanel:
