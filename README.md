@@ -100,7 +100,7 @@ $LUCX_PLUGIN_DATA/gemini_api_key
 5. Посмотрите журнал плагина. Нормальный старт содержит строки примерно такого вида:
 
 ```text
-level=INFO START id=doh-health-monitor version=2.0.1 arch=amd64 data=...
+level=INFO START id=doh-health-monitor version=2.1.0 arch=amd64 data=...
 level=INFO CONFIG loaded ... gemini_api=false
 level=INFO EVENT_SOCKET listening ...
 level=INFO READY DNS=127.0.0.1:5355/127.0.0.1:5355 HTTP=127.0.0.1:18765
@@ -112,14 +112,14 @@ level=INFO READY DNS=127.0.0.1:5355/127.0.0.1:5355 HTTP=127.0.0.1:18765
 
 - Этот ZIP содержит бинарник только `linux/amd64`.
 - `permissions.network` пустой массив: плагину разрешена сеть для DoH и HTTPS health-check. Не устанавливайте `network: ["none"]`.
-- `panelApi` не запрашивается: плагин не изменяет Xray через API.
+- `panelApi` grant не запрашивается: scoped-токен плагина не имеет доступа к `/xray/`; только явные `integrate`/`remove` используют локальный admin credential, получаемый в момент выполнения команды.
 - Listener-ы по умолчанию привязаны только к `127.0.0.1`.
 
 ## 5. Конфигурация плагина
 
 ### 5.1 `config.json`
 
-Это основной файл настроек. Профиль Google, upstream IDs, bootstrap DNS resolvers, резервные IP, тайминги, пороги, кэш, listener-ы и флаг Gemini API находятся здесь.
+Это основной файл настроек. Профиль Google, upstream IDs, bootstrap DNS resolvers, резервные IP, тайминги, пороги, кэш, listener-ы и флаг Gemini API находятся здесь. Поле `integration` управляется командами Go CLI: после успешного `integrate` оно становится `true`, после успешного `remove` — `false`; вручную изменять его не требуется.
 
 Образец `examples/config.example.json` доступен в GitHub-репозитории, но не входит в ZIP. При первом старте плагин создаёт реальный `config.json` из встроенного шаблона. Обычно достаточно редактировать созданный файл.
 

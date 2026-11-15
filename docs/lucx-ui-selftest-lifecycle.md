@@ -35,11 +35,11 @@ The diagnostic Tunnel and temporary allow finalRule are internal resources used 
 Run on the LucX-UI VPS as root:
 
 ```bash
-sudo python3 scripts/lucx-ui-doh-api.py integrate
-sudo python3 scripts/lucx-ui-doh-api.py remove
+sudo /usr/local/x-ui/bin/plugins/doh-health-monitor/bin/doh-health-monitor integrate
+sudo /usr/local/x-ui/bin/plugins/doh-health-monitor/bin/doh-health-monitor remove
 ```
 
-There is no `--plan-only` option. A panel update may automatically restart Xray; the adapter prints a NOTICE and does not ask for interactive confirmation. The legacy `--approve-restart` flag is not required.
+There is no `--plan-only` option and no separate Tunnel command. Admin API credential lookup/reuse happens only during these explicit invocations. Each command appends detailed output to the plugin's `plugin.log` as well as stdout. After a fully successful `integrate`, the Go CLI atomically sets `integration: true` in `$LUCX_PLUGIN_DATA/config.json`; successful `remove` sets it to `false`. On errors the flag is left unchanged. A panel update may automatically restart Xray; the adapter prints a NOTICE and does not ask for interactive confirmation. No automatic integration on daemon start or automatic remove on plugin deletion is implemented.
 
 ## Safety boundaries
 
@@ -52,4 +52,4 @@ There is no `--plan-only` option. A panel update may automatically restart Xray;
 
 ## Validation
 
-Staging validation completed on 2026-11-15 with LucX-UI `3.11.0-lucx.357` and Xray `26.10.21`: Integrate passed positive UDP and TCP DNS A-answer tests, then removed the diagnostic finalRule and Tunnel inbound with panel API read-back. A subsequent Remove removed only the permanent DNS route, outbound, and DNS server. The baseline code commit `db40f1c6f16cf6743b9deba32075420a84fc48e7` passed both DoH integration tests and Go CI. The follow-up change that removes the standalone staging CLI commands is validated separately by its own CI.
+Staging validation of the earlier Python prototype completed on 2026-11-15 with LucX-UI `3.11.0-lucx.357` and Xray `26.10.21`: Integrate passed positive UDP and TCP DNS A-answer tests and cleaned up the diagnostic finalRule/Tunnel; a subsequent Remove removed only the permanent DNS route, outbound, and DNS server. The Go port at `9821debd95a0e3c56c4c3870b02a88e8a00ff339` passed GitHub CI (Go vet/tests, static Linux/amd64 build, Python regression suite, and shell syntax), but has not yet been run on the VPS.

@@ -1,16 +1,20 @@
 # LucX-UI / DoH Health Monitor integration notes
 
-This document records the integration and removal model for the
-DoH Health Monitor 2.0.1 release line. Panel operations are planned from live
-state; this document is guidance, not authorization to change a production panel.
+This document records the integration and removal model for DoH Health Monitor
+2.1.0. Runtime integration is implemented in the plugin's Go binary and is
+available only through explicit `integrate` and `remove` commands. Starting the
+DNS daemon does not modify panel configuration. This document is guidance, not
+authorization to change a production panel.
 
-## Validated target environment
+## Previously validated staging environment
 
-The target panel reported `3.11.0-lucx.357` (`/usr/local/x-ui/x-ui -v`). The
-corresponding LucX-UI source tag was inspected for API and Xray-setting behavior.
-The installed binary checksum was recorded separately during troubleshooting;
-this repository does not claim a cryptographic match between that binary and
-the source tag.
+The Python integration prototype was tested on 2026-11-15 against a staging
+LucX-UI `3.11.0-lucx.357` panel and Xray `26.10.21`. This version is not a
+compatibility pin for the Go implementation: it does not compare LucX-UI/Xray
+version numbers, but validates live API responses, Xray settings structure,
+and read-back. The `.357` sources were inspected as one reference for panel API
+behavior, not as a required target release. The Go port has passed CI; its live
+VPS validation is still pending.
 
 Observed deployment values:
 
@@ -185,7 +189,7 @@ The automated suite covers semantic reuse, nonstandard outbound tags, unique
  planning. GitHub Actions must pass on the current PR head before this refactor
  is treated as CI-verified.
 
-At head commit `0b355bfe155e135d7b4cbe0904d3f4062f225208`, both GitHub Actions workflows passed: the DoH integration-test workflow (Python compilation and full unittest suite) and the general Go CI workflow (go vet, go test, and Linux amd64 build). The new end-to-end cycle on the staging VPS (`integrate` → UDP/TCP self-test → `remove`) has not yet been run; earlier manual Tunnel success does not validate this revised integration path.
+At Go head commit `9821debd95a0e3c56c4c3870b02a88e8a00ff339`, both GitHub Actions workflows passed: `go vet ./...`, `go test ./...`, static Linux/amd64 build with `CGO_ENABLED=0`, the Python regression suite, and `bash -n`. The earlier Python prototype completed staging `integrate` → UDP/TCP self-test → `remove` on 2026-11-15; the Go binary has not yet been run through that live VPS cycle.
 
 
 
