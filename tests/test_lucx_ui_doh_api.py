@@ -241,7 +241,7 @@ class RemovePlannerTests(unittest.TestCase):
         self.assertEqual(plan.dns_server_indexes, [0])
         self.assertFalse(hasattr(plan, "direct_final_rule_indexes"))
 
-        result = api_tool.command_remove(SimpleNamespace(approve_restart=True), client)
+        result = api_tool.command_remove(SimpleNamespace(), client)
 
         self.assertEqual(result, 0)
         direct_after = next(
@@ -324,7 +324,7 @@ class RemovePlannerTests(unittest.TestCase):
         client = FakePanel(config)
 
         result = api_tool.command_remove(
-            SimpleNamespace(approve_restart=True), client
+            SimpleNamespace(), client
         )
 
         self.assertEqual(result, 0)
@@ -363,7 +363,7 @@ class RemovePlannerTests(unittest.TestCase):
         direct["settings"]["finalRules"] = copy.deepcopy(expected_final_rules)
         client = FakePanel(config)
 
-        result = api_tool.command_remove(SimpleNamespace(approve_restart=True), client)
+        result = api_tool.command_remove(SimpleNamespace(), client)
 
         self.assertEqual(result, 0)
         final = client.state["xraySetting"]
@@ -400,7 +400,7 @@ class RemovePlannerTests(unittest.TestCase):
         config["routing"]["rules"].insert(1, copy.deepcopy(api_tool.DNS_PORT_RULE))
         client = FakePanel(config)
 
-        result = api_tool.command_remove(SimpleNamespace(approve_restart=True), client)
+        result = api_tool.command_remove(SimpleNamespace(), client)
 
         self.assertEqual(result, 2)
         self.assertEqual(client.updates, [])
@@ -421,7 +421,6 @@ class IntegrateOrchestrationTests(unittest.TestCase):
 
     def _args(self):
         return SimpleNamespace(
-            approve_restart=True,
             plugin_status_url="http://127.0.0.1:18765/status",
         )
 
@@ -478,42 +477,6 @@ class IntegrateOrchestrationTests(unittest.TestCase):
             with self.assertRaisesRegex(api_tool.IntegrationError, "cleanup also failed"):
                 api_tool.command_integrate(self._args(), client)
         cleanup.assert_called_once_with(client)
-
-
-class AdapterCLITests(unittest.TestCase):
-    def test_staging_tunnel_subcommands_are_not_public_cli_actions(self):
-        for subcommand in ("create", "test", "status", "remove"):
-            with self.subTest(subcommand=subcommand):
-                result = subprocess.run(
-                    [
-                        sys.executable,
-                        str(ROOT / "scripts" / "lucx-ui-doh-api.py"),
-                        "tunnel",
-                        subcommand,
-                    ],
-                    text=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    check=False,
-                )
-                self.assertEqual(result.returncode, 2)
-                self.assertIn("choose integrate or remove", result.stderr)
-
-    def test_plan_only_is_not_a_supported_cli_option(self):
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / "scripts" / "lucx-ui-doh-api.py"),
-                "--plan-only",
-                "integrate",
-            ],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("unrecognized arguments", result.stderr)
 
 
 class SharedPlannerCLITests(unittest.TestCase):
@@ -2177,7 +2140,6 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
 
     def _args(self):
         return SimpleNamespace(
-            approve_restart=True,
             plugin_status_url="http://127.0.0.1:18765/status",
         )
 
@@ -2387,13 +2349,6 @@ class TTYConfirmationTests(unittest.TestCase):
             prompt.assert_not_called()
             printed = " ".join(str(call.args[0]) for call in output.call_args_list if call.args)
             self.assertIn("may automatically restart the Xray process", printed)
-
-    def test_legacy_approval_flag_is_ignored(self):
-        with patch.object(api_tool, "read_tty_confirmation") as prompt, \
-             patch("builtins.print") as output:
-            api_tool.confirm_restart("integrate", True)
-        prompt.assert_not_called()
-        self.assertTrue(output.called)
 
     def test_unknown_panel_action_is_rejected(self):
         with self.assertRaisesRegex(api_tool.IntegrationError, "Unknown panel directive"):

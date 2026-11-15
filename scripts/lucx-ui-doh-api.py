@@ -2030,9 +2030,8 @@ def run_tunnel_dns_self_test(port: int, status_url: str) -> None:
     print("TCP A answers:", ", ".join(tcp_answers))
     print("PASS: UDP and TCP DNS queries through the diagnostic Tunnel succeeded.")
 
-def confirm_restart(action: str, approved_flag: bool = False) -> None:
+def confirm_restart(action: str) -> None:
     """Inform the operator about a possible panel-triggered Xray restart; never prompt."""
-    del approved_flag  # Kept for CLI/API compatibility; confirmation is no longer required.
     if action not in {"integrate", "remove"}:
         raise IntegrationError("Unknown panel directive")
     print()
@@ -2390,7 +2389,7 @@ def command_integrate(args, client: PanelAPI) -> int:
     )
     existing_diagnostics = discover_temporary_leftovers(client)
     if needs_panel_update or not existing_diagnostics:
-        confirm_restart("integrate", args.approve_restart)
+        confirm_restart("integrate")
 
     if needs_panel_update:
         state = _apply_panel_update(
@@ -2453,7 +2452,7 @@ def command_remove(args, client: PanelAPI) -> int:
         print("Remove complete: no unshared resources selected by the Integrate plan need removal.")
         return 0
 
-    confirm_restart("remove", args.approve_restart)
+    confirm_restart("remove")
     config = copy.deepcopy(state["xraySetting"])
 
     routing = config.get("routing")
@@ -2595,10 +2594,6 @@ def main() -> int:
         help="TLS identity mode for explicit/overridden endpoints",
     )
     parser.add_argument("--tls-name", help="Expected certificate IP or DNS name")
-    parser.add_argument(
-        "--approve-restart", action="store_true",
-        help="Deprecated compatibility flag; panel changes now print a restart notice without prompting",
-    )
     parser.add_argument(
         "action", nargs="+",
         help="integrate | remove",
