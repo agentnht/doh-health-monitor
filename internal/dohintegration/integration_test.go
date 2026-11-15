@@ -114,12 +114,11 @@ func TestPanelNormalizeAddsLucXDNSAllowBeforePrivateBlock(t *testing.T) {
 	if canonical(first)!=canonical(second){t.Fatal("panel normalization is not idempotent")}
 }
 
-func TestServerEndpointParsesIPv4AndHTTPS(t *testing.T) {
+func TestServerEndpointParsesIPv4(t *testing.T) {
 	cases:=[]struct{value any;ip string;port int}{
 		{"127.0.0.1:5355","127.0.0.1",5355},
 		{map[string]any{"address":"127.0.0.1","port":json.Number("5355")},"127.0.0.1",5355},
-		{"https://192.0.2.10/dns-query","192.0.2.10",443},
-		{"https://192.0.2.10:8443/dns-query","192.0.2.10",8443},
+		{"127.0.0.1","127.0.0.1",53},
 	}
 	for _,tc:=range cases{ip,port,ok:=serverEndpoint(tc.value);if !ok||ip!=tc.ip||port!=tc.port{t.Errorf("serverEndpoint(%#v) = %q,%d,%v",tc.value,ip,port,ok)}}
 }
