@@ -111,15 +111,7 @@ requires `--tls-mode ip --tls-name IP` or
 `--tls-mode domain --tls-name DOMAIN`; local HTTP can be selected with
 `--tls-mode http`. No mode disables TLS chain verification. Pass
 `--panel-db` for a non-default SQLite location, or `--base-url` explicitly
-for PostgreSQL and other nonstandard deployments. The local Xray core version is detected for diagnostics only. An unlisted or
-unavailable version is reported as a notice and does not block execution. The
-LucX-UI version is also informational. Compatibility is assessed through the
-actual panel API response, configuration structure, conflict checks, and
-read-back verification rather than a hard-coded core-version allowlist.
-Compatibility is detected by API behavior and response shape, not by a
-hard-coded LucX-UI version allowlist: the adapter must successfully read the
-Xray settings endpoint, decode `xraySetting`, preserve `outboundTestUrl`, and
-validate the configuration structure understood by its planner. Unknown or
+for PostgreSQL and other nonstandard deployments. The adapter does not invoke LucX-UI or Xray version commands and does not use version numbers or version allowlists as a compatibility check. Compatibility is assessed from the live panel API response, configuration structure, conflict checks, and read-back verification. The adapter must successfully read the Xray settings endpoint, decode `xraySetting`, preserve `outboundTestUrl`, and validate the configuration structure understood by its planner. Unknown or
 missing fields are a hard stop. The write/update endpoint cannot be safely
 probed without changing panel state; therefore the adapter does not expose a preview-only CLI mode. The update contract
 is validated by applying the selected plan and verifying the live read-back. An unrecognized API response or
