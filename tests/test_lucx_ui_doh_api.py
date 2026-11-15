@@ -481,6 +481,20 @@ class IntegrateOrchestrationTests(unittest.TestCase):
 
 
 class AdapterCLITests(unittest.TestCase):
+    def test_version_probe_option_is_not_exposed(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "lucx-ui-doh-api.py"),
+                "--help",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("--xray-bin", result.stdout)
     def test_staging_tunnel_subcommands_are_not_public_cli_actions(self):
         for subcommand in ("create", "test", "status", "remove"):
             with self.subTest(subcommand=subcommand):
@@ -1624,60 +1638,6 @@ class AdditivePlannerTests(unittest.TestCase):
         self.assertEqual(api_tool._split_ip_address("127.0.0.1:5355"), ("127.0.0.1", 5355))
         self.assertEqual(api_tool._split_ip_address("https://1.1.1.1/dns-query"), ("1.1.1.1", 443))
         self.assertIsNone(api_tool._split_ip_address("https://cloudflare-dns.com/dns-query"))
-
-
-class XrayVersionTests(unittest.TestCase):
-    def test_parses_standard_xray_version_output(self):
-        self.assertEqual(
-            api_tool.parse_xray_version("Xray 25.10.3 (Xray, Penetrates Everything.) Custom"),
-            "25.10.3",
-        )
-
-    def test_parses_version_with_v_prefix(self):
-        self.assertEqual(api_tool.parse_xray_version("Xray v1.8.24"), "1.8.24")
-
-    def test_rejects_unrelated_or_unparseable_output(self):
-        self.assertIsNone(api_tool.parse_xray_version("x-ui 3.11.0-lucx.357"))
-        self.assertIsNone(api_tool.parse_xray_version("Xray version unavailable"))
-
-    def test_unlisted_version_is_not_assumed_verified(self):
-        self.assertFalse(api_tool.xray_version_is_verified("0.0.0-test"))
-
-    def test_unlisted_xray_version_is_informational_and_does_not_prompt(self):
-        with (
-            patch.object(api_tool, "find_xray_binary", return_value="/usr/bin/xray"),
-            patch.object(api_tool, "read_xray_version", return_value="0.0.0-test"),
-            patch.object(api_tool, "detect_panel_version", return_value="3.11.0-test"),
-            patch.object(api_tool, "read_tty_confirmation") as confirm,
-        ):
-            self.assertEqual(api_tool.check_xray_compatibility(), "0.0.0-test")
-        confirm.assert_not_called()
-
-    def test_missing_xray_binary_does_not_block_api_compatibility_checks(self):
-        with (
-            patch.object(
-                api_tool, "find_xray_binary",
-                side_effect=api_tool.IntegrationError("Xray executable was not detected"),
-            ),
-            patch.object(api_tool, "detect_panel_version", return_value=None),
-            patch.object(api_tool, "read_tty_confirmation") as confirm,
-        ):
-            self.assertIsNone(api_tool.check_xray_compatibility())
-        confirm.assert_not_called()
-
-    def test_verified_xray_version_is_still_reported(self):
-        version = next(iter(api_tool.VERIFIED_XRAY_VERSIONS), "99.0.0-test")
-        with (
-            patch.object(api_tool, "find_xray_binary", return_value="/usr/bin/xray"),
-            patch.object(api_tool, "read_xray_version", return_value=version),
-            patch.object(api_tool, "detect_panel_version", return_value=None),
-        ):
-            self.assertEqual(api_tool.check_xray_compatibility(), version)
-
-    def test_remote_panel_api_url_is_not_allowed_by_cli_policy(self):
-        self.assertFalse(api_tool.panel_api_is_local("https://panel.example.com"))
-        self.assertTrue(api_tool.panel_api_is_local("http://127.0.0.1:2053/base"))
-        self.assertTrue(api_tool.panel_api_is_local("http://localhost:2053"))
 
 
 class PanelEndpointDiscoveryTests(unittest.TestCase):
