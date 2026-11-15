@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -123,6 +122,31 @@ func globalPort53Overlap(rule map[string]any)bool{
 }
 func strDefault(v any,d string)string{if s,ok:=v.(string);ok&&s!=""{return s};return d}
 
+func truthy(v any)bool{
+	switch x:=v.(type){
+	case nil:return false
+	case bool:return x
+	case string:return x!=""
+	case json.Number:return x!="0"&&x!=""
+	case float64:return x!=0
+	case int:return x!=0
+	case int64:return x!=0
+	case []any:return len(x)>0
+	case map[string]any:return len(x)>0
+	default:return true
+	}
+}
+func integerValue(v any)(int64,bool){
+	switch x:=v.(type){
+	case json.Number:n,e:=x.Int64();return n,e==nil
+	case int:return int64(x),true
+	case int64:return x,true
+	case float64:return int64(x),x==float64(int64(x))
+	case string:n,e:=strconv.ParseInt(strings.TrimSpace(x),10,64);return n,e==nil
+	default:return 0,false
+	}
+}
+
 func outboundMatchesDNS(item map[string]any)bool{
 	if str(item["protocol"])!="dns"{return false}
 	settings:=mapValue(item["settings"]);if settings==nil{return false}
@@ -130,14 +154,17 @@ func outboundMatchesDNS(item map[string]any)bool{
 	for k:=range item{if !topAllowed[k]{return false}}
 	setAllowed:=map[string]bool{"rewriteNetwork":true,"rewriteAddress":true,"rewritePort":true,"rules":true,"blockTypes":true,"nonIPQuery":true,"userLevel":true}
 	for k:=range settings{if !setAllowed[k]{return false}}
-	if str(settings["rewriteAddress"])!=dnsAddress||!portContains(settings["rewritePort"],dnsPort){return false}
-	rn:=str(settings["rewriteNetwork"]);if rn!=""&&rn!="tcp"&&rn!="udp"{return false}
-	dnsRules,ok:=listValue(settings["rules"]);if settings["rules"]!=nil&&!ok{return false}
+	if str(settings["rewriteAddress"])!=dnsAddress{return false}
+	port,ok:=integerValue(settings["rewritePort"]);if !ok||port!=dnsPort{return false}
+	if rn,exists:=settings["rewriteNetwork"];exists&&rn!=nil{
+		value,ok:=rn.(string);if !ok{return false};value=strings.ToLower(value);if value!="tcp"&&value!="udp"{return false}
+	}
+	dnsRules,ok:=listValue(settings["rules"]);if _,exists:=settings["rules"];exists&&!ok{return false}
 	for _,v:=range dnsRules{r,ok:=v.(map[string]any);if !ok||r["action"]!="direct"{return false};if r["qType"]!=nil&&r["qType"]!=""&&canonical(r["qType"])!="[]"{return false};if r["qtype"]!=nil&&r["qtype"]!=""&&canonical(r["qtype"])!="[]"{return false};if r["domain"]!=nil&&r["domain"]!=""&&canonical(r["domain"])!="[]"{return false};for k:=range r{if k!="action"&&k!="rCode"{return false}}}
-	if v,ok:=settings["blockTypes"];ok&&v!=nil&&canonical(v)!="[]"&&v!=""{return false}
-	if v:=settings["nonIPQuery"];v!=nil&&v!=""&&v!="direct"{return false}
-	if item["proxySettings"]!=nil||item["streamSettings"]!=nil||item["mux"]!=nil{return false}
-	if send:=str(item["sendThrough"]);send!=""{ip:=net.ParseIP(send);if ip==nil||!ip.IsLoopback(){return false}}
+	if v,ok:=settings["blockTypes"];ok&&truthy(v){return false}
+	if v,ok:=settings["nonIPQuery"];ok&&v!=nil&&v!=""&&v!="direct"{return false}
+	if truthy(item["proxySettings"])||truthy(item["streamSettings"])||truthy(item["mux"]){return false}
+	if send,ok:=item["sendThrough"];ok&&truthy(send){value,ok:=send.(string);if !ok{return false};ip:=net.ParseIP(value);if ip==nil||!ip.IsLoopback(){return false}}
 	return true
 }
 func uniqueTag(preferred string,used map[string]bool,forbidden []string)string{
@@ -154,29 +181,27 @@ func dnsServerList(parent map[string]any)([]any,error){
 	return a,nil
 }
 func serverEndpoint(v any)(string,int,bool){
-	address:="";var explicitPort any
-	switch x:=v.(type){
-	case string:address=x
-	case map[string]any:address=str(x["address"]);explicitPort=x["port"]
+	address:="";var portValue any;hasExplicitPort:=false
+	switch item:=v.(type){
+	case string:address=item
+	case map[string]any:
+		value,ok:=item["address"].(string);if !ok{return "",0,false};address=value
+		portValue,hasExplicitPort=item["port"]
 	default:return "",0,false
 	}
 	address=strings.TrimSpace(address);if address==""{return "",0,false}
-	scheme:="";embeddedPort:=""
-	if strings.Contains(address,"://"){
-		u,err:=url.Parse(address);if err!=nil||u.Hostname()==""{return "",0,false}
-		scheme=strings.ToLower(u.Scheme);address=u.Hostname();embeddedPort=u.Port()
-	}else if strings.HasPrefix(address,"[")&&strings.Contains(address,"]:"){
-		idx:=strings.Index(address,"]:");embeddedPort=address[idx+2:];address=address[1:idx]
-	}else if strings.Count(address,":")==1{
-		h,p,_:=strings.Cut(address,":");if _,err:=strconv.Atoi(p);err==nil{address=h;embeddedPort=p}
+	if hasExplicitPort&&portValue==nil{return "",0,false}
+	if !hasExplicitPort{
+		if strings.HasPrefix(address,"[")&&strings.Contains(address,"]:"){
+			idx:=strings.Index(address,"]:");portValue=address[idx+2:];address=address[1:idx];hasExplicitPort=true
+		}else if strings.Count(address,":")==1{
+			host,embedded,_:=strings.Cut(address,":");if _,err:=strconv.Atoi(embedded);err==nil{address=host;portValue=embedded;hasExplicitPort=true}
+		}
 	}
-	port:=53;if scheme=="https"||scheme=="h2c"{port=443}
-	if embeddedPort!=""{n,err:=strconv.Atoi(embeddedPort);if err!=nil{return "",0,false};port=n}
-	if explicitPort!=nil&&scheme!="https"&&scheme!="h2c"{
-		n,ok:=asInt(explicitPort);if !ok{if text,yes:=explicitPort.(string);yes{value,e:=strconv.Atoi(text);if e==nil{n=int64(value);ok=true}}};if !ok{return "",0,false};port=int(n)
-	}
-	ip:=net.ParseIP(strings.Trim(address,"[]"));if ip==nil||port<1||port>65535{return "",0,false}
-	return ip.String(),port,true
+	if !hasExplicitPort{portValue=53}
+	port,ok:=integerValue(portValue);if !ok||port<1||port>65535{return "",0,false}
+	ip:=net.ParseIP(strings.Trim(address,"[]"));if ip==nil{return "",0,false}
+	return ip.String(),int(port),true
 }
 func serverGeneral(v any)bool{
 	m,ok:=v.(map[string]any);if !ok{return true}
@@ -231,7 +256,14 @@ func buildDNSPlan(original map[string]any)DNSPlan{
 	if len(globalMatches)>0{
 		idx:=globalMatches[0]
 		for i:=0;i<idx;i++{if i>0&&ruleMayMatchLoopbackWithoutPort(mapValue(rules[i])){plan.Blockers=append(plan.Blockers,"An earlier broad routing rule can intercept rewritten loopback DNS before the port-53 route")}}
-		for i:=0;i<idx;i++{r:=mapValue(rules[i]);if globalProtocolPort53Rule(r)&&!globalPort53Rule(r)&&!globalPort53Overlap(r){target:=str(r["outboundTag"]);if target==""||!outboundMatchesDNS(outIndex[target]){plan.Blockers=append(plan.Blockers,fmt.Sprintf("Earlier global port-53-overlap rule at routing.rules[%d] shadows the DNS route",i))}}}
+		for i:=0;i<idx;i++{r:=mapValue(rules[i]);if !globalProtocolPort53Rule(r)||globalPort53Rule(r){continue}
+			target:=str(r["outboundTag"])
+			if target!=""{
+				if !outboundMatchesDNS(outIndex[target]){plan.Blockers=append(plan.Blockers,fmt.Sprintf("Earlier global port-53-overlap rule at routing.rules[%d] shadows the DNS route with incompatible outbound %q",i,target))}
+			}else if bal:=str(r["balancerTag"]);bal!=""{
+				if selected,e:=resolveBalancer(bal,balancers,outIndex,outboundOrder);e!=""||len(selected)==0{plan.Blockers=append(plan.Blockers,fmt.Sprintf("Earlier global port-53-overlap rule at routing.rules[%d] shadows the DNS route with incompatible balancer: %s",i,e))}
+			}else{plan.Blockers=append(plan.Blockers,fmt.Sprintf("Earlier global port-53-overlap rule at routing.rules[%d] has no compatible target",i))}
+		}
 		for n,index:=range globalMatches{r:=mapValue(rules[index]);target:=str(r["outboundTag"]);bal:=str(r["balancerTag"]);resolved:=target;if resolved==""&&bal!=""{selected,e:=resolveBalancer(bal,balancers,outIndex,outboundOrder);if e!=""{plan.Blockers=append(plan.Blockers,e)}else if len(selected)>0{resolved=selected[0]}}
 			if resolved==""||!outboundMatchesDNS(outIndex[resolved]){plan.Blockers=append(plan.Blockers,fmt.Sprintf("Existing global port-53 rule #%d does not resolve to the local DNS endpoint",n+1))}else if chosen==""{chosen=resolved}}
 		routeCovered=chosen!=""
@@ -250,7 +282,7 @@ func buildDNSPlan(original map[string]any)DNSPlan{
 			for _,v:=range rules{r:=mapValue(v);if !ruleMayMatchPort53(r){continue};target:=str(r["outboundTag"]);bal:=str(r["balancerTag"]);resolved:=target;if resolved==""&&bal!=""{selected,e:=resolveBalancer(bal,balancers,outIndex,outboundOrder);if e==""&&len(selected)>0{resolved=selected[0]}}
 				if resolved!=""&&outboundMatchesDNS(outIndex[resolved])&&!containsString(scopedOrder,resolved){scopedOrder=append(scopedOrder,resolved)}
 			}
-			if len(scopedOrder)>0{chosen=scopedOrder[0]}else if len(compatible)>0{tags:=[]string{};for t:=range compatible{tags=append(tags,t)};sort.Strings(tags);chosen=tags[0];if len(tags)>1{plan.Warnings=append(plan.Warnings,"Multiple compatible local DNS outbounds exist; the first is reused")}}
+			if len(scopedOrder)>0{chosen=scopedOrder[0]}else if len(compatible)>0{tags:=[]string{};for _,t:=range outboundOrder{if _,ok:=compatible[t];ok{tags=append(tags,t)}};if len(tags)>0{chosen=tags[0];if len(tags)>1{plan.Warnings=append(plan.Warnings,"Multiple compatible local DNS outbounds exist; the first is reused")}}}
 		}
 	}
 	if chosen==""&&len(plan.Blockers)==0&&!routeCovered{
@@ -274,7 +306,7 @@ func buildDNSPlan(original map[string]any)DNSPlan{
 			if ruleTag==""{plan.Blockers=append(plan.Blockers,"No unique routing ruleTag is available")}else{r:=cloneMap(dnsRouteTemplate);r["outboundTag"]=chosen;r["ruleTag"]=ruleTag;rules=append(rules,nil);copy(rules[insert+1:],rules[insert:]);rules[insert]=r;routing["rules"]=rules;plan.RouteCreated=true;plan.RuleTag=ruleTag;plan.Changes=append(plan.Changes,fmt.Sprintf("ADD global TCP/UDP port-53 route at routing.rules[%d]",insert))}
 		}
 	}
-	for i,v:=range rules{r:=mapValue(v);if !ruleMayMatchPort53(r){continue};target:=str(r["outboundTag"]);bal:=str(r["balancerTag"]);if target!=""{if _,ok:=outIndex[target];!ok&&!(target==chosen&&plan.OutboundCreated){plan.Blockers=append(plan.Blockers,fmt.Sprintf("routing.rules[%d] references missing outbound %q",i,target))}}else if bal!=""{if !balancerTags[bal]{plan.Blockers=append(plan.Blockers,fmt.Sprintf("routing.rules[%d] references missing balancer %q",i,bal))}}else{plan.Blockers=append(plan.Blockers,fmt.Sprintf("routing.rules[%d] matches DNS port 53 but has no outbound/balancer target",i))}}
+	for i,v:=range rules{r:=mapValue(v);if !ruleMayMatchPort53(r){continue};if strDefault(r["type"],"field")!="field"{plan.Blockers=append(plan.Blockers,fmt.Sprintf("routing.rules[%d] uses an unsupported rule type for port-53 DNS traffic",i));continue};target:=str(r["outboundTag"]);bal:=str(r["balancerTag"]);if target!=""{if _,ok:=outIndex[target];!ok&&!(target==chosen&&plan.OutboundCreated){plan.Blockers=append(plan.Blockers,fmt.Sprintf("routing.rules[%d] references missing outbound %q",i,target))}}else if bal!=""{if !balancerTags[bal]{plan.Blockers=append(plan.Blockers,fmt.Sprintf("routing.rules[%d] references missing balancer %q",i,bal))}}else{plan.Blockers=append(plan.Blockers,fmt.Sprintf("routing.rules[%d] matches DNS port 53 but has no outbound/balancer target",i))}}
 	if len(plan.Blockers)>0{return failedDNSPlan(original,plan)}
 	plan.Expected=panelNormalize(cfg)
 	return plan
@@ -352,8 +384,19 @@ func outboundReferenceReasons(cfg map[string]any,tag string,ignored map[int]bool
 	return reasons
 }
 func dnsServerReferenceReasons(cfg map[string]any,server any)[]string{
-	dns:=mapValue(cfg["dns"]);rules,_:=listValue(dns["rules"]);tag:=str(mapValue(server)["tag"]);ip,port,ok:=serverEndpoint(server);reasons:=[]string{}
-	for i,v:=range rules{for _,s:=range tagList(mapValue(v)["server"]){match:=tag!=""&&s==tag;if sip,sp,sok:=serverEndpoint(s);ok&&sok&&ip==sip&&port==sp{match=true};if match{reasons=append(reasons,fmt.Sprintf("dns.rules[%d].server",i));break}}}
+	dnsValue,hasDNS:=cfg["dns"];if !hasDNS||dnsValue==nil{return nil}
+	dns,ok:=dnsValue.(map[string]any);if !ok{return []string{"dns is not an object; external DNS-server references cannot be analyzed safely"}}
+	rulesValue,hasRules:=dns["rules"];if !hasRules{return nil}
+	rules,ok:=rulesValue.([]any);if !ok{return []string{"dns.rules is not an array; external DNS-server references cannot be analyzed safely"}}
+	tag:=str(mapValue(server)["tag"]);ip,port,endpointOK:=serverEndpoint(server);reasons:=[]string{}
+	for i,v:=range rules{
+		rule,ok:=v.(map[string]any);if !ok{return []string{fmt.Sprintf("dns.rules[%d] is not an object; external DNS-server references cannot be analyzed safely",i)}}
+		for _,target:=range tagList(rule["server"]){
+			match:=tag!=""&&target==tag
+			if sip,sp,sok:=serverEndpoint(target);endpointOK&&sok&&ip==sip&&port==sp{match=true}
+			if match{reasons=append(reasons,fmt.Sprintf("dns.rules[%d].server",i));break}
+		}
+	}
 	return reasons
 }
 func buildRemovePlan(cfg map[string]any)RemovePlan{
