@@ -2345,14 +2345,14 @@ class TTYConfirmationTests(unittest.TestCase):
             with self.subTest(action=action), \
                  patch.object(api_tool, "read_tty_confirmation") as prompt, \
                  patch("builtins.print") as output:
-                api_tool.confirm_restart(action, False)
+                api_tool.confirm_restart(action)
             prompt.assert_not_called()
             printed = " ".join(str(call.args[0]) for call in output.call_args_list if call.args)
             self.assertIn("may automatically restart the Xray process", printed)
 
     def test_unknown_panel_action_is_rejected(self):
         with self.assertRaisesRegex(api_tool.IntegrationError, "Unknown panel directive"):
-            api_tool.confirm_restart("unknown", False)
+            api_tool.confirm_restart("unknown")
 
 
 class PanelCredentialTests(unittest.TestCase):
