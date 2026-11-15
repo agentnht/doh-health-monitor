@@ -18,19 +18,8 @@ jobs:
           go-version: '1.27.4'
       - name: Resolve and verify Go dependencies
         run: go mod tidy
-      - name: Print resolved Go module files
-        run: |
-          echo "--- go.mod ---"
-          cat go.mod
-          echo "--- go.sum ---"
-          cat go.sum
-      - name: Export Go module checksums
-        uses: actions/upload-artifact@v4
-        with:
-          name: go-module-checksums
-          path: go.sum
-          if-no-files-found: error
-          retention-days: 7
+      - name: Verify Go module files are tidy
+        run: git diff --exit-code -- go.mod go.sum
       - run: go vet ./...
       - run: go test ./...
       - name: Build Linux amd64 test package

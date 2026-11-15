@@ -102,9 +102,9 @@ func TestPanelNormalizeAddsLucXDNSAllowBeforePrivateBlock(t *testing.T) {
 	}
 	first:=panelNormalize(cfg)
 	rules,_:=listValue(mapValue(first["routing"])["rules"])
-	allow:=-1;block:=-1;count:=0
-	for i,v:=range rules{r:=mapValue(v);if str(r["ruleTag"])==dnsAllowTag{allow=i;count++;if str(r["outboundTag"])!="direct"||str(r["port"])!="5355"{t.Fatalf("unexpected DNS allow rule: %#v",r)}};if str(r["outboundTag"])=="blocked"{block=i}}
-	if count!=1||allow<0||block<0||allow>=block{t.Fatalf("DNS allow should be unique and precede private block: %#v",rules)}
+	localAllow:=-1;block:=-1;count:=0;lanAllow:=false
+	for i,v:=range rules{r:=mapValue(v);if str(r["ruleTag"])==dnsAllowTag{count++;if str(r["outboundTag"])!="direct"{t.Fatalf("unexpected DNS allow target: %#v",r)};if str(r["port"])=="5355"{ips:=tagList(r["ip"]);if len(ips)!=1||ips[0]!=dnsAddress{t.Fatalf("unexpected loopback DNS allow IPs: %#v",r["ip"])};localAllow=i};if str(r["port"])=="53"&&containsString(tagList(r["ip"]),"192.168.1.1"){lanAllow=true}};if str(r["outboundTag"])=="blocked"{block=i}}
+	if count!=2||localAllow<0||!lanAllow||block<0||localAllow>=block{t.Fatalf("expected loopback and LAN DNS allows before private block: %#v",rules)}
 	second:=panelNormalize(first)
 	if canonical(first)!=canonical(second){t.Fatal("panel normalization is not idempotent")}
 }
