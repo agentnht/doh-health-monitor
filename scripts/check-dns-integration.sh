@@ -48,14 +48,34 @@ if [[ ! -r "$XRAY_CONFIG" ]]; then
   error "Не найден доступный для чтения Xray config: $XRAY_CONFIG"
 else
   pass "Xray config доступен: $XRAY_CONFIG"
-  if command -v python3 >/dev/null 2>&1; then
-    if python3 "$SCRIPT_DIR/xray_dns_planner.py" --check-config "$XRAY_CONFIG"; then
-      pass "Семантический анализатор подтвердил полный DNS path"
-    else
-      error "Семантический анализ Xray config обнаружил недостающие элементы или конфликт"
-    fi
+  if jq -e '
+    any(.outbounds[]?;
+      .protocol == "dns" and
+      .settings.rewriteAddress == "127.0.0.1" and
+      ((.settings.rewritePort | tostring) == "5355")
+    )
+  ' "$XRAY_CONFIG" >/dev/null; then
+    pass "DNS outbound указывает на 127.0.0.1:5355"
   else
-    error "python3 не установлен; общий анализатор Xray DNS path недоступен"
+    error "DNS outbound на 127.0.0.1:5355 отсутствует или несовместим"
+  fi
+
+  if jq -e '
+    . as $root |
+    any($root.routing.rules[]?;
+      .type == "field" and
+      ((.network // "tcp,udp") | tostring | contains("tcp")) and
+      ((.network // "tcp,udp") | tostring | contains("udp")) and
+      ((.port | tostring) == "53") and
+      ((.outboundTag // "") as $tag |
+        any($root.outbounds[]?; .tag == $tag and .protocol == "dns" and
+          .settings.rewriteAddress == "127.0.0.1" and
+          ((.settings.rewritePort | tostring) == "5355")))
+    )
+  ' "$XRAY_CONFIG" >/dev/null; then
+    pass "Routing rule направляет TCP/UDP port 53 в локальный DNS outbound"
+  else
+    error "Полный DNS route на 127.0.0.1:5355 не найден"
   fi
 
   if jq -e '

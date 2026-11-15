@@ -25,11 +25,13 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"lucx-doh-health-monitor/internal/dohintegration"
 )
 
 const (
 	pluginID      = "doh-health-monitor"
-	pluginVersion = "2.0.1"
+	pluginVersion = "2.1.0"
 	systemDNSUpstreamID = "system-dns"
 	systemResolvConfPath = "/etc/resolv.conf"
 	systemDNSPerServerTimeout = 2 * time.Second
@@ -59,6 +61,7 @@ type Config struct {
 	BootstrapResolvers     []string        `json:"bootstrap_resolvers,omitempty"`
 	Groups                 []Group         `json:"groups"`
 	GeminiAPI              GeminiAPIConfig `json:"gemini_api"`
+	Integration            bool            `json:"integration"`
 }
 type LocalHost struct {
 	IPv4 []string `json:"ipv4"`
@@ -316,6 +319,39 @@ type Runtime struct {
 
 func main() {
 	log.SetFlags(0)
+	if len(os.Args) > 1 {
+		action := strings.ToLower(strings.TrimSpace(os.Args[1]))
+		if action != "integrate" && action != "remove" {
+			logLine("ERROR", "CLI supports only integrate and remove")
+			os.Exit(2)
+		}
+		dataDir, err := dohintegration.PluginDataDir()
+		if err != nil {
+			logLine("ERROR", "INTEGRATION data directory: %v", err)
+			os.Exit(1)
+		}
+		if err := os.MkdirAll(dataDir, 0700); err != nil {
+			logLine("ERROR", "INTEGRATION create data directory failed")
+			os.Exit(1)
+		}
+		configPath := filepath.Join(dataDir, "config.json")
+		if _, err := loadConfig(configPath); err != nil {
+			logLine("ERROR", "INTEGRATION config is invalid: %v", err)
+			os.Exit(1)
+		}
+		logLine("INFO", "INTEGRATION directive=%s started", strings.ToUpper(action))
+		if err := dohintegration.RunCommand(os.Args[1:], lucxIntegrationLogger{}); err != nil {
+			logLine("ERROR", "INTEGRATION directive=%s failed: %v", strings.ToUpper(action), err)
+			os.Exit(1)
+		}
+		enabled := action == "integrate"
+		if err := setIntegrationFlag(configPath, enabled); err != nil {
+			logLine("ERROR", "INTEGRATION directive=%s succeeded but config flag update failed: %v", strings.ToUpper(action), err)
+			os.Exit(1)
+		}
+		logLine("INFO", "INTEGRATION directive=%s completed integration=%t", strings.ToUpper(action), enabled)
+		return
+	}
 	dataDir := strings.TrimSpace(os.Getenv("LUCX_PLUGIN_DATA"))
 	if dataDir == "" {
 		fatal("LUCX_PLUGIN_DATA is required")
@@ -436,6 +472,37 @@ func main() {
 	}
 	wg.Wait()
 	logLine("INFO", "STOP clean=true")
+}
+
+
+type lucxIntegrationLogger struct{}
+func (lucxIntegrationLogger) Printf(format string, args ...any) {
+	logLine("INFO", format, args...)
+}
+
+func setIntegrationFlag(path string, enabled bool) error {
+	data, err := os.ReadFile(path)
+	if err != nil { return fmt.Errorf("read config: %w", err) }
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var config map[string]any
+	if err := decoder.Decode(&config); err != nil || config == nil { return errors.New("config.json is not a JSON object") }
+	config["integration"] = enabled
+	encoded, err := json.MarshalIndent(config, "", "  ")
+	if err != nil { return fmt.Errorf("encode config: %w", err) }
+	encoded = append(encoded, '\n')
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".config.json-*")
+	if err != nil { return fmt.Errorf("create temporary config: %w", err) }
+	name := tmp.Name()
+	defer os.Remove(name)
+	if err := tmp.Chmod(0600); err != nil { tmp.Close(); return err }
+	if _, err := tmp.Write(encoded); err != nil { tmp.Close(); return err }
+	if err := tmp.Sync(); err != nil { tmp.Close(); return err }
+	if err := tmp.Close(); err != nil { return err }
+	if err := os.Rename(name, path); err != nil { return fmt.Errorf("replace config atomically: %w", err) }
+	if d, err := os.Open(dir); err == nil { _ = d.Sync(); _ = d.Close() }
+	return nil
 }
 
 func fatal(f string, a ...any) { logLine("ERROR", f, a...); os.Exit(1) }
