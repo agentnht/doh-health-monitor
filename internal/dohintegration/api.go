@@ -181,10 +181,11 @@ func mintToken(panelCwd,authFile string)(string,error){
 }
 
 func resolveToken(opts Options,panelCwd string,logger Logger)(string,error){
-	if v:=strings.TrimSpace(os.Getenv("XUI_API_TOKEN"));v!=""{logger.Printf("PASS: using XUI_API_TOKEN from command environment (secret hidden)");return validToken(v)}
-	v,err:=readInstallerToken(installerTokenFile);if err!=nil{return "",err};if v!=""{logger.Printf("PASS: loaded installer-provided LucX-UI credential (secret hidden)");return v,nil}
-	v,err=readSavedToken(opts.AuthFile);if err!=nil{return "",err};if v!=""{logger.Printf("PASS: reusing protected local integration credential (secret hidden)");return v,nil}
-	v,err=mintToken(panelCwd,opts.AuthFile);if err!=nil{return "",err};logger.Printf("PASS: created dedicated LucX-UI API credential with admin scope; stored mode 0600");return v,nil
+	logf:=func(format string,args ...any){if logger!=nil{logger.Printf(format,args...)}}
+	if v:=strings.TrimSpace(os.Getenv("XUI_API_TOKEN"));v!=""{logf("PASS: using XUI_API_TOKEN from command environment (secret hidden)");return validToken(v)}
+	v,err:=readInstallerToken(installerTokenFile);if err!=nil{return "",err};if v!=""{logf("PASS: loaded installer-provided LucX-UI credential (secret hidden)");return v,nil}
+	v,err=readSavedToken(opts.AuthFile);if err!=nil{return "",err};if v!=""{logf("PASS: reusing protected local integration credential (secret hidden)");return v,nil}
+	v,err=mintToken(panelCwd,opts.AuthFile);if err!=nil{return "",err};logf("PASS: created dedicated LucX-UI API credential with admin scope; stored mode 0600");return v,nil
 }
 
 func readPanelSettings(dbPath string)(map[string]string,error){

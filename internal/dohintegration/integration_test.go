@@ -279,7 +279,7 @@ func TestDiagnosticExternalUseAnalysisIgnoresPanelManagedDNSAllow(t *testing.T){
 	cfg:=map[string]any{"routing":map[string]any{"rules":[]any{
 		map[string]any{"type":"field","ruleTag":dnsAllowTag,"ip":[]any{dnsAddress},"port":"5355","outboundTag":"direct"},
 		map[string]any{"type":"field","ip":[]any{dnsAddress},"port":"5355","outboundTag":"direct"},
-		map[string]any{"type":"field","inboundTag":[]any{"diag-tunnel"},"outboundTag":"direct"},
+		map[string]any{"type":"field","inboundTag":[]any{"diag-tunnel"},"port":"53","outboundTag":"direct"},
 	}}}
 	inRefs,finalRefs,err:=diagnosticExternalUses(cfg,[]diagnosticResource{resource},inbounds);if err!=nil{t.Fatal(err)}
 	if len(inRefs[7])!=1||inRefs[7][0]!="routing.rules[2].inboundTag"{t.Fatalf("unexpected inbound refs: %#v",inRefs)}

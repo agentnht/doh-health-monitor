@@ -276,7 +276,11 @@ func buildDNSPlan(original map[string]any)DNSPlan{
 		}
 		if len(broadRoutes)>0{sort.Slice(broadRoutes,func(i,j int)bool{return broadRoutes[i].i<broadRoutes[j].i});chosen=broadRoutes[0].tag;routeCovered=true;plan.Warnings=append(plan.Warnings,"An existing broad port-range rule already routes TCP/UDP port 53 to a compatible local DNS outbound")}
 		covered:=map[string]bool{};for _,p:=range partialRoutes{for n:=range p.network{covered[n]=true};if !containsString(scopedOrder,p.tag){scopedOrder=append(scopedOrder,p.tag)}}
-		if !routeCovered&&covered["tcp"]&&covered["udp"]{routeCovered=true;plan.Warnings=append(plan.Warnings,"Existing global TCP-only/UDP-only rules cover both DNS transports")}
+		if !routeCovered&&covered["tcp"]&&covered["udp"]{
+			routeCovered=true
+			if len(partialRoutes)>0{sort.Slice(partialRoutes,func(i,j int)bool{return partialRoutes[i].i<partialRoutes[j].i});chosen=partialRoutes[0].tag}
+			plan.Warnings=append(plan.Warnings,"Existing global TCP-only/UDP-only rules cover both DNS transports")
+		}
 		if !routeCovered&&len(partialRoutes)>0{sort.Slice(partialRoutes,func(i,j int)bool{return partialRoutes[i].i<partialRoutes[j].i});chosen=partialRoutes[0].tag;plan.Warnings=append(plan.Warnings,"An existing single-transport port-53 rule is reused; a fallback will complete the other transport")}
 		if !routeCovered&&chosen==""{
 			for _,v:=range rules{r:=mapValue(v);if !ruleMayMatchPort53(r){continue};target:=str(r["outboundTag"]);bal:=str(r["balancerTag"]);resolved:=target;if resolved==""&&bal!=""{selected,e:=resolveBalancer(bal,balancers,outIndex,outboundOrder);if e==""&&len(selected)>0{resolved=selected[0]}}
