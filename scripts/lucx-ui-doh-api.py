@@ -50,8 +50,6 @@ VERSION = "1.7.0"
 DEFAULT_PLUGIN_SERVICE = "lucx-plugin-doh-health-monitor"
 DEFAULT_PLUGIN_STATUS_URL = "http://127.0.0.1:18765/status"
 DEFAULT_PLUGIN_PORT = 5355
-# Add only Xray versions that passed staging validation. Empty means warn on all.
-VERIFIED_XRAY_VERSIONS: frozenset[str] = frozenset()
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 INSTALL_RESULT_FILE = Path("/etc/x-ui/install-result.env")
 DEFAULT_PANEL_AUTH_FILE = Path("/var/lib/doh-health-monitor-panel-auth/panel-api-auth.json")
@@ -107,104 +105,6 @@ def _safe_exception_summary(exc: Exception) -> str:
         detail = detail[:237] + "..."
     exception_type = type(exc).__name__
     return f"{exception_type}: {detail}" if detail else exception_type
-
-
-def parse_xray_version(output: str) -> str | None:
-    """Extract the Xray core version without exposing command output."""
-    match = re.search(r"\bXray\s+v?(\d+(?:\.\d+){1,3})\b", output, re.IGNORECASE)
-    return match.group(1) if match else None
-
-
-def xray_version_is_verified(version: str) -> bool:
-    return version in VERIFIED_XRAY_VERSIONS
-
-
-def find_xray_binary(explicit_path: str | None = None) -> str:
-    """Find the running Xray executable, then common panel/system paths."""
-    candidates: list[str] = []
-    if explicit_path:
-        candidates.append(explicit_path)
-    try:
-        for entry in Path("/proc").iterdir():
-            if not entry.name.isdigit():
-                continue
-            try:
-                exe = os.readlink(entry / "exe")
-            except OSError:
-                continue
-            if "xray" in Path(exe.removesuffix(" (deleted)")).name.lower():
-                candidates.append(str(entry / "exe"))
-    except OSError:
-        pass
-    candidates.extend([
-        "/usr/local/x-ui/bin/xray",
-        "/usr/local/x-ui/xray",
-        "/usr/bin/xray",
-        "/usr/local/bin/xray",
-    ])
-    located = shutil.which("xray")
-    if located:
-        candidates.append(located)
-    seen: set[str] = set()
-    for candidate in candidates:
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        path = Path(candidate)
-        if path.is_file() and os.access(path, os.X_OK):
-            return str(path)
-    raise IntegrationError("Xray executable was not detected; use --xray-bin with the installed Xray binary")
-
-
-def read_xray_version(binary: str) -> str:
-    """Run the local Xray binary and return only its parsed version."""
-    for argument in ("version", "-version"):
-        try:
-            result = subprocess.run(
-                [binary, argument],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-        version = parse_xray_version(result.stdout or "")
-        if version:
-            return version
-    raise IntegrationError("Could not determine Xray version from the installed binary")
-
-
-def detect_panel_version() -> str | None:
-    """Best-effort informational LucX-UI version lookup; never a compatibility gate."""
-    candidates = ["/usr/local/x-ui/x-ui"]
-    located = shutil.which("x-ui")
-    if located:
-        candidates.append(located)
-    for candidate in candidates:
-        path = Path(candidate)
-        if not path.is_file() or not os.access(path, os.X_OK):
-            continue
-        try:
-            result = subprocess.run(
-                [str(path), "-v"],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-        match = re.search(r"\b(\d+\.\d+\.\d+(?:[-+][A-Za-z0-9._-]+)?)\b", result.stdout or "")
-        if match:
-            return match.group(1)
-    return None
-
-
 
 
 @dataclass(frozen=True)
@@ -850,28 +750,6 @@ def panel_api_is_local(base_url: str) -> bool:
         return ipaddress.ip_address(parsed.hostname).is_loopback
     except ValueError:
         return parsed.hostname.lower() == "localhost"
-
-
-def check_xray_compatibility(explicit_binary: str | None = None) -> str | None:
-    """Report local versions for diagnostics; API/config validation is the compatibility gate."""
-    panel_version = detect_panel_version()
-    print("LucX-UI version:", panel_version or "not detected (informational only)")
-    try:
-        binary = find_xray_binary(explicit_binary)
-        version = read_xray_version(binary)
-    except IntegrationError as exc:
-        print("WARNING: Xray version could not be detected; continuing with API-based checks.")
-        print("Version diagnostic:", str(exc))
-        return None
-
-    print("Detected Xray core:", version)
-    if xray_version_is_verified(version):
-        print("Xray version: present in the informational verified-version list.")
-    else:
-        print("NOTICE: Xray version is not in the informational verified-version list.")
-    print("Xray version does not block Integrate/Remove; compatibility is assessed through panel API")
-    print("response parsing, configuration validation, conflict detection, and read-back.")
-    return version
 
 
 def canonical(value: object) -> str:
@@ -2711,7 +2589,6 @@ def main() -> int:
     parser.add_argument("--plugin-service", default=DEFAULT_PLUGIN_SERVICE)
     parser.add_argument("--plugin-status-url", default=DEFAULT_PLUGIN_STATUS_URL)
     parser.add_argument("--plugin-port", type=int, default=DEFAULT_PLUGIN_PORT)
-    parser.add_argument("--xray-bin", help="Path to local Xray executable")
     parser.add_argument("--allow-insecure-http", action="store_true")
     parser.add_argument(
         "--tls-mode", choices=("auto", "http", "ip", "domain"), default="auto",
@@ -2797,9 +2674,6 @@ def main() -> int:
 
         if action == ("integrate",):
             check_plugin_health(args.plugin_service, args.plugin_status_url, args.plugin_port)
-        if action in {("integrate",), ("remove",)}:
-            check_xray_compatibility(args.xray_bin)
-
         token = resolve_panel_api_token(Path(args.panel_auth_file))
         client = PanelAPI(
             endpoint.base_url, token, timeout=args.timeout,
