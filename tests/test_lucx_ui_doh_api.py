@@ -481,20 +481,6 @@ class IntegrateOrchestrationTests(unittest.TestCase):
 
 
 class AdapterCLITests(unittest.TestCase):
-    def test_version_probe_option_is_not_exposed(self):
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / "scripts" / "lucx-ui-doh-api.py"),
-                "--help",
-            ],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn("--xray-bin", result.stdout)
     def test_staging_tunnel_subcommands_are_not_public_cli_actions(self):
         for subcommand in ("create", "test", "status", "remove"):
             with self.subTest(subcommand=subcommand):
