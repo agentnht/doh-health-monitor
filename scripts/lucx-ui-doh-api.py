@@ -2531,7 +2531,6 @@ def ensure_diagnostic_tunnel(args, client: PanelAPI) -> int:
         f"PASS: diagnostic Tunnel created for verification (inbound ID {inbound_id}, "
         f"loopback port {port}, rule mode {rule_mode})."
     )
-    print("No DNS test was run and no diagnostic record was deleted.")
     return 0
 
 
