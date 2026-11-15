@@ -247,7 +247,7 @@ func buildDNSPlan(original map[string]any)DNSPlan{
 		if !routeCovered&&covered["tcp"]&&covered["udp"]{routeCovered=true;plan.Warnings=append(plan.Warnings,"Existing global TCP-only/UDP-only rules cover both DNS transports")}
 		if !routeCovered&&len(partialRoutes)>0{sort.Slice(partialRoutes,func(i,j int)bool{return partialRoutes[i].i<partialRoutes[j].i});chosen=partialRoutes[0].tag;plan.Warnings=append(plan.Warnings,"An existing single-transport port-53 rule is reused; a fallback will complete the other transport")}
 		if !routeCovered&&chosen==""{
-			for i,v:=range rules{r:=mapValue(v);if !ruleMayMatchPort53(r){continue};target:=str(r["outboundTag"]);bal:=str(r["balancerTag"]);resolved:=target;if resolved==""&&bal!=""{selected,e:=resolveBalancer(bal,balancers,outIndex,outboundOrder);if e==""&&len(selected)>0{resolved=selected[0]}}
+			for _,v:=range rules{r:=mapValue(v);if !ruleMayMatchPort53(r){continue};target:=str(r["outboundTag"]);bal:=str(r["balancerTag"]);resolved:=target;if resolved==""&&bal!=""{selected,e:=resolveBalancer(bal,balancers,outIndex,outboundOrder);if e==""&&len(selected)>0{resolved=selected[0]}}
 				if resolved!=""&&outboundMatchesDNS(outIndex[resolved])&&!containsString(scopedOrder,resolved){scopedOrder=append(scopedOrder,resolved)}
 			}
 			if len(scopedOrder)>0{chosen=scopedOrder[0]}else if len(compatible)>0{tags:=[]string{};for t:=range compatible{tags=append(tags,t)};sort.Strings(tags);chosen=tags[0];if len(tags)>1{plan.Warnings=append(plan.Warnings,"Multiple compatible local DNS outbounds exist; the first is reused")}}

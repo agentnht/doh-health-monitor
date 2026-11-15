@@ -26,6 +26,7 @@ import (
 )
 
 const (
+	pluginID = "doh-health-monitor"
 	tokenName = "doh-health-monitor-integration"
 	defaultAuthFile = "/var/lib/doh-health-monitor-panel-auth/panel-api-auth.json"
 	installerTokenFile = "/etc/x-ui/install-result.env"

@@ -84,7 +84,7 @@ func addTemporaryFinalRule(api *PanelAPI,logger Logger)error{
 		idx:=indices[0];rule:=rules[idx];rules=append(rules[:idx],rules[idx+1:]...);insert:=temporaryAllowInsertIndex(rules);rules=append(rules,nil);copy(rules[insert+1:],rules[insert:]);rules[insert]=rule
 	}else{insert:=temporaryAllowInsertIndex(rules);rules=append(rules,nil);copy(rules[insert+1:],rules[insert:]);rules[insert]=cloneMap(tempDNSFinalRule)}
 	settings["finalRules"]=rules
-	if err:=applyPanelUpdate(api,state,state.Config,"temporary DNS allow addition");err!=nil{return err}
+	if err:=applyPanelUpdate(api,state,state.Config,"temporary DNS allow addition",logger);err!=nil{return err}
 	if logger!=nil{logger.Printf("PASS: diagnostic DNS finalRule is active before matching block rules")}
 	return nil
 }
@@ -95,7 +95,7 @@ func removeTemporaryFinalRule(api *PanelAPI,logger Logger)error{
 	if len(indices)==0{return nil};if len(indices)!=1{return problem("Multiple identical temporary DNS finalRules exist; refusing ambiguous deletion")}
 	rules=append(rules[:indices[0]],rules[indices[0]+1:]...)
 	if len(rules)==0{delete(settings,"finalRules")}else{settings["finalRules"]=rules}
-	if err:=applyPanelUpdate(api,state,state.Config,"temporary DNS allow removal");err!=nil{return err}
+	if err:=applyPanelUpdate(api,state,state.Config,"temporary DNS allow removal",logger);err!=nil{return err}
 	count,err:=finalRuleCountAfter(api);if err!=nil{return err};if count!=0{return problem("Panel read-back still contains the temporary DNS finalRule")}
 	if logger!=nil{logger.Printf("PASS: diagnostic finalRule removed and verified by panel API read-back")}
 	return nil
@@ -152,6 +152,7 @@ func chooseTunnelPort(inbounds []map[string]any)(int,error){
 	for port:=15353;port<=15453;port++{if !reserved[int64(port)]&&portFree(port){return port,nil}}
 	return 0,problem("No free loopback TCP+UDP port is available for temporary Tunnel test")
 }
+func listenerHasLoopbackPort(output string,port int)bool{return listenerHasLoopback(output,port)}
 func listenerHasPort(output string,port int)bool{
 	for _,line:=range strings.Split(output,"\n"){fields:=strings.Fields(line);if len(fields)>=4&&strings.HasSuffix(fields[3],":"+strconv.Itoa(port)){return true}}
 	return false
