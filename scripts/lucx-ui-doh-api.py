@@ -728,20 +728,6 @@ def check_plugin_health(service: str, status_url: str, port: int) -> None:
     print("PASS: DoH Health Monitor status API returns a JSON object")
 
 
-def read_tty_confirmation(prompt: str) -> str:
-    """Read from /dev/tty even when Python receives its source through a pipe."""
-    try:
-        # A TTY is not seekable, so Python's buffered "r+" mode rejects it.
-        # Use separate write/read streams for the same controlling terminal.
-        with open("/dev/tty", "w", encoding="utf-8") as tty_out:
-            tty_out.write(prompt)
-            tty_out.flush()
-        with open("/dev/tty", "r", encoding="utf-8") as tty_in:
-            return tty_in.readline().strip()
-    except OSError:
-        raise IntegrationError("Interactive confirmation requires a controlling TTY") from None
-
-
 def panel_api_is_local(base_url: str) -> bool:
     parsed = urlsplit(base_url)
     if not parsed.hostname:

@@ -2339,14 +2339,11 @@ class TemporaryTunnelOrchestrationTests(unittest.TestCase):
         self.assertEqual(client.deleted, [])
 
 
-class TTYConfirmationTests(unittest.TestCase):
-    def test_panel_change_only_prints_restart_notice_without_prompt(self):
+class RestartNoticeTests(unittest.TestCase):
+    def test_panel_change_prints_restart_notice(self):
         for action in ("integrate", "remove"):
-            with self.subTest(action=action), \
-                 patch.object(api_tool, "read_tty_confirmation") as prompt, \
-                 patch("builtins.print") as output:
+            with self.subTest(action=action), patch("builtins.print") as output:
                 api_tool.confirm_restart(action)
-            prompt.assert_not_called()
             printed = " ".join(str(call.args[0]) for call in output.call_args_list if call.args)
             self.assertIn("may automatically restart the Xray process", printed)
 
