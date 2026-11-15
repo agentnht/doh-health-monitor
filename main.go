@@ -339,17 +339,35 @@ func main() {
 			logLine("ERROR", "INTEGRATION config is invalid: %v", err)
 			os.Exit(1)
 		}
-		logLine("INFO", "INTEGRATION directive=%s started", strings.ToUpper(action))
-		if err := dohintegration.RunCommand(os.Args[1:], lucxIntegrationLogger{}); err != nil {
-			logLine("ERROR", "INTEGRATION directive=%s failed: %v", strings.ToUpper(action), err)
+		pluginLog, err := os.OpenFile(filepath.Join(filepath.Dir(dataDir), "plugin.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			logLine("ERROR", "INTEGRATION cannot open plugin.log: %v", err)
+			os.Exit(1)
+		}
+		info, err := pluginLog.Stat()
+		if err != nil || !info.Mode().IsRegular() {
+			_ = pluginLog.Close()
+			logLine("ERROR", "INTEGRATION plugin.log is not a regular file")
+			os.Exit(1)
+		}
+		if err := pluginLog.Chmod(0600); err != nil {
+			_ = pluginLog.Close()
+			logLine("ERROR", "INTEGRATION cannot secure plugin.log: %v", err)
+			os.Exit(1)
+		}
+		defer pluginLog.Close()
+		logger := lucxIntegrationLogger{file: pluginLog}
+		logger.Printf("INTEGRATION directive=%s started", strings.ToUpper(action))
+		if err := dohintegration.RunCommand(os.Args[1:], logger); err != nil {
+			logger.Printf("INTEGRATION directive=%s failed: %v", strings.ToUpper(action), err)
 			os.Exit(1)
 		}
 		enabled := action == "integrate"
 		if err := setIntegrationFlag(configPath, enabled); err != nil {
-			logLine("ERROR", "INTEGRATION directive=%s succeeded but config flag update failed: %v", strings.ToUpper(action), err)
+			logger.Printf("INTEGRATION directive=%s succeeded but config flag update failed: %v", strings.ToUpper(action), err)
 			os.Exit(1)
 		}
-		logLine("INFO", "INTEGRATION directive=%s completed integration=%t", strings.ToUpper(action), enabled)
+		logger.Printf("INTEGRATION directive=%s completed integration=%t", strings.ToUpper(action), enabled)
 		return
 	}
 	dataDir := strings.TrimSpace(os.Getenv("LUCX_PLUGIN_DATA"))
@@ -475,9 +493,15 @@ func main() {
 }
 
 
-type lucxIntegrationLogger struct{}
-func (lucxIntegrationLogger) Printf(format string, args ...any) {
-	logLine("INFO", format, args...)
+type lucxIntegrationLogger struct { file *os.File }
+func (l lucxIntegrationLogger) Printf(format string, args ...any) {
+	message := fmt.Sprintf(format, args...)
+	logLine("INFO", "%s", message)
+	if l.file != nil {
+		_, err := fmt.Fprintf(l.file, "%s level=INFO %s\n", time.Now().UTC().Format(time.RFC3339), message)
+		if err == nil { err = l.file.Sync() }
+		if err != nil { logLine("ERROR", "INTEGRATION log write failed: %v", err) }
+	}
 }
 
 func setIntegrationFlag(path string, enabled bool) error {

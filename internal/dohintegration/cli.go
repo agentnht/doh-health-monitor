@@ -31,21 +31,11 @@ func RunCommand(args []string,logger Logger)error{
 	if opts.Timeout<=0{return problem("--timeout must be greater than zero")}
 	if opts.Port<1||opts.Port>65535{return problem("--plugin-port must be between 1 and 65535")}
 	if opts.BaseURL!=""&&opts.PanelDB!=""{return problem("--panel-db is only valid when --base-url is omitted")}
-	var endpoint Endpoint
-	var panelCwd string
-	var err error
-	if opts.BaseURL!=""{
-		endpoint=Endpoint{BaseURL:opts.BaseURL}
-		_,panelCwd,err=runningPanelContext()
-	}else{
-		endpoint,panelCwd,err=detectEndpoint(opts)
+	if action=="integrate" {
+		if err:=checkPluginHealth(opts,logger);err!=nil{return fmt.Errorf("%s preflight failed: %w",action,err)}
 	}
-	if err!=nil{return err}
-	if opts.BaseURL!=""&&strings.HasPrefix(strings.ToLower(strings.TrimSpace(opts.BaseURL)),"https://")&&opts.TLSMode=="auto"{return problem("An explicit HTTPS --base-url requires --tls-mode ip/domain and --tls-name")}
-	endpoint,err=validateEndpointMode(endpoint,opts.TLSMode,opts.TLSName);if err!=nil{return err}
-	if action=="integrate"{if err:=checkPluginHealth(opts,logger);err!=nil{return err}}
-	token,err:=resolveToken(opts,panelCwd,logger);if err!=nil{return err}
-	api,err:=NewPanelAPI(endpoint,token,opts.Timeout,opts.AllowInsecureHTTP,logger);if err!=nil{return err}
+	_,api,err:=DetectAndAuthorize(opts,logger)
+	if err!=nil{return fmt.Errorf("%s panel authorization failed: %w",action,err)}
 	switch action{
 	case "integrate":err=Integrate(api,opts,logger)
 	case "remove":err=Remove(api,logger)
