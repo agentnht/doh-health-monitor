@@ -36,7 +36,7 @@ The script is an orchestration/presentation layer. Administrative operations and
 
 **Agreed implementation model:** the Web UI server is part of the existing Go plugin application and is compiled into the same plugin executable. It is not a separately installed Node/Python service or an additional binary. The web handlers and management API live in Go; static HTML/CSS/JavaScript assets should be embedded in the Go executable (for example, with `embed`) so the UI does not depend on external files after installation.
 
-Implemented initial milestone: a minimal embedded placeholder page, sufficient to verify that the server starts, serves HTTP, and can be reached through an SSH tunnel. This is not the full management UI; no management API or state-changing browser actions are exposed yet.
+Implemented milestones: the embedded Web UI now serves a read-only status dashboard through the authenticated `GET /api/v1/status` API. It displays daemon reachability, listener addresses, counters, cache and Gemini state, upstream health, and expandable per-upstream health-check details. No state-changing browser actions are exposed.
 
 Expected lifecycle:
 
@@ -137,11 +137,11 @@ The first API milestone exposes exactly one browser API route:
 
 The Web UI process reads the existing plugin `config.json` without creating or modifying it, obtains the configured status-listener address, and refuses to call it unless it is loopback. It then requests the daemon's existing local `/status` endpoint with a bounded timeout and response size. It does not start, stop, or restart systemd services and does not invoke shell commands.
 
-The API response is an explicit allowlist of operational fields: plugin ID/version and start/update times; DNS listener addresses; cache summary; upstream group and health states; query/cache/failure counters; active connection and dropped-packet counters; and Gemini enabled/disabled state. It must not return the daemon's config-file path, raw last-error strings, credentials, key-file contents, panel tokens, or full configuration objects. If the daemon status endpoint is unavailable, return a generic `503` response without exposing internal network or filesystem details.
+The API response is an explicit allowlist of operational fields: plugin ID/version and start/update times; DNS listener addresses; cache summary; upstream group and health states; query/cache/failure counters; active connection and dropped-packet counters; and Gemini enabled/disabled state. For each upstream it also returns the state, success/failure streaks, last-check timestamp, health-cycle duration, last HTTP status, and safe per-check fields (domain, required/optional, DNS result, HTTP result, and HTTP status). Raw probe errors, the daemon config-file path, raw top-level last-error strings, credentials, key-file contents, panel tokens, and full configuration objects must not be returned. If the daemon status endpoint is unavailable, return a generic `503` response without exposing internal network or filesystem details.
 
 The root page issues a cryptographically random per-Web-UI-session token in an `HttpOnly`, `SameSite=Strict` cookie. The token is never placed in the URL, page source, stdout, or logs. The status route requires the cookie; Host and Origin are checked against loopback/same-origin. Responses use `Cache-Control: no-store`, a restrictive Content Security Policy, and no CORS headers. Only GET is allowed for the status route. This milestone exposes no mutation endpoint; future state-changing routes must add explicit CSRF protection and per-operation confirmation.
 
-The page displays daemon reachability, version, listener addresses, counters, cache state, Gemini state, and upstream-group health. It refreshes read-only status periodically and on demand. No integration, removal, config editing, restart, or arbitrary command execution is available from the browser.
+The page displays daemon reachability, version, listener addresses, counters, cache state, Gemini state, and upstream-group health. Each upstream can be expanded to inspect the last health check, consecutive success/failure counts, and individual DNS/HTTP probe outcomes. The displayed latency is the duration of the complete configured health-check cycle, not the RTT of a single DNS query. The page refreshes read-only status periodically and on demand. No integration, removal, config editing, restart, or arbitrary command execution is available from the browser.
 
 ## 5. Shared management layer
 
@@ -160,8 +160,8 @@ The web API should expose only the operations and status needed by the UI. It sh
 1. **Architecture and interface contract:** agreed and documented.
 2. **SSH menu:** implemented; invokes the Go integration/removal and read-only check commands, plus read-only Xray configuration diagnostics.
 3. **Web placeholder and session lifecycle:** implemented and tested on the VPS; separate Go mode, embedded page, loopback-only dynamic listener, readiness protocol, SSH tunnel, and control-pipe shutdown. The browser loaded the page through the tunnel; after the management session stopped, `pgrep -af 'doh-health-monitor web'` returned no matching process.
-4. **Read-only Web API:** first endpoint `GET /api/v1/status`, authenticated with a per-session HttpOnly cookie, returns an allowlisted daemon status summary. No mutation routes are exposed in this milestone. Guarded integration/removal operations remain a later step.
-5. **Full UI:** add plugin configuration, upstreams/groups, health state, integration status, and logs as their contracts are agreed.
+4. **Read-only Web API and dashboard:** implemented `GET /api/v1/status`, authenticated with a per-session HttpOnly cookie. The API returns an allowlisted daemon summary and sanitized per-upstream health details, including check timestamps, success/failure streaks, and individual DNS/HTTP outcomes. CI tests verify that raw error strings and private fields are not exposed. No mutation routes are present.
+5. **Further management UI:** consider read-only configuration details and integration status next, then guarded `integrate`/`remove` operations only after their confirmation and security contracts are agreed.
 
 ## 7. Open decisions
 
@@ -172,4 +172,4 @@ The web API should expose only the operations and status needed by the UI. It sh
 
 ## Scope note
 
-This document records the agreed architecture and implementation progress. The SSH menu and initial Web UI placeholder are implemented. The Web API and authenticated management operations are not implemented yet; DNS daemon behavior remains unchanged.
+This document records the agreed architecture and implementation progress. The SSH menu, session-bound Web UI, authenticated read-only status API, and upstream health detail view are implemented. State-changing Web API operations are not implemented; DNS daemon behavior remains unchanged.
