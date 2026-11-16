@@ -37,6 +37,16 @@ func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "/app.js") {
 		t.Fatal("dashboard JavaScript asset is missing from the page")
 	}
+	page := rec.Body.String()
+	if got := strings.Count(page, `<section class="panel dashboard-panel">`); got != 1 {
+		t.Fatalf("dashboard should have exactly one combined data panel, got %d", got)
+	}
+	if got := strings.Count(page, `<section class="dashboard-column">`); got != 3 {
+		t.Fatalf("dashboard should have exactly three columns, got %d", got)
+	}
+	if strings.Index(page, `id="dns-udp"`) > strings.Index(page, `id="dns-tcp"`) {
+		t.Fatal("TCP listener must appear below UDP listener")
+	}
 
 	badHost := req.Clone(req.Context())
 	badHost.Host = "example.org"
