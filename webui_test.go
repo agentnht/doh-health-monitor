@@ -19,7 +19,7 @@ func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Host = "127.0.0.1:19876"
-	rec := httptestNewRecorder()
+	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET / status=%d, want %d", rec.Code, http.StatusOK)
@@ -89,12 +89,15 @@ func TestRunWebUIStopsWhenSupervisorPipeCloses(t *testing.T) {
 	go func() {
 		done <- runWebUI()
 	}()
+	finished := false
 
 	cleanup := func() {
 		_ = controlWrite.Close()
-		select {
-		case <-done:
-		case <-time.After(6 * time.Second):
+		if !finished {
+			select {
+			case <-done:
+			case <-time.After(6 * time.Second):
+			}
 		}
 		os.Stdin, os.Stdout = oldStdin, oldStdout
 		_ = controlRead.Close()
@@ -133,6 +136,7 @@ func TestRunWebUIStopsWhenSupervisorPipeCloses(t *testing.T) {
 	}
 	select {
 	case err := <-done:
+		finished = true
 		if err != nil {
 			t.Fatalf("Web UI shutdown: %v", err)
 		}
@@ -141,22 +145,3 @@ func TestRunWebUIStopsWhenSupervisorPipeCloses(t *testing.T) {
 	}
 }
 
-// Small local recorder keeps the tests independent of external packages.
-type webUIRecorder struct {
-	header http.Header
-	code   int
-	body   strings.Builder
-}
-
-func httptestNewRecorder() *webUIRecorder {
-	return &webUIRecorder{header: make(http.Header)}
-}
-
-func (r *webUIRecorder) Header() http.Header { return r.header }
-func (r *webUIRecorder) WriteHeader(code int) { r.code = code }
-func (r *webUIRecorder) Write(data []byte) (int, error) {
-	if r.code == 0 {
-		r.code = http.StatusOK
-	}
-	return r.body.Write(data)
-}
