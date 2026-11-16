@@ -316,3 +316,11 @@ func TestExplicitPanelHTTPSRequiresExplicitTLSIdentity(t *testing.T){
 	opts:=DefaultOptions();opts.BaseURL="https://127.0.0.1:2053"
 	if _,_,err:=DetectAndAuthorize(opts,nil);err==nil{t.Fatal("HTTPS must require explicit TLS identity")}
 }
+
+
+func TestDiagnosticTunnelStartTimeoutCoversLucXApplyCycle(t *testing.T) {
+	if diagnosticTunnelStartTimeout < 2*lucXRestartApplyInterval {
+		t.Fatalf("diagnostic Tunnel startup timeout %s must cover at least two LucX-UI apply intervals (%s)",
+			diagnosticTunnelStartTimeout, lucXRestartApplyInterval)
+	}
+}
