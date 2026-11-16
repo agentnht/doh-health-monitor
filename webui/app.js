@@ -12,6 +12,7 @@
       root.textContent = "Нет данных о группах.";
       return;
     }
+
     for (const [id, group] of entries) {
       const section = document.createElement("section");
       section.className = "group";
@@ -20,12 +21,54 @@
       const active = document.createElement("p");
       active.textContent = "Активный upstream: " + (group.active_upstream || "—");
       const list = document.createElement("ul");
+      list.className = "upstream-list";
+
       for (const [upstreamID, state] of Object.entries(group.upstreams || {})) {
         const item = document.createElement("li");
-        item.textContent = upstreamID + ": " + (state.state || "unknown") +
-          (state.latency_ms ? " · " + state.latency_ms + " мс" : "");
+        item.className = "upstream";
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        const latency = state.latency_ms == null ? "" : " · " + number(state.latency_ms) + " мс";
+        summary.textContent = upstreamID + ": " + (state.state || "unknown") + latency;
+        const meta = document.createElement("p");
+        meta.className = "muted";
+        meta.textContent = "Последняя проверка: " + when(state.last_check) +
+          " · Успешных подряд: " + number(state.success_streak) +
+          " · Неуспешных подряд: " + number(state.failure_streak);
+        details.append(summary, meta);
+
+        const checks = Array.isArray(state.checks) ? state.checks : [];
+        if (checks.length) {
+          const checkTitle = document.createElement("p");
+          checkTitle.className = "check-title";
+          checkTitle.textContent = "Результаты проверок";
+          const checkList = document.createElement("ul");
+          checkList.className = "check-list";
+          for (const check of checks) {
+            const checkItem = document.createElement("li");
+            const requirement = check.required ? "обязательная" : "дополнительная";
+            let result = check.domain + " · " + requirement +
+              " · DNS: " + (check.dns_ok ? "OK" : "ошибка");
+            if (check.http_checked) {
+              result += " · HTTP: " + (check.http_ok ? "OK" : "ошибка");
+              if (check.http_status) result += " (" + check.http_status + ")";
+            } else {
+              result += " · HTTP: не проверялся";
+            }
+            checkItem.textContent = result;
+            checkList.append(checkItem);
+          }
+          details.append(checkTitle, checkList);
+        } else {
+          const noChecks = document.createElement("p");
+          noChecks.className = "muted";
+          noChecks.textContent = "Детальные DNS/HTTP-проверки не настроены.";
+          details.append(noChecks);
+        }
+        item.append(details);
         list.append(item);
       }
+
       section.append(heading, active, list);
       root.append(section);
     }
