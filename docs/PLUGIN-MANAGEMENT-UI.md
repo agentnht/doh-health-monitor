@@ -85,6 +85,33 @@ If local port `19876` is occupied, choose another free local port and replace on
 
 Keep both SSH sessions open while using the UI: the original management session running the menu (which supervises the Web UI process) and this separate tunnel session. Then open the matching `http://127.0.0.1:LOCAL_PORT/` address in the browser. The server must bind exclusively to loopback.
 
+### SSH host-key warning on Windows
+
+If OpenSSH reports `REMOTE HOST IDENTIFICATION HAS CHANGED`, do not immediately delete the saved key or disable host-key checking. First verify the new server host-key fingerprint through a trusted VPS console or hosting-provider control panel. Only after the fingerprint has been independently confirmed as belonging to this VPS, remove the stale known_hosts entry from Windows PowerShell:
+
+```powershell
+ssh-keygen -R SERVER_ADDRESS
+```
+
+Replace `SERVER_ADDRESS` with the VPS IP address or hostname used in the SSH command. Then reconnect normally and compare the fingerprint shown by SSH with the independently verified fingerprint before accepting the new key. A changed host key can be legitimate after a server rebuild or key rotation, but can also indicate a man-in-the-middle attack. Never work around this warning with `StrictHostKeyChecking=no`.
+
+### Web UI session shutdown test
+
+Perform these checks while the DNS daemon is running if desired; none of the tests should stop, restart, or reconfigure it.
+
+1. **Normal stop:** while the Web UI is open, return to the original SSH management terminal and press Enter at the menu's Web UI prompt. The script should print that Web UI has stopped and return to the menu. Choose `0` to exit the menu. The browser tab may still display its already-loaded page; refresh it and verify that the page no longer loads through the still-open tunnel.
+2. **Ctrl+C:** start Web UI again, then press Ctrl+C in the original management terminal. The shell trap should close the control pipe, wait for the Go child, and exit the menu session. Refresh the browser page; the Web UI should be unavailable.
+3. **Abrupt management-session loss:** start Web UI again, keep the separate tunnel session open, then close the original management SSH terminal/window without using the menu's normal exit. After the SSH connection is gone, refresh the browser page. The Go process should observe EOF on its control pipe, perform graceful shutdown, and the page should become unavailable. This specifically checks the server-side EOF safeguard.
+4. **Tunnel-only disconnect:** close only the second SSH terminal that carries the port-forward. This should make the browser page unavailable from the workstation, but it should **not** stop Web UI while the original management session remains active. Return to the original terminal and press Enter to stop Web UI cleanly.
+
+For an additional server-side check after a stop, reconnect to the VPS and inspect only matching Web UI processes:
+
+```bash
+pgrep -af 'doh-health-monitor web' || true
+```
+
+No matching Web UI process should remain after the management session has ended. Do not kill processes by name as part of this test. The DNS daemon is a separate process and must remain running.
+
 ## 4. Security requirements
 
 - Bind the plugin web server exclusively to loopback (`127.0.0.1`), never to a public or wildcard interface.
