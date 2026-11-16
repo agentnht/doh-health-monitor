@@ -31,6 +31,12 @@ func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 	if rec.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal("Web UI response must not be cached")
 	}
+	if len(rec.Result().Cookies()) != 1 || rec.Result().Cookies()[0].Name != webUISessionCookie {
+		t.Fatal("root page must issue the per-session HttpOnly cookie")
+	}
+	if !strings.Contains(rec.Body.String(), "/app.js") {
+		t.Fatal("dashboard JavaScript asset is missing from the page")
+	}
 
 	badHost := req.Clone(req.Context())
 	badHost.Host = "example.org"
@@ -39,6 +45,14 @@ func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 	handler.ServeHTTP(badHostRecorder, badHost)
 	if badHostRecorder.Code != http.StatusForbidden {
 		t.Fatalf("untrusted Host status=%d, want %d", badHostRecorder.Code, http.StatusForbidden)
+	}
+
+	badOrigin := req.Clone(req.Context())
+	badOrigin.Header.Set("Origin", "http://attacker.example")
+	badOriginRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(badOriginRecorder, badOrigin)
+	if badOriginRecorder.Code != http.StatusForbidden {
+		t.Fatalf("untrusted Origin status=%d, want %d", badOriginRecorder.Code, http.StatusForbidden)
 	}
 
 	badMethod := req.Clone(req.Context())
@@ -55,6 +69,71 @@ func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 	handler.ServeHTTP(notFoundRecorder, notFound)
 	if notFoundRecorder.Code != http.StatusNotFound {
 		t.Fatalf("unknown path status=%d, want %d", notFoundRecorder.Code, http.StatusNotFound)
+	}
+}
+
+func TestWebUIStatusAPIRequiresSessionAndReturnsSanitizedStatus(t *testing.T) {
+	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/status" {
+			t.Errorf("status request=%s %s, want GET /status", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"doh-health-monitor",
+			"version":"test-version",
+			"config":"/private/path/config.json",
+			"last_error":"SECRET-MUST-NOT-LEAK",
+			"queries":17,
+			"failures":2,
+			"dns_udp":"127.0.0.1:5355",
+			"dns_tcp":"127.0.0.1:5355",
+			"groups":{"google":{"active_upstream":"system-dns","upstreams":{"system-dns":{"state":"up","last_error":"internal detail"}}}}
+		}`))
+	}))
+	defer statusServer.Close()
+
+	handler := newWebUIHandler(statusServer.URL+"/status", "session-test-token")
+	apiRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/api/v1/status", nil)
+	apiRequest.Host = "127.0.0.1:19876"
+	apiRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(apiRecorder, apiRequest)
+	if apiRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status request=%d, want %d", apiRecorder.Code, http.StatusUnauthorized)
+	}
+
+	rootRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/", nil)
+	rootRequest.Host = "127.0.0.1:19876"
+	rootRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(rootRecorder, rootRequest)
+	cookies := rootRecorder.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatal("root page did not issue session cookie")
+	}
+
+	apiRequest = httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/api/v1/status", nil)
+	apiRequest.Host = "127.0.0.1:19876"
+	apiRequest.AddCookie(cookies[0])
+	apiRequest.Header.Set("Origin", "http://127.0.0.1:19876")
+	apiRecorder = httptest.NewRecorder()
+	handler.ServeHTTP(apiRecorder, apiRequest)
+	if apiRecorder.Code != http.StatusOK {
+		t.Fatalf("authenticated status request=%d, body=%s", apiRecorder.Code, apiRecorder.Body.String())
+	}
+	body := apiRecorder.Body.String()
+	if !strings.Contains(body, "test-version") || !strings.Contains(body, "system-dns") {
+		t.Fatalf("status response is missing expected fields: %s", body)
+	}
+	if strings.Contains(body, "private/path") || strings.Contains(body, "SECRET-MUST-NOT-LEAK") || strings.Contains(body, "internal detail") {
+		t.Fatalf("status response leaked private or diagnostic fields: %s", body)
+	}
+	if apiRecorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("status API response must not be cached")
+	}
+}
+
+func TestFetchWebUIStatusRejectsNonLoopbackURL(t *testing.T) {
+	if _, err := fetchWebUIStatus(t.Context(), "http://192.0.2.10:18765/status"); err == nil {
+		t.Fatal("non-loopback status URL must be rejected")
 	}
 }
 
@@ -88,7 +167,7 @@ func TestRunWebUIStopsWhenSupervisorPipeCloses(t *testing.T) {
 	os.Stdout = readyWrite
 	done := make(chan error, 1)
 	go func() {
-		done <- runWebUI()
+		done <- runWebUIWithStatusURL("http://127.0.0.1:18765/status")
 	}()
 	finished := false
 
@@ -157,4 +236,3 @@ func TestRunWebUIStopsWhenSupervisorPipeCloses(t *testing.T) {
 		t.Fatal("Web UI did not stop after supervisor pipe EOF")
 	}
 }
-
