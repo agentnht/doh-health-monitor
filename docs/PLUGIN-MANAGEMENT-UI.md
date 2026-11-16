@@ -28,6 +28,8 @@ The script is an orchestration/presentation layer. Administrative operations and
 
 **Agreed:** the HTTP server is not started automatically with the DNS daemon. It is started only when the administrator selects **Web** in the SSH menu.
 
+**Agreed implementation model:** the Web UI server is part of the existing Go plugin application and is compiled into the same plugin executable. It is not a separately installed Node/Python service or an additional binary. The web handlers and management API live in Go; static HTML/CSS/JavaScript assets should be embedded in the Go executable (for example, with `embed`) so the UI does not depend on external files after installation.
+
 Initial milestone: a minimal placeholder page, sufficient to verify that the server starts, serves HTTP, and can be reached through an SSH tunnel. This milestone is not the full management UI.
 
 Expected lifecycle:
@@ -42,9 +44,9 @@ Expected lifecycle:
 
 **Agreed port strategy:** the Go web server dynamically selects its own port. It does not read or depend on LucX-UI's `http.port`. Binding to `127.0.0.1:0` lets the operating system allocate a free port as part of creating the listener, avoiding a separate check-then-bind race. The server must keep that same listener open; it must not probe a port, close it, and later attempt to bind again.
 
-The stdout readiness message must be a stable, documented machine-readable contract so the shell script can parse it reliably. It should be emitted only after the listener is active and include the actual TCP port. Reserve stdout for this protocol; diagnostic and error messages go to stderr so they cannot corrupt parsing. If startup fails before readiness, Go must exit with a non-zero status and provide a useful error on stderr. The implementation must also define how the script detects early process exit or a missing readiness message without waiting forever.
+The stdout readiness message must be a stable, documented machine-readable contract so the shell script can parse it reliably. **Proposed agreed format:** `WEB_UI_READY port=<number>`. It is emitted only after the listener is active and includes the actual TCP port. Reserve stdout for this protocol; diagnostic and error messages go to stderr so they cannot corrupt parsing. If startup fails before readiness, Go must exit with a non-zero status and provide a useful error on stderr. The SSH script waits no longer than 10 seconds for readiness, while also detecting early process exit; timeout or malformed output causes cleanup and a clear error.
 
-The script prints two ready-to-copy lines: the SSH command and the browser URL. The local workstation port may be a convenient fixed value (for example, `19876`) or another locally available port; the remote target must always be the dynamically assigned plugin web port.
+The script prints two ready-to-copy lines: the SSH command and the browser URL. The local workstation port may be a convenient fixed value (for example, `19876`) or another locally available port; the remote target must always be the dynamically assigned plugin web port. The Windows SSH command should use `-o ExitOnForwardFailure=yes` so an occupied local port is reported immediately rather than leaving a misleading tunnel session. If the chosen local port is occupied, the administrator can select another local port; the server-side port remains unchanged.
 
 The SSH script should supervise the Go web-server process as its child, keep it in the foreground of the management session, and stop/wait for that exact child on normal exit. It must not use an unvalidated PID file or broad process-name matching to terminate processes.
 
@@ -87,6 +89,10 @@ The script should print a ready-to-copy command containing the real server-side 
 - Keep web-server lifecycle independent from the DNS daemon.
 - Protect process-control files and any runtime state with appropriate filesystem permissions.
 - Treat requests as untrusted even though the service binds to loopback.
+- Validate `Host` and `Origin` for browser requests and implement CSRF protection for state-changing requests.
+- Generate a cryptographically random per-session access token. Do not put it in the URL, stdout, or logs; keep it in a protected session mechanism (for example, a `HttpOnly`, `SameSite=Strict` cookie) and require it for management API access.
+- Expose only an explicit allowlist of plugin management operations through the API. Never provide arbitrary shell execution, command passthrough, or a generic terminal endpoint.
+- Require a separate explicit confirmation in the UI before every state-changing operation.
 
 ## 5. Shared management layer
 
@@ -98,7 +104,7 @@ SSH shell menu ───────┐
 Browser Web UI ─ HTTP ┘
 ```
 
-The web API should expose only the operations and status needed by the UI. It should reuse existing Go integration and diagnostic logic rather than duplicating it.
+The web API should expose only the operations and status needed by the UI. It should reuse existing Go integration and diagnostic logic rather than duplicating it. **Agreed security boundary:** the UI may invoke only a narrow allowlist of Go management operations; it must never execute arbitrary shell commands or expose a terminal. State-changing operations require explicit user confirmation.
 
 ## 6. Proposed delivery stages
 
@@ -112,9 +118,8 @@ The web API should expose only the operations and status needed by the UI. It sh
 
 - Which exact command/script URL and invocation format should be documented for administrators?
 - Should the SSH script download and execute the current script on each run, or should it be installed locally and updated explicitly?
-- What exact stable stdout readiness-line format should Go emit, and how should the shell script handle startup timeout or early process exit?
 - The initial lifecycle is session-bound: the web process exits when the supervising SSH management session ends; no idle timeout is planned for the placeholder milestone.
-- What authentication or per-session protection is required in addition to SSH tunneling?
+- The agreed per-session protection is a random access token kept out of URLs, stdout, and logs, plus Host/Origin validation and CSRF protection; implementation details must be reviewed during development.
 - What exact read-only checks should the first `check` menu item perform and how should results be presented?
 
 ## Scope note
