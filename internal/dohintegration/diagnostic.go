@@ -171,8 +171,15 @@ func ssHasPort(port int,loopbackOnly bool,tcp bool)(bool,error){
 }
 func waitTunnelListeners(port int,timeout time.Duration)error{
 	deadline:=time.Now().Add(timeout)
-	for time.Now().Before(deadline){tcp,e1:=ssHasPort(port,true,true);udp,e2:=ssHasPort(port,true,false);if e1!=nil{return e1};if e2!=nil{return e2};if tcp&&udp{return nil};time.Sleep(250*time.Millisecond)}
-	return problem("Temporary Tunnel TCP/UDP loopback listeners did not become active on port %d",port)
+	lastTCP,lastUDP:=false,false
+	for time.Now().Before(deadline){
+		tcp,e1:=ssHasPort(port,true,true);udp,e2:=ssHasPort(port,true,false)
+		if e1!=nil{return e1};if e2!=nil{return e2}
+		lastTCP,lastUDP=tcp,udp
+		if tcp&&udp{return nil}
+		time.Sleep(250*time.Millisecond)
+	}
+	return problem("Temporary Tunnel TCP/UDP loopback listeners did not become active on port %d (TCP=%t, UDP=%t)",port,lastTCP,lastUDP)
 }
 func waitTunnelClosed(port int,timeout time.Duration)error{
 	deadline:=time.Now().Add(timeout)
