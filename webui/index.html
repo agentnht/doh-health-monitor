@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>DoH Health Monitor</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #111827; color: #e5e7eb; }
+    main { width: min(34rem, calc(100% - 3rem)); padding: 2rem; border: 1px solid #374151; border-radius: 1rem; background: #1f2937; }
+    h1 { margin-top: 0; font-size: 1.5rem; }
+    p { line-height: 1.6; color: #cbd5e1; }
+    .state { display: inline-block; padding: .25rem .6rem; border-radius: 999px; background: #064e3b; color: #a7f3d0; font-size: .85rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <span class="state">Web UI запущен</span>
+    <h1>DoH Health Monitor</h1>
+    <p>Это тестовая страница управления. Сервер доступен через SSH-туннель и работает отдельно от DNS-демона.</p>
+    <p>Функции просмотра состояния и управления будут добавлены на следующих этапах. Пока эта страница не выполняет никаких изменений конфигурации.</p>
+  </main>
+</body>
+</html>
