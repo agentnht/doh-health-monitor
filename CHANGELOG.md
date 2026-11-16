@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-16
+
 ### Go 2.1.0 live staging validation
 - 2026-11-16: установленный основной Go-бинарник версии 2.1.0 успешно проверен на тестовом VPS командами `integrate` и `remove`; отдельный тестовый executable не использовался.
 - Preflight подтвердил активный сервис `lucx-plugin-doh-health-monitor`, слушатели `127.0.0.1:5355` по UDP/TCP и JSON status API; endpoint LucX-UI был автоматически обнаружен, installer-provided credential успешно загружен.
