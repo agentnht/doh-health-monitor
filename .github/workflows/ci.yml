@@ -20,6 +20,8 @@ jobs:
         run: go mod tidy
       - name: Verify Go module files are tidy
         run: git diff --exit-code -- go.mod go.sum
+      - name: Check shell script syntax
+        run: bash -n scripts/plugin-management.sh scripts/check-dns-integration.sh
       - run: go vet ./...
       - run: go test ./...
       - name: Build Linux amd64 test package
