@@ -107,6 +107,12 @@ run_plugin_action() {
 
 run_check() {
   local tmp rc
+  printf 'Проверка состояния плагина через Go read-only command...\\n'
+  if ! "$PLUGIN_BIN" check; then
+    fail "Go-проверка плагина завершилась с ошибкой."
+    return 1
+  fi
+
   if command -v curl >/dev/null 2>&1; then
     tmp="$(mktemp)"
     if ! curl --fail --silent --show-error --location "$CHECK_SCRIPT_URL" --output "$tmp"; then
@@ -127,7 +133,7 @@ run_check() {
   fi
 
   printf 'Проверка выполняется в режиме read-only; конфигурация Xray не изменяется.\n'
-  if bash "$tmp"; then
+  if DOH_SKIP_PLUGIN_HEALTH_CHECK=1 bash "$tmp"; then
     rc=0
   else
     rc=$?
