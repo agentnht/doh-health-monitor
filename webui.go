@@ -203,7 +203,7 @@ func fetchWebUIStatus(ctx context.Context, statusURL string) (webUIStatus, error
 		return webUIStatus{}, errors.New("invalid local status URL")
 	}
 	transport := &http.Transport{Proxy: nil}
-	client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
+	client := &http.Client{Transport: transport, Timeout: 3 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	defer transport.CloseIdleConnections()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
 	if err != nil {
