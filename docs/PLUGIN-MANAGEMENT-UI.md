@@ -13,7 +13,7 @@ The SSH and web interfaces must call the same Go-side management logic. They mus
 
 ## 1. SSH management menu
 
-The administrator connects to the server over SSH and launches the repository-hosted shell script. The script presents these actions:
+The administrator connects to the server over SSH and launches the repository-hosted shell script from an interactive Bash session. Current invocation while this work remains in the draft branch:\n\n```bash\nbash <(curl -fsSL https://raw.githubusercontent.com/agentnht/doh-health-monitor/feature/plugin-management-ui/scripts/plugin-management.sh)\n```\n\nThe menu requires root. It locates the installed plugin executable from `LUCX_PLUGIN_DATA` or the running LucX-UI process working directory. The script presents these actions:
 
 - **Integrate** — invoke the existing Go `integrate` operation.
 - **Remove** — invoke the existing Go `remove` operation.
@@ -22,7 +22,7 @@ The administrator connects to the server over SSH and launches the repository-ho
 
 The existing daemon behavior remains unchanged: starting the binary without a management command starts the DNS daemon. The `check` action must not modify Xray or plugin configuration.
 
-The script is an orchestration/presentation layer. Administrative operations and their validation remain in Go. The script must report missing dependencies, unavailable plugin binaries, and operation failures clearly; it must not silently continue after an error.
+The script is an orchestration/presentation layer. Administrative operations and their validation remain in Go. The current menu invokes the existing Go `integrate` and `remove` commands after explicit confirmation. Its `check` item downloads and runs the existing `scripts/check-dns-integration.sh` diagnostic, which is read-only; it requires `curl` or `wget` to retrieve the script and `jq` for JSON checks. The menu reports a missing plugin binary or failed operation rather than silently continuing. The `web` menu entry is intentionally a placeholder until delivery stage 3.
 
 ## 2. On-demand Web UI
 
@@ -126,4 +126,4 @@ The web API should expose only the operations and status needed by the UI. It sh
 
 ## Scope note
 
-This document records the proposed architecture and agreed direction only. It does not implement the shell script, HTTP server, web page, API, or any daemon behavior.
+This document records the agreed architecture and implementation progress. The SSH menu script now exists and invokes the existing integration/removal commands plus the read-only diagnostic script. The Web UI server, placeholder page, web API, and session-bound Web UI lifecycle are not implemented yet; DNS daemon behavior remains unchanged.
