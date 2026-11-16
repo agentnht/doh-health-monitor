@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1259,4 +1260,35 @@ func TestLocalHostsRejectsDuplicateNormalizedNames(t *testing.T) {
 func containsString(values []string, want string) bool {
 	for _, value := range values { if value == want { return true } }
 	return false
+}
+
+func TestSetIntegrationFlagPreservesConfigAndToggles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	original := []byte("{\"dns_listen_udp\":\"127.0.0.1:5355\",\"custom\":{\"keep\":true}}\n")
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := setIntegrationFlag(path, true); err != nil {
+		t.Fatalf("set integration=true: %v", err)
+	}
+	read := func() map[string]any {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil { t.Fatal(err) }
+		var value map[string]any
+		if err := json.Unmarshal(data, &value); err != nil { t.Fatal(err) }
+		return value
+	}
+	config := read()
+	if config["integration"] != true { t.Fatalf("integration flag=%v, want true", config["integration"]) }
+	if config["dns_listen_udp"] != "127.0.0.1:5355" { t.Fatalf("unrelated config key changed: %#v", config) }
+	if nested := config["custom"].(map[string]any); nested["keep"] != true { t.Fatalf("unknown nested config key changed: %#v", nested) }
+	info, err := os.Stat(path)
+	if err != nil { t.Fatal(err) }
+	if info.Mode().Perm() != 0600 { t.Fatalf("config permissions=%#o, want 0600", info.Mode().Perm()) }
+	if err := setIntegrationFlag(path, false); err != nil {
+		t.Fatalf("set integration=false: %v", err)
+	}
+	config = read()
+	if config["integration"] != false { t.Fatalf("integration flag=%v, want false", config["integration"]) }
 }
