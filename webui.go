@@ -26,13 +26,23 @@ var webUIAssets embed.FS
 
 const webUISessionCookie = "doh_web_session"
 
+type webUIProbeStatus struct {
+	Domain      string `json:"domain"`
+	Required    bool   `json:"required"`
+	DNSOK       bool   `json:"dns_ok"`
+	HTTPChecked bool   `json:"http_checked"`
+	HTTPOK      bool   `json:"http_ok"`
+	HTTPStatus  int    `json:"http_status,omitempty"`
+}
+
 type webUIUpstreamStatus struct {
-	State         string    `json:"state"`
-	SuccessStreak int       `json:"success_streak"`
-	FailureStreak int       `json:"failure_streak"`
-	LastCheck     time.Time `json:"last_check,omitempty"`
-	LatencyMS     int64     `json:"latency_ms,omitempty"`
-	LastHTTP      int       `json:"last_http_status,omitempty"`
+	State         string             `json:"state"`
+	SuccessStreak int                `json:"success_streak"`
+	FailureStreak int                `json:"failure_streak"`
+	LastCheck     *time.Time         `json:"last_check,omitempty"`
+	LatencyMS     int64              `json:"latency_ms,omitempty"`
+	LastHTTP      int                `json:"last_http_status,omitempty"`
+	Checks        []webUIProbeStatus `json:"checks,omitempty"`
 }
 
 type webUIGroupStatus struct {
@@ -237,9 +247,21 @@ func fetchWebUIStatus(ctx context.Context, statusURL string) (webUIStatus, error
 	for groupID, group := range raw.Groups {
 		safeGroup := webUIGroupStatus{ActiveUpstream: group.ActiveUpstream, Upstreams: map[string]webUIUpstreamStatus{}}
 		for upstreamID, upstream := range group.Upstreams {
+			var lastCheck *time.Time
+			if !upstream.LastCheck.IsZero() {
+				checkedAt := upstream.LastCheck
+				lastCheck = &checkedAt
+			}
+			var safeChecks []webUIProbeStatus
+			for _, check := range upstream.Checks {
+				safeChecks = append(safeChecks, webUIProbeStatus{
+					Domain: check.Domain, Required: check.Required, DNSOK: check.DNSOK,
+					HTTPChecked: check.HTTPChecked, HTTPOK: check.HTTPOK, HTTPStatus: check.HTTPStatus,
+				})
+			}
 			safeGroup.Upstreams[upstreamID] = webUIUpstreamStatus{
 				State: upstream.State, SuccessStreak: upstream.SuccessStreak, FailureStreak: upstream.FailureStreak,
-				LastCheck: upstream.LastCheck, LatencyMS: upstream.LatencyMS, LastHTTP: upstream.LastHTTP,
+				LastCheck: lastCheck, LatencyMS: upstream.LatencyMS, LastHTTP: upstream.LastHTTP, Checks: safeChecks,
 			}
 		}
 		out.Groups[groupID] = safeGroup
