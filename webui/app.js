@@ -6,6 +6,11 @@
 
   function renderGroups(groups) {
     const root = $("groups");
+    const expandedUpstreams = new Set(
+      Array.from(root.querySelectorAll("details[data-upstream-key]"))
+        .filter((details) => details.open)
+        .map((details) => details.dataset.upstreamKey)
+    );
     root.replaceChildren();
     const entries = Object.entries(groups || {});
     if (!entries.length) {
@@ -27,6 +32,9 @@
         const item = document.createElement("li");
         item.className = "upstream";
         const details = document.createElement("details");
+        const expansionKey = JSON.stringify([id, upstreamID]);
+        details.dataset.upstreamKey = expansionKey;
+        details.open = expandedUpstreams.has(expansionKey);
         const summary = document.createElement("summary");
         const latency = state.latency_ms == null ? "" : " · " + number(state.latency_ms) + " мс";
         summary.textContent = upstreamID + ": " + (state.state || "unknown") + latency;
