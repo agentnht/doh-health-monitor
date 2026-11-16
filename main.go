@@ -332,8 +332,16 @@ func main() {
 			}
 			return
 		}
+		if action == "check" {
+			logger := lucxIntegrationLogger{}
+			if err := dohintegration.RunCommand(os.Args[1:], logger); err != nil {
+				logLine("ERROR", "CHECK: %v", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if action != "integrate" && action != "remove" {
-			logLine("ERROR", "CLI supports integrate, remove, and web")
+			logLine("ERROR", "CLI supports integrate, remove, check, and web")
 			os.Exit(2)
 		}
 		dataDir, err := dohintegration.PluginDataDir()
