@@ -22,7 +22,7 @@ The administrator connects to the server over SSH and launches the repository-ho
 
 The existing daemon behavior remains unchanged: starting the binary without a management command starts the DNS daemon. The `check` action must not modify Xray or plugin configuration.
 
-The script is an orchestration/presentation layer. Administrative operations and their validation remain in Go. The current menu invokes the existing Go `integrate` and `remove` commands after explicit confirmation. Its `check` item downloads and runs the existing `scripts/check-dns-integration.sh` diagnostic, which is read-only; it requires `curl` or `wget` to retrieve the script and `jq` for JSON checks. The menu reports a missing plugin binary or failed operation rather than silently continuing. The `web` menu entry is intentionally a placeholder until delivery stage 3.
+The script is an orchestration/presentation layer. Administrative operations and their validation remain in Go. The current menu invokes the existing Go `integrate` and `remove` commands after explicit confirmation. Its `check` item downloads and runs the existing `scripts/check-dns-integration.sh` diagnostic, which is read-only; it requires `curl` or `wget` to retrieve the script and `jq` for JSON checks. The menu reports a missing plugin binary or failed operation rather than silently continuing. The `web` menu item starts the separate Go Web UI process. The shell keeps the coprocess stdin writer open as a control pipe, parses the readiness line, and prints the SSH tunnel command plus browser URL.
 
 ## 2. On-demand Web UI
 
@@ -30,7 +30,7 @@ The script is an orchestration/presentation layer. Administrative operations and
 
 **Agreed implementation model:** the Web UI server is part of the existing Go plugin application and is compiled into the same plugin executable. It is not a separately installed Node/Python service or an additional binary. The web handlers and management API live in Go; static HTML/CSS/JavaScript assets should be embedded in the Go executable (for example, with `embed`) so the UI does not depend on external files after installation.
 
-Initial milestone: a minimal placeholder page, sufficient to verify that the server starts, serves HTTP, and can be reached through an SSH tunnel. This milestone is not the full management UI.
+Implemented initial milestone: a minimal embedded placeholder page, sufficient to verify that the server starts, serves HTTP, and can be reached through an SSH tunnel. This is not the full management UI; no management API or state-changing browser actions are exposed yet.
 
 Expected lifecycle:
 
@@ -63,7 +63,7 @@ The SSH script should supervise the Go web-server process as its child, keep it 
 - Go should use a bounded graceful-shutdown period, then close remaining HTTP connections if necessary. The shell should also detect early child exit and clean up without leaving a stale process.
 - No idle timeout is required for the initial placeholder milestone; the web process lives only for the SSH management session.
 
-The exact shell mechanism for creating/inheriting the control pipe and the stdout readiness-line format must be specified during implementation.
+Implementation: the Bash menu starts the Go `web` mode as a coprocess. Bash retains the coprocess stdin writer while Go reads stdin until EOF. Closing that writer on normal stop, or its automatic closure when the SSH supervisor disappears, triggers bounded graceful HTTP shutdown. Go also handles INT, TERM, and HUP. The stdout readiness protocol is `WEB_UI_READY port=<number>`; all diagnostics remain on stderr.
 
 ## 3. Port allocation and SSH tunnel
 
@@ -126,4 +126,4 @@ The web API should expose only the operations and status needed by the UI. It sh
 
 ## Scope note
 
-This document records the agreed architecture and implementation progress. The SSH menu script now exists and invokes the existing integration/removal commands plus the read-only diagnostic script. The Web UI server, placeholder page, web API, and session-bound Web UI lifecycle are not implemented yet; DNS daemon behavior remains unchanged.
+This document records the agreed architecture and implementation progress. The SSH menu and initial Web UI placeholder are implemented. The Web API and authenticated management operations are not implemented yet; DNS daemon behavior remains unchanged.
