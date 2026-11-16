@@ -16,7 +16,12 @@ import (
 	"time"
 )
 
-const tunnelRemarkPrefix="doh-health-monitor-selftest-"
+const (
+	tunnelRemarkPrefix = "doh-health-monitor-selftest-"
+	// LucX-UI applies pending Xray config changes on a 30-second background cadence.
+	// Leave room for one polling interval plus the Xray apply/startup time.
+	diagnosticTunnelStartTimeout = 75 * time.Second
+)
 
 type diagnosticResource struct{
 	Expected map[string]any
@@ -189,8 +194,6 @@ func ensureDiagnosticTunnel(api *PanelAPI,logger Logger)(diagnosticResource,erro
 	live,err:=api.ListInbounds();if err!=nil{return diagnosticResource{},err}
 	matches:=0;for _,item:=range live{if v,ok:=asInt(item["id"]);ok&&v==id{matches++;if err:=verifyTemporaryTunnel(item,expected,id);err!=nil{return diagnosticResource{},err}}}
 	if matches!=1{return diagnosticResource{},problem("Created temporary Tunnel cannot be uniquely verified")}
-	if err:=waitTunnelListeners(port,20*time.Second);err!=nil{return diagnosticResource{},err}
-	if logger!=nil{logger.Printf("PASS: diagnostic Tunnel created for test (inbound ID %d, loopback port %d)",id,port)}
 	return diagnosticResource{Expected:expected,ID:id,Port:port,Tag:str(created["tag"]),RuleMode:mode},nil
 }
 
@@ -318,7 +321,18 @@ func Integrate(api *PanelAPI,opts Options,logger Logger)error{
 		resource,testErr=ensureDiagnosticTunnel(api,logger)
 		if testErr==nil{existing=[]diagnosticResource{resource}}
 	}
-	if testErr==nil{if len(existing)!=1{testErr=problem("Expected one diagnostic Tunnel, found %d",len(existing))}else{testErr=waitTunnelListeners(existing[0].Port,20*time.Second);if testErr==nil{testErr=runTunnelDNSSelfTest(existing[0].Port,logger)}}}
+	if testErr==nil{
+		if len(existing)!=1{
+			testErr=problem("Expected one diagnostic Tunnel, found %d",len(existing))
+		}else{
+			logger.Printf("NOTICE: waiting up to %s for LucX-UI to apply the temporary Tunnel",diagnosticTunnelStartTimeout)
+			testErr=waitTunnelListeners(existing[0].Port,diagnosticTunnelStartTimeout)
+			if testErr==nil{
+				logger.Printf("PASS: diagnostic Tunnel TCP/UDP loopback listeners are active on port %d",existing[0].Port)
+				testErr=runTunnelDNSSelfTest(existing[0].Port,logger)
+			}
+		}
+	}
 	cleanupErr:=cleanupDiagnostic(api,logger)
 	if testErr!=nil&&cleanupErr!=nil{return problem("Permanent DNS integration remains applied. DNS self-test failed: %v; diagnostic cleanup also failed: %v",testErr,cleanupErr)}
 	if testErr!=nil{return problem("Permanent DNS integration remains applied, but DNS self-test failed: %v",testErr)}
