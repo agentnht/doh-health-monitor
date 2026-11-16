@@ -17,10 +17,10 @@ import (
 )
 
 const (
-	tunnelRemarkPrefix = "doh-health-monitor-selftest-"
-	// LucX-UI applies pending Xray config changes on a 30-second background cadence.
-	// Leave room for one polling interval plus the Xray apply/startup time.
-	diagnosticTunnelStartTimeout = 75 * time.Second
+	tunnelRemarkPrefix       = "doh-health-monitor-selftest-"
+	lucXRestartApplyInterval = 30 * time.Second
+	// Allow one LucX-UI polling interval plus 45 seconds for Xray apply/startup.
+	diagnosticTunnelStartTimeout = lucXRestartApplyInterval + 45*time.Second
 )
 
 type diagnosticResource struct{
