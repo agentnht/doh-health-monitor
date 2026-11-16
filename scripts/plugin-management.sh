@@ -89,6 +89,32 @@ confirm_action() {
   [[ "$answer" == "y" || "$answer" == "Y" ]]
 }
 
+resolve_server_address() {
+  local address="" client_addr="" client_port="" server_port="" extra=""
+
+  # An explicit override is useful when SSH terminates behind NAT or a proxy.
+  address="${SERVER_ADDRESS:-}"
+  if [[ -z "$address" && -n "${SSH_CONNECTION:-}" ]]; then
+    read -r client_addr client_port address server_port extra <<< "$SSH_CONNECTION"
+    if [[ -n "$extra" || -z "$client_addr" || -z "$client_port" || -z "$server_port" ]]; then
+      address=""
+    fi
+  fi
+
+  if [[ -z "$address" ]]; then
+    printf 'Не удалось определить адрес SSH-сервера автоматически. Введите IP или hostname для подключения с Windows: ' >&2
+    if ! IFS= read -r address </dev/tty; then
+      return 1
+    fi
+  fi
+
+  if [[ ! "$address" =~ ^[A-Za-z0-9][A-Za-z0-9._:%-]*$ ]]; then
+    fail "Адрес сервера содержит недопустимые символы."
+    return 1
+  fi
+  printf '%s\n' "$address"
+}
+
 run_plugin_action() {
   local action="$1"
   if ! confirm_action "Подтвердите операцию '$action'"; then
@@ -200,7 +226,11 @@ run_web_ui() {
     return 1
   fi
 
-  server_address="${SERVER_ADDRESS:-SERVER_ADDRESS}"
+  if ! server_address="$(resolve_server_address)"; then
+    stop_web_ui
+    fail "Не удалось получить адрес SSH-сервера для команды туннеля."
+    return 1
+  fi
   printf '\n[OK] Web UI слушает только 127.0.0.1:%s.\n' "$remote_port"
   printf '\nНа Windows откройте отдельный PowerShell и выполните:\n'
   printf 'ssh -o ExitOnForwardFailure=yes -L 19876:127.0.0.1:%s root@%s\n' "$remote_port" "$server_address"
