@@ -44,9 +44,18 @@ Expected lifecycle:
 
 The stdout readiness message must be a stable, documented machine-readable contract so the shell script can parse it reliably. It should be emitted only after the listener is active and include the actual TCP port. Reserve stdout for this protocol; diagnostic and error messages go to stderr so they cannot corrupt parsing. If startup fails before readiness, Go must exit with a non-zero status and provide a useful error on stderr. The implementation must also define how the script detects early process exit or a missing readiness message without waiting forever.
 
-The local workstation port may be a convenient fixed value (for example, `19876`) or another locally available port; the remote target must always be the dynamically assigned plugin web port.
+The script prints two ready-to-copy lines: the SSH command and the browser URL. The local workstation port may be a convenient fixed value (for example, `19876`) or another locally available port; the remote target must always be the dynamically assigned plugin web port.
 
-The implementation needs a defined way to track the web process and stop it safely (for example, a PID file with process identity validation). It must avoid killing an unrelated process if a stale PID file exists. Exact start/stop interaction and idle timeout policy remain to be designed.
+The SSH script should supervise the Go web-server process as its child, keep it in the foreground of the management session, and stop/wait for that exact child on normal exit. It must not use an unvalidated PID file or broad process-name matching to terminate processes.
+
+**Agreed session lifecycle and firewall policy:**
+- Do not inspect, add, or remove UFW rules. Because the listener is bound only to `127.0.0.1`, it is not reachable directly from external network interfaces; SSH local port forwarding is the access path.
+- On normal menu exit, Ctrl+C, or catchable termination/hangup signals, the shell script must stop the child web-server process and wait for it to exit. The DNS daemon is not a child of this temporary web session and must remain untouched.
+- Add a second, server-side safeguard for abrupt SSH disconnects: the script provides the Go process with a dedicated control pipe whose write end is held open by the supervising shell. Go monitors that pipe; EOF means the supervising SSH session has gone away, so Go performs graceful HTTP shutdown and exits. This avoids depending solely on shell traps, which cannot run after every kind of disconnect or forced termination.
+- Go should use a bounded graceful-shutdown period, then close remaining HTTP connections if necessary. The shell should also detect early child exit and clean up without leaving a stale process.
+- No idle timeout is required for the initial placeholder milestone; the web process lives only for the SSH management session.
+
+The exact shell mechanism for creating/inheriting the control pipe and the stdout readiness-line format must be specified during implementation.
 
 ## 3. Port allocation and SSH tunnel
 
@@ -69,6 +78,7 @@ The script should print a ready-to-copy command containing the real server-side 
 ## 4. Security requirements
 
 - Bind the plugin web server exclusively to loopback (`127.0.0.1`), never to a public or wildcard interface.
+- Do not modify UFW or other host firewall rules for this feature; SSH forwarding reaches the loopback listener without opening a public inbound port.
 - Do not expose the management UI directly to the Internet.
 - Use SSH port forwarding as the supported remote access path.
 - Do not send panel credentials, admin credentials, or other secrets to browser code.
@@ -103,7 +113,7 @@ The web API should expose only the operations and status needed by the UI. It sh
 - Which exact command/script URL and invocation format should be documented for administrators?
 - Should the SSH script download and execute the current script on each run, or should it be installed locally and updated explicitly?
 - What exact stable stdout readiness-line format should Go emit, and how should the shell script handle startup timeout or early process exit?
-- Should the web process run until explicitly stopped, or should it have an idle timeout?
+- The initial lifecycle is session-bound: the web process exits when the supervising SSH management session ends; no idle timeout is planned for the placeholder milestone.
 - What authentication or per-session protection is required in addition to SSH tunneling?
 - What exact read-only checks should the first `check` menu item perform and how should results be presented?
 
