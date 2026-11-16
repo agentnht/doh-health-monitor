@@ -52,7 +52,7 @@ Expected lifecycle:
 
 The stdout readiness message must be a stable, documented machine-readable contract so the shell script can parse it reliably. **Proposed agreed format:** `WEB_UI_READY port=<number>`. It is emitted only after the listener is active and includes the actual TCP port. Reserve stdout for this protocol; diagnostic and error messages go to stderr so they cannot corrupt parsing. If startup fails before readiness, Go must exit with a non-zero status and provide a useful error on stderr. The SSH script waits no longer than 10 seconds for readiness, while also detecting early process exit; timeout or malformed output causes cleanup and a clear error.
 
-The script prints two ready-to-copy lines: the SSH command and the browser URL. The command must have this form, with `REMOTE_PORT` replaced by the actual server-side port reported by Go and `SERVER_ADDRESS` replaced by the server address:
+The script prints two ready-to-copy lines: the SSH command and the browser URL. It resolves the SSH target in this order: an explicit `SERVER_ADDRESS` environment override; the third field (server-side address) of sshd's `SSH_CONNECTION` environment variable; or an interactive prompt if that variable is unavailable. This avoids printing a literal placeholder. When the VPS is behind NAT, a proxy, or a bastion where the server-side address from `SSH_CONNECTION` is not reachable from the Windows workstation, set `SERVER_ADDRESS` explicitly to the public IP or DNS name used to connect. The command has this form, with `REMOTE_PORT` replaced by the actual server-side port reported by Go:
 
 ```powershell
 ssh -o ExitOnForwardFailure=yes -L 19876:127.0.0.1:REMOTE_PORT root@SERVER_ADDRESS
