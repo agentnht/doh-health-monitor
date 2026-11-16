@@ -46,7 +46,13 @@ Expected lifecycle:
 
 The stdout readiness message must be a stable, documented machine-readable contract so the shell script can parse it reliably. **Proposed agreed format:** `WEB_UI_READY port=<number>`. It is emitted only after the listener is active and includes the actual TCP port. Reserve stdout for this protocol; diagnostic and error messages go to stderr so they cannot corrupt parsing. If startup fails before readiness, Go must exit with a non-zero status and provide a useful error on stderr. The SSH script waits no longer than 10 seconds for readiness, while also detecting early process exit; timeout or malformed output causes cleanup and a clear error.
 
-The script prints two ready-to-copy lines: the SSH command and the browser URL. The local workstation port is chosen on the Windows workstation, not by the remote VPS script. The remote script cannot inspect or reserve a Windows TCP port. Use `-o ExitOnForwardFailure=yes` in the printed SSH command so SSH fails immediately if it cannot bind the requested local forwarding port (for example, because that port is already occupied). In that case, the administrator chooses another local port and retries; the dynamically assigned server-side plugin port remains unchanged. No remote-side check of the Windows port is attempted.
+The script prints two ready-to-copy lines: the SSH command and the browser URL. The command must have this form, with `REMOTE_PORT` replaced by the actual server-side port reported by Go and `SERVER_ADDRESS` replaced by the server address:
+
+```powershell
+ssh -o ExitOnForwardFailure=yes -L 19876:127.0.0.1:REMOTE_PORT root@SERVER_ADDRESS
+```
+
+The local workstation port (`19876` in this example) is chosen on the Windows workstation, not by the remote VPS script. The remote script cannot inspect or reserve a Windows TCP port. If SSH reports that the local port is already occupied, the administrator chooses another free local port by replacing `19876` in the command with that port, then retries. The browser URL printed by the script must use the same local port (for example, `http://127.0.0.1:19876/`; update it to match if the local port is changed). The remote port in the command does not change. `-o ExitOnForwardFailure=yes` makes SSH fail immediately if it cannot bind the requested local forwarding port. No remote-side check of the Windows port is attempted.
 
 The SSH script should supervise the Go web-server process as its child, keep it in the foreground of the management session, and stop/wait for that exact child on normal exit. It must not use an unvalidated PID file or broad process-name matching to terminate processes.
 
@@ -63,19 +69,15 @@ The exact shell mechanism for creating/inheriting the control pipe and the stdou
 
 No lookup of LucX-UI's `http.port` is required. That file belongs to the panel and is unrelated to the plugin's management listener.
 
-Example Windows terminal command (the local port is an example; the remote port is the actual port reported by Go on stdout):
+Example Windows terminal command printed by the script (the remote port is replaced with the actual port reported by Go on stdout):
 
 ```powershell
-ssh -L 19876:127.0.0.1:ACTUAL_PLUGIN_WEB_PORT root@SERVER_ADDRESS
+ssh -o ExitOnForwardFailure=yes -L 19876:127.0.0.1:REMOTE_PORT root@SERVER_ADDRESS
 ```
 
-Keep this SSH session open while using the UI. Then open:
+If local port `19876` is occupied, choose another free local port and replace only the first port in the `-L` argument. For example, for local port `19877` use `-L 19877:127.0.0.1:REMOTE_PORT`; open the matching browser address `http://127.0.0.1:19877/`. Do not change `REMOTE_PORT`.
 
-```text
-http://127.0.0.1:19876/
-```
-
-The script should print a ready-to-copy command containing the real server-side port, not the placeholder shown above. The server must bind exclusively to loopback.
+Keep both SSH sessions open while using the UI: the original management session running the menu (which supervises the Web UI process) and this separate tunnel session. Then open the matching `http://127.0.0.1:LOCAL_PORT/` address in the browser. The server must bind exclusively to loopback.
 
 ## 4. Security requirements
 
