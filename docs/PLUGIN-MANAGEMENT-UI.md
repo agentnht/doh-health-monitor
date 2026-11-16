@@ -34,14 +34,17 @@ Expected lifecycle:
 
 1. The SSH menu starts the web server as a separately managed process.
 2. The Go web server asks the operating system to allocate an available TCP port by listening on `127.0.0.1:0`.
-3. After the listener is successfully created, Go obtains the actual assigned port from the listener and reports it to the SSH menu (for example, through a readiness message or a protected runtime file).
-4. The administrator opens an SSH local port-forward from their workstation, targeting that actual server-side port.
-5. The administrator visits the forwarded local address in a browser.
-6. Stopping the web server does not stop or restart the DNS daemon.
+3. After the listener is successfully created, Go obtains the actual assigned port from the listener.
+4. **Agreed port handoff:** Go reports readiness and the assigned port through stdout. The SSH script reads this readiness message and uses the reported port to construct the tunnel command and browser URL. No port file or lookup of LucX-UI configuration is involved.
+5. The administrator opens an SSH local port-forward from their workstation, targeting that actual server-side port.
+6. The administrator visits the forwarded local address in a browser.
+7. Stopping the web server does not stop or restart the DNS daemon.
 
 **Agreed port strategy:** the Go web server dynamically selects its own port. It does not read or depend on LucX-UI's `http.port`. Binding to `127.0.0.1:0` lets the operating system allocate a free port as part of creating the listener, avoiding a separate check-then-bind race. The server must keep that same listener open; it must not probe a port, close it, and later attempt to bind again.
 
-The actual bound port must be communicated reliably to the SSH script only after the listener is active. The script then prints the exact SSH tunnel command and browser URL. The local workstation port may be a convenient fixed value (for example, `19876`) or another locally available port; the remote target must always be the dynamically assigned plugin web port.
+The stdout readiness message must be a stable, documented machine-readable contract so the shell script can parse it reliably. It should be emitted only after the listener is active and include the actual TCP port. Reserve stdout for this protocol; diagnostic and error messages go to stderr so they cannot corrupt parsing. If startup fails before readiness, Go must exit with a non-zero status and provide a useful error on stderr. The implementation must also define how the script detects early process exit or a missing readiness message without waiting forever.
+
+The local workstation port may be a convenient fixed value (for example, `19876`) or another locally available port; the remote target must always be the dynamically assigned plugin web port.
 
 The implementation needs a defined way to track the web process and stop it safely (for example, a PID file with process identity validation). It must avoid killing an unrelated process if a stale PID file exists. Exact start/stop interaction and idle timeout policy remain to be designed.
 
@@ -49,7 +52,7 @@ The implementation needs a defined way to track the web process and stop it safe
 
 No lookup of LucX-UI's `http.port` is required. That file belongs to the panel and is unrelated to the plugin's management listener.
 
-Example Windows terminal command (the local port is an example; the remote port must be replaced with the actual port reported by the Go server):
+Example Windows terminal command (the local port is an example; the remote port is the actual port reported by Go on stdout):
 
 ```powershell
 ssh -L 19876:127.0.0.1:ACTUAL_PLUGIN_WEB_PORT root@SERVER_ADDRESS
@@ -89,7 +92,7 @@ The web API should expose only the operations and status needed by the UI. It sh
 
 ## 6. Proposed delivery stages
 
-1. **Architecture and interface contract:** settle command names, dynamic port reporting, web-server lifecycle, and the initial API boundary.
+1. **Architecture and interface contract:** settle command names, stdout readiness contract, web-server lifecycle, and the initial API boundary.
 2. **SSH menu:** implement the repository-hosted interactive script and connect its actions to existing Go commands.
 3. **Web placeholder:** implement on-demand start/stop and a minimal page; validate access through SSH forwarding.
 4. **Web API:** expose read-only status/diagnostics and then guarded integration/removal operations.
@@ -99,7 +102,7 @@ The web API should expose only the operations and status needed by the UI. It sh
 
 - Which exact command/script URL and invocation format should be documented for administrators?
 - Should the SSH script download and execute the current script on each run, or should it be installed locally and updated explicitly?
-- How should the Go server communicate readiness and its dynamically assigned port to the SSH script (stdout handshake or protected runtime file)?
+- What exact stable stdout readiness-line format should Go emit, and how should the shell script handle startup timeout or early process exit?
 - Should the web process run until explicitly stopped, or should it have an idle timeout?
 - What authentication or per-session protection is required in addition to SSH tunneling?
 - What exact read-only checks should the first `check` menu item perform and how should results be presented?
