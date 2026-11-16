@@ -3,17 +3,17 @@
 ## [Unreleased]
 
 ### Go 2.1.0 live staging validation
-### Go daemon startup and upstream probe results
-- Дополнительно проверен полный `plugin.log` от запуска sidecar: бинарник `2.1.0` стартовал штатно, автоматически создал первичный `data/config.json`, загрузил конфигурацию (6 upstreams, 1 group) и перешёл в `READY` с DNS UDP/TCP на `127.0.0.1:5355` и HTTP на `127.0.0.1:18765`; Unix event socket также успешно поднят.
-- Startup DoH IP discovery выбрал рабочий адрес для каждого из проверенных hostname. Отдельные кандидаты дали ожидаемые ошибки подключения: IPv6 `network is unreachable` на VPS без IPv6-маршрута, один timeout и один `connection refused` для отдельных IPv4 адресов. У каждого затронутого hostname при этом был выбран успешный IP; эти предупреждения не мешали READY и не привели к отказу upstream.
-- После успешного `integrate` и после `remove` daemon зарегистрировал `CONFIG reloaded` без ошибок. Это подтверждает, что атомарные изменения флага `integration` в config были корректно подхвачены работающим процессом через hot reload.
-
 - 2026-11-16: установленный основной Go-бинарник версии 2.1.0 успешно проверен на тестовом VPS командами `integrate` и `remove`; отдельный тестовый executable не использовался.
 - Preflight подтвердил активный сервис `lucx-plugin-doh-health-monitor`, слушатели `127.0.0.1:5355` по UDP/TCP и JSON status API; endpoint LucX-UI был автоматически обнаружен, installer-provided credential успешно загружен.
 - `integrate` добавил DNS outbound `dns-out`, DNS server `127.0.0.1:5355` и глобальное TCP/UDP правило для порта 53. Запись панели прошла API read-back verification; правило `xui-dns-allow` осталось под управлением LucX-UI.
 - Диагностический Tunnel (inbound ID 1, loopback port 15353) успешно вернул положительные DNS A-ответы по UDP и TCP: `104.20.23.154` и `172.66.147.243`. Временная allow-запись `finalRule` и диагностический inbound были удалены; очистка подтверждена read-back и анализом внешних ссылок.
 - `remove` успешно удалил выбранные постоянные ресурсы без внешних ссылок (port-53 route, `dns-out`, DNS server `127.0.0.1:5355`); API read-back подтвердил удаление, итоговый флаг `integration=false`.
 - Финальное состояние тестового VPS после проверки: постоянная DNS-интеграция удалена намеренно, поскольку за успешным `integrate` последовал успешный `remove`.
+
+### Go daemon startup and upstream probe results
+- Дополнительно проверен полный `plugin.log` от запуска sidecar: бинарник `2.1.0` стартовал штатно, автоматически создал первичный `data/config.json`, загрузил конфигурацию (6 upstreams, 1 group) и перешёл в `READY` с DNS UDP/TCP на `127.0.0.1:5355` и HTTP на `127.0.0.1:18765`; Unix event socket также успешно поднят.
+- Startup DoH IP discovery выбрал рабочий адрес для каждого из проверенных hostname. Отдельные кандидаты дали ошибки подключения: IPv6 `network is unreachable` (маршрут IPv6 на VPS недоступен), timeout и `connection refused` для отдельных IPv4 адресов. У каждого затронутого hostname при этом был выбран успешный IP; предупреждения не помешали READY и не привели к отказу upstream.
+- После успешного `integrate` и после `remove` daemon зарегистрировал `CONFIG reloaded` без ошибок. С учётом успешных результатов директив это подтверждает, что изменения флага `integration` в config были подхвачены работающим процессом через hot reload.
 
 
 ### Перенос интеграции в Go
