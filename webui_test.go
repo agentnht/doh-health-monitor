@@ -34,7 +34,7 @@ func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 	badHost := req.Clone(req.Context())
 	badHost.Host = "example.org"
 	badHost.URL.Path = "/"
-	badHostRecorder := httptestNewRecorder()
+	badHostRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(badHostRecorder, badHost)
 	if badHostRecorder.Code != http.StatusForbidden {
 		t.Fatalf("untrusted Host status=%d, want %d", badHostRecorder.Code, http.StatusForbidden)
@@ -42,7 +42,7 @@ func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 
 	badMethod := req.Clone(req.Context())
 	badMethod.Method = http.MethodPost
-	methodRecorder := httptestNewRecorder()
+	methodRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(methodRecorder, badMethod)
 	if methodRecorder.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST status=%d, want %d", methodRecorder.Code, http.StatusMethodNotAllowed)
@@ -50,7 +50,7 @@ func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 
 	notFound := req.Clone(req.Context())
 	notFound.URL.Path = "/api/anything"
-	notFoundRecorder := httptestNewRecorder()
+	notFoundRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(notFoundRecorder, notFound)
 	if notFoundRecorder.Code != http.StatusNotFound {
 		t.Fatalf("unknown path status=%d, want %d", notFoundRecorder.Code, http.StatusNotFound)
