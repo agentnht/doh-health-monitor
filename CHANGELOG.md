@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Go 2.1.0 live staging validation
+- 2026-11-16: установленный основной Go-бинарник версии 2.1.0 успешно проверен на тестовом VPS командами `integrate` и `remove`; отдельный тестовый executable не использовался.
+- Preflight подтвердил активный сервис `lucx-plugin-doh-health-monitor`, слушатели `127.0.0.1:5355` по UDP/TCP и JSON status API; endpoint LucX-UI был автоматически обнаружен, installer-provided credential успешно загружен.
+- `integrate` добавил DNS outbound `dns-out`, DNS server `127.0.0.1:5355` и глобальное TCP/UDP правило для порта 53. Запись панели прошла API read-back verification; правило `xui-dns-allow` осталось под управлением LucX-UI.
+- Диагностический Tunnel (inbound ID 1, loopback port 15353) успешно вернул положительные DNS A-ответы по UDP и TCP: `104.20.23.154` и `172.66.147.243`. Временная allow-запись `finalRule` и диагностический inbound были удалены; очистка подтверждена read-back и анализом внешних ссылок.
+- `remove` успешно удалил выбранные постоянные ресурсы без внешних ссылок (port-53 route, `dns-out`, DNS server `127.0.0.1:5355`); API read-back подтвердил удаление, итоговый флаг `integration=false`.
+- Финальное состояние тестового VPS после проверки: постоянная DNS-интеграция удалена намеренно, поскольку за успешным `integrate` последовал успешный `remove`.
+
+
 ### Перенос интеграции в Go
 - В основной бинарник добавлены явные команды `integrate` и `remove`; обычный запуск DNS daemon не обращается к API панели и не получает admin credential.
 - Получение/переиспользование локального admin API credential выполняется только внутри `integrate` или `remove`; секрет не выводится в журнал и хранится вне каталога плагина с правами 0600.
