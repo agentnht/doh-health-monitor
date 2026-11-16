@@ -321,8 +321,19 @@ func main() {
 	log.SetFlags(0)
 	if len(os.Args) > 1 {
 		action := strings.ToLower(strings.TrimSpace(os.Args[1]))
+		if action == "web" {
+			if len(os.Args) != 2 {
+				logLine("ERROR", "WEB_UI does not accept additional arguments")
+				os.Exit(2)
+			}
+			if err := runWebUI(); err != nil {
+				logLine("ERROR", "WEB_UI: %v", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if action != "integrate" && action != "remove" {
-			logLine("ERROR", "CLI supports only integrate and remove")
+			logLine("ERROR", "CLI supports integrate, remove, and web")
 			os.Exit(2)
 		}
 		dataDir, err := dohintegration.PluginDataDir()
