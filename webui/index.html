@@ -25,6 +25,12 @@
     .group { padding: 1rem; }
     ul { padding-left: 1.25rem; color: #cbd5e1; }
     li { margin: .3rem 0; overflow-wrap: anywhere; }
+    .upstream-list { list-style: none; padding: 0; margin: 0; }
+    .upstream { border-top: 1px solid #374151; padding: .65rem 0; }
+    .upstream summary { cursor: pointer; font-weight: 600; }
+    .upstream details[open] summary { margin-bottom: .5rem; }
+    .check-title { margin-bottom: .25rem; font-weight: 600; }
+    .check-list { margin-top: .25rem; }
     button { border: 0; border-radius: .5rem; padding: .6rem 1rem; color: #fff; background: #2563eb; cursor: pointer; }
     button:disabled { opacity: .6; cursor: wait; }
     #error { color: #fca5a5; }
@@ -67,6 +73,7 @@
 
     <section class="panel">
       <h2>Upstream-группы</h2>
+      <p class="muted">Время в мс — длительность полного цикла health-проверки upstream, а не задержка отдельного DNS-запроса. Раскрой upstream, чтобы увидеть время последней проверки, серии успехов/ошибок и результаты DNS/HTTP-проверок.</p>
       <div class="groups" id="groups">Загрузка…</div>
     </section>
   </main>
