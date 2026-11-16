@@ -107,12 +107,24 @@ func TestRunWebUIStopsWhenSupervisorPipeCloses(t *testing.T) {
 	}
 	defer cleanup()
 
-	if err := readyRead.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
-		t.Fatal(err)
+	type readinessResult struct {
+		line string
+		err  error
 	}
-	line, err := bufio.NewReader(readyRead).ReadString('\n')
-	if err != nil {
-		t.Fatalf("read Web UI readiness line: %v", err)
+	readiness := make(chan readinessResult, 1)
+	go func() {
+		line, readErr := bufio.NewReader(readyRead).ReadString('\n')
+		readiness <- readinessResult{line: line, err: readErr}
+	}()
+	var line string
+	select {
+	case result := <-readiness:
+		line = result.line
+		if result.err != nil {
+			t.Fatalf("read Web UI readiness line: %v", result.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for Web UI readiness line")
 	}
 	fields := strings.Fields(strings.TrimSpace(line))
 	if len(fields) != 2 || fields[0] != "WEB_UI_READY" || !strings.HasPrefix(fields[1], "port=") {
