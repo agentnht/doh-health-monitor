@@ -13,7 +13,13 @@ The SSH and web interfaces must call the same Go-side management logic. They mus
 
 ## 1. SSH management menu
 
-The administrator connects to the server over SSH and launches the repository-hosted shell script from an interactive Bash session. Current invocation while this work remains in the draft branch:\n\n```bash\nbash <(curl -fsSL https://raw.githubusercontent.com/agentnht/doh-health-monitor/feature/plugin-management-ui/scripts/plugin-management.sh)\n```\n\nThe menu requires root. It locates the installed plugin executable from `LUCX_PLUGIN_DATA` or the running LucX-UI process working directory. The script presents these actions:
+The administrator connects to the server over SSH and launches the repository-hosted shell script from an interactive Bash session. Current invocation while this work remains in the draft branch:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/agentnht/doh-health-monitor/feature/plugin-management-ui/scripts/plugin-management.sh)
+```
+
+The menu requires root. It locates the installed plugin executable from `LUCX_PLUGIN_DATA` or the running LucX-UI process working directory. The script presents these actions:
 
 - **Integrate** — invoke the existing Go `integrate` operation.
 - **Remove** — invoke the existing Go `remove` operation.
@@ -110,16 +116,15 @@ The web API should expose only the operations and status needed by the UI. It sh
 
 ## 6. Proposed delivery stages
 
-1. **Architecture and interface contract:** settle command names, stdout readiness contract, web-server lifecycle, and the initial API boundary.
-2. **SSH menu:** implement the repository-hosted interactive script and connect its actions to existing Go commands.
-3. **Web placeholder:** implement on-demand start/stop and a minimal page; validate access through SSH forwarding.
+1. **Architecture and interface contract:** agreed and documented.
+2. **SSH menu:** implemented; invokes the existing Go integration/removal commands and read-only diagnostic.
+3. **Web placeholder:** implemented; separate Go mode, embedded page, loopback-only dynamic listener, readiness protocol, SSH tunnel instructions, and control-pipe shutdown. End-to-end SSH tunnel testing on the VPS remains outstanding.
 4. **Web API:** expose read-only status/diagnostics and then guarded integration/removal operations.
 5. **Full UI:** add plugin configuration, upstreams/groups, health state, integration status, and logs as their contracts are agreed.
 
 ## 7. Open decisions
 
-- Which exact command/script URL and invocation format should be documented for administrators?
-- Should the SSH script download and execute the current script on each run, or should it be installed locally and updated explicitly?
+- The current invocation uses the draft branch URL. Before merging, switch it to the stable `main` branch or a tagged release.
 - The initial lifecycle is session-bound: the web process exits when the supervising SSH management session ends; no idle timeout is planned for the placeholder milestone.
 - The agreed per-session protection is a random access token kept out of URLs, stdout, and logs, plus Host/Origin validation and CSRF protection; implementation details must be reviewed during development.
 - What exact read-only checks should the first `check` menu item perform and how should results be presented?
