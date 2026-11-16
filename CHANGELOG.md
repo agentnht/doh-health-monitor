@@ -11,16 +11,15 @@
 - Финальное состояние тестового VPS после проверки: постоянная DNS-интеграция удалена намеренно, поскольку за успешным `integrate` последовал успешный `remove`.
 
 ### Go daemon startup and upstream probe results
+- Полный `plugin.log` подтверждает штатный старт sidecar 2.1.0: создан первичный `data/config.json`, загружены 6 upstreams и 1 group, подняты DNS UDP/TCP на `127.0.0.1:5355`, HTTP status listener на `127.0.0.1:18765` и Unix event socket; процесс перешёл в `READY`.
+- Startup DoH IP discovery выбрал рабочий адрес для каждого проверенного hostname. Отдельные кандидаты дали ошибки: IPv6 `network is unreachable`, а также timeout и `connection refused` для отдельных IPv4 адресов. Для каждого hostname при этом был выбран успешный IP; предупреждения не помешали запуску.
+- После успешного `integrate` и после `remove` daemon зарегистрировал `CONFIG reloaded` без ошибок. Это согласуется с успешным обновлением флага `integration` и hot reload конфигурации работающим процессом.
+
 ### Runtime DNS smoke tests
-- Проверка `curl http://127.0.0.1:18765/healthz` вернула `ok`; `/status` вернул корректный JSON с версией `2.1.0`, listeners на loopback и `active_upstream: system-dns`.
-- На момент снимка `/status` активный `system-dns` имел состояние `up`; также `up` были `dns.bezmezhau.com`, `dns.comss.one` и `doh.dagami.ru`. Два из шести кандидатов — `dns.zapret.moe` и `eu.geohide.ru` — имели состояние `down` из-за неуспешных обязательных Gemini HTTP-проверок (EOF и redirect на Google Sorry соответственно); поэтому это не следует трактовать как полностью зелёный health-check всех upstream. При этом выбранный `system-dns` работал штатно.
+- `curl http://127.0.0.1:18765/healthz` вернул `ok`; `/status` вернул корректный JSON с версией `2.1.0`, loopback listeners и `active_upstream: system-dns`.
+- В status snapshot выбранный `system-dns` имел состояние `up`; также `up` были `dns.bezmezhau.com`, `dns.comss.one` и `doh.dagami.ru`. Два из шести кандидатов — `dns.zapret.moe` и `eu.geohide.ru` — имели состояние `down` из-за обязательной Gemini HTTP-проверки (EOF и redirect на Google Sorry соответственно). Поэтому health-check всех upstream не был полностью зелёным, но выбранный `system-dns` работал штатно.
 - В status snapshot: `queries=2`, `failures=0`, `udp_dropped=0`, `tcp_rejected=0`, очереди и активные соединения пустые.
 - `dig @127.0.0.1 -p 5355 example.com A` по UDP и тот же запрос с `+tcp` по TCP оба вернули `NOERROR` и два A-ответа (`104.20.23.154`, `172.66.147.243`); измеренное время — 15 ms по UDP и 1 ms по TCP.
-
-- Дополнительно проверен полный `plugin.log` от запуска sidecar: бинарник `2.1.0` стартовал штатно, автоматически создал первичный `data/config.json`, загрузил конфигурацию (6 upstreams, 1 group) и перешёл в `READY` с DNS UDP/TCP на `127.0.0.1:5355` и HTTP на `127.0.0.1:18765`; Unix event socket также успешно поднят.
-- Startup DoH IP discovery выбрал рабочий адрес для каждого из проверенных hostname. Отдельные кандидаты дали ошибки подключения: IPv6 `network is unreachable` (маршрут IPv6 на VPS недоступен), timeout и `connection refused` для отдельных IPv4 адресов. У каждого затронутого hostname при этом был выбран успешный IP; предупреждения не помешали READY и не привели к отказу upstream.
-- После успешного `integrate` и после `remove` daemon зарегистрировал `CONFIG reloaded` без ошибок. С учётом успешных результатов директив это подтверждает, что изменения флага `integration` в config были подхвачены работающим процессом через hot reload.
-
 
 ### Перенос интеграции в Go
 - В основной бинарник добавлены явные команды `integrate` и `remove`; обычный запуск DNS daemon не обращается к API панели и не получает admin credential.
