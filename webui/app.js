@@ -37,7 +37,19 @@
         details.open = expandedUpstreams.has(expansionKey);
         const summary = document.createElement("summary");
         const latency = state.latency_ms == null ? "" : " · " + number(state.latency_ms) + " мс";
-        summary.textContent = upstreamID + ": " + (state.state || "unknown") + latency;
+        const stateValue = String(state.state || "unknown");
+        const stateLabel = document.createElement("span");
+        stateLabel.className = "upstream-state";
+        stateLabel.textContent = stateValue === "up" || stateValue === "down"
+          ? stateValue.toUpperCase()
+          : stateValue;
+        if (stateValue.toLowerCase() === "up") stateLabel.classList.add("upstream-state-up");
+        if (stateValue.toLowerCase() === "down") stateLabel.classList.add("upstream-state-down");
+        summary.append(
+          document.createTextNode(upstreamID + ": "),
+          stateLabel,
+          document.createTextNode(latency)
+        );
         const meta = document.createElement("p");
         meta.className = "muted";
         meta.textContent = "Последняя проверка: " + when(state.last_check) +
