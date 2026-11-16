@@ -28,7 +28,7 @@ The menu requires root. It locates the installed plugin executable from `LUCX_PL
 
 The existing daemon behavior remains unchanged: starting the binary without a management command starts the DNS daemon. The `check` action must not modify Xray or plugin configuration.
 
-The script is an orchestration/presentation layer. Administrative operations and their validation remain in Go. The current menu invokes the existing Go `integrate` and `remove` commands after explicit confirmation. Its `check` item downloads and runs the existing `scripts/check-dns-integration.sh` diagnostic, which is read-only; it requires `curl` or `wget` to retrieve the script and `jq` for JSON checks. The menu reports a missing plugin binary or failed operation rather than silently continuing. The `web` menu item starts the separate Go Web UI process. The shell keeps the coprocess stdin writer open as a control pipe, parses the readiness line, and prints the SSH tunnel command plus browser URL.
+The script is an orchestration/presentation layer. Administrative operations and their validation remain in Go. The current menu invokes the existing Go `integrate` and `remove` commands after explicit confirmation. Its `check` item first invokes the new Go `check` command for read-only service/listener/status diagnostics, then downloads and runs `scripts/check-dns-integration.sh` for read-only Xray configuration checks. The shell checker skips its duplicate service/listener/status probes when called by the menu; standalone use still performs the complete check. The menu requires `curl` or `wget` to retrieve the checker and `jq` for Xray JSON checks. The menu reports a missing plugin binary or failed operation rather than silently continuing. The `web` menu item starts the separate Go Web UI process. The shell keeps the coprocess stdin writer open as a control pipe, parses the readiness line, and prints the SSH tunnel command plus browser URL.
 
 ## 2. On-demand Web UI
 
@@ -117,7 +117,7 @@ The web API should expose only the operations and status needed by the UI. It sh
 ## 6. Proposed delivery stages
 
 1. **Architecture and interface contract:** agreed and documented.
-2. **SSH menu:** implemented; invokes the existing Go integration/removal commands and read-only diagnostic.
+2. **SSH menu:** implemented; invokes the Go integration/removal and read-only check commands, plus read-only Xray configuration diagnostics.
 3. **Web placeholder:** implemented; separate Go mode, embedded page, loopback-only dynamic listener, readiness protocol, SSH tunnel instructions, and control-pipe shutdown. End-to-end SSH tunnel testing on the VPS remains outstanding.
 4. **Web API:** expose read-only status/diagnostics and then guarded integration/removal operations.
 5. **Full UI:** add plugin configuration, upstreams/groups, health state, integration status, and logs as their contracts are agreed.
