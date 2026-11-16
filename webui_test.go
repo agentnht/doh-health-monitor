@@ -87,7 +87,13 @@ func TestWebUIStatusAPIRequiresSessionAndReturnsSanitizedStatus(t *testing.T) {
 			"failures":2,
 			"dns_udp":"127.0.0.1:5355",
 			"dns_tcp":"127.0.0.1:5355",
-			"groups":{"google":{"active_upstream":"system-dns","upstreams":{"system-dns":{"state":"up","last_error":"internal detail"}}}}
+			"groups":{"google":{"active_upstream":"system-dns","upstreams":{"system-dns":{
+				"state":"up","success_streak":4,"failure_streak":0,
+				"last_check":"2026-11-16T10:00:00Z","latency_ms":946,"last_http_status":204,
+				"last_error":"internal detail",
+				"checks":[{"domain":"health.example","required":true,"dns_ok":true,
+					"http_checked":true,"http_ok":true,"http_status":204,"error":"PROBE-ERROR-MUST-NOT-LEAK"}]
+			}}}}
 		}`))
 	}))
 	defer statusServer.Close()
@@ -123,8 +129,22 @@ func TestWebUIStatusAPIRequiresSessionAndReturnsSanitizedStatus(t *testing.T) {
 	if !strings.Contains(body, "test-version") || !strings.Contains(body, "system-dns") {
 		t.Fatalf("status response is missing expected fields: %s", body)
 	}
-	if strings.Contains(body, "private/path") || strings.Contains(body, "SECRET-MUST-NOT-LEAK") || strings.Contains(body, "internal detail") {
-		t.Fatalf("status response leaked private or diagnostic fields: %s", body)
+	for _, want := range []string{
+		"\"success_streak\":4", "\"failure_streak\":0",
+		"\"last_check\":\"2026-11-16T10:00:00Z\"", "\"latency_ms\":946",
+		"\"domain\":\"health.example\"", "\"dns_ok\":true",
+		"\"http_checked\":true", "\"http_ok\":true", "\"http_status\":204",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("status response is missing safe upstream detail %s: %s", want, body)
+		}
+	}
+	for _, forbidden := range []string{
+		"private/path", "SECRET-MUST-NOT-LEAK", "internal detail", "PROBE-ERROR-MUST-NOT-LEAK",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("status response leaked private or diagnostic field %q: %s", forbidden, body)
+		}
 	}
 	if apiRecorder.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal("status API response must not be cached")
