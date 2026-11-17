@@ -136,7 +136,9 @@ func (r *Runtime) cachePut(key string, packet []byte, c CacheConfig) {
 	} else {
 		ttl, ok = minResponseTTL(packet)
 	}
-	if !ok { return }
+	if !ok {
+		return
+	}
 	if ttl == 0 || (c.MinTTL > 0 && ttl < uint32(c.MinTTL)) {
 		return
 	}
