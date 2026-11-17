@@ -31,7 +31,7 @@ import (
 
 const (
 	pluginID      = "doh-health-monitor"
-	pluginVersion = "2.1.0"
+	pluginVersion = "2.2.0"
 	systemDNSUpstreamID = "system-dns"
 	systemResolvConfPath = "/etc/resolv.conf"
 	systemDNSPerServerTimeout = 2 * time.Second
@@ -116,14 +116,12 @@ type GeminiAPIConfig struct {
 }
 
 type Snapshot struct {
-	cfg       Config
+	cfg        Config
 	localHosts map[string]LocalHost
-	upstreams map[string]*UpstreamRuntime
-	groups    map[string]Group
-	loadedAt  time.Time
-	configMod time.Time
-	dohMod    time.Time
-	configSum string
+	upstreams  map[string]*UpstreamRuntime
+	groups     map[string]Group
+	loadedAt   time.Time
+	configMod  time.Time
 }
 type UpstreamRuntime struct {
 	cfg       Upstream
@@ -213,15 +211,15 @@ type ProbeStatus struct {
 	Error       string `json:"error,omitempty"`
 }
 type HealthEntry struct {
-	State         string        `json:"state"`
-	Checks        []ProbeStatus `json:"checks,omitempty"`
-	SuccessStreak int           `json:"success_streak"`
-	FailureStreak int           `json:"failure_streak"`
-	LastCheck     time.Time     `json:"last_check,omitempty"`
-	LatencyMS     int64         `json:"latency_ms,omitempty"`
-	LastError     string        `json:"last_error,omitempty"`
-	LastHTTP      int           `json:"last_http_status,omitempty"`
-	GeminiState   string        `json:"gemini_api_state,omitempty"`
+	State            string        `json:"state"`
+	Checks           []ProbeStatus `json:"checks,omitempty"`
+	SuccessStreak    int           `json:"success_streak"`
+	FailureStreak    int           `json:"failure_streak"`
+	LastCheck        time.Time     `json:"last_check,omitempty"`
+	CheckDurationMS  int64         `json:"check_duration_ms,omitempty"`
+	LastError        string        `json:"last_error,omitempty"`
+	LastHTTP         int           `json:"last_http_status,omitempty"`
+	GeminiState      string        `json:"gemini_api_state,omitempty"`
 }
 type GroupStatus struct {
 	ActiveUpstream string                 `json:"active_upstream"`
@@ -289,12 +287,15 @@ type cacheOrderEntry struct {
 	generation uint64
 }
 type Runtime struct {
-	dnsSem     chan struct{}
-	dataDir    string
-	configPath string
-	dohPath    string
-	snapshot   atomic.Pointer[Snapshot]
-	mu         sync.RWMutex
+	dnsSem       chan struct{}
+	dataDir      string
+	configPath   string
+	dohPath      string
+	checksPath   string
+	sourceHashes ConfigSourceChecksums
+	lastRejectedSourceHash string
+	snapshot     atomic.Pointer[Snapshot]
+	mu           sync.RWMutex
 	health           map[string]map[string]HealthEntry
 	active           map[string]string
 	upstreamCooldown map[string]time.Time
@@ -402,28 +403,42 @@ func main() {
 
 	configPath := filepath.Join(dataDir, "config.json")
 	dohPath := filepath.Join(dataDir, "doh-servers.txt")
+	checksPath := filepath.Join(dataDir, "tst-domen.txt")
+	if err := initializeConfigSourceFiles(dataDir); err != nil {
+		fatal("CONFIG sources initialization failed: %v", err)
+	}
 	cfg, err := loadConfig(configPath)
 	if err != nil {
 		fatal("CONFIG invalid: %v", err)
 	}
-	dohURLs, err := loadDoHList(dohPath, true)
+	sources, err := readConfigSources(dohPath, checksPath)
 	if err != nil {
-		fatal("DoH list invalid: %v", err)
+		fatal("CONFIG sources invalid: %v", err)
 	}
-	snap, err := buildSnapshot(cfg, dohURLs)
+	cfg, err = applyConfigSources(cfg, sources)
+	if err != nil {
+		fatal("CONFIG generation failed: %v", err)
+	}
+	if err := writeConfigAtomic(configPath, cfg); err != nil {
+		fatal("CONFIG generated file write failed: %v", err)
+	}
+	snap, err := buildSnapshot(cfg, sources.DoHURLs)
 	if err != nil {
 		fatal("CONFIG invalid: %v", err)
 	}
 	if fi, e := os.Stat(configPath); e == nil {
 		snap.configMod = fi.ModTime()
 	}
-	if fi, e := os.Stat(dohPath); e == nil {
-		snap.dohMod = fi.ModTime()
+	rt := &Runtime{
+		dataDir: dataDir, configPath: configPath, dohPath: dohPath, checksPath: checksPath,
+		sourceHashes: sources.Checksums,
+		health: map[string]map[string]HealthEntry{}, active: map[string]string{},
+		cache: map[string]cacheItem{}, lastGemini: map[string]time.Time{},
+		dnsSem: make(chan struct{}, cfg.DNSMaxConcurrent),
 	}
-	rt := &Runtime{dataDir: dataDir, configPath: configPath, dohPath: dohPath, health: map[string]map[string]HealthEntry{}, active: map[string]string{}, cache: map[string]cacheItem{}, lastGemini: map[string]time.Time{}, dnsSem: make(chan struct{}, cfg.DNSMaxConcurrent)}
 	rt.snapshot.Store(snap)
 	rt.initHealth(snap)
-	logLine("INFO", "CONFIG loaded path=%s doh_list=%s groups=%d upstreams=%d dns_udp=%s dns_tcp=%s gemini_api=%t", configPath, dohPath, len(cfg.Groups), len(cfg.Upstreams), cfg.DNSListenUDP, cfg.DNSListenTCP, cfg.GeminiAPI.Enabled)
+	logLine("INFO", "CONFIG loaded path=%s doh_list=%s checks_list=%s groups=%d upstreams=%d checks=%d dns_udp=%s dns_tcp=%s gemini_api=%t", configPath, dohPath, checksPath, len(cfg.Groups), len(cfg.Upstreams), len(sources.Checks), cfg.DNSListenUDP, cfg.DNSListenTCP, cfg.GeminiAPI.Enabled)
 
 	udpAddr, err := net.ResolveUDPAddr("udp", cfg.DNSListenUDP)
 	if err != nil {
@@ -586,7 +601,7 @@ func loadConfig(path string) (Config, error) {
 	return c, nil
 }
 func defaultConfig() Config {
-	return Config{
+	c := Config{
 		DNSListenUDP: "127.0.0.1:5355", DNSListenTCP: "127.0.0.1:5355", HTTPListen: "127.0.0.1:18765", ReloadSecs: 5,
 		DNSQueryTimeoutSeconds: 15, DoHTimeoutSeconds: 10, DNSMaxConcurrent: 256,
 		Health: HealthConfig{IntervalSeconds: 25 * 60, TimeoutSeconds: 5, FailureThreshold: 1, SuccessThreshold: 1},
@@ -595,43 +610,23 @@ func defaultConfig() Config {
 		BootstrapResolvers: []string{"1.1.1.1", "8.8.8.8"},
 		Upstreams: []Upstream{
 			{ID: systemDNSUpstreamID, Name: "System DNS (VPS)", Type: "system"},
-			{ID: "eu.geohide.ru", Name: "GeoHide EU"},
-			{ID: "doh.dagami.ru", Name: "Dagami"},
-			{ID: "dns.comss.one", Name: "Comss.one"},
-			{ID: "dns.bezmezhau.com", Name: "Bezmezhau"},
-			{ID: "dns.zapret.moe", Name: "Zapret"},
+			{ID: "geohide-eu", Name: "GeoHide EU"},
+			{ID: "dagami", Name: "Dagami"},
+			{ID: "comss-one", Name: "Comss.one"},
+			{ID: "bezmezhau", Name: "Bezmezhau"},
+			{ID: "zapret", Name: "Zapret"},
 		},
 		Groups: []Group{
-			{ID: "google", Upstreams: []string{systemDNSUpstreamID, "eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}, Checks: []Check{
-				{Domain: "aistudio.google.com", Required: false},
-				{Domain: "alkalimakersuite-pa.clients6.google.com", Required: false},
-				{Domain: "apis.google.com", Required: false},
-				{Domain: "www.googletagmanager.com", Required: false},
-				{Domain: "waa-pa.clients6.google.com", Required: false},
-				{Domain: "console.cloud.google.com", Required: false},
-				{Domain: "people-pa.clients6.google.com", Required: false},
-				{Domain: "ln3.googleusercontent.com", Required: false},
-				{Domain: "www.google-analytics.com", Required: false},
-				{Domain: "content-autofill.googleapis.com", Required: false},
-				{Domain: "play.google.com", Required: false},
-				{Domain: "google.com", Required: false},
-				{Domain: "googleapis.com", Required: false},
-				{Domain: "gstatic.com", Required: false},
-				{Domain: "googleusercontent.com", Required: false},
-				{Domain: "google.org", Required: false},
-				{Domain: "googleadservices.com", Required: false},
-				{Domain: "google-analytics.com", Required: false},
-				{Domain: "gemini.google.com", HTTPURL: "https://gemini.google.com/", Required: true, ExpectedStatus: []int{200}},
-				{Domain: "generativelanguage.googleapis.com", Required: false},
-				{Domain: "clients6.google.com", Required: false},
-				{Domain: "jnn-pa.googleapis.com", Required: false},
-				{Domain: "accounts.google.com", HTTPURL: "https://accounts.google.com/.well-known/openid-configuration", Required: true, ExpectedStatus: []int{200}, VerifyOIDC: true},
-				{Domain: "ssl.gstatic.com", HTTPURL: "https://ssl.gstatic.com/", Required: false, ExpectedStatus: []int{200, 301, 302, 403}},
-				{Domain: "www.googleapis.com", HTTPURL: "https://www.googleapis.com/", Required: false, ExpectedStatus: []int{200, 301, 302, 403}},
-			}},
+			{ID: "google", Upstreams: []string{systemDNSUpstreamID, "geohide-eu", "dagami", "comss-one", "bezmezhau", "zapret"}},
 		},
 		GeminiAPI: GeminiAPIConfig{Enabled: false, RequiredForGroup: false, GroupID: "google", Model: "gemini-3.8-flash", IntervalSeconds: 1800, KeyFile: "gemini_api_key", Prompt: "Reply with exactly OK.", MaxOutputTokens: 8},
 	}
+	if data, err := embeddedConfigSources.ReadFile("defaults/tst-domen.txt"); err == nil {
+		if checks, err := parseHealthChecks(data); err == nil {
+			c.Groups[0].Checks = checks
+		}
+	}
+	return c
 }
 func normalizeConfigGroups(c Config) (Config, error) {
 	// Older installations may still have multiple groups. Keep only the Google
@@ -852,54 +847,27 @@ func validListen(s string) bool {
 func normalizeDomain(s string) string {
 	return strings.Trim(strings.ToLower(strings.TrimSpace(s)), ".")
 }
-func defaultDoHURLs() map[string]string {
-	return map[string]string{
-		"eu.geohide.ru":       "https://eu.geohide.ru/dns-query",
-		"doh.dagami.ru":        "https://doh.dagami.ru/dns-query",
-		"dns.comss.one":        "https://dns.comss.one/dns-query",
-		"dns.bezmezhau.com":    "https://dns.bezmezhau.com/dns-query",
-		"dns.zapret.moe":       "https://dns.zapret.moe/dns-query",
-	}
-}
 func loadDoHList(path string, create bool) (map[string]string, error) {
-	b, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) && create {
-		var lines []string
-		for _, u := range []string{
-			"https://eu.geohide.ru/dns-query",
-			"https://doh.dagami.ru/dns-query",
-			"https://dns.comss.one/dns-query",
-			"https://dns.bezmezhau.com/dns-query",
-			"https://dns.zapret.moe/dns-query",
-		} {
-			lines = append(lines, u)
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) && create {
+		defaults, readErr := embeddedConfigSources.ReadFile("defaults/doh-servers.txt")
+		if readErr != nil {
+			return nil, readErr
 		}
-		if err = os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {
-			return nil, err
+		if writeErr := writeAtomicFile(path, defaults, 0600); writeErr != nil {
+			return nil, writeErr
 		}
-		b, err = os.ReadFile(path)
 	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]string{}
-	for n, raw := range strings.Split(string(b), "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		u, e := url.Parse(line)
-		if e != nil || u.Scheme != "https" || u.Hostname() == "" {
-			return nil, fmt.Errorf("doh-servers.txt line %d: expected https://host/dns-query", n+1)
-		}
-		id := strings.ToLower(u.Hostname())
-		if _, exists := out[id]; exists {
-			return nil, fmt.Errorf("duplicate DoH hostname %s", id)
-		}
-		out[id] = line
+	providers, err := parseDoHProviders(data)
+	if err != nil {
+		return nil, err
 	}
-	if len(out) == 0 {
-		return nil, errors.New("doh-servers.txt contains no DoH URLs")
+	out := make(map[string]string, len(providers))
+	for _, provider := range providers {
+		out[provider.ID] = provider.URL
 	}
 	return out, nil
 }
@@ -2607,7 +2575,7 @@ func (r *Runtime) updateHealth(gid, uid string, ok bool, lat time.Duration, last
 	}
 	e := r.health[gid][uid]
 	e.LastCheck = time.Now().UTC()
-	e.LatencyMS = lat.Milliseconds()
+	e.CheckDurationMS = lat.Milliseconds()
 	e.LastHTTP = httpStatus
 	e.Checks = checks
 	if gemState != "" {
@@ -2668,49 +2636,66 @@ func (r *Runtime) publishHealthState() {
 	}
 }
 func (r *Runtime) reloadLoop(ctx context.Context) {
+	ticker := time.NewTicker(configSourcePollInterval)
+	defer ticker.Stop()
 	for {
-		delay := time.Duration(r.currentSnapshot().cfg.ReloadSecs) * time.Second
-		t := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
-			t.Stop()
 			return
-		case <-t.C:
+		case <-ticker.C:
 		}
 		old := r.currentSnapshot()
-		cfi, ce := os.Stat(r.configPath)
-		dfi, de := os.Stat(r.dohPath)
-		if ce != nil || de != nil {
-			r.setError("stat configuration files failed")
+		cfi, err := os.Stat(r.configPath)
+		if err != nil {
+			r.rejectConfigReload("config-stat:"+err.Error(), "CONFIG reload rejected: cannot stat config.json: %v", err)
 			continue
 		}
-		if !cfi.ModTime().After(old.configMod) && !dfi.ModTime().After(old.dohMod) {
+		sources, sourceErr := readConfigSources(r.dohPath, r.checksPath)
+		if sourceErr != nil {
+			rejectedHash := sources.Checksums.Combined
+			if rejectedHash == "" {
+				rejectedHash = "source-read-error:" + sourceErr.Error()
+			}
+			r.rejectConfigReload(rejectedHash, "CONFIG source reload rejected: %v", sourceErr)
 			continue
 		}
-		cfg, e := loadConfigNoCreate(r.configPath)
-		if e != nil {
-			r.setError("config reload rejected: " + e.Error())
-			logLine("ERROR", "CONFIG reload rejected: %v", e)
+		sourcesChanged := sources.Checksums != r.sourceHashes
+		configChanged := cfi.ModTime().After(old.configMod)
+		if !sourcesChanged && !configChanged {
+			// A source file may have been reverted byte-for-byte to the last
+			// accepted version after a rejected edit. Clear the stale warning.
+			if r.lastRejectedSourceHash != "" {
+				r.lastRejectedSourceHash = ""
+				r.setError("")
+			}
+			continue
+		}
+		cfg, err := loadConfigNoCreate(r.configPath)
+		if err != nil {
+			r.rejectConfigReload("config-error:"+cfi.ModTime().UTC().Format(time.RFC3339Nano)+":"+err.Error(), "CONFIG reload rejected: %v", err)
 			continue
 		}
 		if cfg.DNSListenUDP != old.cfg.DNSListenUDP || cfg.DNSListenTCP != old.cfg.DNSListenTCP || cfg.HTTPListen != old.cfg.HTTPListen || cfg.DNSMaxConcurrent != old.cfg.DNSMaxConcurrent {
-			r.setError("listener or dns_max_concurrent changed; restart plugin to apply")
-			logLine("WARN", "CONFIG listener/dns_max_concurrent change requires plugin restart")
+			r.rejectConfigReload("listener-change:"+cfi.ModTime().UTC().Format(time.RFC3339Nano), "CONFIG listener/dns_max_concurrent change requires plugin restart")
 			continue
 		}
-		dohURLs, e := loadDoHList(r.dohPath, false)
-		if e != nil {
-			r.setError("DoH list reload rejected: " + e.Error())
-			logLine("ERROR", "DOH list reload rejected: %v", e)
+		cfg, err = applyConfigSources(cfg, sources)
+		if err != nil {
+			r.rejectConfigReload(sources.Checksums.Combined+":generated:"+err.Error(), "CONFIG generation rejected: %v", err)
 			continue
 		}
-		ns, e := buildSnapshot(cfg, dohURLs)
-		if e != nil {
-			r.setError("config reload rejected: " + e.Error())
-			logLine("ERROR", "CONFIG reload rejected: %v", e)
+		ns, err := buildSnapshot(cfg, sources.DoHURLs)
+		if err != nil {
+			r.rejectConfigReload(sources.Checksums.Combined+":snapshot:"+err.Error(), "CONFIG snapshot rejected: %v", err)
 			continue
 		}
-		ns.configMod, ns.dohMod = cfi.ModTime(), dfi.ModTime()
+		if err := writeConfigAtomic(r.configPath, cfg); err != nil {
+			r.rejectConfigReload(sources.Checksums.Combined+":write:"+err.Error(), "CONFIG generated file write failed: %v", err)
+			continue
+		}
+		if fi, err := os.Stat(r.configPath); err == nil {
+			ns.configMod = fi.ModTime()
+		}
 		r.snapshot.Store(ns)
 		r.initHealth(ns)
 		r.cacheMu.Lock()
@@ -2719,11 +2704,21 @@ func (r *Runtime) reloadLoop(ctx context.Context) {
 		r.cacheOrderHead = 0
 		r.cacheBytes = 0
 		r.cacheMu.Unlock()
+		r.sourceHashes = sources.Checksums
+		r.lastRejectedSourceHash = ""
 		r.mu.Lock()
 		r.lastReload = time.Now().UTC()
 		r.mu.Unlock()
 		r.setError("")
-		logLine("INFO", "CONFIG reloaded upstreams=%d groups=%d", len(cfg.Upstreams), len(cfg.Groups))
+		logLine("INFO", "CONFIG reloaded upstreams=%d groups=%d checks=%d sources_sha256=%s", len(cfg.Upstreams), len(cfg.Groups), len(sources.Checks), sources.Checksums.Combined)
+	}
+}
+
+func (r *Runtime) rejectConfigReload(key, format string, args ...any) {
+	r.setError(fmt.Sprintf(format, args...))
+	if key != r.lastRejectedSourceHash {
+		logLine("ERROR", format, args...)
+		r.lastRejectedSourceHash = key
 	}
 }
 

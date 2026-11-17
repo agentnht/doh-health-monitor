@@ -1,6 +1,7 @@
-# Recommended DoH proxy providers (Shecan excluded until TLS certificate is renewed)
-https://eu.geohide.ru/dns-query
-https://doh.dagami.ru/dns-query
-https://dns.comss.one/dns-query
-https://dns.bezmezhau.com/dns-query
-https://dns.zapret.moe/dns-query
+# id;url
+# The provider ID is stable; endpoint hostname can change.
+geohide-eu;https://eu.geohide.ru/dns-query
+dagami;https://dns.dagami.ru/dns-query
+comss-one;https://dns.comss.one/dns-query
+bezmezhau;https://dns.bezmezhau.com/dns-query
+zapret;https://dns.zapret.moe/dns-query

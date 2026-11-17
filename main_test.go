@@ -525,11 +525,11 @@ func TestGeminiRegionBlockDetection(t *testing.T) {
 func TestDefaultConfigUsesSystemDNSFirstAndDoHProviders(t *testing.T) {
 	want := []string{
 		systemDNSUpstreamID,
-		"eu.geohide.ru",
-		"doh.dagami.ru",
-		"dns.comss.one",
-		"dns.bezmezhau.com",
-		"dns.zapret.moe",
+		"geohide-eu",
+		"dagami",
+		"comss-one",
+		"bezmezhau",
+		"zapret",
 	}
 	c := defaultConfig()
 	got := make([]string, 0, len(c.Upstreams))
@@ -618,9 +618,12 @@ func TestNormalizeConfigMovesExistingSystemDNSFirst(t *testing.T) {
 
 func TestBuildSnapshotIncludesSystemDNSWithoutDoHURL(t *testing.T) {
 	c := defaultConfig()
-	urls := map[string]string{}
-	for _, id := range []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"} {
-		urls[id] = "https://" + id + "/dns-query"
+	urls := map[string]string{
+		"geohide-eu": "https://eu.geohide.ru/dns-query",
+		"dagami": "https://dns.dagami.ru/dns-query",
+		"comss-one": "https://dns.comss.one/dns-query",
+		"bezmezhau": "https://dns.bezmezhau.com/dns-query",
+		"zapret": "https://dns.zapret.moe/dns-query",
 	}
 	snapshot, err := buildSnapshot(c, urls)
 	if err != nil {
@@ -633,7 +636,7 @@ func TestBuildSnapshotIncludesSystemDNSWithoutDoHURL(t *testing.T) {
 	if system.client != nil || system.bootstrap != nil {
 		t.Fatal("system DNS must not use a DoH HTTP client or bootstrap resolver")
 	}
-	for _, id := range []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"} {
+	for _, id := range []string{"geohide-eu", "dagami", "comss-one", "bezmezhau", "zapret"} {
 		if u := snapshot.upstreams[id]; u == nil || u.client == nil || u.bootstrap == nil {
 			t.Errorf("DoH runtime %s was not built", id)
 		}
@@ -849,7 +852,7 @@ func TestLoadDoHListCreatesProxyProviderDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}
+	want := []string{"geohide-eu", "dagami", "comss-one", "bezmezhau", "zapret"}
 	if len(urls) != len(want) {
 		t.Fatalf("default DoH URL count = %d, want %d: %#v", len(urls), len(want), urls)
 	}
@@ -1114,7 +1117,7 @@ func TestRFC8484DoHRoundTrip(t *testing.T) {
 
 func TestDoHListOneURLPerLine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "doh-servers.txt")
-	content := "# proxy providers\nhttps://eu.geohide.ru/dns-query\n\nhttps://doh.dagami.ru/dns-query\n"
+	content := "# id;url\ngeohide-eu;https://eu.geohide.ru/dns-query\n\ndagami;https://dns.dagami.ru/dns-query\n"
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -1122,11 +1125,11 @@ func TestDoHListOneURLPerLine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if urls["eu.geohide.ru"] != "https://eu.geohide.ru/dns-query" {
-		t.Fatalf("GeoHide URL: %q", urls["eu.geohide.ru"])
+	if urls["geohide-eu"] != "https://eu.geohide.ru/dns-query" {
+		t.Fatalf("GeoHide URL: %q", urls["geohide-eu"])
 	}
-	if urls["doh.dagami.ru"] != "https://doh.dagami.ru/dns-query" {
-		t.Fatalf("Dagami URL: %q", urls["doh.dagami.ru"])
+	if urls["dagami"] != "https://dns.dagami.ru/dns-query" {
+		t.Fatalf("Dagami URL: %q", urls["dagami"])
 	}
 }
 

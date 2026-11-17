@@ -36,7 +36,7 @@
         details.dataset.upstreamKey = expansionKey;
         details.open = expandedUpstreams.has(expansionKey);
         const summary = document.createElement("summary");
-        const latency = state.latency_ms == null ? "" : " · " + number(state.latency_ms) + " мс";
+        const duration = state.check_duration_ms == null ? "" : " · Check duration: " + number(state.check_duration_ms) + " мс";
         const stateValue = String(state.state || "unknown");
         const stateLabel = document.createElement("span");
         stateLabel.className = "upstream-state";
@@ -48,7 +48,7 @@
         summary.append(
           document.createTextNode(upstreamID + ": "),
           stateLabel,
-          document.createTextNode(latency)
+          document.createTextNode(duration)
         );
         const meta = document.createElement("p");
         meta.className = "muted";

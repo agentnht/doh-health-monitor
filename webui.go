@@ -40,7 +40,7 @@ type webUIUpstreamStatus struct {
 	SuccessStreak int                `json:"success_streak"`
 	FailureStreak int                `json:"failure_streak"`
 	LastCheck     *time.Time         `json:"last_check,omitempty"`
-	LatencyMS     int64              `json:"latency_ms,omitempty"`
+	CheckDurationMS int64              `json:"check_duration_ms,omitempty"`
 	LastHTTP      int                `json:"last_http_status,omitempty"`
 	Checks        []webUIProbeStatus `json:"checks,omitempty"`
 }
@@ -261,7 +261,7 @@ func fetchWebUIStatus(ctx context.Context, statusURL string) (webUIStatus, error
 			}
 			safeGroup.Upstreams[upstreamID] = webUIUpstreamStatus{
 				State: upstream.State, SuccessStreak: upstream.SuccessStreak, FailureStreak: upstream.FailureStreak,
-				LastCheck: lastCheck, LatencyMS: upstream.LatencyMS, LastHTTP: upstream.LastHTTP, Checks: safeChecks,
+				LastCheck: lastCheck, CheckDurationMS: upstream.CheckDurationMS, LastHTTP: upstream.LastHTTP, Checks: safeChecks,
 			}
 		}
 		out.Groups[groupID] = safeGroup
