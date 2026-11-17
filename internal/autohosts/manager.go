@@ -173,26 +173,89 @@ func (m *Manager) SetPinned(id string)error{return m.update(func(s *State)error{
 
 // ApplyCycle commits endpoint, per-domain probe results and published domain set together.
 // Call only from the single background controller, never from DNS request handlers.
-func (m *Manager) ApplyCycle(activeID string,ep Endpoint,results []ProbeResult,now time.Time)error{
- return m.update(func(s *State)error{
-  activeID=strings.TrimSpace(activeID);if activeID==""||ep.ServerID!=activeID{return errors.New("active server and endpoint ID mismatch")}
-  if s.Config.Mode=="pinned"&&s.Config.PinnedServerID!=activeID{return ErrPinnedServer}
-  checked,err:=validateEndpoint(ep);if err!=nil{return err};checked.UpdatedAt=now.UTC();s.Endpoints[activeID]=checked
-  for _,r:=range results {
-   if r.ServerID!=""&&r.ServerID!=activeID{return errors.New("probe result belongs to a different server")}
-   d,err:=NormalizeDomain(r.Domain);if err!=nil{return err};r.Domain=d;r.ServerID=activeID;if r.CheckedAt.IsZero(){r.CheckedAt=now.UTC()}
-   if len(r.WebsiteIPs)>32{return errors.New("too many probe target IPs")}
-   for _,ip:=range r.WebsiteIPs{if net.ParseIP(ip)==nil{return errors.New("invalid temporary website IP")}}
-   s.ProbeResults[activeID+"\x00"+d]=r
-   if r.Success{s.Domains[d]=DomainRecord{Domain:d,ServerID:activeID,LastSuccess:r.CheckedAt.UTC(),ExpiresAt:r.CheckedAt.Add(s.Config.GracePeriod).UTC()}}
-  }
-  published:=make(map[string]DomainRecord)
-  for d,r:=range s.Domains {if r.ServerID==activeID&&now.Before(r.ExpiresAt){published[d]=r}}
-  s.Domains=published;s.ActiveServer=activeID
-  for k,r:=range s.ProbeResults{if now.Sub(r.CheckedAt)>30*24*time.Hour{delete(s.ProbeResults,k)}}
-  return nil
- })
+func (m *Manager) ApplyCycle(activeID string, ep Endpoint, results []ProbeResult, now time.Time) error {
+	return m.ApplyFullCycle(activeID, []Endpoint{ep}, results, now)
 }
+
+// ApplyFullCycle atomically records every endpoint and every server×domain result,
+// while publishing only successful/current-or-grace domains for the selected server.
+// It is intended to be called once by the single background controller per cycle.
+func (m *Manager) ApplyFullCycle(activeID string, endpoints []Endpoint, results []ProbeResult, now time.Time) error {
+	return m.update(func(s *State) error {
+		activeID = strings.TrimSpace(activeID)
+		if activeID == "" {
+			return errors.New("active server ID is empty")
+		}
+		seenEndpoints := make(map[string]bool, len(endpoints))
+		for _, ep := range endpoints {
+			checked, err := validateEndpoint(ep)
+			if err != nil {
+				return err
+			}
+			if seenEndpoints[checked.ServerID] {
+				return fmt.Errorf("duplicate endpoint %q", checked.ServerID)
+			}
+			seenEndpoints[checked.ServerID] = true
+			checked.UpdatedAt = now.UTC()
+			s.Endpoints[checked.ServerID] = checked
+		}
+		if _, ok := s.Endpoints[activeID]; !ok {
+			return fmt.Errorf("active endpoint %q is missing", activeID)
+		}
+		if s.Config.Mode == "pinned" && s.Config.PinnedServerID != activeID {
+			return ErrPinnedServer
+		}
+		for _, r := range results {
+			serverID := strings.TrimSpace(r.ServerID)
+			if serverID == "" {
+				return errors.New("probe result server ID is required")
+			}
+			if _, ok := s.Endpoints[serverID]; !ok {
+				return fmt.Errorf("probe result references unknown server %q", serverID)
+			}
+			d, err := NormalizeDomain(r.Domain)
+			if err != nil {
+				return err
+			}
+			r.Domain = d
+			r.ServerID = serverID
+			if r.CheckedAt.IsZero() {
+				r.CheckedAt = now.UTC()
+			}
+			if len(r.WebsiteIPs) > 32 {
+				return errors.New("too many probe target IPs")
+			}
+			for _, ip := range r.WebsiteIPs {
+				if net.ParseIP(ip) == nil {
+					return errors.New("invalid temporary website IP")
+				}
+			}
+			s.ProbeResults[serverID+"\x00"+d] = r
+			if serverID == activeID && r.Success {
+				s.Domains[d] = DomainRecord{
+					Domain: d, ServerID: activeID,
+					LastSuccess: r.CheckedAt.UTC(),
+					ExpiresAt: r.CheckedAt.Add(s.Config.GracePeriod).UTC(),
+				}
+			}
+		}
+		published := make(map[string]DomainRecord)
+		for d, record := range s.Domains {
+			if record.ServerID == activeID && now.Before(record.ExpiresAt) {
+				published[d] = record
+			}
+		}
+		s.Domains = published
+		s.ActiveServer = activeID
+		for key, result := range s.ProbeResults {
+			if now.Sub(result.CheckedAt) > 30*24*time.Hour {
+				delete(s.ProbeResults, key)
+			}
+		}
+		return nil
+	})
+}
+
 func (m *Manager) DryRun(activeID string,ep Endpoint,results []ProbeResult,now time.Time)(map[string]DomainRecord,error){
  state:=m.State()
  if state.Config.Mode=="pinned"&&state.Config.PinnedServerID!=activeID{return nil,ErrPinnedServer}
