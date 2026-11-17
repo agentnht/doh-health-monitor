@@ -467,6 +467,9 @@ func main() {
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	httpMux.HandleFunc("/status", rt.handleStatus)
+	httpMux.HandleFunc("/autohosts/status", rt.handleAutoHostsStatus)
+	httpMux.HandleFunc("/autohosts/config", rt.handleAutoHostsConfig)
+	httpMux.HandleFunc("/autohosts/dry-run", rt.handleAutoHostsDryRun)
 	httpSrv := &http.Server{Addr: cfg.HTTPListen, Handler: httpMux, ReadHeaderTimeout: 3 * time.Second}
 	httpLn, err := net.Listen("tcp", cfg.HTTPListen)
 	if err != nil {
@@ -2879,6 +2882,76 @@ func timevalNanoseconds(tv syscall.Timeval) uint64 {
 		return 0
 	}
 	return uint64(tv.Sec)*uint64(time.Second) + uint64(tv.Usec)*uint64(time.Microsecond)
+}
+
+func (r *Runtime) handleAutoHostsStatus(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.autoHosts == nil {
+		http.Error(w, "Auto Hosts is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(r.autoHosts.State())
+}
+
+func (r *Runtime) handleAutoHostsConfig(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.autoHosts == nil {
+		http.Error(w, "Auto Hosts is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	req.Body = http.MaxBytesReader(w, req.Body, 16<<10)
+	var input struct {
+		Enabled *bool `json:"enabled"`
+		EmergencyOff *bool `json:"emergency_off"`
+		PinnedServerID *string `json:"pinned_server_id"`
+	}
+	decoder := json.NewDecoder(req.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		http.Error(w, "invalid Auto Hosts settings", http.StatusBadRequest)
+		return
+	}
+	if err := r.autoHosts.Configure(input.Enabled, input.EmergencyOff, input.PinnedServerID); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(r.autoHosts.State())
+}
+
+func (r *Runtime) handleAutoHostsDryRun(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.autoController == nil {
+		http.Error(w, "Auto Hosts controller is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	ctx, cancel := context.WithTimeout(req.Context(), 5*time.Minute)
+	defer cancel()
+	preview, err := r.autoController.dryRunCycle(ctx, time.Now().UTC())
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(preview)
 }
 
 func (r *Runtime) cacheStats() (int, int) {
