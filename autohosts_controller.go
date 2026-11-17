@@ -102,9 +102,9 @@ type autoHostsProbeJob struct {
 
 func (c *autoHostsController) runCycle(ctx context.Context, now time.Time) error {
 	endpoints, results, err := c.probeAll(ctx, now)
-	if err != nil { return err }
+	if err != nil { c.recordPinnedFailure(err, now); return err }
 	activeID, err := c.chooseActive(endpoints, results, now)
-	if err != nil { return err }
+	if err != nil { c.recordPinnedFailure(err, now); return err }
 	if err := c.manager.ApplyFullCycle(activeID, endpoints, results, now); err != nil { return err }
 	successCount := 0
 	totalSuccess := 0
@@ -112,6 +112,13 @@ func (c *autoHostsController) runCycle(ctx context.Context, now time.Time) error
 	logLine("INFO", "AUTO_HOSTS cycle completed servers=%d pairs=%d active=%s active_domains=%d total_success=%d", len(endpoints), len(results), activeID, successCount, totalSuccess)
 	if totalSuccess == 0 { return errors.New("all DoH server/domain probes failed") }
 	return nil
+}
+
+func (c *autoHostsController) recordPinnedFailure(cause error, now time.Time) {
+	state := c.manager.State()
+	if state.Config.Mode == "pinned" && state.Config.PinnedServerID != "" {
+		_ = c.manager.RecordProbeFailures(state.Config.PinnedServerID, autoHostsDomains, cause.Error(), now)
+	}
 }
 
 type autoHostsDryRunPreview struct {
