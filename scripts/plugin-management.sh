@@ -264,7 +264,7 @@ stop_web_ui() {
 }
 
 run_web_ui() {
-  local ready remote_port server_address read_status extra
+  local ready remote_port launch_token server_address read_status extra
   printf 'Запуск отдельного процесса Web UI...\n'
 
   # The shell owns the coprocess stdin writer. Go sees EOF when this session
@@ -299,7 +299,7 @@ run_web_ui() {
   printf '\n[OK] Web UI слушает только 127.0.0.1:%s.\n' "$remote_port"
   printf '\nНа Windows откройте отдельный PowerShell и выполните:\n'
   printf 'ssh -o ExitOnForwardFailure=yes -L 19876:127.0.0.1:%s root@%s\n' "$remote_port" "$server_address"
-  printf 'Затем откройте в браузере: http://127.0.0.1:19876/\n'
+  printf 'Затем откройте в браузере: http://127.0.0.1:19876/?access_token=%s\n' "$launch_token"
   printf 'Если локальный порт 19876 занят, замените его в SSH-команде и URL браузера на один и тот же свободный порт. Удалённый порт %s не меняйте.\n' "$remote_port"
   printf 'Оставьте открытыми эту SSH-сессию и отдельную SSH-сессию туннеля.\n'
   printf 'Нажмите Enter здесь, чтобы остановить Web UI и вернуться в меню.\n'
