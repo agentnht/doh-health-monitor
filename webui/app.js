@@ -111,6 +111,10 @@
   async function loadAutoHosts() {
     const s = await api("/api/v1/autohosts/status"); autoHostsState = s;
     const cfg = s.config || {}; $("autohosts-enabled").checked = Boolean(cfg.enabled); $("autohosts-mode").value = cfg.mode || "auto";
+    const pinSelect = $("autohosts-pinned"); pinSelect.replaceChildren();
+    for (const [id, ep] of Object.entries(s.endpoints || {})) { const option = document.createElement("option"); option.value = id; option.textContent = id + " · " + ep.hostname; pinSelect.append(option); }
+    if (!pinSelect.options.length) { const option = document.createElement("option"); option.value = ""; option.textContent = "Сначала выполните первый цикл"; pinSelect.append(option); }
+    pinSelect.value = cfg.pinned_server_id || ""; pinSelect.disabled = cfg.mode !== "pinned" || !Object.keys(s.endpoints || {}).length;
     text("autohosts-active", s.active_server); text("autohosts-state-emergency", cfg.emergency_off ? "ВКЛЮЧЁН" : "выключен");
     $("autohosts-domains").textContent = Object.keys(s.domains || {}).join(", ") || "Нет доменов";
     $("autohosts-results").textContent = Object.values(s.probe_results || {}).map(x => x.server_id + " × " + x.domain + " · " + (x.success ? "OK" : "FAIL")).join("\n") || "Нет проверок";
