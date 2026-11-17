@@ -1,0 +1,192 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func newTestWebUIData(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := initializeConfigSourceFiles(dir); err != nil {
+		t.Fatal(err)
+	}
+	config := defaultConfig()
+	if err := writeConfigAtomic(filepath.Join(dir, "config.json"), config); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func newAuthenticatedWebUIRequest(t *testing.T, handler http.Handler, method, path string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	const host = "127.0.0.1:19876"
+	root := httptest.NewRequest(http.MethodGet, "http://"+host+"/", nil)
+	root.Host = host
+	rootRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(rootRecorder, root)
+	cookies := rootRecorder.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatal("root response did not issue a session cookie")
+	}
+
+	request := httptest.NewRequest(method, "http://"+host+path, bytes.NewReader(body))
+	request.Host = host
+	request.Header.Set("Origin", "http://"+host)
+	request.AddCookie(cookies[0])
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
+func TestWebUIAdminAPIRequiresSessionCookie(t *testing.T) {
+	dir := newTestWebUIData(t)
+	handler := newWebUIHandlerWithDataDir("http://127.0.0.1:18765/status", "test-session", dir)
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/api/v1/config", nil)
+	request.Host = "127.0.0.1:19876"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated management API status=%d, want %d", recorder.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestWebUIConfigAPIUpdatesValidatedSettingsAndDefaults(t *testing.T) {
+	dir := newTestWebUIData(t)
+	handler := newWebUIHandlerWithDataDir("http://127.0.0.1:18765/status", "test-session", dir)
+
+	get := newAuthenticatedWebUIRequest(t, handler, http.MethodGet, "/api/v1/config", nil)
+	if get.Code != http.StatusOK {
+		t.Fatalf("GET config status=%d body=%s", get.Code, get.Body.String())
+	}
+	var view webUIEditableConfig
+	if err := json.Unmarshal(get.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	view.Health.TimeoutSeconds = 9
+	body, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	save := newAuthenticatedWebUIRequest(t, handler, http.MethodPost, "/api/v1/config", body)
+	if save.Code != http.StatusOK {
+		t.Fatalf("POST config status=%d body=%s", save.Code, save.Body.String())
+	}
+	config, err := loadConfigNoCreate(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Health.TimeoutSeconds != 9 {
+		t.Fatalf("saved health timeout=%d, want 9", config.Health.TimeoutSeconds)
+	}
+
+	reset := newAuthenticatedWebUIRequest(t, handler, http.MethodPost, "/api/v1/config/defaults", []byte(`{"section":"health"}`))
+	if reset.Code != http.StatusOK {
+		t.Fatalf("reset health status=%d body=%s", reset.Code, reset.Body.String())
+	}
+	config, err = loadConfigNoCreate(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Health != defaultConfig().Health {
+		t.Fatalf("health defaults not restored: %+v", config.Health)
+	}
+}
+
+func TestWebUISourceEditorCommentsRowsAndValidatesBeforeWriting(t *testing.T) {
+	dir := newTestWebUIData(t)
+	update := webUISourceUpdate{
+		Kind: "doh",
+		Rows: []webUISourceRow{
+			{Active: true, Editable: true, Fields: []string{"example-provider", "https://dns.example/dns-query"}},
+			{Active: false, Editable: true, Fields: []string{"disabled-provider", "https://disabled.example/dns-query"}},
+		},
+	}
+	if err := saveWebUISources(dir, update); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "doh-servers.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "example-provider;https://dns.example/dns-query") ||
+		!strings.Contains(string(data), "# disabled-provider;https://disabled.example/dns-query") {
+		t.Fatalf("source rows were not serialized as active/commented lines: %s", data)
+	}
+	if _, err := parseDoHProviders(data); err != nil {
+		t.Fatalf("saved DoH source does not validate: %v", err)
+	}
+
+	before := append([]byte(nil), data...)
+	invalid := webUISourceUpdate{
+		Kind: "doh",
+		Rows: []webUISourceRow{{Active: true, Editable: true, Fields: []string{"bad-id", "http://not-https.example/dns-query"}}},
+	}
+	if err := saveWebUISources(dir, invalid); err == nil {
+		t.Fatal("invalid source update unexpectedly succeeded")
+	}
+	after, err := os.ReadFile(filepath.Join(dir, "doh-servers.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("invalid source update changed the existing file")
+	}
+}
+
+func TestWebUISourceRowsPreserveHeaderComments(t *testing.T) {
+	rows := parseWebUISourceRows([]byte("# id;url — provider IDs remain stable\nalpha;https://dns.example/dns-query\n# beta;https://beta.example/dns-query\n"), 2, "id;url")
+	if len(rows) != 3 {
+		t.Fatalf("parsed %d rows, want 3", len(rows))
+	}
+	if rows[0].Editable || rows[0].Active {
+		t.Fatal("header comment should be preserved as read-only")
+	}
+	if !rows[1].Editable || !rows[1].Active {
+		t.Fatal("active row was not parsed as editable")
+	}
+	if !rows[2].Editable || rows[2].Active {
+		t.Fatal("commented provider was not parsed as an inactive editable row")
+	}
+}
+
+func TestWebUIGeminiKeyIsStoredPrivatelyWithoutReturningSecret(t *testing.T) {
+	dir := newTestWebUIData(t)
+	if err := saveWebUIGeminiKey(dir, "test-gemini-secret"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, defaultConfig().GeminiAPI.KeyFile)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("Gemini key permissions=%#o, want 0600", info.Mode().Perm())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != "test-gemini-secret" {
+		t.Fatal("Gemini key file content mismatch")
+	}
+}
+
+func TestWebUISafeListenerProbeRejectsPublicAddresses(t *testing.T) {
+	for _, address := range []string{"0.0.0.0:5355", "192.0.2.1:5355", "dns.example:5355"} {
+		if _, err := localListenAddress(address); err == nil {
+			t.Errorf("localListenAddress(%q) unexpectedly allowed", address)
+		}
+	}
+	for _, address := range []string{"127.0.0.1:5355", "localhost:18765", "[::1]:5355"} {
+		if _, err := localListenAddress(address); err != nil {
+			t.Errorf("localListenAddress(%q): %v", address, err)
+		}
+	}
+}
