@@ -111,3 +111,17 @@ func TestConfigurePinsServerAndEmergencyOffAtomically(t *testing.T) {
 	after = m.State()
 	if after.Config.Mode!="auto" || after.Config.EmergencyOff { t.Fatalf("explicit restore did not apply: %+v", after.Config) }
 }
+
+func TestRecordPinnedFailurePersistsDegradationWithoutChangingActiveSnapshot(t *testing.T) {
+	m, err := New(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil { t.Fatal(err) }
+	now := time.Now().UTC()
+	ep := Endpoint{ServerID:"edge", URL:"https://dns.example/dns-query", Hostname:"dns.example", IPv4:[]string{"8.8.8.8"}}
+	if err := m.ApplyCycle("edge", ep, []ProbeResult{{Domain:"chatgpt.com",Success:true,CheckedAt:now}}, now); err != nil { t.Fatal(err) }
+	before := m.State()
+	if err := m.RecordProbeFailures("edge", []string{"chatgpt.com","claude.ai"}, "pinned endpoint DNS resolution failed", now.Add(time.Minute)); err != nil { t.Fatal(err) }
+	after := m.State()
+	if after.ActiveServer != before.ActiveServer || len(after.Domains) != len(before.Domains) { t.Fatal("degradation record changed active DNS domain snapshot") }
+	failure := after.ProbeResults["edge\x00chatgpt.com"]
+	if failure.Success || failure.Error == "" { t.Fatalf("pinned degradation not recorded: %+v", failure) }
+}
