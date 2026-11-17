@@ -1531,7 +1531,7 @@ func TestHandleDNSAutoHostsEndToEndAndEmergencyBypass(t *testing.T) {
 	enabled := true
 	if err := manager.SetEnabled(enabled); err != nil { t.Fatal(err) }
 	if ips,_,matched:=manager.Snapshot().Lookup("chatgpt.com",1,time.Now()); !matched || len(ips)!=1 { t.Fatalf("test setup did not publish Auto Hosts record: enabled=%v emergency=%v active=%s domains=%+v endpoint=%+v lookup=%v",manager.State().Config.Enabled,manager.State().Config.EmergencyOff,manager.State().ActiveServer,manager.State().Domains,manager.State().Endpoints,ips) }
-	runtime := &Runtime{autoHosts:manager}
+	runtime := &Runtime{autoHosts:manager, dnsSem:make(chan struct{},1)}
 	runtime.snapshot.Store(&Snapshot{cfg:Config{Cache:CacheConfig{Enabled:false}},localHosts:map[string]LocalHost{},upstreams:map[string]*UpstreamRuntime{},groups:map[string]Group{}})
 	a := runtime.handleDNS(makeDNSQuery("CHATGPT.COM",1))
 	ips, err := parseARecords(a)
@@ -1552,7 +1552,7 @@ func TestHandleDNSManualLocalHostsOverrideAutoHosts(t *testing.T) {
 	if err := manager.ApplyFullCycle("edge", []autohosts.Endpoint{endpoint}, []autohosts.ProbeResult{{ServerID:"edge",Domain:"chatgpt.com",Success:true,CheckedAt:now}}, now); err != nil { t.Fatal(err) }
 	enabled := true
 	if err := manager.SetEnabled(enabled); err != nil { t.Fatal(err) }
-	runtime := &Runtime{autoHosts:manager}
+	runtime := &Runtime{autoHosts:manager, dnsSem:make(chan struct{},1)}
 	runtime.snapshot.Store(&Snapshot{cfg:Config{},localHosts:map[string]LocalHost{"chatgpt.com":{IPv4:[]string{"203.0.113.9"}}},upstreams:map[string]*UpstreamRuntime{},groups:map[string]Group{}})
 	response := runtime.handleDNS(makeDNSQuery("chatgpt.com",1))
 	ips, err := parseARecords(response)
@@ -1569,7 +1569,7 @@ func newAutoHostsDNSRuntimeForTransportTest(t *testing.T) *Runtime {
 	if err := manager.ApplyCycle("edge",endpoint,[]autohosts.ProbeResult{{Domain:"chatgpt.com",Success:true,CheckedAt:now}},now); err != nil { t.Fatal(err) }
 	enabled := true
 	if err := manager.Configure(&enabled,nil,nil); err != nil { t.Fatal(err) }
-	r := &Runtime{autoHosts:manager}
+	r := &Runtime{autoHosts:manager, dnsSem:make(chan struct{},2)}
 	r.snapshot.Store(&Snapshot{cfg:Config{DNSMaxConcurrent:2},localHosts:map[string]LocalHost{},upstreams:map[string]*UpstreamRuntime{},groups:map[string]Group{}})
 	return r
 }
