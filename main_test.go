@@ -1452,7 +1452,7 @@ func TestAutoHostsDNSAnswersUseActiveEndpointAndFamilyNODATA(t *testing.T) {
 	now := time.Now().UTC()
 	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
 	if err != nil { t.Fatal(err) }
-	endpoint := autohosts.Endpoint{ServerID:"edge", URL:"https://dns.example/dns-query", Hostname:"dns.example", IPv4:[]string{"8.8.8.8"}}
+	endpoint := autohosts.Endpoint{ServerID:"edge", URL:"https://dns.example/dns-query", Hostname:"dns.example", IPv4:[]string{"8.8.8.8"},UpdatedAt:now}
 	if err := manager.ApplyCycle("edge", endpoint, []autohosts.ProbeResult{{Domain:"chatgpt.com",Success:true,CheckedAt:now}}, now); err != nil { t.Fatal(err) }
 	if err := manager.SetEnabled(true); err != nil { t.Fatal(err) }
 
