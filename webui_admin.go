@@ -519,7 +519,7 @@ func parseWebUISourceRows(data []byte, fieldCount int, header string) []webUISou
 		if strings.HasPrefix(value, "#") {
 			active = false
 			value = strings.TrimSpace(strings.TrimPrefix(value, "#"))
-			if value == "" || strings.HasPrefix(strings.ToLower(value), strings.ToLower(header)) {
+			if value == "" || strings.HasPrefix(strings.ToLower(value), strings.ToLower(header)) || !strings.Contains(value, ";") {
 				rows = append(rows, webUISourceRow{Active: false, Editable: false, Raw: trimmed})
 				continue
 			}
