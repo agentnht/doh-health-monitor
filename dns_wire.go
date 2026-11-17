@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"net"
 	"strings"
 )
