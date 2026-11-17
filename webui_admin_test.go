@@ -230,3 +230,26 @@ func TestWebUIPageHasTabsAndHeaderIntegrationActions(t *testing.T) {
 		t.Fatal("tests tab is not connected to its page")
 	}
 }
+
+func TestWebUIIntegrationLogAPIRequiresSessionAndReturnsPersistedOperations(t *testing.T) {
+	dir := t.TempDir()
+	logger := &webUIOperationLogger{dataDir: dir}
+	logger.Printf("INTEGRATION action=DEINTEGRATE completed successfully")
+
+	handler := newWebUIHandlerWithDataDir("http://127.0.0.1:18765/status", "test-session", dir)
+	unauthorized := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/api/v1/integration/logs", nil)
+	unauthorized.Host = "127.0.0.1:19876"
+	unauthorizedRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorizedRecorder, unauthorized)
+	if unauthorizedRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated integration log status=%d, want %d", unauthorizedRecorder.Code, http.StatusUnauthorized)
+	}
+
+	authorized := newAuthenticatedWebUIRequest(t, handler, http.MethodGet, "/api/v1/integration/logs", nil)
+	if authorized.Code != http.StatusOK {
+		t.Fatalf("authenticated integration log status=%d, body=%s", authorized.Code, authorized.Body.String())
+	}
+	if !strings.Contains(authorized.Body.String(), "DEINTEGRATE completed successfully") {
+		t.Fatalf("integration log response is missing saved operation: %s", authorized.Body.String())
+	}
+}
