@@ -2992,25 +2992,6 @@ func (r *Runtime) cacheLen() int {
 	entries, _ := r.cacheStats()
 	return entries
 }
-func (r *Runtime) serveEvent(w http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodPost || req.URL.Path != "/_lucx/events" {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-	b, e := io.ReadAll(io.LimitReader(req.Body, 64<<10))
-	if e != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	var ev Event
-	if json.Unmarshal(b, &ev) != nil || ev.Type == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	logLine("INFO", "EVENT received id=%s type=%s source=%s", safeLog(ev.ID), safeLog(ev.Type), safeLog(ev.Source))
-	w.WriteHeader(http.StatusNoContent)
-}
-
 func removeStaleSocket(path string) error {
 	fi, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
