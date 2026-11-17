@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"time"
 )
 
@@ -76,7 +77,17 @@ func (r *Runtime) cacheDo(key string, id uint16, resolve func() ([]byte, error))
 	r.cacheFlights[key] = flight
 	r.cacheMu.Unlock()
 
-	response, err := resolve()
+	var response []byte
+	var err error
+	// A resolver panic must not strand callers waiting on this singleflight.
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				err = fmt.Errorf("cache resolver panic: %v", recovered)
+			}
+		}()
+		response, err = resolve()
+	}()
 	r.cacheMu.Lock()
 	flight.packet = append([]byte(nil), response...)
 	flight.err = err
