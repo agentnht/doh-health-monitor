@@ -121,6 +121,7 @@
   }
   async function saveAutoHosts() {
     const mode = $("autohosts-mode").value; const pinned = mode === "pinned" ? $("autohosts-pinned").value : "";
+    if (mode === "pinned" && !pinned) throw new Error("Сначала выполните первый цикл проверок, чтобы зарегистрировать DoH-серверы.");
     await api("/api/v1/autohosts/config", {method:"POST", body:JSON.stringify({enabled:$("autohosts-enabled").checked, pinned_server_id:pinned})}); await loadAutoHosts();
   }
   async function toggleAutoHostsEmergency() {
