@@ -33,8 +33,11 @@ func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 	if exchangeRecorder.Code != http.StatusNoContent || len(cookies) != 1 || cookies[0].Name != webUISessionCookie {
 		t.Fatal("valid one-time launch exchange did not issue the HttpOnly session cookie")
 	}
+	replayRequest := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:19876/session/exchange", strings.NewReader(`{"token":"session-test-token"}`))
+	replayRequest.Host = "127.0.0.1:19876"
+	replayRequest.Header.Set("Content-Type", "application/json")
 	replay := httptest.NewRecorder()
-	handler.ServeHTTP(replay, exchange)
+	handler.ServeHTTP(replay, replayRequest)
 	if replay.Code != http.StatusUnauthorized {
 		t.Fatalf("replayed launch token status=%d, want %d", replay.Code, http.StatusUnauthorized)
 	}
@@ -204,6 +207,27 @@ func TestWebUIStatusAPIRequiresSessionAndReturnsSanitizedStatus(t *testing.T) {
 	}
 	if apiRecorder.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal("status API response must not be cached")
+	}
+}
+
+func TestAutoHostsMiddlewareRequiresBearerAndLoopbackHost(t *testing.T) {
+	handler := requireAutoHostsAPIToken("secret-token", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	for _, tc := range []struct { name, host, authorization string; want int }{
+		{"bare token", "127.0.0.1:18765", "secret-token", http.StatusUnauthorized},
+		{"wrong scheme", "127.0.0.1:18765", "Basic secret-token", http.StatusUnauthorized},
+		{"bearer", "127.0.0.1:18765", "Bearer secret-token", http.StatusNoContent},
+		{"untrusted host", "attacker.example", "Bearer secret-token", http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://"+tc.host+"/status", nil)
+			req.Host = tc.host
+			req.Header.Set("Authorization", tc.authorization)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != tc.want { t.Fatalf("status=%d, want %d", rec.Code, tc.want) }
+		})
 	}
 }
 
