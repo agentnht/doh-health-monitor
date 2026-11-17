@@ -24,7 +24,7 @@ func TestLookupEmergencyOffAndFamilySpecificNODATA(t *testing.T) {
 }
 func TestIPv4OnlyAAAAIsNODATAAndGraceExpires(t *testing.T){
  now:=time.Now().UTC();m,err:=New(filepath.Join(t.TempDir(),"state.json"));if err!=nil{t.Fatal(err)}
- ep:=Endpoint{ServerID:"v4",URL:"https://dns.example/dns-query",Hostname:"dns.example",IPv4:[]string{"192.0.2.53"}}
+ ep:=Endpoint{ServerID:"v4",URL:"https://dns.example/dns-query",Hostname:"dns.example",IPv4:[]string{"192.0.2.53"},UpdatedAt:now}
  if err=m.ApplyCycle("v4",ep,[]ProbeResult{{Domain:"example.com",Success:true,CheckedAt:now}},now);err!=nil{t.Fatal(err)}
  if err=m.SetEnabled(true);err!=nil{t.Fatal(err)}
  ips,_,matched:=m.Snapshot().Lookup("example.com",28,now.Add(time.Second))
@@ -34,10 +34,10 @@ func TestIPv4OnlyAAAAIsNODATAAndGraceExpires(t *testing.T){
 }
 func TestPinnedAndDryRunDoNotMutateState(t *testing.T){
  now:=time.Now().UTC();m,err:=New(filepath.Join(t.TempDir(),"state.json"));if err!=nil{t.Fatal(err)}
- a:=Endpoint{ServerID:"a",URL:"https://a.example/dns-query",Hostname:"a.example",IPv4:[]string{"192.0.2.1"}}
+ a:=Endpoint{ServerID:"a",URL:"https://a.example/dns-query",Hostname:"a.example",IPv4:[]string{"192.0.2.1"},UpdatedAt:now}
  if err=m.ApplyCycle("a",a,nil,now);err!=nil{t.Fatal(err)}
  if err=m.SetPinned("a");err!=nil{t.Fatal(err)}
- b:=Endpoint{ServerID:"b",URL:"https://b.example/dns-query",Hostname:"b.example",IPv4:[]string{"192.0.2.2"}}
+ b:=Endpoint{ServerID:"b",URL:"https://b.example/dns-query",Hostname:"b.example",IPv4:[]string{"192.0.2.2"},UpdatedAt:now}
  if err=m.ApplyCycle("b",b,nil,now);!errors.Is(err,ErrPinnedServer){t.Fatalf("expected pinned error, got %v",err)}
  before:=m.State()
  proposed,err:=m.DryRun("a",a,[]ProbeResult{{Domain:"new.example",Success:true,CheckedAt:now}},now)
