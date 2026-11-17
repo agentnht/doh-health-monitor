@@ -165,6 +165,13 @@ func TestWebUISourceEditorCommentsRowsAndValidatesBeforeWriting(t *testing.T) {
 	if !strings.Contains(string(disabledData), "# system-dns;") {
 		t.Fatalf("disabled system-dns should remain as a comment row: %s", disabledData)
 	}
+	noActiveUpstreams := webUISourceUpdate{Kind: "doh", Rows: []webUISourceRow{
+		{Active: false, Editable: true, System: true, Fields: []string{systemDNSUpstreamID, ""}},
+	}}
+	if err := saveWebUISources(dir, noActiveUpstreams); err == nil {
+		t.Fatal("disabling system-dns without another enabled upstream must be rejected")
+	}
+
 	providers, err := parseDoHProviders(disabledData)
 	if err != nil {
 		t.Fatal(err)
