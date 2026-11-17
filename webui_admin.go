@@ -311,6 +311,17 @@ func webUIAdminAPI(w http.ResponseWriter, r *http.Request, path, dataDir string)
 			return
 		}
 		writeWebUIJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "Ключ сохранён в приватный файл с правами 0600. Содержимое не возвращается."})
+	case "/api/v1/integration/logs":
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w, "GET")
+			return
+		}
+		lines, err := readWebUIIntegrationLog(dataDir, 300)
+		if err != nil {
+			writeWebUIError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeWebUIJSON(w, http.StatusOK, map[string]any{"lines": lines})
 	case "/api/v1/logs":
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w, "GET")
@@ -678,11 +689,7 @@ func readWebUILogs(dataDir string, count int) ([]string, string, error) {
 	root, rootErr := webUIDataRoot(dataDir)
 	if rootErr == nil {
 		path := filepath.Join(root, "webui-operations.log")
-		if lines, err := readWebUILogFile(path, count); err == nil && len(lines) > 0 {
-			all = append(all, "— Web UI operations —")
-			all = append(all, lines...)
-			source = "systemd journal + Web UI operations"
-		}
+		_ = path
 	}
 	if len(all) == 0 && rootErr == nil {
 		parentLog := filepath.Join(filepath.Dir(root), "plugin.log")
@@ -746,6 +753,18 @@ func webUITest(name string, ok bool, reason string) webUITestResult {
 
 func runWebUIAdminTests(dataDir string) webUITestSummary {
 	summary := webUITestSummary{Status: "NotOK", RunAt: time.Now().UTC(), Tests: []webUITestResult{}}
+
+	// Keep the legacy integration preflight as the first mandatory check.
+	integrationOutput, integrationErr := runWebUIIntegration(dataDir, "check")
+	integrationReason := strings.TrimSpace(integrationOutput)
+	if integrationErr != nil {
+		if integrationReason != "" {
+			integrationReason += "\n"
+		}
+		integrationReason += integrationErr.Error()
+	}
+	summary.Tests = append(summary.Tests, webUITest("DNS integration preflight", integrationErr == nil, integrationReason))
+
 	configPath, _, fileErr := webUIDataFile(dataDir, "config.json", webUIAdminMaxFile)
 	if fileErr != nil {
 		summary.Tests = append(summary.Tests, webUITest("Чтение config.json", false, fileErr.Error()))
@@ -1040,6 +1059,7 @@ func runWebUIIntegration(dataDir, action string) (string, error) {
 		return "", errors.New("configured status endpoint must use loopback")
 	}
 	logger := &webUIOperationLogger{dataDir: root}
+	logger.Printf("INTEGRATION action=%s started", strings.ToUpper(action))
 	args := []string{action, "--plugin-port", pluginPort, "--plugin-status-url", statusURL}
 	done := make(chan error, 1)
 	go func() {
@@ -1048,15 +1068,42 @@ func runWebUIIntegration(dataDir, action string) (string, error) {
 	select {
 	case err := <-done:
 		if err != nil {
+			logger.Printf("INTEGRATION action=%s failed: %v", strings.ToUpper(action), err)
 			return logger.String(), err
 		}
 	case <-time.After(45 * time.Second):
-		return logger.String(), errors.New("операция интеграции превысила лимит 45 секунд")
+		timeoutErr := errors.New("операция интеграции превысила лимит 45 секунд")
+		logger.Printf("INTEGRATION action=%s failed: %v", strings.ToUpper(action), timeoutErr)
+		return logger.String(), timeoutErr
 	}
 	if action == "integrate" || action == "remove" {
 		if err := setIntegrationFlag(filepath.Join(root, "config.json"), action == "integrate"); err != nil {
+			logger.Printf("INTEGRATION action=%s completed but config flag update failed: %v", strings.ToUpper(action), err)
 			return logger.String(), fmt.Errorf("операция завершилась, но не удалось обновить integration в config.json: %w", err)
 		}
 	}
+	logger.Printf("INTEGRATION action=%s completed successfully", strings.ToUpper(action))
 	return logger.String(), nil
+}
+
+func readWebUIIntegrationLog(dataDir string, count int) ([]string, error) {
+	root, err := webUIDataRoot(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(root, "webui-operations.log")
+	lines, err := readWebUILogFile(path, count)
+	if errors.Is(err, os.ErrNotExist) {
+		return []string{"Операции интеграции/деинтеграции ещё не выполнялись."}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(lines) == 0 {
+		return []string{"Операции интеграции/деинтеграции ещё не выполнялись."}, nil
+	}
+	for index := range lines {
+		lines[index] = redactWebUILogLine(lines[index])
+	}
+	return lines, nil
 }
