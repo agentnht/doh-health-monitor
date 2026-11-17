@@ -444,11 +444,20 @@ func TestWebUIAutoHostsRoutesRequireSessionAndProxyFullFlow(t *testing.T) {
 	}))
 	defer daemon.Close()
 	handler := newWebUIHandlerWithDataDir(daemon.URL+"/status", "auto-hosts-session", dataDir)
+	exchangeRequest := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:19876/session/exchange", strings.NewReader(`{"token":"auto-hosts-session"}`))
+	exchangeRequest.Host = "127.0.0.1:19876"
+	exchangeRequest.Header.Set("Content-Type", "application/json")
+	exchangeRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(exchangeRecorder, exchangeRequest)
+	if exchangeRecorder.Code != http.StatusNoContent || len(exchangeRecorder.Result().Cookies()) != 1 {
+		t.Fatalf("session exchange failed: status=%d", exchangeRecorder.Code)
+	}
+	sessionCookie := exchangeRecorder.Result().Cookies()[0]
 	request := func(method, path, body string, authenticated bool) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, "http://127.0.0.1:19876"+path, strings.NewReader(body))
 		req.Host = "127.0.0.1:19876"
 		if authenticated {
-			req.AddCookie(&http.Cookie{Name: webUISessionCookie, Value: "auto-hosts-session"})
+			req.AddCookie(sessionCookie)
 		}
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
@@ -522,7 +531,14 @@ func TestWebUILaunchDoesNotIssueSessionToArbitraryLoopbackGET(t *testing.T) {
 	req.Host = "127.0.0.1:19876"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("unauthenticated shell request unexpectedly issued a session: status=%d cookies=%d", rec.Code, len(rec.Result().Cookies()))
+	}
+	req = httptest.NewRequest(http.MethodPost, "http://127.0.0.1:19876/session/exchange", strings.NewReader(`{"token":"wrong-token"}`))
+	req.Host = "127.0.0.1:19876"
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized || len(rec.Result().Cookies()) != 0 {
-		t.Fatalf("unauthenticated GET / issued a session: status=%d cookies=%d", rec.Code, len(rec.Result().Cookies()))
+		t.Fatalf("invalid launch token issued a session: status=%d cookies=%d", rec.Code, len(rec.Result().Cookies()))
 	}
 }
