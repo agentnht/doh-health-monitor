@@ -50,6 +50,7 @@ type webUIEditableConfig struct {
 type webUISourceRow struct {
 	Active   bool     `json:"active"`
 	Editable bool     `json:"editable"`
+	System   bool     `json:"system,omitempty"`
 	Fields   []string `json:"fields,omitempty"`
 	Raw      string   `json:"raw,omitempty"`
 }
@@ -527,7 +528,8 @@ func parseWebUISourceRows(data []byte, fieldCount int, header string) []webUISou
 		for len(fields) < fieldCount {
 			fields = append(fields, "")
 		}
-		rows = append(rows, webUISourceRow{Active: active, Editable: true, Fields: fields})
+		system := fieldCount == 2 && strings.EqualFold(strings.TrimSpace(fields[0]), systemDNSUpstreamID)
+		rows = append(rows, webUISourceRow{Active: active, Editable: true, System: system, Fields: fields})
 	}
 	return rows
 }
@@ -547,12 +549,16 @@ func saveWebUISources(dataDir string, update webUISourceUpdate) error {
 	if len(update.Rows) > webUIAdminMaxRows {
 		return fmt.Errorf("too many rows; maximum is %d", webUIAdminMaxRows)
 	}
+	systemRows := 0
 	var output strings.Builder
 	for index, row := range update.Rows {
 		if !row.Editable {
 			raw := strings.TrimSpace(row.Raw)
 			if row.Active || !strings.HasPrefix(raw, "#") || strings.ContainsAny(raw, "\r\n") || len(raw) > 512 {
 				return fmt.Errorf("row %d: only read-only comment rows may use raw text", index+1)
+			}
+			if update.Kind == "doh" && strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(raw, "#")), systemDNSUpstreamID+";") {
+				return fmt.Errorf("row %d: system-dns must remain an editable protected row", index+1)
 			}
 			output.WriteString(raw)
 			output.WriteByte('\n')
@@ -569,11 +575,28 @@ func saveWebUISources(dataDir string, update webUISourceUpdate) error {
 			fields[fieldIndex] = strings.TrimSpace(field)
 		}
 		line := strings.Join(fields, ";")
+		if update.Kind == "doh" {
+			isSystemID := strings.EqualFold(fields[0], systemDNSUpstreamID)
+			if row.System || isSystemID {
+				if !row.System || !isSystemID {
+					return fmt.Errorf("row %d: system-dns is a protected system row", index+1)
+				}
+				systemRows++
+				if fields[1] != "" {
+					return fmt.Errorf("row %d: system-dns uses /etc/resolv.conf and must not have a DoH URL", index+1)
+				}
+				fields[0] = systemDNSUpstreamID
+				line = strings.Join(fields, ";")
+			}
+		}
 		if !row.Active {
 			line = "# " + line
 		}
 		output.WriteString(line)
 		output.WriteByte('\n')
+	}
+	if update.Kind == "doh" && systemRows != 1 {
+		return errors.New("doh-servers.txt must keep exactly one system-dns row; disable it with the checkbox instead of deleting it")
 	}
 	data := []byte(output.String())
 	if update.Kind == "doh" && len(strings.TrimSpace(string(data))) == 0 {
