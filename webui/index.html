@@ -72,6 +72,10 @@
     .source-table td:first-child { width: 2.5rem; text-align: center; }
     .source-table td:last-child { width: 3rem; }
     .source-comment { color: #9ca3af; font-size: .75rem; font-style: italic; }
+    .source-system td { background: rgba(37, 99, 235, .06); }
+    .source-system-note, .source-protected { color: #93c5fd; font-size: .72rem; }
+    .source-protected { white-space: nowrap; }
+
     .row-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .6rem; }
     .results { display: grid; gap: .42rem; margin-top: .8rem; }
     .result { border: 1px solid #374151; background: #111827; border-radius: .5rem; min-width: 0; }
@@ -203,7 +207,7 @@
 
     <section class="panel tab-page" data-page-panel="doh" hidden>
       <h2>Список DoH-серверов · doh-servers.txt</h2>
-      <p class="muted">Формат строки: id;url. Флажок включает строку или комментирует её. Порядок записей сохраняется.</p>
+      <p class="muted">Формат строки: id;url. Флажок включает строку или комментирует её. Порядок записей сохраняется. system-dns использует nameserver-ы VPS из /etc/resolv.conf: его можно отключить, но нельзя удалить или заменить URL.</p>
       <div class="source-wrap">
         <table class="source-table"><thead><tr><th>Вкл.</th><th>ID</th><th>HTTPS URL</th><th></th></tr></thead><tbody id="doh-rows"></tbody></table>
       </div>
