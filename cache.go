@@ -8,9 +8,10 @@ import (
 )
 
 type cacheFlight struct {
-	done   chan struct{}
-	packet []byte
-	err    error
+	done    chan struct{}
+	packet  []byte
+	err     error
+	waiters int
 }
 
 type cacheItem struct {
@@ -56,6 +57,7 @@ func (r *Runtime) cacheDo(key string, id uint16, resolve func() ([]byte, error))
 		r.deleteCacheEntryLocked(key, item)
 	}
 	if flight := r.cacheFlights[key]; flight != nil {
+		flight.waiters++
 		r.cacheMu.Unlock()
 		<-flight.done
 		if flight.err != nil {
