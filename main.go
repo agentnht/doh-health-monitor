@@ -1923,6 +1923,7 @@ func (r *Runtime) deleteCacheEntryLocked(key string, item cacheItem) {
 }
 
 func (r *Runtime) cacheDo(key string, id uint16, resolve func() ([]byte, error)) ([]byte, error) {
+	if cached, ok := r.cacheGet(key, id); ok { return cached, nil }
 	r.cacheMu.Lock()
 	if flight := r.cacheFlights[key]; flight != nil {
 		r.cacheMu.Unlock()
