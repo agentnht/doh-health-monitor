@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"bufio"
 	"fmt"
 	"net/http"
@@ -314,4 +315,27 @@ func TestWebUIAppScriptMakesManagementPagesMutuallyExclusive(t *testing.T) {
 			t.Errorf("app.js is missing exclusive tab behaviour %q", want)
 		}
 	}
+}
+
+
+func TestWebUIAutoHostsProxyOnlyTargetsLoopbackDaemon(t *testing.T) {
+	var gotPath, gotMethod, gotBody string
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod = r.URL.Path, r.Method
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{\"ok\":true}"))
+	}))
+	defer daemon.Close()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/autohosts/config", strings.NewReader("{\"enabled\":true}"))
+	response := httptest.NewRecorder()
+	proxyWebUIAutoHostsAPI(response, request, daemon.URL+"/status")
+	if response.Code != http.StatusOK || gotPath != "/autohosts/config" || gotMethod != http.MethodPost || gotBody != "{\"enabled\":true}" {
+		t.Fatalf("unexpected proxy result: status=%d path=%s method=%s body=%s", response.Code, gotPath, gotMethod, gotBody)
+	}
+	badRequest := httptest.NewRequest(http.MethodGet, "/api/v1/autohosts/status", nil)
+	badResponse := httptest.NewRecorder()
+	proxyWebUIAutoHostsAPI(badResponse, badRequest, "http://example.com/status")
+	if badResponse.Code != http.StatusServiceUnavailable { t.Fatalf("non-loopback status URL was accepted: %d", badResponse.Code) }
 }
