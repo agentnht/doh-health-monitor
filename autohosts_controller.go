@@ -39,6 +39,8 @@ type autoHostsController struct {
 	activeSince time.Time
 	lastSwitch time.Time
 	activeFailures int
+	betterCandidate string
+	betterCandidateStreak int
 }
 
 func newAutoHostsController(r *Runtime, manager *autohosts.Manager) *autoHostsController {
@@ -155,49 +157,54 @@ func (c *autoHostsController) runCycle(ctx context.Context, now time.Time) error
 	return nil
 }
 
-func (c *autoHostsController) chooseActive(endpoints []autohosts.Endpoint, results []autohosts.ProbeResult, now time.Time) (string,error) {
-	available := make(map[string]bool,len(endpoints))
-	for _, ep := range endpoints { available[ep.ServerID]=true }
+func (c *autoHostsController) chooseActive(endpoints []autohosts.Endpoint, results []autohosts.ProbeResult, now time.Time) (string, error) {
+	available := make(map[string]bool, len(endpoints))
+	for _, ep := range endpoints { available[ep.ServerID] = true }
 	state := c.manager.State()
 	if state.Config.Mode == "pinned" {
 		if !available[state.Config.PinnedServerID] { return "", fmt.Errorf("pinned DoH server %q is not currently reachable/resolved", state.Config.PinnedServerID) }
-		return state.Config.PinnedServerID,nil
+		return state.Config.PinnedServerID, nil
 	}
-	scores := make(map[string]int,len(endpoints))
+	scores := make(map[string]int, len(endpoints))
 	for _, result := range results { if result.Success { scores[result.ServerID]++ } }
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	current := state.ActiveServer
-	if current != "" && available[current] {
-		if scores[current] > 0 {
-			c.activeFailures=0
-			if c.activeSince.IsZero() { c.activeSince=now }
-			return current,nil
+	if current == "" || !available[current] {
+		bestID, bestScore := "", 0
+		for _, ep := range endpoints {
+			if scores[ep.ServerID] > bestScore { bestID, bestScore = ep.ServerID, scores[ep.ServerID] }
 		}
-		c.activeFailures++
-		if c.activeSince.IsZero() { c.activeSince=now }
-		if c.activeFailures < autoHostsFailureCycles || now.Sub(c.activeSince) < autoHostsMinimumHold || (!c.lastSwitch.IsZero() && now.Sub(c.lastSwitch) < autoHostsSwitchCooldown) {
-			return current,nil
-		}
+		if bestID == "" { bestID = endpoints[0].ServerID }
+		c.activeSince, c.lastSwitch = now, now
+		c.activeFailures, c.betterCandidate, c.betterCandidateStreak = 0, "", 0
+		return bestID, nil
 	}
-	bestID := ""
-	bestScore := 0
+	currentScore := scores[current]
+	if currentScore == 0 { c.activeFailures++ } else { c.activeFailures = 0 }
+	bestID, bestScore := current, currentScore
 	for _, ep := range endpoints {
 		score := scores[ep.ServerID]
-		if score > bestScore || (score == bestScore && score > 0 && ep.ServerID == current) {
-			bestID,bestScore=ep.ServerID,score
-		}
+		if score > bestScore { bestID, bestScore = ep.ServerID, score }
 	}
-	if bestID == "" {
-		if current != "" && available[current] { return current,nil }
-		bestID=endpoints[0].ServerID
+	if bestID == current || bestScore == 0 {
+		c.betterCandidate, c.betterCandidateStreak = "", 0
+		return current, nil
 	}
-	if bestID != current {
-		c.lastSwitch=now
-		c.activeSince=now
-		c.activeFailures=0
+	if c.betterCandidate == bestID { c.betterCandidateStreak++ } else {
+		c.betterCandidate, c.betterCandidateStreak = bestID, 1
 	}
-	return bestID,nil
+	if c.activeSince.IsZero() { c.activeSince = now }
+	holdElapsed := now.Sub(c.activeSince) >= autoHostsMinimumHold
+	cooldownElapsed := c.lastSwitch.IsZero() || now.Sub(c.lastSwitch) >= autoHostsSwitchCooldown
+	repeatedFailure := currentScore == 0 && c.activeFailures >= autoHostsFailureCycles
+	repeatedImprovement := c.betterCandidateStreak >= 2
+	if (repeatedFailure || repeatedImprovement) && holdElapsed && cooldownElapsed {
+		c.lastSwitch, c.activeSince = now, now
+		c.activeFailures, c.betterCandidate, c.betterCandidateStreak = 0, "", 0
+		return bestID, nil
+	}
+	return current, nil
 }
 
 func (c *autoHostsController) probeDomain(ctx context.Context, job autoHostsProbeJob, now time.Time) (result autohosts.ProbeResult) {
@@ -211,6 +218,7 @@ func (c *autoHostsController) probeDomain(ctx context.Context, job autoHostsProb
 		cancel()
 		if err!=nil { result.Error="DoH query: "+err.Error(); continue }
 		if dnsRCode(response)!=0 { result.Error=fmt.Sprintf("DNS qtype=%d rcode=%d",qtype,dnsRCode(response)); continue }
+		if dnsTruncated(response) { result.Error=fmt.Sprintf("DNS qtype=%d response is truncated",qtype); continue }
 		ips,err:=parseAddressRecords(response,qtype)
 		if err!=nil { result.Error="DNS parse: "+err.Error(); continue }
 		for _,ip:=range ips { if isAutoHostsPublicIP(net.ParseIP(ip)) { websiteIPs=appendUniqueString(websiteIPs,ip) } }
