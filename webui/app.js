@@ -462,9 +462,11 @@
       }
       await loadIntegrationLog();
       try { await loadConfig(); } catch (_) { /* preserve operation result */ }
+      activatePage("logs");
     } catch (error) {
       notice("integration-result", error.message, false);
       await loadIntegrationLog();
+      activatePage("logs");
     } finally {
       if (configState) {
         $("integration-add").disabled = Boolean(configState.integration);
