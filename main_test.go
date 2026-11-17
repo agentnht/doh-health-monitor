@@ -1484,3 +1484,39 @@ func TestManualLocalHostsTakePriorityOverAutoHosts(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	if len(ips)!=1 || ips[0]!="1.2.3.4" { t.Fatalf("manual local_hosts must win over Auto Hosts, got %v",ips) }
 }
+
+
+func TestAutoHostsHTTPSettingsAndStatusHandlers(t *testing.T) {
+	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
+	if err != nil { t.Fatal(err) }
+	runtime := &Runtime{autoHosts:manager}
+	request := httptest.NewRequest(http.MethodPost, "/autohosts/config", strings.NewReader("{\"enabled\":true,\"emergency_off\":true}"))
+	response := httptest.NewRecorder()
+	runtime.handleAutoHostsConfig(response, request)
+	if response.Code != http.StatusOK { t.Fatalf("config handler returned %d: %s", response.Code, response.Body.String()) }
+	if !manager.State().Config.Enabled || !manager.State().Config.EmergencyOff { t.Fatal("settings were not applied") }
+	statusRequest := httptest.NewRequest(http.MethodGet, "/autohosts/status", nil)
+	statusResponse := httptest.NewRecorder()
+	runtime.handleAutoHostsStatus(statusResponse, statusRequest)
+	if statusResponse.Code != http.StatusOK { t.Fatalf("status handler returned %d", statusResponse.Code) }
+	var state autohosts.State
+	if err := json.Unmarshal(statusResponse.Body.Bytes(), &state); err != nil { t.Fatal(err) }
+	if !state.Config.Enabled || !state.Config.EmergencyOff { t.Fatal("status response omitted persisted settings") }
+}
+
+func TestAutoHostsDryRunHandlerDoesNotMutateStateOnUnavailableEndpoints(t *testing.T) {
+	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
+	if err != nil { t.Fatal(err) }
+	runtime := &Runtime{autoHosts:manager}
+	runtime.snapshot.Store(&Snapshot{upstreams:map[string]*UpstreamRuntime{},groups:map[string]Group{}})
+	runtime.autoController = newAutoHostsController(runtime, manager)
+	before := manager.State()
+	request := httptest.NewRequest(http.MethodPost, "/autohosts/dry-run", strings.NewReader("{}"))
+	response := httptest.NewRecorder()
+	runtime.handleAutoHostsDryRun(response, request)
+	if response.Code != http.StatusServiceUnavailable { t.Fatalf("expected unavailable endpoint result, got %d", response.Code) }
+	after := manager.State()
+	if before.ActiveServer != after.ActiveServer || len(before.Domains) != len(after.Domains) || before.UpdatedAt != after.UpdatedAt {
+		t.Fatal("failed Dry Run mutated Auto Hosts persistent state")
+	}
+}
