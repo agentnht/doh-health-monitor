@@ -342,7 +342,7 @@ func main() {
 
 func runManagementCommand(args []string) {
 	if len(args) == 0 {
-	return
+		return
 	}
 	action := strings.ToLower(strings.TrimSpace(args[0]))
 	if action == "web" {
