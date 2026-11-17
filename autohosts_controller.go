@@ -37,6 +37,7 @@ const (
 type autoHostsController struct {
 	runtime *Runtime
 	manager *autohosts.Manager
+	trigger chan struct{}
 	mu sync.Mutex
 	activeSince time.Time
 	lastSwitch time.Time
@@ -46,7 +47,7 @@ type autoHostsController struct {
 }
 
 func newAutoHostsController(r *Runtime, manager *autohosts.Manager) *autoHostsController {
-	return &autoHostsController{runtime:r, manager:manager}
+	return &autoHostsController{runtime:r, manager:manager, trigger:make(chan struct{},1)}
 }
 
 func (c *autoHostsController) run(ctx context.Context) {
@@ -66,10 +67,14 @@ func (c *autoHostsController) run(ctx context.Context) {
 		case <-ctx.Done():
 			timer.Stop()
 			return
+		case <-c.trigger:
+			if !timer.Stop() { select { case <-timer.C: default: } }
 		case <-timer.C:
 		}
 	}
 }
+
+func (c *autoHostsController) Trigger() { select { case c.trigger <- struct{}{}: default: } }
 
 type autoHostsProbeJob struct {
 	serverID string
