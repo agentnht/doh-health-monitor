@@ -6,16 +6,22 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
+
+      - name: Resolve and verify Go dependencies
+        run: go mod tidy
+      - name: Verify Go module files are tidy
+        run: git diff --exit-code -- go.mod go.sum
 
       - name: Verify versions match tag
         run: |
@@ -26,8 +32,14 @@ jobs:
           [ "$source" = "$version" ] || { echo "main.go=$source, tag=$version"; exit 1; }
           grep -q "^## \[$version\]" CHANGELOG.md || { echo "CHANGELOG.md has no [$version]"; exit 1; }
 
+      - name: Check Go formatting
+        run: test -z \"$(gofmt -l $(git ls-files '*.go'))\"
       - run: go vet ./...
       - run: go test ./...
+      - name: Run race detector
+        run: go test -race ./...
+      - name: Scan dependencies and call graph for known vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
 
       - name: Build package
         env:
@@ -45,6 +57,17 @@ jobs:
           unzip -Z1 "$id-v$version.zip" | grep -Fx "scripts/plugin-management.sh"
           unzip -Z1 "$id-v$version.zip" | grep -Fx "scripts/check-dns-integration.sh"
           sha256sum "$id-v$version.zip" > "$id-v$version.zip.sha256"
+
+      - name: Sign package and checksum with Sigstore keyless signing
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          go install github.com/sigstore/cosign/v3/cmd/cosign@v3.1.4
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          file=$(find . -maxdepth 1 -name '*.zip' -print -quit)
+          checksum="${file}.sha256"
+          cosign sign-blob --yes --bundle "${file}.sigstore.json" "$file"
+          cosign sign-blob --yes --bundle "${checksum}.sigstore.json" "$checksum"
 
       - name: Extract release notes
         run: |
