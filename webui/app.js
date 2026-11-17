@@ -611,6 +611,10 @@
   $("integration-add").addEventListener("click", () => integrationAction("integrate"));
   $("integration-remove").addEventListener("click", () => integrationAction("remove"));
   $("refresh-logs").addEventListener("click", loadLogs);
+  $("autohosts-save").addEventListener("click", () => saveAutoHosts().catch(e => notice("autohosts-note", e.message, false)));
+  $("autohosts-emergency").addEventListener("click", () => toggleAutoHostsEmergency().catch(e => notice("autohosts-note", e.message, false)));
+  $("autohosts-dry-run").addEventListener("click", () => runAutoHostsDryRun().catch(e => notice("autohosts-note", e.message, false)));
+  $("autohosts-mode").addEventListener("change", () => { $("autohosts-pinned").disabled = $("autohosts-mode").value !== "pinned"; });
   $("refresh-integration-log").addEventListener("click", loadIntegrationLog);
   document.querySelectorAll("[data-page]").forEach(button => {
     button.addEventListener("click", () => activatePage(button.dataset.page));
@@ -626,5 +630,6 @@
     notice("check-note", error.message, false);
   });
   loadIntegrationLog();
+  loadAutoHosts().catch(e => notice("autohosts-note", e.message, false));
   window.setInterval(loadStatus, 15000);
 })();
