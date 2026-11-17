@@ -1754,7 +1754,7 @@ func localHostsResponseWithTTL(query []byte, host string, qtype uint16, hosts ma
 			if ip == nil || net.ParseIP(strings.TrimSpace(raw)).To4() != nil {
 				continue
 			}
-			response = appendLocalHostRR(response, qtype, ip)
+			response = appendLocalHostRRWithTTL(response, qtype, ip, ttl)
 			answers++
 		}
 	}
