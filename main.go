@@ -1692,7 +1692,7 @@ func localHostsResponseWithTTL(query []byte, host string, qtype uint16, hosts ma
 // target address from either Answer or Additional while preserving exact-name
 // Auto Hosts handling for direct queries.
 func cnameChainTargetsAutoHosts(response []byte, originalName string, qtype uint16, manager *autohosts.Manager) bool {
-	if manager == nil || (qtype != 1 && qtype != 28) || len(response) < 12 {
+	if manager == nil || (qtype != 1 && qtype != 28 && qtype != 64 && qtype != 65) || len(response) < 12 {
 		return false
 	}
 	snapshot := manager.Snapshot()
@@ -1703,19 +1703,25 @@ func cnameChainTargetsAutoHosts(response []byte, originalName string, qtype uint
 	qd := int(binary.BigEndian.Uint16(response[4:6]))
 	for i := 0; i < qd; i++ {
 		n, err := skipName(response, off)
-		if err != nil || n+4 > len(response) { return false }
+		if err != nil || n+4 > len(response) {
+			return false
+		}
 		off = n + 4
 	}
 	answerCount := int(binary.BigEndian.Uint16(response[6:8]))
 	aliases := make(map[string]string)
 	for i := 0; i < answerCount; i++ {
 		owner, next, err := decodeName(response, off)
-		if err != nil || next+10 > len(response) { return false }
-		typ := binary.BigEndian.Uint16(response[next:next+2])
-		rdlen := int(binary.BigEndian.Uint16(response[next+8:next+10]))
+		if err != nil || next+10 > len(response) {
+			return false
+		}
+		typ := binary.BigEndian.Uint16(response[next : next+2])
+		rdlen := int(binary.BigEndian.Uint16(response[next+8 : next+10]))
 		rdata := next + 10
 		end := rdata + rdlen
-		if end > len(response) { return false }
+		if end > len(response) {
+			return false
+		}
 		if typ == 5 {
 			target, _, nameErr := decodeName(response, rdata)
 			if nameErr == nil {
@@ -1728,8 +1734,12 @@ func cnameChainTargetsAutoHosts(response []byte, originalName string, qtype uint
 	seen := make(map[string]struct{}, 16)
 	for i := 0; i < 16; i++ {
 		target, ok := aliases[current]
-		if !ok { return false }
-		if _, duplicate := seen[target]; duplicate { return false }
+		if !ok {
+			return false
+		}
+		if _, duplicate := seen[target]; duplicate {
+			return false
+		}
 		seen[target] = struct{}{}
 		if _, _, matched := snapshot.Lookup(target, qtype, time.Now()); matched {
 			return true
