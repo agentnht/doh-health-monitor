@@ -224,6 +224,10 @@
     promptLabel.append(prompt);
     gemini.append(promptLabel);
     text("config-note", config.integration ? "Интеграция включена" : "Интеграция выключена");
+    $("integration-add").disabled = Boolean(config.integration);
+    $("integration-remove").disabled = !config.integration;
+    $("integration-add").setAttribute("aria-pressed", String(!config.integration));
+    $("integration-remove").setAttribute("aria-pressed", String(Boolean(config.integration)));
   }
 
   async function loadConfig() {
@@ -425,33 +429,64 @@
     }
   }
 
-  async function integrationAction(action) {
-    if (action !== "check") {
-      const prompt = action === "integrate"
-        ? "Выполнить DNS-интеграцию в LucX-UI/Xray? Операция изменит настройки панели."
-        : "Удалить DNS-интеграцию из LucX-UI/Xray? Операция изменит настройки панели.";
-      if (!window.confirm(prompt)) return;
+  async function loadIntegrationLog() {
+    const node = $("integration-log");
+    if (!node) return;
+    node.textContent = "Загрузка журнала операций…";
+    try {
+      const result = await api("/api/v1/integration/logs");
+      node.textContent = (result.lines || []).join("\\n");
+    } catch (error) {
+      node.textContent = "Не удалось прочитать журнал операций: " + error.message;
     }
-    const ids = { check: "integration-check", integrate: "integration-add", remove: "integration-remove" };
-    const button = $(ids[action]);
+  }
+
+  async function integrationAction(action) {
+    const button = $(action === "integrate" ? "integration-add" : "integration-remove");
+    const prompt = action === "integrate"
+      ? "Выполнить DNS-интеграцию в LucX-UI/Xray? Операция изменит настройки панели."
+      : "Удалить DNS-интеграцию из LucX-UI/Xray? Операция изменит настройки панели.";
+    if (!window.confirm(prompt)) return;
+
     button.disabled = true;
-    notice("integration-result", "Операция выполняется…", false);
-    $("integration-output").hidden = true;
+    notice("integration-result", action === "integrate" ? "Выполняется Integrate…" : "Выполняется DeIntegrate…", false);
     try {
       const result = await api("/api/v1/integration", {
         method: "POST",
-        body: JSON.stringify({ action, confirmed: action === "check" ? false : true })
+        body: JSON.stringify({ action, confirmed: true })
       });
-      notice("integration-result", result.ok ? "Операция " + action + " выполнена." : "Операция " + action + " завершилась ошибкой: " + (result.error || ""), Boolean(result.ok));
-      if (result.output || result.error) {
-        $("integration-output").textContent = [result.output, result.error].filter(Boolean).join("\n");
-        $("integration-output").hidden = false;
+      if (result.ok) {
+        notice("integration-result", action === "integrate" ? "Интеграция выполнена." : "Деинтеграция выполнена.", true);
+      } else {
+        notice("integration-result", (action === "integrate" ? "Ошибка Integrate: " : "Ошибка DeIntegrate: ") + (result.error || "неизвестная ошибка"), false);
       }
+      await loadIntegrationLog();
       try { await loadConfig(); } catch (_) { /* preserve operation result */ }
     } catch (error) {
       notice("integration-result", error.message, false);
+      await loadIntegrationLog();
     } finally {
-      button.disabled = false;
+      if (configState) {
+        $("integration-add").disabled = Boolean(configState.integration);
+        $("integration-remove").disabled = !configState.integration;
+      } else {
+        button.disabled = false;
+      }
+    }
+  }
+
+  function activatePage(name) {
+    document.querySelectorAll("[data-page-panel]").forEach(panel => {
+      panel.hidden = panel.dataset.pagePanel !== name;
+    });
+    document.querySelectorAll("[data-page]").forEach(button => {
+      const selected = button.dataset.page === name;
+      button.setAttribute("aria-selected", String(selected));
+      button.tabIndex = selected ? 0 : -1;
+    });
+    if (name === "logs") {
+      loadLogs();
+      loadIntegrationLog();
     }
   }
 
@@ -497,10 +532,13 @@
   $("doh-save").addEventListener("click", () => saveSources("doh"));
   $("check-save").addEventListener("click", () => saveSources("checks"));
   $("run-tests").addEventListener("click", runTests);
-  $("integration-check").addEventListener("click", () => integrationAction("check"));
   $("integration-add").addEventListener("click", () => integrationAction("integrate"));
   $("integration-remove").addEventListener("click", () => integrationAction("remove"));
   $("refresh-logs").addEventListener("click", loadLogs);
+  $("refresh-integration-log").addEventListener("click", loadIntegrationLog);
+  document.querySelectorAll("[data-page]").forEach(button => {
+    button.addEventListener("click", () => activatePage(button.dataset.page));
+  });
   document.querySelectorAll("[data-default-section]").forEach(button => {
     button.addEventListener("click", () => resetConfigSection(button.dataset.defaultSection));
   });
@@ -511,5 +549,6 @@
     notice("doh-note", error.message, false);
     notice("check-note", error.message, false);
   });
+  loadIntegrationLog();
   window.setInterval(loadStatus, 15000);
 })();
