@@ -183,6 +183,22 @@ func TestWebUISourceEditorCommentsRowsAndValidatesBeforeWriting(t *testing.T) {
 	}
 }
 
+func TestWebUISourceRowsMarkSystemDNSAsProtectedAndEditable(t *testing.T) {
+	rows := parseWebUISourceRows([]byte("# id;url\nsystem-dns;\n# system-dns;\n# free-form comment\n"), 2, "id;url")
+	if len(rows) != 4 {
+		t.Fatalf("parsed %d rows, want 4", len(rows))
+	}
+	if !rows[1].System || !rows[1].Editable || !rows[1].Active {
+		t.Fatalf("active system DNS row was not identified: %+v", rows[1])
+	}
+	if !rows[2].System || !rows[2].Editable || rows[2].Active {
+		t.Fatalf("commented system DNS row was not identified as disabled: %+v", rows[2])
+	}
+	if rows[3].Editable || rows[3].Raw != "# free-form comment" {
+		t.Fatalf("free-form comment should remain read-only: %+v", rows[3])
+	}
+}
+
 func TestWebUISourceRowsPreserveHeaderComments(t *testing.T) {
 	rows := parseWebUISourceRows([]byte("# id;url — provider IDs remain stable\nalpha;https://dns.example/dns-query\n# beta;https://beta.example/dns-query\n"), 2, "id;url")
 	if len(rows) != 3 {
