@@ -78,6 +78,61 @@ type autoHostsProbeJob struct {
 }
 
 func (c *autoHostsController) runCycle(ctx context.Context, now time.Time) error {
+	endpoints, results, err := c.probeAll(ctx, now)
+	if err != nil { return err }
+	activeID, err := c.chooseActive(endpoints, results, now)
+	if err != nil { return err }
+	if err := c.manager.ApplyFullCycle(activeID, endpoints, results, now); err != nil { return err }
+	successCount := 0
+	for _, result := range results { if result.ServerID == activeID && result.Success { successCount++ } }
+	logLine("INFO", "AUTO_HOSTS cycle completed servers=%d pairs=%d active=%s active_domains=%d", len(endpoints), len(results), activeID, successCount)
+	return nil
+}
+
+type autoHostsDryRunPreview struct {
+	ActiveServer string `json:"active_server"`
+	EndpointIPv4 []string `json:"endpoint_ipv4,omitempty"`
+	EndpointIPv6 []string `json:"endpoint_ipv6,omitempty"`
+	Domains []string `json:"domains"`
+	Results []autohosts.ProbeResult `json:"results"`
+}
+
+func (c *autoHostsController) dryRunCycle(ctx context.Context, now time.Time) (autoHostsDryRunPreview, error) {
+	endpoints, results, err := c.probeAll(ctx, now)
+	if err != nil { return autoHostsDryRunPreview{}, err }
+	state := c.manager.State()
+	scores := make(map[string]int, len(endpoints))
+	for _, result := range results { if result.Success { scores[result.ServerID]++ } }
+	activeID := ""
+	if state.Config.Mode == "pinned" {
+		for _, endpoint := range endpoints { if endpoint.ServerID == state.Config.PinnedServerID { activeID = endpoint.ServerID; break } }
+		if activeID == "" { return autoHostsDryRunPreview{}, fmt.Errorf("pinned DoH server %q is not currently reachable/resolved", state.Config.PinnedServerID) }
+	} else {
+		bestScore := 0
+		for _, endpoint := range endpoints {
+			score := scores[endpoint.ServerID]
+			if score > bestScore || (score == bestScore && score > 0 && endpoint.ServerID == state.ActiveServer) {
+				activeID, bestScore = endpoint.ServerID, score
+			}
+		}
+		if activeID == "" {
+			for _, endpoint := range endpoints { if endpoint.ServerID == state.ActiveServer { activeID = endpoint.ServerID; break } }
+		}
+		if activeID == "" { activeID = endpoints[0].ServerID }
+	}
+	var activeEndpoint autohosts.Endpoint
+	for _, endpoint := range endpoints { if endpoint.ServerID == activeID { activeEndpoint = endpoint; break } }
+	activeResults := make([]autohosts.ProbeResult, 0, len(autoHostsDomains))
+	for _, result := range results { if result.ServerID == activeID { activeResults = append(activeResults, result) } }
+	proposed, err := c.manager.DryRun(activeID, activeEndpoint, activeResults, now)
+	if err != nil { return autoHostsDryRunPreview{}, err }
+	domains := make([]string, 0, len(proposed))
+	for domain := range proposed { domains = append(domains, domain) }
+	sort.Strings(domains)
+	return autoHostsDryRunPreview{ActiveServer:activeID, EndpointIPv4:append([]string(nil),activeEndpoint.IPv4...), EndpointIPv6:append([]string(nil),activeEndpoint.IPv6...), Domains:domains, Results:results}, nil
+}
+
+func (c *autoHostsController) probeAll(ctx context.Context, now time.Time) ([]autohosts.Endpoint, []autohosts.ProbeResult, error) {
 	s := c.runtime.currentSnapshot()
 	if s == nil { return errors.New("runtime snapshot is unavailable") }
 	jobs := make(chan autoHostsProbeJob)
@@ -150,16 +205,38 @@ func (c *autoHostsController) runCycle(ctx context.Context, now time.Time) error
 	results := make([]autohosts.ProbeResult, 0, len(jobList))
 	for result := range resultsCh { results = append(results, result) }
 
-	activeID, err := c.chooseActive(endpoints, results, now)
-	if err != nil { return err }
-	var activeEndpoint autohosts.Endpoint
-	for _, endpoint := range endpoints { if endpoint.ServerID == activeID { activeEndpoint = endpoint; break } }
-	if activeEndpoint.ServerID == "" { return fmt.Errorf("selected active endpoint %q is unavailable", activeID) }
-	if err := c.manager.ApplyFullCycle(activeID, endpoints, results, now); err != nil { return err }
-	successCount := 0
-	for _, result := range results { if result.ServerID == activeID && result.Success { successCount++ } }
-	logLine("INFO", "AUTO_HOSTS cycle completed servers=%d pairs=%d active=%s active_domains=%d", len(endpoints), len(results), activeID, successCount)
-	return nil
+	// Execute with a bounded worker pool to cap outbound requests.
+	jobList := make([]autoHostsProbeJob, 0, len(endpoints)*len(autoHostsDomains))
+	for _, ep := range endpoints {
+		upstream := s.upstreams[ep.ServerID]
+		for _, domain := range autoHostsDomains {
+			check := checks[domain]
+			check.Domain = domain
+			jobList = append(jobList, autoHostsProbeJob{serverID:ep.ServerID, upstream:upstream, domain:domain, check:check})
+		}
+	}
+	workerCount := autoHostsProbeWorkers
+	if workerCount > len(jobList) { workerCount = len(jobList) }
+	var wg sync.WaitGroup
+	for i:=0; i<workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				probeCtx, cancel := context.WithTimeout(ctx, autoHostsProbeTimeout)
+				result := c.probeDomain(probeCtx, job, now)
+				cancel()
+				resultsCh <- result
+			}
+		}()
+	}
+	for _, job := range jobList { jobs <- job }
+	close(jobs)
+	wg.Wait()
+	close(resultsCh)
+	results := make([]autohosts.ProbeResult, 0, len(jobList))
+	for result := range resultsCh { results = append(results, result) }
+	return endpoints, results, nil
 }
 
 func (c *autoHostsController) chooseActive(endpoints []autohosts.Endpoint, results []autohosts.ProbeResult, now time.Time) (string, error) {
