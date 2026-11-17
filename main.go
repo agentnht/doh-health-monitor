@@ -1641,7 +1641,7 @@ func localHostsResponseWithTTL(query []byte, host string, qtype uint16, hosts ma
 	if err != nil || questionEnd > len(query) {
 		return nil, false
 	}
-	opt := extractEDNSOPT(query)
+	opt := minimalResponseOPT(query)
 	flags := binary.BigEndian.Uint16(query[2:4])
 	responseFlags := (flags & 0x7900) | 0x8080 // preserve opcode/RD; set QR and RA; AD is deliberately clear
 	response := make([]byte, 12)
