@@ -59,6 +59,8 @@ IP сайта, который DoH-сервер возвращает при пр�
 | `elevenlabs.io` | ElevenLabs |
 | `grok.com` | Grok |
 | `www.perplexity.ai` | Perplexity |
+| `notebooklm.google.com` | NotebookLM |
+| `aistudio.google.com` | Google AI Studio |
 
 Именно этот набор используется как исходный список проверок для каждого настроенного DoH-сервера. Успешная проверка конкретной пары «DoH-сервер × домен» добавляет в Auto Hosts IP DoH-сервера и этот домен. Список должен оставаться редактируемым через `tst-domen.txt`/Web UI; новые домены добавляются явно, а не подбираются автоматически.
 
