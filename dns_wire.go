@@ -296,7 +296,6 @@ func decrementTTLs(p []byte, elapsed uint32) {
 	}
 }
 
-
 // negativeSOATTL returns the RFC 2308 negative-cache TTL from the authority
 // SOA: min(SOA RR TTL, SOA.MINIMUM). It returns false when no usable SOA exists.
 func negativeSOATTL(packet []byte) (uint32, bool) {
