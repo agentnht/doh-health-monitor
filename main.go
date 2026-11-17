@@ -403,6 +403,10 @@ func main() {
 		fatal("create data dir: %v", err)
 	}
 	_ = os.Chmod(dataDir, 0700)
+	autoHostsAPIToken, err := loadOrCreateAutoHostsAPIToken(dataDir)
+	if err != nil {
+		fatal("AUTO_HOSTS API token initialization failed: %v", err)
+	}
 	logLine("INFO", "START id=%s version=%s arch=%s data=%s", envOr("LUCX_PLUGIN_ID", pluginID), envOr("LUCX_PLUGIN_VERSION", pluginVersion), runtime.GOARCH, dataDir)
 
 	configPath := filepath.Join(dataDir, "config.json")
@@ -467,9 +471,9 @@ func main() {
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	httpMux.HandleFunc("/status", rt.handleStatus)
-	httpMux.HandleFunc("/autohosts/status", rt.handleAutoHostsStatus)
-	httpMux.HandleFunc("/autohosts/config", rt.handleAutoHostsConfig)
-	httpMux.HandleFunc("/autohosts/dry-run", rt.handleAutoHostsDryRun)
+	httpMux.HandleFunc("/autohosts/status", requireAutoHostsAPIToken(autoHostsAPIToken, rt.handleAutoHostsStatus))
+	httpMux.HandleFunc("/autohosts/config", requireAutoHostsAPIToken(autoHostsAPIToken, rt.handleAutoHostsConfig))
+	httpMux.HandleFunc("/autohosts/dry-run", requireAutoHostsAPIToken(autoHostsAPIToken, rt.handleAutoHostsDryRun))
 	httpSrv := &http.Server{Addr: cfg.HTTPListen, Handler: httpMux, ReadHeaderTimeout: 3 * time.Second}
 	httpLn, err := net.Listen("tcp", cfg.HTTPListen)
 	if err != nil {
