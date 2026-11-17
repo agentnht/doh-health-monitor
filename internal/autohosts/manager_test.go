@@ -74,3 +74,16 @@ func TestFullCyclePersistsAllServerDomainPairsButPublishesOnlyActive(t *testing.
 	if _, ok := state.Domains["claude.ai"]; ok { t.Fatal("inactive server's successful domain must not be published") }
 	if _, ok := state.Endpoints["b"]; !ok { t.Fatal("inactive endpoint missing from state") }
 }
+
+
+func TestEndpointFreshnessExpiresIndependentlyFromDomainGrace(t *testing.T) {
+	now := time.Now().UTC()
+	m, err := New(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil { t.Fatal(err) }
+	ep := Endpoint{ServerID:"edge", URL:"https://dns.example/dns-query", Hostname:"dns.example", IPv4:[]string{"8.8.8.8"}, UpdatedAt:now.Add(-25*time.Hour)}
+	if err := m.ApplyCycle("edge", ep, []ProbeResult{{Domain:"chatgpt.com",Success:true,CheckedAt:now}}, now); err != nil { t.Fatal(err) }
+	if err := m.SetEnabled(true); err != nil { t.Fatal(err) }
+	if _,_,matched := m.Snapshot().Lookup("chatgpt.com",1,now); matched {
+		t.Fatal("stale DoH endpoint IP must not be published even while domain grace is valid")
+	}
+}
