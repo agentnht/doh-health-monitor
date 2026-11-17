@@ -79,7 +79,7 @@ func TestWebUIConfigAPIUpdatesValidatedSettingsAndDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	save, cookie = newAuthenticatedWebUIRequest(t, handler, cookie, http.MethodPost, "/api/v1/config", body)
+	save, cookie := newAuthenticatedWebUIRequest(t, handler, cookie, http.MethodPost, "/api/v1/config", body)
 	if save.Code != http.StatusOK {
 		t.Fatalf("POST config status=%d body=%s", save.Code, save.Body.String())
 	}
@@ -91,7 +91,7 @@ func TestWebUIConfigAPIUpdatesValidatedSettingsAndDefaults(t *testing.T) {
 		t.Fatalf("saved health timeout=%d, want 9", config.Health.TimeoutSeconds)
 	}
 
-	reset, cookie = newAuthenticatedWebUIRequest(t, handler, cookie, http.MethodPost, "/api/v1/config/defaults", []byte(`{"section":"health"}`))
+	reset, cookie := newAuthenticatedWebUIRequest(t, handler, cookie, http.MethodPost, "/api/v1/config/defaults", []byte(`{"section":"health"}`))
 	if reset.Code != http.StatusOK {
 		t.Fatalf("reset health status=%d body=%s", reset.Code, reset.Body.String())
 	}
