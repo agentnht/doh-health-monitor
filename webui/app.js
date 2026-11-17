@@ -131,6 +131,22 @@
   async function runAutoHostsDryRun() {
     const p = await api("/api/v1/autohosts/dry-run", {method:"POST", body:"{}"}); $("autohosts-preview").textContent = JSON.stringify(p, null, 2);
   }
+  async function bootstrapSession() {
+    const fragment = new URLSearchParams(window.location.hash.slice(1));
+    const launchToken = fragment.get("access_token");
+    if (!launchToken) return;
+    // Remove the secret before any other navigation, fetch, or page activity.
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    const response = await fetch("/session/exchange", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: launchToken }),
+      cache: "no-store",
+      credentials: "same-origin"
+    });
+    if (!response.ok) throw new Error("Web UI launch token expired or already used (HTTP " + response.status + ")");
+  }
+
   async function loadStatus() {
     $("refresh").disabled = true;
     text("updated", "Загрузка…");
@@ -628,14 +644,22 @@
     button.addEventListener("click", () => resetConfigSection(button.dataset.defaultSection));
   });
 
-  loadStatus();
-  loadConfig().catch(error => notice("config-note", error.message, false));
-  loadSources().catch(error => {
-    notice("doh-note", error.message, false);
-    notice("check-note", error.message, false);
-  });
-  loadIntegrationLog();
-  loadAutoHosts().catch(e => notice("autohosts-note", e.message, false));
-  window.setInterval(loadStatus, 15000);
-  window.setInterval(() => { if (autoHostsState) loadAutoHosts().catch(() => {}); }, 30000);
+  (async () => {
+    try {
+      await bootstrapSession();
+      loadStatus();
+      loadConfig().catch(error => notice("config-note", error.message, false));
+      loadSources().catch(error => {
+        notice("doh-note", error.message, false);
+        notice("check-note", error.message, false);
+      });
+      loadIntegrationLog();
+      loadAutoHosts().catch(e => notice("autohosts-note", e.message, false));
+      window.setInterval(loadStatus, 15000);
+      window.setInterval(() => { if (autoHostsState) loadAutoHosts().catch(() => {}); }, 30000);
+    } catch (error) {
+      text("daemon", "Ошибка входа");
+      notice("config-note", error.message, false);
+    }
+  })();
 })();
