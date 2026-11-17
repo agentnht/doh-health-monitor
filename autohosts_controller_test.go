@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"net"
+	"net/url"
 	"path/filepath"
 	"testing"
 	"time"
@@ -53,5 +54,23 @@ func TestAutoHostsJitterIsBounded(t *testing.T) {
 		if got < base*95/100 || got > base*105/100 {
 			t.Fatalf("jitter outside ±5%%: base=%s got=%s",base,got)
 		}
+	}
+}
+
+
+func TestAutoHostsProbeURLRejectsNonHTTPSAndNon443Ports(t *testing.T) {
+	cases:=[]struct{raw,domain string; want bool}{
+		{"https://chatgpt.com/","chatgpt.com",true},
+		{"https://chatgpt.com:443/","chatgpt.com",true},
+		{"https://chatgpt.com:8443/","chatgpt.com",false},
+		{"http://chatgpt.com/","chatgpt.com",false},
+		{"https://evil.example/","chatgpt.com",false},
+		{"https://user:pass@chatgpt.com/","chatgpt.com",false},
+		{"https://chatgpt.com./","chatgpt.com",true},
+	}
+	for _,tc:=range cases {
+		parsed,err:=url.Parse(tc.raw)
+		if err!=nil { t.Fatalf("parse %q: %v",tc.raw,err) }
+		if got:=validAutoHostsProbeURL(parsed,tc.domain);got!=tc.want { t.Errorf("validAutoHostsProbeURL(%q)=%v want %v",tc.raw,got,tc.want) }
 	}
 }
