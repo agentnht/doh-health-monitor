@@ -183,6 +183,25 @@ func (s *Snapshot) Lookup(qname string,qtype uint16,now time.Time)([]string,time
  }
  return nil,0,false
 }
+func (m *Manager) Configure(enabled, emergencyOff *bool, pinnedServerID *string) error {
+	return m.update(func(s *State) error {
+		if enabled != nil { s.Config.Enabled = *enabled }
+		if emergencyOff != nil { s.Config.EmergencyOff = *emergencyOff }
+		if pinnedServerID != nil {
+			id := strings.TrimSpace(*pinnedServerID)
+			if id == "" {
+				s.Config.Mode = "auto"
+				s.Config.PinnedServerID = ""
+			} else {
+				if _, ok := s.Endpoints[id]; !ok { return fmt.Errorf("unknown DoH server %q", id) }
+				s.Config.Mode = "pinned"
+				s.Config.PinnedServerID = id
+			}
+		}
+		return nil
+	})
+}
+
 func (m *Manager) SetEnabled(v bool)error{return m.update(func(s *State)error{s.Config.Enabled=v;return nil})}
 func (m *Manager) SetEmergencyOff(v bool)error{return m.update(func(s *State)error{s.Config.EmergencyOff=v;return nil})}
 func (m *Manager) SetPinned(id string)error{return m.update(func(s *State)error{
