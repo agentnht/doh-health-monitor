@@ -107,7 +107,7 @@ ensure_dhm_symlink() {
   fi
 
   if ! chmod 0755 "$MANAGEMENT_SCRIPT_PATH"; then
-    printf '[WARN] Не удалось сделать локальный скрипт исполняемым: %s\\n' "$MANAGEMENT_SCRIPT_PATH" >&2
+    printf '[WARN] Не удалось сделать локальный скрипт исполняемым: %s\n' "$MANAGEMENT_SCRIPT_PATH" >&2
     return 0
   fi
 
@@ -188,7 +188,7 @@ run_plugin_action() {
 
 run_check() {
   local tmp="" checker_file="" cleanup_tmp=0 rc
-  printf 'Проверка состояния плагина через Go read-only command...\\n'
+  printf 'Проверка состояния плагина через Go read-only command...\n'
   if ! "$PLUGIN_BIN" check; then
     fail "Go-проверка плагина завершилась с ошибкой."
     return 1
@@ -221,7 +221,7 @@ run_check() {
     fi
   fi
 
-  printf 'Проверка выполняется в режиме read-only; конфигурация Xray не изменяется.\\n'
+  printf 'Проверка выполняется в режиме read-only; конфигурация Xray не изменяется.\n'
   if DOH_SKIP_PLUGIN_HEALTH_CHECK=1 bash "$checker_file"; then
     rc=0
   else
