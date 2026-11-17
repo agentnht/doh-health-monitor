@@ -3,6 +3,7 @@ package autohosts
 import (
  "errors"
  "path/filepath"
+ "sync"
  "testing"
  "time"
 )
@@ -137,4 +138,45 @@ func TestEndpointWithoutResolutionTimestampIsNeverPublished(t *testing.T) {
 	if ips,_,matched:=m.Snapshot().Lookup("chatgpt.com",1,now);matched||len(ips)!=0 {
 		t.Fatalf("endpoint without a successful resolution timestamp must not be published: ips=%v matched=%v",ips,matched)
 	}
+}
+
+
+func TestConcurrentSnapshotReadsAndAtomicCycles(t *testing.T) {
+	path:=filepath.Join(t.TempDir(),"state.json")
+	m,err:=New(path)
+	if err!=nil { t.Fatal(err) }
+	now:=time.Now().UTC()
+	ep:=Endpoint{ServerID:"edge",URL:"https://dns.example/dns-query",Hostname:"dns.example",IPv4:[]string{"8.8.8.8"},UpdatedAt:now}
+	if err=m.ApplyCycle("edge",ep,[]ProbeResult{{Domain:"chatgpt.com",Success:true,CheckedAt:now}},now);err!=nil { t.Fatal(err) }
+	if err=m.SetEnabled(true);err!=nil { t.Fatal(err) }
+	var wg sync.WaitGroup
+	errs:=make(chan error,9)
+	for reader:=0;reader<8;reader++ {
+		wg.Add(1)
+		go func(){
+			defer wg.Done()
+			for i:=0;i<100;i++ {
+				snapshot:=m.Snapshot()
+				if snapshot==nil { errs<-errors.New("snapshot unexpectedly nil");return }
+				_,_,_=snapshot.Lookup("chatgpt.com",1,time.Now().UTC())
+				_ = m.State()
+			}
+		}()
+	}
+	wg.Add(1)
+	go func(){
+		defer wg.Done()
+		for i:=0;i<40;i++ {
+			at:=now.Add(time.Duration(i)*time.Second)
+			next:=ep
+			next.UpdatedAt=at
+			if err:=m.ApplyCycle("edge",next,[]ProbeResult{{Domain:"chatgpt.com",Success:true,CheckedAt:at}},at);err!=nil { errs<-err;return }
+		}
+	}()
+	wg.Wait()
+	close(errs)
+	for err:=range errs { t.Error(err) }
+	reloaded,err:=New(path)
+	if err!=nil { t.Fatal(err) }
+	if reloaded.Snapshot()==nil||reloaded.Snapshot().ActiveServer!="edge" { t.Fatal("atomic cycle state was not restored after concurrent reads") }
 }
