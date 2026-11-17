@@ -1716,6 +1716,10 @@ const localHostsTTL uint32 = 60
 // localHostsResponse handles only explicitly configured hosts and the A, AAAA,
 // SVCB and HTTPS RR types. A nil/empty map leaves normal DoH processing untouched.
 func localHostsResponse(query []byte, host string, qtype uint16, hosts map[string]LocalHost) ([]byte, bool) {
+	return localHostsResponseWithTTL(query, host, qtype, hosts, localHostsTTL)
+}
+
+func localHostsResponseWithTTL(query []byte, host string, qtype uint16, hosts map[string]LocalHost, ttl uint32) ([]byte, bool) {
 	entry, ok := hosts[normalizeDomain(host)]
 	_, _, questionEnd, questionErr := parseQuestion(query)
 	if !ok || questionErr != nil || questionEnd < 2 || binary.BigEndian.Uint16(query[questionEnd-2:questionEnd]) != 1 ||
@@ -1741,7 +1745,7 @@ func localHostsResponse(query []byte, host string, qtype uint16, hosts map[strin
 			if ip == nil {
 				continue
 			}
-			response = appendLocalHostRR(response, qtype, ip)
+			response = appendLocalHostRRWithTTL(response, qtype, ip, ttl)
 			answers++
 		}
 	} else if qtype == 28 {
@@ -1756,7 +1760,7 @@ func localHostsResponse(query []byte, host string, qtype uint16, hosts map[strin
 	}
 	binary.BigEndian.PutUint16(response[6:8], uint16(answers))
 	if answers == 0 {
-		response = appendLocalHostSOA(response)
+		response = appendLocalHostSOAWithTTL(response, ttl)
 		binary.BigEndian.PutUint16(response[8:10], 1)
 	}
 	if len(opt) > 0 {
@@ -1775,7 +1779,7 @@ func autoHostsResponse(query []byte, host string, qtype uint16, manager *autohos
 	if snapshot == nil {
 		return nil, false
 	}
-	ips, _, matched := snapshot.Lookup(host, qtype, time.Now())
+	ips, ttlDuration, matched := snapshot.Lookup(host, qtype, time.Now())
 	if !matched {
 		return nil, false
 	}
@@ -1785,29 +1789,39 @@ func autoHostsResponse(query []byte, host string, qtype uint16, manager *autohos
 	} else if qtype == 28 {
 		entry.IPv6 = ips
 	}
-	return localHostsResponse(query, host, qtype, map[string]LocalHost{normalizeDomain(host): entry})
+	ttl := uint32(ttlDuration / time.Second)
+	if ttl == 0 { ttl = 1 }
+	return localHostsResponseWithTTL(query, host, qtype, map[string]LocalHost{normalizeDomain(host): entry}, ttl)
 }
 
 func appendLocalHostRR(packet []byte, qtype uint16, ip []byte) []byte {
-	packet = append(packet, 0xc0, 0x0c) // owner name points to QNAME
+	return appendLocalHostRRWithTTL(packet, qtype, ip, localHostsTTL)
+}
+
+func appendLocalHostRRWithTTL(packet []byte, qtype uint16, ip []byte, ttlValue uint32) []byte {
+	packet = append(packet, 0xc0, 0x0c)
 	packet = append(packet, byte(qtype>>8), byte(qtype), 0, 1)
 	var ttl [4]byte
-	binary.BigEndian.PutUint32(ttl[:], localHostsTTL)
+	binary.BigEndian.PutUint32(ttl[:], ttlValue)
 	packet = append(packet, ttl[:]...)
 	packet = append(packet, byte(len(ip)>>8), byte(len(ip)))
 	return append(packet, ip...)
 }
 
 func appendLocalHostSOA(packet []byte) []byte {
-	packet = append(packet, 0xc0, 0x0c) // SOA owner name
+	return appendLocalHostSOAWithTTL(packet, localHostsTTL)
+}
+
+func appendLocalHostSOAWithTTL(packet []byte, ttlValue uint32) []byte {
+	packet = append(packet, 0xc0, 0x0c)
 	packet = append(packet, 0, 6, 0, 1)
 	var ttl [4]byte
-	binary.BigEndian.PutUint32(ttl[:], localHostsTTL)
+	binary.BigEndian.PutUint32(ttl[:], ttlValue)
 	packet = append(packet, ttl[:]...)
 	soa := make([]byte, 0, 64)
 	soa = appendDNSName(soa, "ns.local-hosts.invalid")
 	soa = appendDNSName(soa, "hostmaster.local-hosts.invalid")
-	for _, value := range []uint32{1, localHostsTTL, localHostsTTL, localHostsTTL, localHostsTTL} {
+	for _, value := range []uint32{1, ttlValue, ttlValue, ttlValue, ttlValue} {
 		var raw [4]byte
 		binary.BigEndian.PutUint32(raw[:], value)
 		soa = append(soa, raw[:]...)
