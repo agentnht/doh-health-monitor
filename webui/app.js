@@ -524,7 +524,10 @@
     }
   }
 
-  $("refresh").addEventListener("click", loadStatus);
+  $("refresh").addEventListener("click", () => {
+    loadStatus();
+    loadConfig().catch(error => notice("config-note", error.message, false));
+  });
   $("save-config").addEventListener("click", saveConfig);
   $("save-gemini-key").addEventListener("click", saveGeminiKey);
   $("doh-add").addEventListener("click", () => addSourceRow("doh"));
