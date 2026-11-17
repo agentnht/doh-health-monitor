@@ -621,7 +621,7 @@ func TestDefaultConfigUsesSystemDNSFirstAndDoHProviders(t *testing.T) {
 	}
 }
 
-func TestNormalizeConfigAddsSystemDNSFirstToLegacyConfig(t *testing.T) {
+func TestNormalizeConfigDoesNotReAddDisabledSystemDNS(t *testing.T) {
 	c := defaultConfig()
 	filtered := c.Upstreams[:0]
 	for _, upstream := range c.Upstreams {
@@ -638,14 +638,18 @@ func TestNormalizeConfigAddsSystemDNSFirstToLegacyConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(normalized.Upstreams) != len(c.Upstreams)+1 {
-		t.Fatalf("upstream count = %d, want %d", len(normalized.Upstreams), len(c.Upstreams)+1)
+	if len(normalized.Upstreams) != len(c.Upstreams) {
+		t.Fatalf("upstream count = %d, want unchanged count %d", len(normalized.Upstreams), len(c.Upstreams))
 	}
-	if normalized.Upstreams[0].ID != systemDNSUpstreamID || normalized.Upstreams[0].Type != "system" {
-		t.Fatalf("first normalized upstream = %+v, want system DNS", normalized.Upstreams[0])
+	for _, upstream := range normalized.Upstreams {
+		if upstream.ID == systemDNSUpstreamID {
+			t.Fatal("normalizer re-added disabled system-dns")
+		}
 	}
-	if normalized.Groups[0].Upstreams[0] != systemDNSUpstreamID {
-		t.Fatalf("first group upstream = %q, want %q", normalized.Groups[0].Upstreams[0], systemDNSUpstreamID)
+	for _, id := range normalized.Groups[0].Upstreams {
+		if id == systemDNSUpstreamID {
+			t.Fatal("normalizer re-added disabled system-dns to the Google group")
+		}
 	}
 }
 
