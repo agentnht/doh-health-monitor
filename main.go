@@ -276,6 +276,12 @@ type Event struct {
 	Time   json.RawMessage `json:"time"`
 	Data   json.RawMessage `json:"data"`
 }
+type cacheFlight struct {
+	done   chan struct{}
+	packet []byte
+	err    error
+}
+
 type cacheItem struct {
 	packet     []byte
 	expires    time.Time
@@ -305,6 +311,7 @@ type Runtime struct {
 	upstreamCooldown map[string]time.Time
 	cacheMu        sync.Mutex
 	cache          map[string]cacheItem
+	cacheFlights   map[string]*cacheFlight
 	cacheOrder     []cacheOrderEntry
 	cacheOrderHead int
 	cacheBytes     int
@@ -1719,14 +1726,22 @@ func (r *Runtime) handleDNS(packet []byte) []byte {
 			return v
 		}
 	}
-	resp, uid, e := r.query(context.Background(), packet)
+	resolve := func() ([]byte, error) {
+		response, _, queryErr := r.query(context.Background(), packet)
+		if queryErr == nil && s.cfg.Cache.Enabled {
+			r.cachePut(cacheKey, response, s.cfg.Cache)
+		}
+		return response, queryErr
+	}
+	var resp []byte
+	if s.cfg.Cache.Enabled {
+		resp, e = r.cacheDo(cacheKey, packetID(packet), resolve)
+	} else {
+		resp, e = resolve()
+	}
 	if e != nil {
 		return servfailResponse(packet)
 	}
-	if s.cfg.Cache.Enabled {
-		r.cachePut(cacheKey, resp, s.cfg.Cache)
-	}
-	_ = uid // avoid a log entry for every successful DNS query
 	return resp
 }
 
@@ -1907,6 +1922,32 @@ func (r *Runtime) deleteCacheEntryLocked(key string, item cacheItem) {
 	}
 }
 
+func (r *Runtime) cacheDo(key string, id uint16, resolve func() ([]byte, error)) ([]byte, error) {
+	r.cacheMu.Lock()
+	if flight := r.cacheFlights[key]; flight != nil {
+		r.cacheMu.Unlock()
+		<-flight.done
+		if flight.err != nil { return nil, flight.err }
+		if cached, ok := r.cacheGet(key, id); ok { return cached, nil }
+		response := append([]byte(nil), flight.packet...)
+		if len(response) >= 2 { binary.BigEndian.PutUint16(response[:2], id) }
+		return response, nil
+	}
+	if r.cacheFlights == nil { r.cacheFlights = make(map[string]*cacheFlight) }
+	flight := &cacheFlight{done: make(chan struct{})}
+	r.cacheFlights[key] = flight
+	r.cacheMu.Unlock()
+
+	response, err := resolve()
+	r.cacheMu.Lock()
+	flight.packet = append([]byte(nil), response...)
+	flight.err = err
+	delete(r.cacheFlights, key)
+	close(flight.done)
+	r.cacheMu.Unlock()
+	return response, err
+}
+
 func (r *Runtime) cacheGet(key string, id uint16) ([]byte, bool) {
 	r.cacheMu.Lock()
 	defer r.cacheMu.Unlock()
@@ -1961,7 +2002,9 @@ func (r *Runtime) cachePut(key string, packet []byte, c CacheConfig) {
 	}
 	ttl, ok := minResponseTTL(packet)
 	if !ok {
-		if dnsRCode(packet) == 3 {
+		// NXDOMAIN and NOERROR/NODATA are negative answers. Use the
+		// configured negative TTL when the response has no SOA TTL to derive.
+		if dnsRCode(packet) == 3 || (dnsRCode(packet) == 0 && dnsAnswerCount(packet) == 0) {
 			ttl = uint32(c.NegativeTTL)
 		} else {
 			return
