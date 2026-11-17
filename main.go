@@ -2786,6 +2786,18 @@ func (r *Runtime) reloadLoop(ctx context.Context) {
 		default:
 		}
 		logLine("INFO", "CONFIG reloaded upstreams=%d groups=%d checks=%d sources_sha256=%s", len(cfg.Upstreams), len(cfg.Groups), len(sources.Checks), sources.Checksums.Combined)
+		r.triggerAutoHostsConfigReload()
+	}
+}
+
+
+func (r *Runtime) triggerAutoHostsConfigReload() {
+	if r.autoHosts == nil || r.autoController == nil {
+		return
+	}
+	state := r.autoHosts.State()
+	if state.Config.Enabled && !state.Config.EmergencyOff {
+		r.autoController.Trigger()
 	}
 }
 
