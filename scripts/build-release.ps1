@@ -20,7 +20,7 @@ if ($LASTEXITCODE) { throw 'go test failed' }
 
 $stage = Join-Path $root "dist/stage"
 if (Test-Path $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
-New-Item -ItemType Directory -Force "$stage/bin" | Out-Null
+New-Item -ItemType Directory -Force "$stage/bin", "$stage/scripts" | Out-Null
 
 $env:GOOS = 'linux'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
 go build -trimpath -ldflags '-s -w' -o "$stage/bin/$id" .
@@ -28,6 +28,7 @@ if ($LASTEXITCODE) { throw 'go build failed' }
 Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED
 
 Copy-Item manifest.json $stage
+Copy-Item scripts/plugin-management.sh, scripts/check-dns-integration.sh "$stage/scripts/"
 
 $zip = Join-Path $root "dist/$id-v$version.zip"
 if (Test-Path $zip) { Remove-Item -LiteralPath $zip -Force }
