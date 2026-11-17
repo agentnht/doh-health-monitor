@@ -1967,6 +1967,24 @@ func TestCNAMEChainIntoAutoHostsFailsClosed(t *testing.T) {
 	if !cnameChainTargetsAutoHosts(response, "alias.example", 1, manager) {
 		t.Fatal("CNAME into Auto Hosts must be detected and blocked")
 	}
+	// Exercise the real DNS cache-hit path: the response must be replaced by
+	// SERVFAIL rather than returning the protected target's real address.
+	runtime := &Runtime{
+		autoHosts: manager,
+		dnsSem:    make(chan struct{}, 1),
+		cache:     make(map[string]cacheItem),
+	}
+	runtime.snapshot.Store(&Snapshot{
+		cfg:        Config{Cache: CacheConfig{Enabled: true, MinTTL: 1, MaxTTL: 120, NegativeTTL: 30, MaxEntries: 8, MaxBytes: 4096}},
+		localHosts: map[string]LocalHost{},
+		upstreams:  map[string]*UpstreamRuntime{},
+		groups:     map[string]Group{},
+	})
+	runtime.cachePut(cacheKey(query), response, runtime.currentSnapshot().cfg.Cache)
+	got := runtime.handleDNS(query)
+	if dnsRCode(got) != 2 {
+		t.Fatalf("CNAME into Auto Hosts must fail closed, got RCODE=%d", dnsRCode(got))
+	}
 }
 
 func TestNegativeSOATTLUsesRFC2308Minimum(t *testing.T) {
