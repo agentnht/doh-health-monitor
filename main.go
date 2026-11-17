@@ -1448,7 +1448,13 @@ func (r *Runtime) query(ctx context.Context, packet []byte) ([]byte, string, err
 	var errs []string
 	var lastDNSResponse []byte
 	var lastDNSUpstream string
-	attemptTimeout := time.Duration(s.cfg.DoHTimeoutSeconds) * time.Second
+	attemptTimeout := minDuration(
+		time.Duration(s.cfg.DoHTimeoutSeconds)*time.Second,
+		time.Duration(s.cfg.DNSQueryTimeoutSeconds)*time.Second,
+	)
+	// Keep fallback attempts independent, but cap one client query to four
+	// upstreams so a large configuration cannot multiply worst-case latency.
+	if len(order) > 4 { order = order[:4] }
 	for _, uid := range order {
 		u := s.upstreams[uid]
 		if u == nil {
@@ -1713,9 +1719,7 @@ func (r *Runtime) handleDNS(packet []byte) []byte {
 			return v
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(s.cfg.DNSQueryTimeoutSeconds)*time.Second)
-	defer cancel()
-	resp, uid, e := r.query(ctx, packet)
+	resp, uid, e := r.query(context.Background(), packet)
 	if e != nil {
 		return servfailResponse(packet)
 	}
