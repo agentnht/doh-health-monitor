@@ -107,14 +107,22 @@ func readAutoHostsAPIToken(dataDir string) (string, error) {
 	return token, nil
 }
 
+func bearerToken(header string) (string, bool) {
+	parts := strings.Fields(header)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || parts[1] == "" {
+		return "", false
+	}
+	return parts[1], true
+}
+
 func requireAutoHostsAPIToken(token string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !isLoopbackWebHost(r.Host) || !validWebUIOrigin(r) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		provided := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-		if provided == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
+		provided, ok := bearerToken(r.Header.Get("Authorization"))
+		if !ok || subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
 		}
@@ -233,7 +241,12 @@ func newWebUIHandlerWithDataDir(statusURL, sessionToken, dataDir string) http.Ha
 				http.Error(w, "authentication required", http.StatusUnauthorized)
 				return
 			}
-			status, err := fetchWebUIStatus(r.Context(), statusURL)
+			apiToken, tokenErr := readAutoHostsAPIToken(dataDir)
+			if tokenErr != nil && strings.TrimSpace(dataDir) != "" {
+				http.Error(w, "local status authentication is unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			status, err := fetchWebUIStatus(r.Context(), statusURL, apiToken)
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json; charset=utf-8")
 				w.WriteHeader(http.StatusServiceUnavailable)
@@ -420,7 +433,7 @@ func webUIStatusURLFromConfig() (string, error) {
 	return "http://" + net.JoinHostPort(host, port) + "/status", nil
 }
 
-func fetchWebUIStatus(ctx context.Context, statusURL string) (webUIStatus, error) {
+func fetchWebUIStatus(ctx context.Context, statusURL string, tokens ...string) (webUIStatus, error) {
 	parsed, err := url.Parse(statusURL)
 	if err != nil || parsed.Scheme != "http" || parsed.User != nil || parsed.Host == "" ||
 		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path != "/status" ||
@@ -435,6 +448,9 @@ func fetchWebUIStatus(ctx context.Context, statusURL string) (webUIStatus, error
 		return webUIStatus{}, err
 	}
 	req.Header.Set("Accept", "application/json")
+	if len(tokens) > 0 && tokens[0] != "" {
+		req.Header.Set("Authorization", "Bearer "+tokens[0])
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return webUIStatus{}, err
