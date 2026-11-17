@@ -182,3 +182,27 @@ func TestDirectDoHProbeUsesTLSPostDNSMessage(t *testing.T) {
 	if err!=nil { t.Fatalf("direct DoH request failed: %v",err) }
 	if !bytes.Equal(got,response) { t.Fatal("direct DoH response differs from DNS response payload") }
 }
+
+
+func TestPinnedHTTPSProbeRejectsUntrustedCertificate(t *testing.T) {
+	key,err:=ecdsa.GenerateKey(elliptic.P256(),rand.Reader)
+	if err!=nil { t.Fatal(err) }
+	now:=time.Now()
+	template:=&x509.Certificate{SerialNumber:big.NewInt(43),Subject:pkix.Name{CommonName:"probe.example"},DNSNames:[]string{"probe.example"},NotBefore:now.Add(-time.Minute),NotAfter:now.Add(time.Hour),KeyUsage:x509.KeyUsageDigitalSignature,ExtKeyUsage:[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	der,err:=x509.CreateCertificate(rand.Reader,template,template,&key.PublicKey,key)
+	if err!=nil { t.Fatal(err) }
+	keyDER,err:=x509.MarshalECPrivateKey(key)
+	if err!=nil { t.Fatal(err) }
+	cert,err:=tls.X509KeyPair(pem.EncodeToMemory(&pem.Block{Type:"CERTIFICATE",Bytes:der}),pem.EncodeToMemory(&pem.Block{Type:"EC PRIVATE KEY",Bytes:keyDER}))
+	if err!=nil { t.Fatal(err) }
+	listener,err:=net.Listen("tcp","127.0.0.1:0")
+	if err!=nil { t.Fatal(err) }
+	server:=&http.Server{TLSConfig:&tls.Config{Certificates:[]tls.Certificate{cert}},Handler:http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){w.WriteHeader(http.StatusOK)})}
+	go func(){ _=server.Serve(tls.NewListener(listener,server.TLSConfig)) }()
+	defer func(){ctx,cancel:=context.WithTimeout(context.Background(),time.Second);defer cancel();_ = server.Shutdown(ctx)}()
+	port:=listener.Addr().(*net.TCPAddr).Port
+	client:=newPinnedHTTPClient("127.0.0.1","probe.example",2*time.Second)
+	defer client.CloseIdleConnections()
+	_,err=client.Get("https://probe.example:"+fmt.Sprint(port)+"/")
+	if err==nil { t.Fatal("expected self-signed certificate to be rejected without a trusted root") }
+}
