@@ -106,6 +106,11 @@ ensure_dhm_symlink() {
     return 0
   fi
 
+  if ! chmod 0755 "$MANAGEMENT_SCRIPT_PATH"; then
+    printf '[WARN] Не удалось сделать локальный скрипт исполняемым: %s\\n' "$MANAGEMENT_SCRIPT_PATH" >&2
+    return 0
+  fi
+
   if [[ -L "$DHM_SYMLINK_PATH" ]]; then
     current_target="$(readlink -f -- "$DHM_SYMLINK_PATH" 2>/dev/null || true)"
     if [[ "$current_target" == "$MANAGEMENT_SCRIPT_PATH" ]]; then
