@@ -273,6 +273,17 @@ func (m *Manager) ApplyFullCycle(activeID string, endpoints []Endpoint, results 
 				delete(s.ProbeResults, key)
 			}
 		}
+		for len(s.ProbeResults) > maxStoredProbeResults {
+			oldestKey := ""
+			var oldest time.Time
+			for key, result := range s.ProbeResults {
+				if oldestKey == "" || result.CheckedAt.Before(oldest) {
+					oldestKey, oldest = key, result.CheckedAt
+				}
+			}
+			if oldestKey == "" { break }
+			delete(s.ProbeResults, oldestKey)
+		}
 		return nil
 	})
 }
