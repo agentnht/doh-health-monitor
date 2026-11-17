@@ -141,7 +141,7 @@ func TestWebUIStatusAPIRequiresSessionAndReturnsSanitizedStatus(t *testing.T) {
 	}
 	for _, want := range []string{
 		"\"success_streak\":4", "\"failure_streak\":0",
-		"\"last_check\":\"2026-11-16T10:00:00Z\"", "\"latency_ms\":946",
+		"\"last_check\":\"2026-11-16T10:00:00Z\"", "\"check_duration_ms\":946",
 		"\"domain\":\"health.example\"", "\"dns_ok\":true",
 		"\"http_checked\":true", "\"http_ok\":true", "\"http_status\":204",
 	} {
