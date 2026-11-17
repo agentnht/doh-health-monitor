@@ -106,8 +106,10 @@ func (c *autoHostsController) runCycle(ctx context.Context, now time.Time) error
 	if err != nil { return err }
 	if err := c.manager.ApplyFullCycle(activeID, endpoints, results, now); err != nil { return err }
 	successCount := 0
-	for _, result := range results { if result.ServerID == activeID && result.Success { successCount++ } }
-	logLine("INFO", "AUTO_HOSTS cycle completed servers=%d pairs=%d active=%s active_domains=%d", len(endpoints), len(results), activeID, successCount)
+	totalSuccess := 0
+	for _, result := range results { if result.Success { totalSuccess++ }; if result.ServerID == activeID && result.Success { successCount++ } }
+	logLine("INFO", "AUTO_HOSTS cycle completed servers=%d pairs=%d active=%s active_domains=%d total_success=%d", len(endpoints), len(results), activeID, successCount, totalSuccess)
+	if totalSuccess == 0 { return errors.New("all DoH server/domain probes failed") }
 	return nil
 }
 
