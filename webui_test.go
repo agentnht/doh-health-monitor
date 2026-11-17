@@ -64,6 +64,16 @@ func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 		t.Fatal("dashboard sections must be ordered: DNS listeners, resources, upstream groups")
 	}
 
+	if got := strings.Count(page, `aria-expanded="false"`); got != 5 {
+		t.Fatalf("all five section buttons must start collapsed, got %d collapsed buttons", got)
+	}
+	if got := strings.Count(page, `<section class="panel tab-page`); got != 6 {
+		t.Fatalf("all section panels, including both log panels, must start hidden; got %d", got)
+	}
+	if strings.Count(page, `class="tab-button"`) != 5 {
+		t.Fatal("expected five independent collapsible section buttons")
+	}
+
 	badHost := req.Clone(req.Context())
 	badHost.Host = "example.org"
 	badHost.URL.Path = "/"
