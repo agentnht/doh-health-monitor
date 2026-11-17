@@ -33,7 +33,12 @@ jobs:
           grep -q "^## \[$version\]" CHANGELOG.md || { echo "CHANGELOG.md has no [$version]"; exit 1; }
 
       - name: Check Go formatting
-        run: test -z \"$(gofmt -l $(git ls-files '*.go'))\"
+        run: |
+          unformatted="$(gofmt -l $(git ls-files '*.go'))"
+          if [[ -n "$unformatted" ]]; then
+            printf '%s\\n' "$unformatted"
+            exit 1
+          fi
       - run: go vet ./...
       - run: go test ./...
       - name: Run race detector
@@ -63,7 +68,7 @@ jobs:
           COSIGN_EXPERIMENTAL: "1"
         run: |
           go install github.com/sigstore/cosign/v3/cmd/cosign@v3.1.4
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          export PATH="$(go env GOPATH)/bin:$PATH"
           file=$(find . -maxdepth 1 -name '*.zip' -print -quit)
           checksum="${file}.sha256"
           cosign sign-blob --yes --bundle "${file}.sigstore.json" "$file"
@@ -78,11 +83,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" *.zip *.zip.sha256 --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" \
-              --title "$GITHUB_REF_NAME" \
-              --notes-file notes.md \
-              *.zip *.zip.sha256
-          fi
+          gh release create "$GITHUB_REF_NAME" \\
+            --title "$GITHUB_REF_NAME" \\
+            --notes-file notes.md \\
+            *.zip *.zip.sha256 *.sigstore.json
