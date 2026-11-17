@@ -5,7 +5,12 @@ DOH_SERVICE="${DOH_SERVICE:-lucx-plugin-doh-health-monitor}"
 DOH_STATUS_URL="${DOH_STATUS_URL:-http://127.0.0.1:18765/status}"
 XRAY_CONFIG="${XRAY_CONFIG:-/usr/local/x-ui/bin/config.json}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PLUGIN_PORT=5355
+PLUGIN_PORT="${DOH_PLUGIN_PORT:-5355}"
+if [[ ! "$PLUGIN_PORT" =~ ^[0-9]{1,5}$ ]] || (( 10#$PLUGIN_PORT < 1 || 10#$PLUGIN_PORT > 65535 )); then
+  printf '[FAIL] Некорректный DOH_PLUGIN_PORT: ожидается порт 1..65535.\n' >&2
+  exit 2
+fi
+PLUGIN_PORT=$((10#$PLUGIN_PORT))
 ok=0; warn=0; fail=0
 pass() { printf '[OK]   %s\n' "$*"; ok=$((ok + 1)); }
 warning() { printf '[WARN] %s\n' "$*"; warn=$((warn + 1)); }
@@ -26,10 +31,10 @@ if command -v ss >/dev/null 2>&1; then
   for proto in tcp udp; do
     flag="-t"
     [[ "$proto" == "udp" ]] && flag="-u"
-    if ss -H -l "$flag" 2>/dev/null | grep -Eq "127\\.0\\.0\\.1:5355([[:space:]]|$)"; then
-      pass "Порт 5355/${proto} слушается"
+    if ss -H -l "$flag" 2>/dev/null | grep -Eq "127\\.0\\.0\\.1:${PLUGIN_PORT}([[:space:]]|$)"; then
+      pass "Порт ${PLUGIN_PORT}/${proto} слушается"
     else
-      error "Порт 5355/${proto} не слушается"
+      error "Порт ${PLUGIN_PORT}/${proto} не слушается"
     fi
   done
 else
@@ -51,19 +56,19 @@ if [[ ! -r "$XRAY_CONFIG" ]]; then
   error "Не найден доступный для чтения Xray config: $XRAY_CONFIG"
 else
   pass "Xray config доступен: $XRAY_CONFIG"
-  if jq -e '
+  if jq -e --arg plugin_port "$PLUGIN_PORT" '
     any(.outbounds[]?;
       .protocol == "dns" and
       .settings.rewriteAddress == "127.0.0.1" and
-      ((.settings.rewritePort | tostring) == "5355")
+      ((.settings.rewritePort | tostring) == $plugin_port)
     )
   ' "$XRAY_CONFIG" >/dev/null; then
-    pass "DNS outbound указывает на 127.0.0.1:5355"
+    pass "DNS outbound указывает на 127.0.0.1:${PLUGIN_PORT}"
   else
-    error "DNS outbound на 127.0.0.1:5355 отсутствует или несовместим"
+    error "DNS outbound на 127.0.0.1:${PLUGIN_PORT} отсутствует или несовместим"
   fi
 
-  if jq -e '
+  if jq -e --arg plugin_port "$PLUGIN_PORT" '
     . as $root |
     any($root.routing.rules[]?;
       .type == "field" and
@@ -73,12 +78,12 @@ else
       ((.outboundTag // "") as $tag |
         any($root.outbounds[]?; .tag == $tag and .protocol == "dns" and
           .settings.rewriteAddress == "127.0.0.1" and
-          ((.settings.rewritePort | tostring) == "5355")))
+          ((.settings.rewritePort | tostring) == $plugin_port)))
     )
   ' "$XRAY_CONFIG" >/dev/null; then
     pass "Routing rule направляет TCP/UDP port 53 в локальный DNS outbound"
   else
-    error "Полный DNS route на 127.0.0.1:5355 не найден"
+    error "Полный DNS route на 127.0.0.1:${PLUGIN_PORT} не найден"
   fi
 
   if jq -e '
