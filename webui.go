@@ -211,7 +211,9 @@ func newWebUIHandlerWithDataDir(statusURL, launchToken, dataDir string) http.Han
 				return
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, 2048)
-			var input struct { Token string `json:"token"` }
+			var input struct {
+				Token string `json:"token"`
+			}
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 				http.Error(w, "invalid launch exchange", http.StatusBadRequest)
 				return
@@ -219,7 +221,9 @@ func newWebUIHandlerWithDataDir(statusURL, launchToken, dataDir string) http.Han
 			launchMu.Lock()
 			valid := !launchUsed && input.Token != "" &&
 				subtle.ConstantTimeCompare([]byte(input.Token), []byte(launchToken)) == 1
-			if valid { launchUsed = true }
+			if valid {
+				launchUsed = true
+			}
 			launchMu.Unlock()
 			if !valid {
 				http.Error(w, "launch token expired or already used", http.StatusUnauthorized)
@@ -509,15 +513,30 @@ func fetchWebUIStatus(ctx context.Context, statusURL string, tokens ...string) (
 }
 
 func writeWebUILaunchToken(dataDir, token string) error {
-	if err := os.MkdirAll(dataDir, 0700); err != nil { return err }
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		return err
+	}
 	tmp, err := os.CreateTemp(dataDir, ".web-ui-launch-*")
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	name := tmp.Name()
 	defer os.Remove(name)
-	if err := tmp.Chmod(0600); err != nil { _ = tmp.Close(); return err }
-	if _, err := io.WriteString(tmp, token+"\n"); err != nil { _ = tmp.Close(); return err }
-	if err := tmp.Sync(); err != nil { _ = tmp.Close(); return err }
-	if err := tmp.Close(); err != nil { return err }
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := io.WriteString(tmp, token+"\n"); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
 	return os.Rename(name, filepath.Join(dataDir, "web-ui-launch.token"))
 }
 
