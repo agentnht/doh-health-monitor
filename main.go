@@ -698,7 +698,7 @@ func validateConfig(c Config) error {
 			}
 		}
 		for _, ch := range g.Checks {
-			if !validDNSHostname(normalizeDomain(ch.Domain)) {
+			if !validDNSHostname(strings.TrimSuffix(strings.ToLower(strings.TrimSpace(ch.Domain)), ".")) {
 				return fmt.Errorf("invalid check domain %q in group %s", ch.Domain, g.ID)
 			}
 			for _, qt := range ch.QTypes {
