@@ -123,16 +123,20 @@ func (r *Runtime) cachePut(key string, packet []byte, c CacheConfig) {
 	if !c.Enabled || c.MaxEntries < 1 || c.MaxBytes < 1024 {
 		return
 	}
-	ttl, ok := minResponseTTL(packet)
-	if !ok {
-		// NXDOMAIN and NOERROR/NODATA are negative answers. Use the
-		// configured negative TTL when the response has no SOA TTL to derive.
-		if dnsRCode(packet) == 3 || (dnsRCode(packet) == 0 && dnsAnswerCount(packet) == 0) {
+	negative := dnsRCode(packet) == 3 || (dnsRCode(packet) == 0 && dnsAnswerCount(packet) == 0)
+	var ttl uint32
+	var ok bool
+	if negative {
+		// RFC 2308: negative TTL is min(SOA RR TTL, SOA.MINIMUM).
+		ttl, ok = negativeSOATTL(packet)
+		if !ok {
 			ttl = uint32(c.NegativeTTL)
-		} else {
-			return
+			ok = ttl > 0
 		}
+	} else {
+		ttl, ok = minResponseTTL(packet)
 	}
+	if !ok { return }
 	if ttl == 0 || (c.MinTTL > 0 && ttl < uint32(c.MinTTL)) {
 		return
 	}
