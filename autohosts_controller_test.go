@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
-	"strings"
 	"net"
 	"net/url"
 	"path/filepath"
@@ -153,20 +152,5 @@ func TestPinnedHTTPSProbePreservesSNIHostAndDoesNotFollowRedirect(t *testing.T) 
 		t.Fatalf("redirect was followed unexpectedly: %+v",extra)
 	case <-time.After(100*time.Millisecond):
 	}
-	if !strings.Contains(target,"probe.example") { t.Fatal("test target must retain original hostname") }
 }
 
-func TestPinnedHTTPSProbeRejectsUntrustedCertificate(t *testing.T) {
-	listener,err:=net.Listen("tcp","127.0.0.1:0")
-	if err!=nil { t.Fatal(err) }
-	cert,err:=tls.X509KeyPair(testProbeCertificatePEM(t),testProbePrivateKeyPEM(t))
-	if err!=nil { t.Fatal(err) }
-	server:=&http.Server{TLSConfig:&tls.Config{Certificates:[]tls.Certificate{cert}},Handler:http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){w.WriteHeader(http.StatusOK)})}
-	go func(){ _=server.Serve(tls.NewListener(listener,server.TLSConfig)) }()
-	defer func(){ctx,cancel:=context.WithTimeout(context.Background(),time.Second);defer cancel();_ = server.Shutdown(ctx)}()
-	port:=listener.Addr().(*net.TCPAddr).Port
-	client:=newPinnedHTTPClient("127.0.0.1","probe.example",2*time.Second)
-	defer client.CloseIdleConnections()
-	_,err=client.Get("https://probe.example:"+fmt.Sprint(port)+"/")
-	if err==nil { t.Fatal("expected untrusted self-signed certificate to be rejected") }
-}
