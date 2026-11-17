@@ -94,6 +94,29 @@ func TestInitializeConfigSourceFilesPreservesExistingUserFiles(t *testing.T) {
 	}
 }
 
+func TestEnsureSystemDNSDoHEntryAddsEnabledRowForLegacyLists(t *testing.T) {
+	legacy := []byte("# id;url\ndagami;https://dns.dagami.ru/dns-query\n")
+	got, changed, err := ensureSystemDNSDoHEntry(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed || !strings.Contains(string(got), "# id;url\nsystem-dns;\ndagami;") {
+		t.Fatalf("legacy DoH list was not migrated with active system-dns row: changed=%v data=%q", changed, got)
+	}
+
+	disabled := []byte("# id;url\n# system-dns;\ndagami;https://dns.dagami.ru/dns-query\n")
+	got, changed, err = ensureSystemDNSDoHEntry(disabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed || string(got) != string(disabled) {
+		t.Fatalf("explicitly disabled system-dns row must remain disabled: changed=%v data=%q", changed, got)
+	}
+	if _, _, err := ensureSystemDNSDoHEntry([]byte("system-dns;\n# system-dns;\n")); err == nil {
+		t.Fatal("duplicate active/commented system DNS rows should be rejected")
+	}
+}
+
 func TestMigrateLegacyDoHListUsesStableIDsAndPreservesURLs(t *testing.T) {
 	legacy := []byte("# old URL-only format\nhttps://eu.geohide.ru/dns-query\nhttps://doh.dagami.ru/dns-query\nhttps://custom.example.net/resolve\n")
 	got, changed, err := migrateLegacyDoHList(legacy)
