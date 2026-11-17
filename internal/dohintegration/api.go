@@ -158,14 +158,36 @@ func saveToken(path,token string)error{
 
 var tokenLine=regexp.MustCompile("(?m)^apiToken:\\s*(\\S+)\\s*$")
 
-func panelCLI(panelCwd string)(string,error){
-	entries,_:=os.ReadDir("/proc");found:=map[string]bool{}
-	for _,e:=range entries{if _,x:=strconv.Atoi(e.Name());x!=nil{continue};exe,x:=os.Readlink(filepath.Join("/proc",e.Name(),"exe"));if x!=nil{continue};exe=strings.TrimSuffix(exe," (deleted)");if filepath.Base(exe)=="x-ui"{if st,x:=os.Stat(exe);x==nil&&st.Mode().IsRegular()&&st.Mode().Perm()&0o111!=0{found[exe]=true}}}
-	if len(found)>1{return "",problem("Multiple LucX-UI executables are running; cannot select a local token provider")}
-	for p:=range found{return p,nil}
-	candidates:=[]string{};if panelCwd!=""{candidates=append(candidates,filepath.Join(panelCwd,"x-ui"))};if p,x:=exec.LookPath("x-ui");x==nil{candidates=append(candidates,p)}
-	for _,p:=range candidates{if st,x:=os.Stat(p);x==nil&&st.Mode().IsRegular(){return p,nil}}
-	return "",problem("Could not locate the local LucX-UI CLI to provision an API credential")
+func panelCLI(panelCwd string) (string, error) {
+	entries, _ := os.ReadDir("/proc")
+	found := map[string]bool{}
+	for _, entry := range entries {
+		if _, err := strconv.Atoi(entry.Name()); err != nil { continue }
+		procPath := filepath.Join("/proc", entry.Name())
+		procInfo, err := os.Stat(procPath)
+		if err != nil { continue }
+		procOwner, ok := procInfo.Sys().(*syscall.Stat_t)
+		if !ok || procOwner.Uid != uint32(os.Geteuid()) { continue }
+		exe, err := os.Readlink(filepath.Join(procPath, "exe"))
+		if err != nil { continue }
+		exe = strings.TrimSuffix(exe, " (deleted)")
+		if filepath.Base(exe) != "x-ui" { continue }
+		if info, err := os.Stat(exe); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+			if owner, ok := info.Sys().(*syscall.Stat_t); ok && owner.Uid == uint32(os.Geteuid()) { found[exe] = true }
+		}
+	}
+	if len(found) > 1 { return "", problem("Multiple LucX-UI executables are running for the current uid; cannot select a local token provider") }
+	for path := range found { return path, nil }
+	candidates := []string{}
+	if panelCwd != "" { candidates = append(candidates, filepath.Join(panelCwd, "x-ui")) }
+	if path, err := exec.LookPath("x-ui"); err == nil { candidates = append(candidates, path) }
+	for _, path := range candidates {
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 { continue }
+		owner, ok := info.Sys().(*syscall.Stat_t)
+		if ok && owner.Uid == uint32(os.Geteuid()) { return path, nil }
+	}
+	return "", problem("Could not locate an executable LucX-UI CLI owned by the current uid to provision an API credential")
 }
 
 func mintToken(panelCwd,authFile string)(string,error){
@@ -287,7 +309,7 @@ func (p *PanelAPI) request(method,path string,form url.Values,payload any)(map[s
 	if form!=nil{body=strings.NewReader(form.Encode());contentType="application/x-www-form-urlencoded"}
 	if payload!=nil{b,err:=json.Marshal(payload);if err!=nil{return nil,problem("Could not encode panel API request")};body=bytes.NewReader(b);contentType="application/json"}
 	req,err:=http.NewRequest(method,p.root+path,body);if err!=nil{return nil,problem("Could not create panel API request")}
-	req.Header.Set("Authorization","Bearer "+p.token);req.Header.Set("Accept","application/json");req.Header.Set("User-Agent","doh-health-monitor/2.1.0")
+	req.Header.Set("Authorization","Bearer "+p.token);req.Header.Set("Accept","application/json");req.Header.Set("User-Agent","doh-health-monitor/2.2.1")
 	if contentType!=""{req.Header.Set("Content-Type",contentType)};if p.hostHeader!=""{req.Host=p.hostHeader}
 	resp,err:=p.client.Do(req);if err!=nil{return nil,problem("Could not reach LucX-UI API; network details suppressed")};defer resp.Body.Close()
 	data,err:=io.ReadAll(io.LimitReader(resp.Body,maxResponseBytes+1));if err!=nil{return nil,problem("Could not read LucX-UI API response")}
