@@ -294,6 +294,7 @@ type Runtime struct {
 	checksPath   string
 	sourceHashes ConfigSourceChecksums
 	lastRejectedSourceHash string
+	healthCheckTrigger chan struct{}
 	snapshot     atomic.Pointer[Snapshot]
 	mu           sync.RWMutex
 	health           map[string]map[string]HealthEntry
@@ -432,6 +433,7 @@ func main() {
 	rt := &Runtime{
 		dataDir: dataDir, configPath: configPath, dohPath: dohPath, checksPath: checksPath,
 		sourceHashes: sources.Checksums,
+		healthCheckTrigger: make(chan struct{}, 1),
 		health: map[string]map[string]HealthEntry{}, active: map[string]string{},
 		cache: map[string]cacheItem{}, lastGemini: map[string]time.Time{},
 		dnsSem: make(chan struct{}, cfg.DNSMaxConcurrent),
@@ -1952,6 +1954,13 @@ func (r *Runtime) monitorLoop(ctx context.Context) {
 		case <-ctx.Done():
 			t.Stop()
 			return
+		case <-r.healthCheckTrigger:
+			if !t.Stop() {
+				select {
+				case <-t.C:
+				default:
+				}
+			}
 		case <-t.C:
 		}
 	}
@@ -2710,6 +2719,11 @@ func (r *Runtime) reloadLoop(ctx context.Context) {
 		r.lastReload = time.Now().UTC()
 		r.mu.Unlock()
 		r.setError("")
+		// Run health checks immediately against the newly applied source files.
+		select {
+		case r.healthCheckTrigger <- struct{}{}:
+		default:
+		}
 		logLine("INFO", "CONFIG reloaded upstreams=%d groups=%d checks=%d sources_sha256=%s", len(cfg.Upstreams), len(cfg.Groups), len(sources.Checks), sources.Checksums.Combined)
 	}
 }
