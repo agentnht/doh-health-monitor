@@ -7,6 +7,7 @@ import (
  "errors"
  "fmt"
  "net"
+ "net/url"
  "os"
  "path/filepath"
  "strings"
@@ -16,6 +17,8 @@ import (
 )
 
 const SchemaVersion = 1
+const maxStoredEndpoints = 64
+const maxStoredProbeResults = 512
 
 var ErrPinnedServer = errors.New("active server is pinned to a different DoH server")
 
@@ -125,6 +128,8 @@ func (m *Manager) validate(s State) error {
  if c.Mode=="pinned" && strings.TrimSpace(c.PinnedServerID)=="" {return errors.New("pinned DoH server ID is required")}
  if c.CheckInterval<10*time.Second || c.CheckInterval>24*time.Hour || c.GracePeriod<c.CheckInterval || c.GracePeriod>30*24*time.Hour || c.TTL<5*time.Second || c.TTL>10*time.Minute || c.EndpointMaxAge<time.Minute || c.EndpointMaxAge>7*24*time.Hour || c.MaxDomains<1 || c.MaxDomains>4096 {return errors.New("invalid Auto Hosts interval, TTL, grace period or domain limit")}
  if len(s.Domains)>c.MaxDomains{return errors.New("Auto Hosts domain limit exceeded")}
+ if len(s.Endpoints)>maxStoredEndpoints{return errors.New("Auto Hosts endpoint limit exceeded")}
+ if len(s.ProbeResults)>maxStoredProbeResults{return errors.New("Auto Hosts probe result limit exceeded")}
  for id,ep:=range s.Endpoints {
   if id=="" || ep.ServerID!=id || ep.URL=="" || ep.Hostname=="" {return fmt.Errorf("invalid DoH endpoint %q",id)}
   if _,err:=validateEndpoint(ep);err!=nil{return fmt.Errorf("invalid DoH endpoint %q: %w",id,err)}
