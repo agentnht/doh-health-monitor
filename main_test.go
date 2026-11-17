@@ -15,6 +15,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -1711,4 +1713,48 @@ func TestTruncateDNSUDPResponseSetsTCAndKeepsWholeRecords(t *testing.T) {
 	if !dnsTruncated(got) { t.Fatal("truncated response is missing TC flag") }
 	if binary.BigEndian.Uint16(got[4:6]) != 1 { t.Fatal("truncated response lost its question") }
 	if binary.BigEndian.Uint16(got[6:8]) != 0 { t.Fatal("partial answer RR was retained") }
+}
+
+
+func TestCachePutCachesNOERRORNODATA(t *testing.T) {
+	query := makeDNSQuery("nodata.example", 1)
+	response := append([]byte(nil), query...)
+	binary.BigEndian.PutUint16(response[2:4], 0x8180)
+	runtime := &Runtime{cache: map[string]cacheItem{}}
+	config := CacheConfig{Enabled: true, MinTTL: 1, MaxTTL: 300, NegativeTTL: 45, MaxEntries: 8, MaxBytes: 4096}
+	runtime.cachePut("nodata", response, config)
+	if _, ok := runtime.cacheGet("nodata", packetID(query)); !ok {
+		t.Fatal("NOERROR/NODATA response was not cached with NegativeTTL")
+	}
+}
+
+func TestCacheDoCoalescesConcurrentMisses(t *testing.T) {
+	runtime := &Runtime{cache: map[string]cacheItem{}}
+	query := makeDNSQuery("singleflight.example", 1)
+	response := testAResponse(query, 60)
+	config := CacheConfig{Enabled: true, MinTTL: 1, MaxTTL: 120, NegativeTTL: 30, MaxEntries: 8, MaxBytes: 4096}
+	var calls atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	const workers = 16
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(id uint16) {
+			defer wg.Done()
+			_, err := runtime.cacheDo("singleflight", id, func() ([]byte, error) {
+				if calls.Add(1) == 1 { close(started) }
+				<-release
+				runtime.cachePut("singleflight", response, config)
+				return response, nil
+			})
+			if err != nil { t.Errorf("cacheDo: %v", err) }
+		}(uint16(i + 1))
+	}
+	<-started
+	close(release)
+	wg.Wait()
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("upstream resolver invoked %d times; want exactly once", got)
+	}
 }
