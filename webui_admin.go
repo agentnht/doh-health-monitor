@@ -603,8 +603,12 @@ func saveWebUISources(dataDir string, update webUISourceUpdate) error {
 		data = []byte("# id;url — provider ID; HTTPS endpoint\n")
 	}
 	if update.Kind == "doh" {
-		if _, err := parseDoHProviders(data); err != nil {
+		providers, err := parseDoHProviders(data)
+		if err != nil {
 			return fmt.Errorf("doh-servers.txt validation failed: %w", err)
+		}
+		if len(providers) == 0 {
+			return errors.New("at least one upstream must remain enabled; keep system-dns active or enable a DoH provider")
 		}
 	} else {
 		if _, err := parseHealthChecks(data); err != nil {
