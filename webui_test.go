@@ -41,11 +41,37 @@ func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 	if got := strings.Count(page, `<section class="panel dashboard-panel">`); got != 1 {
 		t.Fatalf("dashboard should have exactly one combined data panel, got %d", got)
 	}
-	if got := strings.Count(page, `<section class="dashboard-column">`); got != 3 {
-		t.Fatalf("dashboard should have exactly three columns, got %d", got)
+	if got := strings.Count(page, `<section class="dashboard-column dashboard-`); got != 2 {
+		t.Fatalf("dashboard should have exactly two columns, got %d", got)
+	}
+	for _, want := range []string{
+		`class="dashboard-column dashboard-overview"`,
+		`class="dashboard-column dashboard-upstreams"`,
+		`class="metric-list"`,
+			`<h2>DNS listeners</h2>`,
+			`<h2>Запросы и ресурсы</h2>`,
+			`<h2>Upstream-группы</h2>`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("dashboard is missing expected layout element %q", want)
+		}
 	}
 	if strings.Index(page, `id="dns-udp"`) > strings.Index(page, `id="dns-tcp"`) {
 		t.Fatal("TCP listener must appear below UDP listener")
+	}
+	if !(strings.Index(page, `<h2>DNS listeners</h2>`) < strings.Index(page, `<h2>Запросы и ресурсы</h2>`) &&
+		strings.Index(page, `<h2>Запросы и ресурсы</h2>`) < strings.Index(page, `<h2>Upstream-группы</h2>`)) {
+		t.Fatal("dashboard sections must be ordered: DNS listeners, resources, upstream groups")
+	}
+
+	if got := strings.Count(page, `aria-expanded="false"`); got != 5 {
+		t.Fatalf("all five section buttons must start collapsed, got %d collapsed buttons", got)
+	}
+	if got := strings.Count(page, `<section class="panel tab-page`); got != 6 {
+		t.Fatalf("all section panels, including both log panels, must start hidden; got %d", got)
+	}
+	if strings.Count(page, `class="tab-button"`) != 5 {
+		t.Fatal("expected five independent collapsible section buttons")
 	}
 
 	badHost := req.Clone(req.Context())
@@ -264,5 +290,28 @@ func TestRunWebUIStopsWhenSupervisorPipeCloses(t *testing.T) {
 		}
 	case <-time.After(6 * time.Second):
 		t.Fatal("Web UI did not stop after supervisor pipe EOF")
+	}
+}
+
+func TestWebUIAppScriptMakesManagementPagesMutuallyExclusive(t *testing.T) {
+	handler := webUIHandler()
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/app.js", nil)
+	request.Host = "127.0.0.1:19876"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /app.js status=%d, want %d", recorder.Code, http.StatusOK)
+	}
+	script := recorder.Body.String()
+	for _, want := range []string{
+		`panel.hidden = !shouldOpen || panel.dataset.pagePanel !== name`,
+		`const shouldOpen = open == null ? !currentlyOpen : Boolean(open)`,
+		`button.setAttribute("aria-expanded", String(selected))`,
+		`if (kind === "doh" && row.system)`,
+		`protectedLabel.textContent = "Защищён"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js is missing exclusive tab behaviour %q", want)
+		}
 	}
 }

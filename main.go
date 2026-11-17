@@ -31,7 +31,7 @@ import (
 
 const (
 	pluginID      = "doh-health-monitor"
-	pluginVersion = "2.2.0"
+	pluginVersion = "2.2.1"
 	systemDNSUpstreamID = "system-dns"
 	systemResolvConfPath = "/etc/resolv.conf"
 	systemDNSPerServerTimeout = 2 * time.Second
@@ -645,7 +645,7 @@ func normalizeConfigGroups(c Config) (Config, error) {
 func ensureSystemDNSFirst(c Config) (Config, error) {
 	var system Upstream
 	found := false
-	remaining := make([]Upstream, 0, len(c.Upstreams)+1)
+	remaining := make([]Upstream, 0, len(c.Upstreams))
 	for _, u := range c.Upstreams {
 		if u.ID == systemDNSUpstreamID {
 			if found {
@@ -661,20 +661,29 @@ func ensureSystemDNSFirst(c Config) (Config, error) {
 		remaining = append(remaining, u)
 	}
 	if !found {
-		system = Upstream{ID: systemDNSUpstreamID, Name: "System DNS (VPS)", Type: "system"}
+		// The source list controls whether system-dns is enabled. Do not
+		// recreate it when a previous reload removed it intentionally.
+		c.Upstreams = remaining
+		return c, nil
 	}
 	c.Upstreams = append([]Upstream{system}, remaining...)
 
+	// Keep system DNS first only when the saved group already references it.
+	// Membership itself is controlled by doh-servers.txt.
 	group := c.Groups[0]
-	ordered := make([]string, 0, len(group.Upstreams)+1)
-	ordered = append(ordered, systemDNSUpstreamID)
+	containsSystem := false
+	ordered := make([]string, 0, len(group.Upstreams))
 	for _, id := range group.Upstreams {
-		if id != systemDNSUpstreamID {
-			ordered = append(ordered, id)
+		if id == systemDNSUpstreamID {
+			containsSystem = true
+			continue
 		}
+		ordered = append(ordered, id)
 	}
-	group.Upstreams = ordered
-	c.Groups[0] = group
+	if containsSystem {
+		group.Upstreams = append([]string{systemDNSUpstreamID}, ordered...)
+		c.Groups[0] = group
+	}
 	return c, nil
 }
 
@@ -776,8 +785,8 @@ func validateConfig(c Config) error {
 			}
 		}
 	}
-	if systemDNSCount != 1 {
-		return fmt.Errorf("exactly one system DNS upstream is required; got %d", systemDNSCount)
+	if systemDNSCount > 1 {
+		return fmt.Errorf("at most one system DNS upstream is allowed; got %d", systemDNSCount)
 	}
 	groups := map[string]bool{}
 	for _, g := range c.Groups {
@@ -869,6 +878,9 @@ func loadDoHList(path string, create bool) (map[string]string, error) {
 	}
 	out := make(map[string]string, len(providers))
 	for _, provider := range providers {
+		if provider.System || provider.ID == systemDNSUpstreamID {
+			continue
+		}
 		out[provider.ID] = provider.URL
 	}
 	return out, nil

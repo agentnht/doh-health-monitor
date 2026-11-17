@@ -188,6 +188,53 @@ func TestTimevalNanoseconds(t *testing.T) {
 	}
 }
 
+func TestConfigCanDisableSystemDNSWithoutNormalizerReaddingIt(t *testing.T) {
+	cfg := defaultConfig()
+	upstreams := make([]Upstream, 0, len(cfg.Upstreams)-1)
+	for _, upstream := range cfg.Upstreams {
+		if upstream.ID != systemDNSUpstreamID {
+			upstreams = append(upstreams, upstream)
+		}
+	}
+	cfg.Upstreams = upstreams
+	groupUpstreams := make([]string, 0, len(cfg.Groups[0].Upstreams)-1)
+	for _, id := range cfg.Groups[0].Upstreams {
+		if id != systemDNSUpstreamID {
+			groupUpstreams = append(groupUpstreams, id)
+		}
+	}
+	cfg.Groups[0].Upstreams = groupUpstreams
+
+	normalized, err := normalizeConfigGroups(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, upstream := range normalized.Upstreams {
+		if upstream.ID == systemDNSUpstreamID {
+			t.Fatal("normalizer re-added disabled system-dns")
+		}
+	}
+	for _, id := range normalized.Groups[0].Upstreams {
+		if id == systemDNSUpstreamID {
+			t.Fatal("normalizer re-added system-dns to the group")
+		}
+	}
+	if err := validateConfig(normalized); err != nil {
+		t.Fatalf("configuration without system DNS should validate: %v", err)
+	}
+	urls := map[string]string{}
+	for _, upstream := range normalized.Upstreams {
+		urls[upstream.ID] = "https://resolver.example/dns-query"
+	}
+	snapshot, err := buildSnapshot(normalized, urls)
+	if err != nil {
+		t.Fatalf("build snapshot without system DNS: %v", err)
+	}
+	if _, exists := snapshot.upstreams[systemDNSUpstreamID]; exists {
+		t.Fatal("snapshot recreated disabled system-dns")
+	}
+}
+
 func TestDefaultConfigValid(t *testing.T) {
 	c := defaultConfig()
 	if err := validateConfig(c); err != nil {
@@ -574,7 +621,7 @@ func TestDefaultConfigUsesSystemDNSFirstAndDoHProviders(t *testing.T) {
 	}
 }
 
-func TestNormalizeConfigAddsSystemDNSFirstToLegacyConfig(t *testing.T) {
+func TestNormalizeConfigDoesNotReAddDisabledSystemDNS(t *testing.T) {
 	c := defaultConfig()
 	filtered := c.Upstreams[:0]
 	for _, upstream := range c.Upstreams {
@@ -591,14 +638,18 @@ func TestNormalizeConfigAddsSystemDNSFirstToLegacyConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(normalized.Upstreams) != len(c.Upstreams)+1 {
-		t.Fatalf("upstream count = %d, want %d", len(normalized.Upstreams), len(c.Upstreams)+1)
+	if len(normalized.Upstreams) != len(c.Upstreams) {
+		t.Fatalf("upstream count = %d, want unchanged count %d", len(normalized.Upstreams), len(c.Upstreams))
 	}
-	if normalized.Upstreams[0].ID != systemDNSUpstreamID || normalized.Upstreams[0].Type != "system" {
-		t.Fatalf("first normalized upstream = %+v, want system DNS", normalized.Upstreams[0])
+	for _, upstream := range normalized.Upstreams {
+		if upstream.ID == systemDNSUpstreamID {
+			t.Fatal("normalizer re-added disabled system-dns")
+		}
 	}
-	if normalized.Groups[0].Upstreams[0] != systemDNSUpstreamID {
-		t.Fatalf("first group upstream = %q, want %q", normalized.Groups[0].Upstreams[0], systemDNSUpstreamID)
+	for _, id := range normalized.Groups[0].Upstreams {
+		if id == systemDNSUpstreamID {
+			t.Fatal("normalizer re-added disabled system-dns to the Google group")
+		}
 	}
 }
 

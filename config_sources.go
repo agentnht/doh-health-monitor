@@ -22,8 +22,9 @@ var embeddedConfigSources embed.FS
 const configSourcePollInterval = 30 * time.Second
 
 type DoHProvider struct {
-	ID  string
-	URL string
+	ID     string
+	URL    string
+	System bool
 }
 
 type ConfigSourceChecksums struct {
@@ -33,10 +34,11 @@ type ConfigSourceChecksums struct {
 }
 
 type ConfigSources struct {
-	Providers []DoHProvider
-	Checks    []Check
-	DoHURLs   map[string]string
-	Checksums ConfigSourceChecksums
+	Providers        []DoHProvider
+	Checks           []Check
+	DoHURLs          map[string]string
+	SystemDNSEnabled bool
+	Checksums        ConfigSourceChecksums
 }
 
 func initializeConfigSourceFiles(dataDir string) error {
@@ -78,8 +80,61 @@ func initializeConfigSourceFiles(dataDir string) error {
 			return fmt.Errorf("write migrated doh-servers.txt: %w", err)
 		}
 		logLine("INFO", "CONFIG_SOURCE_MIGRATED file=doh-servers.txt format=id;url")
+		raw = migrated
+	}
+	withSystem, addedSystem, err := ensureSystemDNSDoHEntry(raw)
+	if err != nil {
+		return fmt.Errorf("ensure system-dns entry in doh-servers.txt: %w", err)
+	}
+	if addedSystem {
+		if err := writeAtomicFile(dohPath, withSystem, 0600); err != nil {
+			return fmt.Errorf("write system-dns entry to doh-servers.txt: %w", err)
+		}
+		logLine("INFO", "CONFIG_SOURCE_MIGRATED file=doh-servers.txt added_system_dns_entry")
 	}
 	return nil
+}
+
+func ensureSystemDNSDoHEntry(data []byte) ([]byte, bool, error) {
+	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+	found := 0
+	for lineNumber, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "#"))
+		}
+		fields := strings.SplitN(line, ";", 2)
+		if len(fields) == 2 && strings.EqualFold(strings.TrimSpace(fields[0]), systemDNSUpstreamID) {
+			found++
+			if strings.TrimSpace(fields[1]) != "" {
+				return nil, false, fmt.Errorf("line %d: system-dns must not have a DoH URL", lineNumber+1)
+			}
+		}
+	}
+	if found > 1 {
+		return nil, false, errors.New("doh-servers.txt must contain exactly one system-dns row; duplicate rows found")
+	}
+	if found == 1 {
+		return data, false, nil
+	}
+
+	// Older versions always enabled system DNS implicitly. Preserve that
+	// behaviour when migrating a list that predates the editable system row.
+	insertAt := 0
+	for i, raw := range lines {
+		lower := strings.ToLower(strings.TrimSpace(raw))
+		if strings.HasPrefix(lower, "#") && strings.Contains(lower, "id;url") {
+			insertAt = i + 1
+			break
+		}
+	}
+	lines = append(lines, "")
+	copy(lines[insertAt+1:], lines[insertAt:])
+	lines[insertAt] = systemDNSUpstreamID + ";"
+	return []byte(strings.Join(lines, "\n")), true, nil
 }
 
 func migrateLegacyDoHList(data []byte) ([]byte, bool, error) {
@@ -155,10 +210,18 @@ func readConfigSources(dohPath, checksPath string) (ConfigSources, error) {
 		return ConfigSources{Checksums: checksums}, fmt.Errorf("tst-domen.txt: %w", err)
 	}
 	urls := make(map[string]string, len(providers))
+	systemDNSEnabled := false
 	for _, provider := range providers {
+		if provider.System || provider.ID == systemDNSUpstreamID {
+			systemDNSEnabled = true
+			continue
+		}
 		urls[provider.ID] = provider.URL
 	}
-	return ConfigSources{Providers: providers, Checks: checks, DoHURLs: urls, Checksums: checksums}, nil
+	return ConfigSources{
+		Providers: providers, Checks: checks, DoHURLs: urls,
+		SystemDNSEnabled: systemDNSEnabled, Checksums: checksums,
+	}, nil
 }
 
 func configSourceChecksums(dohData, checksData []byte) ConfigSourceChecksums {
@@ -194,7 +257,15 @@ func parseDoHProviders(data []byte) ([]DoHProvider, error) {
 		}
 		id = strings.ToLower(id)
 		if id == systemDNSUpstreamID {
-			return nil, fmt.Errorf("line %d: %q is reserved for the VPS system DNS", lineNumber+1, id)
+			if endpoint != "" {
+				return nil, fmt.Errorf("line %d: system-dns is a system resolver and must not have a DoH URL", lineNumber+1)
+			}
+			if seen[id] {
+				return nil, fmt.Errorf("line %d: duplicate provider ID %q", lineNumber+1, id)
+			}
+			seen[id] = true
+			providers = append(providers, DoHProvider{ID: id, System: true})
+			continue
 		}
 		if seen[id] {
 			return nil, fmt.Errorf("line %d: duplicate provider ID %q", lineNumber+1, id)
@@ -386,8 +457,10 @@ func applyConfigSources(base Config, sources ConfigSources) (Config, error) {
 	}
 
 	existing := make(map[string]Upstream, len(base.Upstreams))
+	var system Upstream
 	for _, upstream := range base.Upstreams {
 		if upstream.ID == systemDNSUpstreamID {
+			system = upstream
 			continue
 		}
 		key := upstream.ID
@@ -396,13 +469,6 @@ func applyConfigSources(base Config, sources ConfigSources) (Config, error) {
 		}
 		existing[key] = upstream
 	}
-	var system Upstream
-	for _, upstream := range base.Upstreams {
-		if upstream.ID == systemDNSUpstreamID {
-			system = upstream
-			break
-		}
-	}
 	if system.ID == "" {
 		system = Upstream{ID: systemDNSUpstreamID, Name: "System DNS (VPS)", Type: "system"}
 	}
@@ -410,10 +476,15 @@ func applyConfigSources(base Config, sources ConfigSources) (Config, error) {
 	system.BootstrapIPs = nil
 
 	upstreams := make([]Upstream, 0, len(sources.Providers)+1)
-	upstreams = append(upstreams, system)
 	ordered := make([]string, 0, len(sources.Providers)+1)
-	ordered = append(ordered, systemDNSUpstreamID)
+	if sources.SystemDNSEnabled {
+		upstreams = append(upstreams, system)
+		ordered = append(ordered, systemDNSUpstreamID)
+	}
 	for _, provider := range sources.Providers {
+		if provider.System || provider.ID == systemDNSUpstreamID {
+			continue
+		}
 		upstream, ok := existing[provider.ID]
 		if !ok {
 			upstream = Upstream{ID: provider.ID, Name: provider.ID}
@@ -426,6 +497,9 @@ func applyConfigSources(base Config, sources ConfigSources) (Config, error) {
 		}
 		upstreams = append(upstreams, upstream)
 		ordered = append(ordered, provider.ID)
+	}
+	if len(ordered) == 0 {
+		return Config{}, errors.New("at least one DoH or system DNS upstream must be enabled")
 	}
 
 	base.Upstreams = upstreams

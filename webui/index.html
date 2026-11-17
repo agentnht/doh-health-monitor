@@ -7,30 +7,26 @@
   <title>DoH Health Monitor</title>
   <style>
     :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #111827; color: #e5e7eb; }
-    body { margin: 0; padding: 2rem 1rem; }
-    main { width: min(70rem, 100%); margin: 0 auto; }
+    body { margin: 0; padding: 1.5rem 1rem 3rem; }
+    main { width: min(78rem, 100%); margin: 0 auto; }
     header, .panel, .metric { border: 1px solid #374151; border-radius: .8rem; background: #1f2937; }
-    header, .panel { padding: 1rem; margin-bottom: .85rem; }
+    header, .panel { padding: 1rem; margin-bottom: .9rem; }
     h1 { margin: .2rem 0; font-size: 1.45rem; }
-    h2 { margin: 0 0 .6rem; font-size: 1rem; }
-    h3 { margin: 0 0 .25rem; font-size: .95rem; }
+    h2 { margin: 0 0 .65rem; font-size: 1.05rem; }
+    h3 { margin: .25rem 0 .55rem; font-size: .92rem; }
     p { color: #cbd5e1; line-height: 1.4; }
     .state { color: #a7f3d0; }
     .muted { color: #9ca3af; font-size: .78rem; }
-    .dashboard-grid { display: grid; grid-template-columns: minmax(9rem, .8fr) minmax(15rem, 1.05fr) minmax(22rem, 1.8fr); gap: 1rem; align-items: start; }
+    .dashboard-grid { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 1rem; align-items: start; }
     .dashboard-column { min-width: 0; }
     .dashboard-column + .dashboard-column { border-left: 1px solid #374151; padding-left: 1rem; }
-    .listener-list { display: flex; flex-direction: column; gap: .5rem; }
-    .listener { border: 1px solid #374151; border-radius: .55rem; padding: .55rem .65rem; background: #111827; }
-    .listener span { display: block; color: #9ca3af; font-size: .78rem; }
-    .listener strong { display: block; margin-top: .15rem; font-size: .95rem; overflow-wrap: anywhere; }
-    .metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .4rem; }
-    .metric { min-width: 0; padding: .45rem .55rem; background: #111827; }
-    .metric strong { display: block; font-size: 1rem; line-height: 1.2; margin-top: .12rem; overflow-wrap: anywhere; }
-    .metric span { color: #9ca3af; font-size: .72rem; }
+    .dashboard-overview { display: flex; flex-direction: column; gap: 1rem; }
+    .dashboard-section + .dashboard-section { border-top: 1px solid #374151; padding-top: .85rem; }
+    .listener-list, .metric-list { display: flex; flex-direction: column; gap: .32rem; }
+    .listener, .metric { display: flex; align-items: baseline; gap: .65rem; min-width: 0; padding: .42rem .6rem; border-radius: .45rem; background: #111827; }
+    .listener span, .metric span { flex: 0 0 9.5rem; color: #9ca3af; font-size: .78rem; }
+    .listener strong, .metric strong { min-width: 0; flex: 1; font-size: .9rem; line-height: 1.3; overflow-wrap: anywhere; text-align: right; }
     .groups { display: block; min-width: 0; }
-    .group { padding: 0; margin: 0; }
-    .group > p { margin: .15rem 0 .35rem; font-size: .78rem; }
     ul { padding-left: 1rem; color: #cbd5e1; }
     li { margin: .22rem 0; overflow-wrap: anywhere; }
     .upstream-list { list-style: none; padding: 0; margin: 0; }
@@ -45,68 +41,206 @@
     .check-title { margin: .3rem 0 .15rem; font-size: .78rem; font-weight: 600; }
     .check-list { margin: .15rem 0; padding-left: 1rem; font-size: .72rem; }
     .check-list li { margin: .12rem 0; }
-    button { border: 0; border-radius: .5rem; padding: .55rem .85rem; color: #fff; background: #2563eb; cursor: pointer; }
-    button:disabled { opacity: .6; cursor: wait; }
+    button { border: 0; border-radius: .48rem; padding: .55rem .85rem; color: #fff; background: #2563eb; cursor: pointer; font: inherit; font-size: .84rem; }
+    button.secondary { background: #374151; }
+    button.danger { background: #991b1b; }
+    button.small { padding: .35rem .55rem; }
+    button:disabled { opacity: .55; cursor: wait; }
+    input, textarea, select { width: 100%; box-sizing: border-box; color: #e5e7eb; background: #111827; border: 1px solid #4b5563; border-radius: .4rem; padding: .48rem .55rem; font: inherit; font-size: .84rem; }
+    input[type="checkbox"] { width: auto; accent-color: #3b82f6; }
+    label.field { display: flex; flex-direction: column; gap: .28rem; color: #cbd5e1; font-size: .78rem; min-width: 0; }
+    label.check-field { display: flex; align-items: center; gap: .45rem; color: #cbd5e1; font-size: .8rem; padding: .48rem 0; }
+    .field-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .7rem; }
+    .config-block { border-top: 1px solid #374151; margin-top: .9rem; padding-top: .75rem; }
+    .section-actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .8rem; }
+    .header-controls { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: .65rem; margin-top: .75rem; }
+    .refresh-group, .integration-buttons { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
+    .integration-buttons { margin-left: auto; }
+    .tab-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0 0 .85rem; }
+    .tab-button { background: #374151; }
+    .tab-button[aria-selected="true"] { background: #1d4ed8; box-shadow: inset 0 0 0 1px #60a5fa; }
+    .tab-page[hidden] { display: none; }
+    button:disabled { opacity: .28; cursor: not-allowed; filter: saturate(.35); }
+    .notice { color: #fde68a; font-size: .82rem; white-space: pre-wrap; margin-top: .55rem; }
+    .success { color: #86efac; }
+    .error { color: #fca5a5; }
+    .source-wrap { overflow-x: auto; }
+    table.source-table { width: 100%; border-collapse: collapse; min-width: 38rem; }
+    .source-table th, .source-table td { border-bottom: 1px solid #374151; padding: .42rem .35rem; text-align: left; vertical-align: middle; }
+    .source-table th { color: #9ca3af; font-size: .72rem; font-weight: 600; }
+    .source-table td input { min-width: 6.5rem; }
+    .source-table td:first-child { width: 2.5rem; text-align: center; }
+    .source-table td:last-child { width: 3rem; }
+    .source-comment { color: #9ca3af; font-size: .75rem; font-style: italic; }
+    .source-system td { background: rgba(37, 99, 235, .06); }
+    .source-system-note, .source-protected { color: #93c5fd; font-size: .72rem; }
+    .source-protected { white-space: nowrap; }
+
+    .row-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .6rem; }
+    .results { display: grid; gap: .42rem; margin-top: .8rem; }
+    .result { border: 1px solid #374151; background: #111827; border-radius: .5rem; min-width: 0; }
+    .result-head { display: flex; justify-content: space-between; gap: .7rem; align-items: center; }
+    details.result { padding: 0; overflow: hidden; }
+    .result-summary { display: flex; justify-content: space-between; align-items: center; gap: .7rem; padding: .55rem .65rem; cursor: pointer; list-style: none; }
+    .result-summary::-webkit-details-marker { display: none; }
+    .result-summary::marker { content: ""; }
+    .result-name { min-width: 0; flex: 1; font-weight: 650; font-size: .82rem; overflow-wrap: anywhere; }
+    .result-status { font-size: .75rem; font-weight: 700; white-space: nowrap; }
+    .result-status.ok { color: #86efac; }
+    .result-status.bad { color: #fca5a5; }
+    .result-toggle { flex: 0 0 1.25rem; text-align: center; font-size: 1rem; font-weight: 800; color: #86efac; }
+    .result-status.bad + .result-toggle { color: #fca5a5; }
+    .result-details { border-top: 1px solid #374151; padding: .5rem .65rem .6rem; }
+    .result-details .muted { margin: .1rem 0 .4rem; }
+    .result pre { white-space: pre-wrap; overflow-wrap: anywhere; color: #cbd5e1; font: .76rem/1.4 ui-monospace, monospace; margin: .35rem 0 0; }
+    .log-output { max-height: 26rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #111827; border: 1px solid #374151; border-radius: .5rem; padding: .7rem; color: #cbd5e1; font: .75rem/1.45 ui-monospace, monospace; }
     #error { color: #fca5a5; }
     @media (max-width: 65rem) {
-      .dashboard-grid { grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); }
-      .dashboard-column:last-child { grid-column: 1 / -1; }
-      .dashboard-column + .dashboard-column { border-left: 0; padding-left: 0; }
-      .dashboard-column:last-child { border-top: 1px solid #374151; padding-top: .85rem; }
+      .dashboard-grid { grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); }
+      .field-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 38rem) {
-      body { padding: .85rem .55rem; }
+      body { padding: .85rem .55rem 2rem; }
       header, .panel { padding: .8rem; }
       .dashboard-grid { grid-template-columns: minmax(0, 1fr); gap: .85rem; }
-      .dashboard-column:last-child { grid-column: auto; }
       .dashboard-column + .dashboard-column { border-left: 0; padding-left: 0; border-top: 1px solid #374151; padding-top: .85rem; }
-      .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .listener span, .metric span { flex-basis: 8.5rem; }
+      .field-grid { grid-template-columns: minmax(0, 1fr); }
     }
   </style>
 </head>
 <body>
   <main>
     <header>
-      <p class="state">Web UI запущен · read-only</p>
+      <p class="state">Web UI · локальное управление через SSH-туннель</p>
       <h1>DoH Health Monitor</h1>
-      <p>Состояние DNS-демона и upstream-групп. На этом этапе интерфейс ничего не меняет в конфигурации.</p>
+      <p>Мониторинг, редактирование конфигурации и списков, проверка DNS и управление интеграцией.</p>
       <p class="muted">Версия: <strong id="version">—</strong> · Демон: <strong id="daemon">Проверка…</strong> · Запущен: <strong id="started">—</strong></p>
-      <button id="refresh" type="button">Обновить состояние</button>
-      <span class="muted" id="updated">Загрузка…</span>
+      <div class="header-controls">
+        <div class="refresh-group">
+          <button id="refresh" type="button">Обновить состояние</button>
+          <span class="muted" id="updated">Загрузка…</span>
+        </div>
+        <div class="integration-buttons" aria-label="Управление DNS integration">
+          <span id="integration-result" class="muted" role="status"></span>
+          <button id="integration-add" type="button" disabled>Integrate</button>
+          <button id="integration-remove" class="danger" type="button" disabled>DeIntegrate</button>
+        </div>
+      </div>
       <p id="error" role="status"></p>
     </header>
 
     <section class="panel dashboard-panel">
       <div class="dashboard-grid">
-        <section class="dashboard-column">
-          <h2>DNS listeners</h2>
-          <div class="listener-list">
-            <div class="listener"><span>UDP</span><strong id="dns-udp">—</strong></div>
-            <div class="listener"><span>TCP</span><strong id="dns-tcp">—</strong></div>
-          </div>
+        <section class="dashboard-column dashboard-overview">
+          <section class="dashboard-section">
+            <h2>DNS listeners</h2>
+            <div class="listener-list">
+              <div class="listener"><span>UDP:</span><strong id="dns-udp">—</strong></div>
+              <div class="listener"><span>TCP:</span><strong id="dns-tcp">—</strong></div>
+            </div>
+          </section>
+          <section class="dashboard-section">
+            <h2>Запросы и ресурсы</h2>
+            <div class="metric-list">
+              <div class="metric"><span>Запросы:</span><strong id="queries">—</strong></div>
+              <div class="metric"><span>Ошибки:</span><strong id="failures">—</strong></div>
+              <div class="metric"><span>Попадания в кеш:</span><strong id="cache-hits">—</strong></div>
+              <div class="metric"><span>Активные UDP:</span><strong id="active-udp">—</strong></div>
+              <div class="metric"><span>Активные TCP:</span><strong id="active-tcp">—</strong></div>
+              <div class="metric"><span>Потерянные UDP:</span><strong id="udp-dropped">—</strong></div>
+              <div class="metric"><span>DNS-кеш:</span><strong id="cache">—</strong></div>
+              <div class="metric"><span>Gemini API:</span><strong id="gemini">—</strong></div>
+            </div>
+          </section>
         </section>
-
-        <section class="dashboard-column">
-          <h2>Запросы и ресурсы</h2>
-          <div class="metric-grid">
-            <div class="metric"><span>Запросы</span><strong id="queries">—</strong></div>
-            <div class="metric"><span>Ошибки</span><strong id="failures">—</strong></div>
-            <div class="metric"><span>Попадания в кеш</span><strong id="cache-hits">—</strong></div>
-            <div class="metric"><span>Активные UDP</span><strong id="active-udp">—</strong></div>
-            <div class="metric"><span>Активные TCP</span><strong id="active-tcp">—</strong></div>
-            <div class="metric"><span>Потерянные UDP</span><strong id="udp-dropped">—</strong></div>
-            <div class="metric"><span>DNS-кеш</span><strong id="cache">—</strong></div>
-            <div class="metric"><span>Gemini API</span><strong id="gemini">—</strong></div>
-          </div>
-        </section>
-
-        <section class="dashboard-column">
+        <section class="dashboard-column dashboard-upstreams">
           <h2>Upstream-группы</h2>
           <p class="muted">Время в мс — полный цикл health-проверки, а не задержка одного DNS-запроса. Раскрой upstream для деталей.</p>
           <div class="groups" id="groups">Загрузка…</div>
         </section>
       </div>
     </section>
+
+    <nav class="tab-nav" aria-label="Разделы управления">
+      <button class="tab-button" type="button" data-page="config" aria-selected="false" aria-expanded="false">Конфигурация</button>
+      <button class="tab-button" type="button" data-page="doh" aria-selected="false" aria-expanded="false">DoH-сервера</button>
+      <button class="tab-button" type="button" data-page="domains" aria-selected="false" aria-expanded="false">Домены</button>
+      <button class="tab-button" type="button" data-page="tests" aria-selected="false" aria-expanded="false">Проверка состояния</button>
+      <button class="tab-button" type="button" data-page="logs" aria-selected="false" aria-expanded="false">Логи</button>
+    </nav>
+
+    <section class="panel tab-page" data-page-panel="config" hidden>
+      <h2>Конфигурация config.json</h2>
+      <p class="muted">Изменения проверяются перед сохранением. Параметры listener и dns_max_concurrent требуют перезапуска плагина.</p>
+      <div class="config-block">
+        <h3>Слушатели и общие параметры</h3>
+        <div class="field-grid" id="config-general"></div>
+      </div>
+      <div class="config-block">
+        <div class="result-head"><h3>Health</h3><button class="secondary small" type="button" data-default-section="health">По умолчанию</button></div>
+        <div class="field-grid" id="config-health"></div>
+      </div>
+      <div class="config-block">
+        <div class="result-head"><h3>Cache</h3><button class="secondary small" type="button" data-default-section="cache">По умолчанию</button></div>
+        <div class="field-grid" id="config-cache"></div>
+      </div>
+      <div class="config-block">
+        <div class="result-head"><h3>Bootstrap resolvers</h3><button class="secondary small" type="button" data-default-section="bootstrap_resolvers">По умолчанию</button></div>
+        <label class="field">IP-адреса, по одному на строку<textarea id="config-bootstrap" rows="3" spellcheck="false"></textarea></label>
+      </div>
+      <div class="config-block">
+        <h3>Gemini API</h3>
+        <div class="field-grid" id="config-gemini"></div>
+        <div class="section-actions">
+          <label class="field" style="flex:1;min-width:15rem">Новый API key (не отображается после сохранения)
+            <input id="gemini-key" type="password" autocomplete="new-password" placeholder="Вставьте новый ключ">
+          </label>
+          <button id="save-gemini-key" type="button">Сохранить ключ</button>
+        </div>
+      </div>
+      <div class="section-actions">
+        <button id="save-config" type="button">Сохранить конфигурацию</button>
+        <span class="muted" id="config-note" role="status"></span>
+      </div>
+    </section>
+
+    <section class="panel tab-page" data-page-panel="doh" hidden>
+      <h2>Список DoH-серверов · doh-servers.txt</h2>
+      <p class="muted">Формат строки: id;url. Флажок включает строку или комментирует её. Порядок записей сохраняется. system-dns использует nameserver-ы VPS из /etc/resolv.conf: его можно отключить, но нельзя удалить или заменить URL.</p>
+      <div class="source-wrap">
+        <table class="source-table"><thead><tr><th>Вкл.</th><th>ID</th><th>HTTPS URL</th><th></th></tr></thead><tbody id="doh-rows"></tbody></table>
+      </div>
+      <div class="row-actions"><button class="secondary" id="doh-add" type="button">+ Добавить сервер</button><button id="doh-save" type="button">Сохранить список</button><span id="doh-note" class="muted" role="status"></span></div>
+    </section>
+
+    <section class="panel tab-page" data-page-panel="domains" hidden>
+      <h2>Домены для проверки · tst-domen.txt</h2>
+      <p class="muted">Поля: domain; qtypes; required; http_url; expected_status; verify_oidc. Для нескольких qtype используйте запятую, флаги — 0 или 1.</p>
+      <div class="source-wrap">
+        <table class="source-table"><thead><tr><th>Вкл.</th><th>Домен</th><th>QTypes</th><th>Required</th><th>HTTP URL</th><th>HTTP status</th><th>OIDC</th><th></th></tr></thead><tbody id="check-rows"></tbody></table>
+      </div>
+      <div class="row-actions"><button class="secondary" id="check-add" type="button">+ Добавить домен</button><button id="check-save" type="button">Сохранить список</button><span id="check-note" class="muted" role="status"></span></div>
+    </section>
+
+    <section class="panel tab-page" data-page-panel="logs" hidden>
+      <div class="result-head"><h2>Лог интеграции / деинтеграции</h2><button id="refresh-integration-log" class="secondary" type="button">Обновить журнал операций</button></div>
+      <p class="muted">Результаты последних операций Integrate и DeIntegrate, включая ошибки и вывод штатной процедуры.</p>
+      <pre class="log-output" id="integration-log">Журнал пока не загружен.</pre>
+    </section>
+    <section class="panel tab-page" data-page-panel="logs" hidden>
+      <div class="result-head"><h2>Логи</h2><button id="refresh-logs" class="secondary" type="button">Обновить логи</button></div>
+      <p class="muted" id="logs-source">Источник: systemd journal / plugin.log.</p>
+      <pre class="log-output" id="logs">Нажмите «Обновить логи».</pre>
+    </section>
+
+    <section class="panel tab-page" data-page-panel="tests" hidden>
+      <h2>Проверка состояния</h2>
+      <p class="muted">Проверяются config.json, файлы списков, фактические DNS-запросы через dig, UDP/HTTP listeners и Xray DNS integration. Предыдущий результат остаётся до нового запуска.</p>
+      <div class="section-actions"><button id="run-tests" type="button">Запустить проверки</button><strong id="tests-summary" class="muted">Проверки ещё не запускались</strong></div>
+      <div class="results" id="test-results"></div>
+    </section>
+
   </main>
   <script src="/app.js" defer></script>
 </body>
