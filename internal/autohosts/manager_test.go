@@ -87,3 +87,27 @@ func TestEndpointFreshnessExpiresIndependentlyFromDomainGrace(t *testing.T) {
 		t.Fatal("stale DoH endpoint IP must not be published even while domain grace is valid")
 	}
 }
+
+
+func TestConfigurePinsServerAndEmergencyOffAtomically(t *testing.T) {
+	m, err := New(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil { t.Fatal(err) }
+	now := time.Now().UTC()
+	ep := Endpoint{ServerID:"edge", URL:"https://dns.example/dns-query", Hostname:"dns.example", IPv4:[]string{"8.8.8.8"}}
+	if err := m.ApplyCycle("edge", ep, nil, now); err != nil { t.Fatal(err) }
+	enabled, emergency, pinned := true, true, "edge"
+	if err := m.Configure(&enabled, &emergency, &pinned); err != nil { t.Fatal(err) }
+	state := m.State()
+	if !state.Config.Enabled || !state.Config.EmergencyOff || state.Config.Mode!="pinned" || state.Config.PinnedServerID!="edge" {
+		t.Fatalf("settings were not applied: %+v", state.Config)
+	}
+	badPin := "missing"
+	if err := m.Configure(nil, nil, &badPin); err == nil { t.Fatal("expected unknown pinned server to fail") }
+	after := m.State()
+	if after.Config.PinnedServerID!="edge" || !after.Config.EmergencyOff { t.Fatal("failed settings update partially mutated state") }
+	auto := ""
+	restore := false
+	if err := m.Configure(nil, &restore, &auto); err != nil { t.Fatal(err) }
+	after = m.State()
+	if after.Config.Mode!="auto" || after.Config.EmergencyOff { t.Fatalf("explicit restore did not apply: %+v", after.Config) }
+}
