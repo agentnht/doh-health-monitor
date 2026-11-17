@@ -1814,7 +1814,7 @@ func TestRRCacheTTLDoesNotTreatOPTFlagsAsTTL(t *testing.T) {
 	binary.BigEndian.PutUint16(packet[10:12], 1)
 	packet = append(packet, 1, 'a', 0, 0, 1, 0, 1)
 	packet = append(packet, 0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 120, 0, 4, 192, 0, 2, 1)
-	packet = append(packet, 0, 0, 41, 0x10, 0, 0, 0, 0x80, 0, 0, 0, 0)
+	packet = append(packet, 0, 0, 41, 0x10, 0, 0, 0, 0x80, 0, 0, 0)
 
 	ttl, ok := minResponseTTL(packet)
 	if !ok || ttl != 120 {
