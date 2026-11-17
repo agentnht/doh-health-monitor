@@ -5,16 +5,16 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+undefined
         with:
           go-version-file: go.mod
 
@@ -22,6 +22,11 @@ jobs:
         run: go mod tidy
       - name: Verify Go module files are tidy
         run: git diff --exit-code -- go.mod go.sum
+
+      - name: Verify release tag belongs to main
+        run: |
+          git fetch origin main --no-tags
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
       - name: Verify versions match tag
         run: |
@@ -36,7 +41,7 @@ jobs:
         run: |
           unformatted="$(gofmt -l $(git ls-files '*.go'))"
           if [[ -n "$unformatted" ]]; then
-            printf '%s\\n' "$unformatted"
+            printf '%s\n' "$unformatted"
             exit 1
           fi
       - run: go vet ./...
@@ -64,10 +69,8 @@ jobs:
           sha256sum "$id-v$version.zip" > "$id-v$version.zip.sha256"
 
       - name: Sign package and checksum with Sigstore keyless signing
-        env:
-          COSIGN_EXPERIMENTAL: "1"
         run: |
-          go install github.com/sigstore/cosign/v3/cmd/cosign@v3.1.4
+          go install github.com/sigstore/cosign/v3/cmd/cosign@3428d3c2217e06f641de9f298ae597e2f85eb989
           export PATH="$(go env GOPATH)/bin:$PATH"
           file=$(find . -maxdepth 1 -name '*.zip' -print -quit)
           checksum="${file}.sha256"
