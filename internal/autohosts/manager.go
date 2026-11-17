@@ -316,6 +316,32 @@ func (m *Manager) ApplyFullCycle(activeID string, endpoints []Endpoint, results 
 	})
 }
 
+func (m *Manager) RecordProbeFailures(serverID string, domains []string, message string, now time.Time) error {
+	serverID = strings.TrimSpace(serverID)
+	if serverID == "" { return errors.New("probe failure server ID is empty") }
+	if len(message) > 512 { message = message[:512] }
+	return m.update(func(s *State) error {
+		for _, raw := range domains {
+			domain, err := NormalizeDomain(raw)
+			if err != nil { return err }
+			s.ProbeResults[serverID+"\\x00"+domain] = ProbeResult{ServerID:serverID, Domain:domain, Success:false, CheckedAt:now.UTC(), Error:message}
+		}
+		for key, result := range s.ProbeResults {
+			if now.Sub(result.CheckedAt) > 30*24*time.Hour { delete(s.ProbeResults, key) }
+		}
+		for len(s.ProbeResults) > maxStoredProbeResults {
+			oldestKey := ""
+			var oldest time.Time
+			for key, result := range s.ProbeResults {
+				if oldestKey == "" || result.CheckedAt.Before(oldest) { oldestKey, oldest = key, result.CheckedAt }
+			}
+			if oldestKey == "" { break }
+			delete(s.ProbeResults, oldestKey)
+		}
+		return nil
+	})
+}
+
 func (m *Manager) DryRun(activeID string,ep Endpoint,results []ProbeResult,now time.Time)(map[string]DomainRecord,error){
  state:=m.State()
  if activeID=="" || ep.ServerID!=activeID{return nil,errors.New("dry-run active server and endpoint mismatch")}
