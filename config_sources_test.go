@@ -29,8 +29,11 @@ func TestInitializeConfigSourceFilesCreatesEmbeddedDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sources.Providers) != 5 {
-		t.Fatalf("default providers = %d, want 5", len(sources.Providers))
+	if len(sources.Providers) != 6 {
+		t.Fatalf("default providers = %d, want 6 including system-dns", len(sources.Providers))
+	}
+	if !sources.SystemDNSEnabled {
+		t.Fatal("embedded default source must enable system-dns")
 	}
 	if len(sources.Checks) != 25 {
 		t.Fatalf("default checks = %d, want 25", len(sources.Checks))
@@ -85,8 +88,9 @@ func TestInitializeConfigSourceFilesPreservesExistingUserFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(gotDoH) != doh || string(gotChecks) != checks {
-		t.Fatal("existing user source files were unexpectedly replaced")
+	wantDoH := "# id;url\nsystem-dns;\ncustom;https://resolver.example.net/dns-query\n"
+	if string(gotDoH) != wantDoH || string(gotChecks) != checks {
+		t.Fatalf("existing user source files were not preserved with the system row migration: doh=%q checks=%q", gotDoH, gotChecks)
 	}
 }
 
@@ -122,10 +126,21 @@ func TestParseDoHProvidersKeepsIDWhenEndpointHostnameChanges(t *testing.T) {
 	}
 }
 
-func TestParseDoHProvidersRejectsDuplicateIDsAndReservedSystemDNS(t *testing.T) {
+func TestParseDoHProvidersAllowsSystemDNSWithoutDoHURL(t *testing.T) {
+	providers, err := parseDoHProviders([]byte("# id;url\nsystem-dns;\ndagami;https://dns.dagami.ru/dns-query\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(providers) != 2 || providers[0].ID != systemDNSUpstreamID || !providers[0].System || providers[0].URL != "" {
+		t.Fatalf("system DNS row = %+v", providers)
+	}
+}
+
+func TestParseDoHProvidersRejectsDuplicateIDsAndInvalidSystemDNS(t *testing.T) {
 	cases := [][]byte{
 		[]byte("dagami;https://one.example/dns-query\ndagami;https://two.example/dns-query\n"),
 		[]byte("system-dns;https://resolver.example/dns-query\n"),
+		[]byte("system-dns;\nsystem-dns;\n"),
 		[]byte("bad id;https://resolver.example/dns-query\n"),
 		[]byte("dagami;http://resolver.example/dns-query\n"),
 	}
@@ -204,7 +219,7 @@ func TestApplyConfigSourcesGeneratesOrderedUpstreamsAndPreservesRuntimeSettings(
 	cfg.GeminiAPI.Enabled = true
 	cfg.Integration = true
 
-	providers, err := parseDoHProviders([]byte("dagami;https://dns.dagami.ru/dns-query\nextra;https://extra.example.net/dns-query\n"))
+	providers, err := parseDoHProviders([]byte("system-dns;\ndagami;https://dns.dagami.ru/dns-query\nextra;https://extra.example.net/dns-query\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +231,7 @@ func TestApplyConfigSourcesGeneratesOrderedUpstreamsAndPreservesRuntimeSettings(
 	for _, provider := range providers {
 		urls[provider.ID] = provider.URL
 	}
-	generated, err := applyConfigSources(cfg, ConfigSources{Providers: providers, Checks: checks, DoHURLs: urls})
+	generated, err := applyConfigSources(cfg, ConfigSources{Providers: providers, Checks: checks, DoHURLs: urls, SystemDNSEnabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,6 +251,37 @@ func TestApplyConfigSourcesGeneratesOrderedUpstreamsAndPreservesRuntimeSettings(
 	}
 	if generated.Cache.MaxEntries != 321 || len(generated.LocalHosts) != 1 || !generated.GeminiAPI.Enabled || !generated.Integration {
 		t.Fatal("non-managed config settings were not preserved")
+	}
+}
+
+func TestApplyConfigSourcesCanDisableSystemDNS(t *testing.T) {
+	cfg := defaultConfig()
+	providers, err := parseDoHProviders([]byte("# system-dns;\\ndagami;https://dns.dagami.ru/dns-query\\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	urls := map[string]string{"dagami": "https://dns.dagami.ru/dns-query"}
+	generated, err := applyConfigSources(cfg, ConfigSources{
+		Providers: providers, DoHURLs: urls, SystemDNSEnabled: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, upstream := range generated.Upstreams {
+		if upstream.ID == systemDNSUpstreamID {
+			t.Fatal("disabled system-dns remained in generated upstreams")
+		}
+	}
+	for _, id := range generated.Groups[0].Upstreams {
+		if id == systemDNSUpstreamID {
+			t.Fatal("disabled system-dns remained in the Google upstream group")
+		}
+	}
+	if len(generated.Groups[0].Upstreams) != 1 || generated.Groups[0].Upstreams[0] != "dagami" {
+		t.Fatalf("unexpected upstreams with system DNS disabled: %v", generated.Groups[0].Upstreams)
+	}
+	if err := validateConfig(generated); err != nil {
+		t.Fatalf("configuration without system DNS should validate: %v", err)
 	}
 }
 
