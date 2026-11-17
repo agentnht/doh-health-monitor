@@ -1,6 +1,6 @@
 # Plugin management UI — architecture proposal
 
-**Status:** Draft architecture; no implementation decisions beyond the items explicitly marked as agreed.
+**Status:** Implemented in release 2.2.0; this document records the current behavior and the remaining scope boundaries.
 
 ## Goal
 
@@ -13,11 +13,21 @@ The SSH and web interfaces must call the same Go-side management logic. They mus
 
 ## 1. SSH management menu
 
-The administrator connects to the server over SSH and launches the repository-hosted shell script from an interactive Bash session. Current invocation while this work remains in the draft branch:
+The administrator connects to the server over SSH and launches the interactive Bash menu as root. The preferred entry point is the copy bundled in the installed plugin ZIP:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/agentnht/doh-health-monitor/feature/plugin-management-ui/scripts/plugin-management.sh)
+bash /usr/local/x-ui/bin/plugins/doh-health-monitor/scripts/plugin-management.sh
 ```
+
+On its first launch from the installed package directory, the script creates `/usr/local/bin/dhm` as a symlink to that packaged script. Subsequent launches can use `dhm`. The script does not overwrite an existing file or a symlink pointing elsewhere. If the plugin itself is uninstalled, the administrator removes the now-dangling link with `rm -f /usr/local/bin/dhm`.
+
+The GitHub process-substitution entry point remains available as an alternative/bootstrap method:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/agentnht/doh-health-monitor/main/scripts/plugin-management.sh)
+```
+
+Because the GitHub version is streamed rather than executed from a persistent installed file, this entry point does not create the `dhm` symlink.
 
 The menu requires root. It locates the installed plugin executable from `LUCX_PLUGIN_DATA` or the running LucX-UI process working directory. The script presents these actions:
 
@@ -28,7 +38,7 @@ The menu requires root. It locates the installed plugin executable from `LUCX_PL
 
 The existing daemon behavior remains unchanged: starting the binary without a management command starts the DNS daemon. The `check` action must not modify Xray or plugin configuration.
 
-The script is an orchestration/presentation layer. Administrative operations and their validation remain in Go. The current menu invokes the existing Go `integrate` and `remove` commands after explicit confirmation. Integrate saves permanent DNS objects first, then performs a temporary TCP/UDP Tunnel self-test. LucX-UI applies pending Xray changes asynchronously on a 30-second background cadence, so the self-test allows up to 75 seconds for the temporary Tunnel listeners to appear and polls only once (rather than timing out before the panel's next apply cycle). A failed self-test does not roll back or remove the already verified permanent DNS integration; temporary diagnostic resources are cleaned up separately. Its `check` item first invokes the new Go `check` command for read-only service/listener/status diagnostics, then downloads and runs `scripts/check-dns-integration.sh` for read-only Xray configuration checks. The shell checker skips its duplicate service/listener/status probes when called by the menu; standalone use still performs the complete check. The menu requires `curl` or `wget` to retrieve the checker and `jq` for Xray JSON checks. The menu reports a missing plugin binary or failed operation rather than silently continuing. The `web` menu item starts the separate Go Web UI process. The shell keeps the coprocess stdin writer open as a control pipe, parses the readiness line, and prints the SSH tunnel command plus browser URL.
+The script is an orchestration/presentation layer. Administrative operations and their validation remain in Go. The current menu invokes the existing Go `integrate` and `remove` commands after explicit confirmation. Integrate saves permanent DNS objects first, then performs a temporary TCP/UDP Tunnel self-test. LucX-UI applies pending Xray changes asynchronously on a 30-second background cadence, so the self-test allows up to 75 seconds for the temporary Tunnel listeners to appear and polls only once (rather than timing out before the panel's next apply cycle). A failed self-test does not roll back or remove the already verified permanent DNS integration; temporary diagnostic resources are cleaned up separately. Its `check` item first invokes the Go `check` command for read-only service/listener/status diagnostics, then runs the adjacent `scripts/check-dns-integration.sh` included in the ZIP for read-only Xray configuration checks. When the menu is launched from GitHub by process substitution, it downloads the checker from the stable `main` branch as a fallback. The shell checker skips duplicate service/listener/status probes when called by the menu; standalone use still performs the complete check. The menu requires `jq` for Xray JSON checks, and the GitHub bootstrap mode additionally requires `curl` or `wget`. The menu reports a missing plugin binary or failed operation rather than silently continuing. The `web` menu item starts the separate Go Web UI process. The shell keeps the coprocess stdin writer open as a control pipe, parses the readiness line, and prints the SSH tunnel command plus browser URL.
 
 ## 2. On-demand Web UI
 
@@ -155,7 +165,7 @@ Browser Web UI ─ HTTP ┘
 
 The web API should expose only the operations and status needed by the UI. It should reuse existing Go integration and diagnostic logic rather than duplicating it. **Agreed security boundary:** the UI may invoke only a narrow allowlist of Go management operations; it must never execute arbitrary shell commands or expose a terminal. State-changing operations require explicit user confirmation.
 
-## 6. Proposed delivery stages
+## 6. Delivery status
 
 1. **Architecture and interface contract:** agreed and documented.
 2. **SSH menu:** implemented; invokes the Go integration/removal and read-only check commands, plus read-only Xray configuration diagnostics.
@@ -163,12 +173,10 @@ The web API should expose only the operations and status needed by the UI. It sh
 4. **Read-only Web API and dashboard:** implemented `GET /api/v1/status`, authenticated with a per-session HttpOnly cookie. The API returns an allowlisted daemon summary and sanitized per-upstream health details, including check timestamps, success/failure streaks, and individual DNS/HTTP outcomes. CI tests verify that raw error strings and private fields are not exposed. No mutation routes are present.
 5. **Further management UI:** consider read-only configuration details and integration status next, then guarded `integrate`/`remove` operations only after their confirmation and security contracts are agreed.
 
-## 7. Open decisions
+## 7. Remaining scope boundary
 
-- The current invocation uses the draft branch URL. Before merging, switch it to the stable `main` branch or a tagged release.
-- The initial lifecycle is session-bound: the web process exits when the supervising SSH management session ends; no idle timeout is planned for the placeholder milestone.
-- The agreed per-session protection is a random access token kept out of URLs, stdout, and logs, plus Host/Origin validation and CSRF protection; implementation details must be reviewed during development.
-- What exact read-only checks should the first `check` menu item perform and how should results be presented?
+- The Web UI remains read-only; browser-based configuration editing and state-changing API routes are outside this release.
+- The temporary Web UI process remains bound to the supervising SSH management session; no background service or idle-timeout behavior is introduced.
 
 ## Scope note
 
