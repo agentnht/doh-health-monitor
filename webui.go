@@ -271,13 +271,13 @@ func newWebUIHandlerWithDataDir(statusURL, launchToken, dataDir string) http.Han
 		case "/api/v1/config", "/api/v1/config/defaults", "/api/v1/sources",
 			"/api/v1/gemini-key", "/api/v1/logs", "/api/v1/integration/logs",
 			"/api/v1/tests/run", "/api/v1/integration":
-			if !webUIRequestAuthorized(r, sessionToken) {
+			if !webUIRequestAuthorized(r, cookieToken) {
 				http.Error(w, "authentication required", http.StatusUnauthorized)
 				return
 			}
 			webUIAdminAPI(w, r, r.URL.Path, dataDir)
 		case "/api/v1/autohosts/status", "/api/v1/autohosts/config", "/api/v1/autohosts/dry-run":
-			if !webUIRequestAuthorized(r, sessionToken) {
+			if !webUIRequestAuthorized(r, cookieToken) {
 				http.Error(w, "authentication required", http.StatusUnauthorized)
 				return
 			}
