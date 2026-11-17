@@ -25,8 +25,12 @@ jobs:
           bash -n scripts/plugin-management.sh
           bash -n scripts/check-dns-integration.sh
           node --check webui/app.js
-      - name: Check Go formatting
-        run: test -z \"$(gofmt -l $(git ls-files '*.go'))\"
+        run: |
+          unformatted="$(gofmt -l $(git ls-files '*.go'))"
+          if [[ -n "$unformatted" ]]; then
+            printf '%s\\n' "$unformatted"
+            exit 1
+          fi
       - run: go vet ./...
       - run: go test ./...
       - name: Run race detector
