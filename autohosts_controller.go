@@ -293,11 +293,6 @@ func parseAddressRecords(packet []byte,qtype uint16)([]string,error) {
 	return ips,nil
 }
 
-func appendUniqueString(values []string,value string) []string {
-	for _,existing:=range values { if existing==value { return values } }
-	return append(values,value)
-}
-
 func isAutoHostsPublicIP(ip net.IP) bool {
 	if ip==nil || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() { return false }
 	return true
