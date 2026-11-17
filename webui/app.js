@@ -5,6 +5,7 @@
   const when = (value) => value ? new Date(value).toLocaleString("ru-RU") : "—";
   let configState = null;
   const sourceState = { doh: [], checks: [] };
+  let autoHostsState = null;
 
   async function api(path, options = {}) {
     const headers = new Headers(options.headers || {});
@@ -107,6 +108,24 @@
     }
   }
 
+  async function loadAutoHosts() {
+    const s = await api("/api/v1/autohosts/status"); autoHostsState = s;
+    const cfg = s.config || {}; $("autohosts-enabled").checked = Boolean(cfg.enabled); $("autohosts-mode").value = cfg.mode || "auto";
+    text("autohosts-active", s.active_server); text("autohosts-state-emergency", cfg.emergency_off ? "ВКЛЮЧЁН" : "выключен");
+    $("autohosts-domains").textContent = Object.keys(s.domains || {}).join(", ") || "Нет доменов";
+    $("autohosts-results").textContent = Object.values(s.probe_results || {}).map(x => x.server_id + " × " + x.domain + " · " + (x.success ? "OK" : "FAIL")).join("\n") || "Нет проверок";
+  }
+  async function saveAutoHosts() {
+    const mode = $("autohosts-mode").value; const pinned = mode === "pinned" ? $("autohosts-pinned").value : "";
+    await api("/api/v1/autohosts/config", {method:"POST", body:JSON.stringify({enabled:$("autohosts-enabled").checked, pinned_server_id:pinned})}); await loadAutoHosts();
+  }
+  async function toggleAutoHostsEmergency() {
+    const off = Boolean(autoHostsState && autoHostsState.config && autoHostsState.config.emergency_off);
+    await api("/api/v1/autohosts/config", {method:"POST", body:JSON.stringify({emergency_off:!off})}); await loadAutoHosts();
+  }
+  async function runAutoHostsDryRun() {
+    const p = await api("/api/v1/autohosts/dry-run", {method:"POST", body:"{}"}); $("autohosts-preview").textContent = JSON.stringify(p, null, 2);
+  }
   async function loadStatus() {
     $("refresh").disabled = true;
     text("updated", "Загрузка…");
