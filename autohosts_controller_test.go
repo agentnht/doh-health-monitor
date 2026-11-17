@@ -22,7 +22,7 @@ func TestParseAAAARecordsAndRejectPrivateProbeTargets(t *testing.T) {
 	ips, err := parseAddressRecords(response, 28)
 	if err != nil { t.Fatal(err) }
 	if len(ips) != 1 || ips[0] != "2001:4860:4860::8888" { t.Fatalf("unexpected AAAA records: %v", ips) }
-	for _, raw := range []string{"127.0.0.1", "10.0.0.1", "192.168.1.1", "169.254.1.1", "::1", "fc00::1"} {
+	for _, raw := range []string{"127.0.0.1", "10.0.0.1", "192.168.1.1", "169.254.1.1", "100.64.0.1", "192.0.2.1", "198.18.0.1", "::1", "fc00::1", "2001:db8::1", "2002::1"} {
 		if isAutoHostsPublicIP(net.ParseIP(raw)) { t.Errorf("private/reserved address accepted: %s", raw) }
 	}
 	if !isAutoHostsPublicIP(net.ParseIP("8.8.8.8")) { t.Fatal("public IPv4 rejected") }
