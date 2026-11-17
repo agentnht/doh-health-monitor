@@ -317,9 +317,9 @@ func isAutoHostsPublicIP(ip net.IP) bool {
 			return false
 		case a == 172 && b >= 16 && b <= 31:
 			return false
-		case a == 192 && (b == 0 || b == 168):
+		case a == 192 && b == 168:
 			return false
-		case a == 192 && b == 0 && v4[2] == 2: // documentation range
+		case a == 192 && b == 0 && (v4[2] == 0 || v4[2] == 2):
 			return false
 		case a == 192 && b == 88 && v4[2] == 99:
 			return false
@@ -338,8 +338,14 @@ func isAutoHostsPublicIP(ip net.IP) bool {
 	if v6 == nil || (v6[0]&0xe0) != 0x20 {
 		return false
 	}
+	if v6[0] == 0x20 && v6[1] == 0x01 && v6[2] <= 0x01 {
+		return false // 2001:0000::/23 special-purpose space
+	}
 	if v6[0] == 0x20 && v6[1] == 0x01 && v6[2] == 0x0d && v6[3] == 0xb8 {
 		return false // 2001:db8::/32
+	}
+	if v6[0] == 0x20 && v6[1] == 0x02 {
+		return false // 2002::/16 6to4 transition space
 	}
 	return true
 }
