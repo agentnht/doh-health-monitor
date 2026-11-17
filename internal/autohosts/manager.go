@@ -146,7 +146,11 @@ func NormalizeDomain(raw string)(string,error){
  return d,nil
 }
 func validateEndpoint(ep Endpoint)(Endpoint,error){
- if ep.ServerID==""||ep.URL==""||ep.Hostname=="" {return Endpoint{},errors.New("endpoint ID, URL and hostname are required")}
+ if ep.ServerID==""||len(ep.ServerID)>128||ep.URL==""||len(ep.URL)>2048||ep.Hostname==""||len(ep.Hostname)>253 {return Endpoint{},errors.New("endpoint ID, URL and hostname are required and bounded")}
+ parsed,parseErr:=url.Parse(ep.URL)
+ if parseErr!=nil||parsed.Scheme!="https"||parsed.Hostname()==""||parsed.User!=nil||parsed.Fragment!=""||!strings.EqualFold(strings.TrimSuffix(parsed.Hostname(),"."),strings.TrimSuffix(ep.Hostname,".")){return Endpoint{},errors.New("DoH endpoint URL must be HTTPS and match its hostname")}
+ if net.ParseIP(ep.Hostname)==nil {if _,err:=NormalizeDomain(ep.Hostname);err!=nil{return Endpoint{},errors.New("invalid DoH endpoint hostname")}}
+ if len(ep.IPv4)>16||len(ep.IPv6)>16{return Endpoint{},errors.New("too many resolved DoH endpoint IPs")}
  v4,v6:=[]string{},[]string{}; seen:=map[string]bool{}
  for _,raw:=range ep.IPv4 {ip:=net.ParseIP(raw);if ip==nil||ip.To4()==nil{return Endpoint{},errors.New("invalid IPv4 endpoint IP")};v:=ip.To4().String();if !seen[v]{seen[v]=true;v4=append(v4,v)}}
  seen=map[string]bool{}
