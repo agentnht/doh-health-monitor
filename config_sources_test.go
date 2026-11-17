@@ -99,7 +99,7 @@ func TestMigrateLegacyDoHListUsesStableIDsAndPreservesURLs(t *testing.T) {
 	if !changed {
 		t.Fatal("legacy list was not marked as migrated")
 	}
-	want := "# id;url — provider IDs stay stable when endpoint hostnames change\ngeohide-eu;https://eu.geohide.ru/dns-query\ndagami;https://doh.dagami.ru/dns-query\nprovider-custom-example-net;https://custom.example.net/resolve\n"
+	want := "# id;url — provider IDs remain stable when endpoint hostnames change\ngeohide-eu;https://eu.geohide.ru/dns-query\ndagami;https://doh.dagami.ru/dns-query\nprovider-custom-example-net;https://custom.example.net/resolve\n"
 	if string(got) != want {
 		t.Fatalf("migrated contents:\n%s\nwant:\n%s", got, want)
 	}

@@ -99,7 +99,7 @@ func TestWebUIStatusAPIRequiresSessionAndReturnsSanitizedStatus(t *testing.T) {
 			"dns_tcp":"127.0.0.1:5355",
 			"groups":{"google":{"active_upstream":"system-dns","upstreams":{"system-dns":{
 				"state":"up","success_streak":4,"failure_streak":0,
-				"last_check":"2026-11-16T10:00:00Z","latency_ms":946,"last_http_status":204,
+				"last_check":"2026-11-16T10:00:00Z","check_duration_ms":946,"last_http_status":204,
 				"last_error":"internal detail",
 				"checks":[{"domain":"health.example","required":true,"dns_ok":true,
 					"http_checked":true,"http_ok":true,"http_status":204,"error":"PROBE-ERROR-MUST-NOT-LEAK"}]
