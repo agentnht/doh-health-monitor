@@ -259,7 +259,7 @@ run_web_ui() {
     stop_web_ui
     return 1
   fi
-  if [[ ! "$ready" =~ ^WEB_UI_READY\\ port=([0-9]{1,5})\\ token=([A-Za-z0-9_-]{40,})$ ]]; then
+  if [[ ! "$ready" =~ ^WEB_UI_READY[[:space:]]port=([0-9]{1,5})[[:space:]]token=([A-Za-z0-9_-]{40,})$ ]]; then
     fail "Web UI вернул некорректный readiness-ответ."
     stop_web_ui
     return 1
