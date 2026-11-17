@@ -1530,6 +1530,7 @@ func TestHandleDNSAutoHostsEndToEndAndEmergencyBypass(t *testing.T) {
 	if err := manager.ApplyCycle("edge", endpoint, []autohosts.ProbeResult{{Domain:"chatgpt.com",Success:true,CheckedAt:now}}, now); err != nil { t.Fatal(err) }
 	enabled := true
 	if err := manager.SetEnabled(enabled); err != nil { t.Fatal(err) }
+	if ips,_,matched:=manager.Snapshot().Lookup("chatgpt.com",1,time.Now()); !matched || len(ips)!=1 { t.Fatalf("test setup did not publish Auto Hosts record: enabled=%v emergency=%v active=%s domains=%+v endpoint=%+v lookup=%v",manager.State().Config.Enabled,manager.State().Config.EmergencyOff,manager.State().ActiveServer,manager.State().Domains,manager.State().Endpoints,ips) }
 	runtime := &Runtime{autoHosts:manager}
 	runtime.snapshot.Store(&Snapshot{cfg:Config{Cache:CacheConfig{Enabled:false}},localHosts:map[string]LocalHost{},upstreams:map[string]*UpstreamRuntime{},groups:map[string]Group{}})
 	a := runtime.handleDNS(makeDNSQuery("CHATGPT.COM",1))
