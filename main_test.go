@@ -1520,3 +1520,40 @@ func TestAutoHostsDryRunHandlerDoesNotMutateStateOnUnavailableEndpoints(t *testi
 		t.Fatal("failed Dry Run mutated Auto Hosts persistent state")
 	}
 }
+
+
+func TestHandleDNSAutoHostsEndToEndAndEmergencyBypass(t *testing.T) {
+	now := time.Now().UTC()
+	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
+	if err != nil { t.Fatal(err) }
+	endpoint := autohosts.Endpoint{ServerID:"edge", URL:"https://dns.example/dns-query", Hostname:"dns.example", IPv4:[]string{"8.8.4.4"}, UpdatedAt:now}
+	if err := manager.ApplyFullCycle("edge", []autohosts.Endpoint{endpoint}, []autohosts.ProbeResult{{ServerID:"edge",Domain:"chatgpt.com",Success:true,CheckedAt:now}}, now); err != nil { t.Fatal(err) }
+	enabled := true
+	if err := manager.Configure(&enabled, nil, nil); err != nil { t.Fatal(err) }
+	runtime := &Runtime{autoHosts:manager}
+	runtime.snapshot.Store(&Snapshot{cfg:Config{Cache:CacheConfig{Enabled:false}},localHosts:map[string]LocalHost{},upstreams:map[string]*UpstreamRuntime{},groups:map[string]Group{}})
+	a := runtime.handleDNS(makeDNSQuery("CHATGPT.COM",1))
+	ips, err := parseARecords(a)
+	if err != nil || len(ips)!=1 || ips[0]!="8.8.4.4" { t.Fatalf("A answer = %v, err=%v",ips,err) }
+	aaaa := runtime.handleDNS(makeDNSQuery("chatgpt.com",28))
+	if dnsRCode(aaaa)!=0 || binary.BigEndian.Uint16(aaaa[6:8])!=0 { t.Fatalf("AAAA without endpoint IPv6 must be NODATA: %x",aaaa) }
+	off := true
+	if err := manager.Configure(nil,&off,nil); err != nil { t.Fatal(err) }
+	bypassed := runtime.handleDNS(makeDNSQuery("chatgpt.com",1))
+	if dnsRCode(bypassed)!=2 { t.Fatalf("Emergency OFF should bypass Auto Hosts and use ordinary gateway path; with no upstream expected SERVFAIL, got rcode=%d",dnsRCode(bypassed)) }
+}
+
+func TestHandleDNSManualLocalHostsOverrideAutoHosts(t *testing.T) {
+	now := time.Now().UTC()
+	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
+	if err != nil { t.Fatal(err) }
+	endpoint := autohosts.Endpoint{ServerID:"edge", URL:"https://dns.example/dns-query", Hostname:"dns.example", IPv4:[]string{"8.8.4.4"}, UpdatedAt:now}
+	if err := manager.ApplyFullCycle("edge", []autohosts.Endpoint{endpoint}, []autohosts.ProbeResult{{ServerID:"edge",Domain:"chatgpt.com",Success:true,CheckedAt:now}}, now); err != nil { t.Fatal(err) }
+	enabled := true
+	if err := manager.Configure(&enabled,nil,nil); err != nil { t.Fatal(err) }
+	runtime := &Runtime{autoHosts:manager}
+	runtime.snapshot.Store(&Snapshot{cfg:Config{},localHosts:map[string]LocalHost{"chatgpt.com":{IPv4:[]string{"203.0.113.9"}}},upstreams:map[string]*UpstreamRuntime{},groups:map[string]Group{}})
+	response := runtime.handleDNS(makeDNSQuery("chatgpt.com",1))
+	ips, err := parseARecords(response)
+	if err != nil || len(ips)!=1 || ips[0]!="203.0.113.9" { t.Fatalf("manual local_hosts did not win priority: %v err=%v",ips,err) }
+}
