@@ -878,12 +878,10 @@ func TestDNSGatewaySendsArbitraryQNAMEThroughGoogleProfile(t *testing.T) {
 	}
 	rt.snapshot.Store(snapshot)
 
-	response, selected, err := rt.query(context.Background(), query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if selected != "selected-google-doh" {
-		t.Fatalf("selected upstream = %q", selected)
+	rt.dnsSem = make(chan struct{}, 1)
+	response := rt.handleDNS(query)
+	if dnsRCode(response) != 0 {
+		t.Fatalf("ordinary DNS Gateway returned rcode=%d", dnsRCode(response))
 	}
 	if gotName != "completely-unrelated.example" {
 		t.Fatalf("DoH received QNAME %q; want arbitrary QNAME unchanged", gotName)
@@ -1622,4 +1620,27 @@ func TestAutoHostsDNSOverTCPTransport(t *testing.T) {
 	if err!=nil || len(ips)!=1 || ips[0]!="8.8.4.4" { t.Fatalf("TCP Auto Hosts response=%v err=%v",ips,err) }
 	cancel(); _=listener.Close()
 	select { case <-done: case <-time.After(2*time.Second): t.Fatal("TCP server did not stop") }
+}
+
+func TestAutoHostsConfigHotReloadTriggersBackgroundController(t *testing.T) {
+	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
+	if err != nil { t.Fatal(err) }
+	enabled := true
+	if err := manager.Configure(&enabled, nil, nil); err != nil { t.Fatal(err) }
+	runtime := &Runtime{autoHosts: manager}
+	runtime.autoController = newAutoHostsController(runtime, manager)
+	runtime.triggerAutoHostsConfigReload()
+	select {
+	case <-runtime.autoController.trigger:
+	default:
+		t.Fatal("hot reload did not trigger an immediate Auto Hosts controller cycle")
+	}
+	 emergencyOff := true
+	if err := manager.Configure(nil, &emergencyOff, nil); err != nil { t.Fatal(err) }
+	runtime.triggerAutoHostsConfigReload()
+	select {
+	case <-runtime.autoController.trigger:
+		t.Fatal("hot reload must not reactivate Auto Hosts while Emergency OFF is enabled")
+	default:
+	}
 }
