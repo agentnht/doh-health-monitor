@@ -280,14 +280,19 @@ func TestRunWebUIStopsWhenSupervisorPipeCloses(t *testing.T) {
 	}
 
 	launchToken := strings.TrimPrefix(fields[2], "token=")
-	response, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/?access_token=%s", port, launchToken))
-	if err != nil {
-		t.Fatalf("request placeholder page: %v", err)
-	}
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/?access_token=%s", port, launchToken))
+	if err != nil { t.Fatalf("request Web UI launch URL: %v", err) }
 	_ = response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("Web UI status=%d, want %d", response.StatusCode, http.StatusOK)
+	if response.StatusCode != http.StatusSeeOther || len(response.Cookies()) != 1 {
+		t.Fatalf("launch response status=%d cookies=%d; want redirect and session cookie", response.StatusCode, len(response.Cookies()))
 	}
+	pageRequest, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/", port), nil)
+	pageRequest.AddCookie(response.Cookies()[0])
+	pageResponse, err := client.Do(pageRequest)
+	if err != nil { t.Fatalf("request authenticated Web UI page: %v", err) }
+	_ = pageResponse.Body.Close()
+	if pageResponse.StatusCode != http.StatusOK { t.Fatalf("authenticated Web UI status=%d, want %d", pageResponse.StatusCode, http.StatusOK) }
 
 	if err := controlWrite.Close(); err != nil {
 		t.Fatal(err)
