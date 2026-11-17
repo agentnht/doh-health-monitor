@@ -27,6 +27,7 @@ type Config struct {
  CheckInterval time.Duration `json:"check_interval"`
  GracePeriod time.Duration `json:"grace_period"`
  TTL time.Duration `json:"ttl"`
+ EndpointMaxAge time.Duration `json:"endpoint_max_age"`
  MaxDomains int `json:"max_domains"`
 }
 type Endpoint struct {
@@ -68,6 +69,7 @@ type Snapshot struct {
  Endpoint Endpoint
  Domains map[string]DomainRecord
  TTL time.Duration
+ EndpointMaxAge time.Duration
 }
 type Manager struct {
  path string
@@ -77,7 +79,7 @@ type Manager struct {
 }
 
 func DefaultConfig() Config {
- return Config{Mode:"auto", CheckInterval:5*time.Minute, GracePeriod:30*time.Minute, TTL:60*time.Second, MaxDomains:64}
+ return Config{Mode:"auto", CheckInterval:5*time.Minute, GracePeriod:30*time.Minute, TTL:60*time.Second, EndpointMaxAge:24*time.Hour, MaxDomains:64}
 }
 func New(path string) (*Manager,error) {
  if strings.TrimSpace(path)=="" { return nil,errors.New("Auto Hosts state path is empty") }
@@ -107,6 +109,7 @@ func normalizeState(s *State) error {
  if s.Config.CheckInterval==0{s.Config.CheckInterval=d.CheckInterval}
  if s.Config.GracePeriod==0{s.Config.GracePeriod=d.GracePeriod}
  if s.Config.TTL==0{s.Config.TTL=d.TTL}
+ if s.Config.EndpointMaxAge==0{s.Config.EndpointMaxAge=d.EndpointMaxAge}
  if s.Config.MaxDomains==0{s.Config.MaxDomains=d.MaxDomains}
  normalized:=make(map[string]DomainRecord,len(s.Domains))
  for _,rec:=range s.Domains {
@@ -120,11 +123,11 @@ func (m *Manager) validate(s State) error {
  c:=s.Config
  if c.Mode!="auto" && c.Mode!="pinned" {return errors.New("Auto Hosts mode must be auto or pinned")}
  if c.Mode=="pinned" && strings.TrimSpace(c.PinnedServerID)=="" {return errors.New("pinned DoH server ID is required")}
- if c.CheckInterval<10*time.Second || c.CheckInterval>24*time.Hour || c.GracePeriod<c.CheckInterval || c.GracePeriod>30*24*time.Hour || c.TTL<5*time.Second || c.TTL>10*time.Minute || c.MaxDomains<1 || c.MaxDomains>4096 {return errors.New("invalid Auto Hosts interval, TTL, grace period or domain limit")}
+ if c.CheckInterval<10*time.Second || c.CheckInterval>24*time.Hour || c.GracePeriod<c.CheckInterval || c.GracePeriod>30*24*time.Hour || c.TTL<5*time.Second || c.TTL>10*time.Minute || c.EndpointMaxAge<time.Minute || c.EndpointMaxAge>7*24*time.Hour || c.MaxDomains<1 || c.MaxDomains>4096 {return errors.New("invalid Auto Hosts interval, TTL, grace period or domain limit")}
  if len(s.Domains)>c.MaxDomains{return errors.New("Auto Hosts domain limit exceeded")}
  for id,ep:=range s.Endpoints {
   if id=="" || ep.ServerID!=id || ep.URL=="" || ep.Hostname=="" {return fmt.Errorf("invalid DoH endpoint %q",id)}
-  for _,raw:=range append(append([]string{},ep.IPv4...),ep.IPv6...) {if net.ParseIP(raw)==nil{return errors.New("invalid endpoint IP")}}
+  if _,err:=validateEndpoint(ep);err!=nil{return fmt.Errorf("invalid DoH endpoint %q: %w",id,err)}
  }
  return nil
 }
@@ -148,7 +151,7 @@ func validateEndpoint(ep Endpoint)(Endpoint,error){
  return ep,nil
 }
 func (m *Manager) publish(){
- s:=&Snapshot{Enabled:m.state.Config.Enabled,EmergencyOff:m.state.Config.EmergencyOff,ActiveServer:m.state.ActiveServer,Endpoint:m.state.Endpoints[m.state.ActiveServer],Domains:make(map[string]DomainRecord,len(m.state.Domains)),TTL:m.state.Config.TTL}
+ s:=&Snapshot{Enabled:m.state.Config.Enabled,EmergencyOff:m.state.Config.EmergencyOff,ActiveServer:m.state.ActiveServer,Endpoint:m.state.Endpoints[m.state.ActiveServer],Domains:make(map[string]DomainRecord,len(m.state.Domains)),TTL:m.state.Config.TTL,EndpointMaxAge:m.state.Config.EndpointMaxAge}
  for d,r:=range m.state.Domains{s.Domains[d]=r}
  m.view.Store(s)
 }
@@ -157,6 +160,7 @@ func (m *Manager) Snapshot()*Snapshot{return m.view.Load()}
 // Lookup returns matched=true with no IPs for family-specific NODATA.
 func (s *Snapshot) Lookup(qname string,qtype uint16,now time.Time)([]string,time.Duration,bool){
  if s==nil||!s.Enabled||s.EmergencyOff{return nil,0,false}
+ if s.Endpoint.UpdatedAt.IsZero() || now.Sub(s.Endpoint.UpdatedAt)>s.EndpointMaxAge{return nil,0,false}
  d,err:=NormalizeDomain(qname);if err!=nil{return nil,0,false}
  rec,ok:=s.Domains[d];if !ok||rec.ServerID!=s.ActiveServer||rec.ExpiresAt.IsZero()||!now.Before(rec.ExpiresAt){return nil,0,false}
  ttl:=s.TTL;if remain:=rec.ExpiresAt.Sub(now);remain<ttl{ttl=remain};if ttl<0{ttl=0}
@@ -203,7 +207,7 @@ func (m *Manager) ApplyFullCycle(activeID string, endpoints []Endpoint, results 
 				return fmt.Errorf("duplicate endpoint %q", checked.ServerID)
 			}
 			seenEndpoints[checked.ServerID] = true
-			checked.UpdatedAt = now.UTC()
+			if checked.UpdatedAt.IsZero() { checked.UpdatedAt = now.UTC() }
 			s.Endpoints[checked.ServerID] = checked
 		}
 		if _, ok := s.Endpoints[activeID]; !ok {
