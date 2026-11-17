@@ -1688,6 +1688,9 @@ func (r *Runtime) handleDNS(packet []byte) []byte {
 	if response, matched := localHostsResponse(packet, normalizeDomain(name), qtype, s.localHosts); matched {
 		return response
 	}
+	if response, matched := autoHostsResponse(packet, normalizeDomain(name), qtype, r.autoHosts); matched {
+		return response
+	}
 	cacheKey := cacheKey(packet)
 	if s.cfg.Cache.Enabled {
 		if v, ok := r.cacheGet(cacheKey, packetID(packet)); ok {
@@ -1761,6 +1764,28 @@ func localHostsResponse(query []byte, host string, qtype uint16, hosts map[strin
 		binary.BigEndian.PutUint16(response[10:12], 1)
 	}
 	return response, true
+}
+
+
+func autoHostsResponse(query []byte, host string, qtype uint16, manager *autohosts.Manager) ([]byte, bool) {
+	if manager == nil {
+		return nil, false
+	}
+	snapshot := manager.Snapshot()
+	if snapshot == nil {
+		return nil, false
+	}
+	ips, _, matched := snapshot.Lookup(host, qtype, time.Now())
+	if !matched {
+		return nil, false
+	}
+	entry := LocalHost{}
+	if qtype == 1 {
+		entry.IPv4 = ips
+	} else if qtype == 28 {
+		entry.IPv6 = ips
+	}
+	return localHostsResponse(query, host, qtype, map[string]LocalHost{normalizeDomain(host): entry})
 }
 
 func appendLocalHostRR(packet []byte, qtype uint16, ip []byte) []byte {
