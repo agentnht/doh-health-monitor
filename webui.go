@@ -78,10 +78,14 @@ func webUIHandler() http.Handler {
 			http.Error(w, "Web UI session initialization failed", http.StatusInternalServerError)
 		})
 	}
-	return newWebUIHandler("http://127.0.0.1:18765/status", base64.RawURLEncoding.EncodeToString(token))
+	return newWebUIHandlerWithDataDir("http://127.0.0.1:18765/status", base64.RawURLEncoding.EncodeToString(token), strings.TrimSpace(os.Getenv("LUCX_PLUGIN_DATA")))
 }
 
 func newWebUIHandler(statusURL, sessionToken string) http.Handler {
+	return newWebUIHandlerWithDataDir(statusURL, sessionToken, strings.TrimSpace(os.Getenv("LUCX_PLUGIN_DATA")))
+}
+
+func newWebUIHandlerWithDataDir(statusURL, sessionToken, dataDir string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setWebUISecurityHeaders(w)
 		if !isLoopbackWebHost(r.Host) {
@@ -118,8 +122,7 @@ func newWebUIHandler(statusURL, sessionToken string) http.Handler {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
-			cookie, err := r.Cookie(webUISessionCookie)
-			if err != nil || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(sessionToken)) != 1 {
+			if !webUIRequestAuthorized(r, sessionToken) {
 				http.Error(w, "authentication required", http.StatusUnauthorized)
 				return
 			}
@@ -133,10 +136,22 @@ func newWebUIHandler(statusURL, sessionToken string) http.Handler {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(status)
+		case "/api/v1/config", "/api/v1/config/defaults", "/api/v1/sources",
+			"/api/v1/gemini-key", "/api/v1/logs", "/api/v1/tests/run", "/api/v1/integration":
+			if !webUIRequestAuthorized(r, sessionToken) {
+				http.Error(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			webUIAdminAPI(w, r, r.URL.Path, dataDir)
 		default:
 			http.NotFound(w, r)
 		}
 	})
+}
+
+func webUIRequestAuthorized(r *http.Request, sessionToken string) bool {
+	cookie, err := r.Cookie(webUISessionCookie)
+	return err == nil && subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(sessionToken)) == 1
 }
 
 func setWebUISecurityHeaders(w http.ResponseWriter) {
@@ -284,7 +299,7 @@ func runWebUIWithStatusURL(statusURL string) error {
 	if _, err := rand.Read(token); err != nil {
 		return fmt.Errorf("create Web UI session token: %w", err)
 	}
-	handler := newWebUIHandler(statusURL, base64.RawURLEncoding.EncodeToString(token))
+	handler := newWebUIHandlerWithDataDir(statusURL, base64.RawURLEncoding.EncodeToString(token), strings.TrimSpace(os.Getenv("LUCX_PLUGIN_DATA")))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return fmt.Errorf("listen on Web UI loopback: %w", err)
