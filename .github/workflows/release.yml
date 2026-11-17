@@ -37,10 +37,13 @@ jobs:
         run: |
           id=$(jq -r .id manifest.json)
           version="${GITHUB_REF_NAME#v}"
-          mkdir -p stage/bin
+          mkdir -p stage/bin stage/scripts
           go build -trimpath -ldflags "-s -w" -o "stage/bin/$id" .
           cp manifest.json stage/
+          install -m 0755 scripts/plugin-management.sh scripts/check-dns-integration.sh stage/scripts/
           (cd stage && zip -r "../$id-v$version.zip" .)
+          unzip -Z1 "$id-v$version.zip" | grep -Fx "scripts/plugin-management.sh"
+          unzip -Z1 "$id-v$version.zip" | grep -Fx "scripts/check-dns-integration.sh"
           sha256sum "$id-v$version.zip" > "$id-v$version.zip.sha256"
 
       - name: Extract release notes
