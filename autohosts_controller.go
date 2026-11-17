@@ -36,6 +36,7 @@ const (
 )
 
 type autoHostsController struct {
+	probeMu sync.Mutex
 	runtime *Runtime
 	manager *autohosts.Manager
 	trigger chan struct{}
@@ -101,6 +102,8 @@ type autoHostsProbeJob struct {
 }
 
 func (c *autoHostsController) runCycle(ctx context.Context, now time.Time) error {
+	c.probeMu.Lock()
+	defer c.probeMu.Unlock()
 	endpoints, results, err := c.probeAll(ctx, now)
 	if err != nil { c.recordPinnedFailure(err, now); return err }
 	activeID, err := c.chooseActive(endpoints, results, now)
@@ -130,6 +133,8 @@ type autoHostsDryRunPreview struct {
 }
 
 func (c *autoHostsController) dryRunCycle(ctx context.Context, now time.Time) (autoHostsDryRunPreview, error) {
+	c.probeMu.Lock()
+	defer c.probeMu.Unlock()
 	endpoints, results, err := c.probeAll(ctx, now)
 	if err != nil { return autoHostsDryRunPreview{}, err }
 	state := c.manager.State()
@@ -192,8 +197,10 @@ func (c *autoHostsController) probeAll(ctx context.Context, now time.Time) ([]au
 			continue
 		}
 		bootstrapStatus := upstream.bootstrap.status()
+		// Fallback IPs are useful to keep ordinary DoH operational, but they
+		// have no successful DNS-resolution timestamp. Never make them appear
+		// fresh for Auto Hosts merely because this controller ran now.
 		endpointUpdatedAt := bootstrapStatus.ResolvedAt
-		if endpointUpdatedAt.IsZero() { endpointUpdatedAt = now.UTC() }
 		if resolveErr != nil { logLine("WARN", "AUTO_HOSTS using cached/fallback endpoint IPs server=%s error=%v", id, resolveErr) }
 		ep := autohosts.Endpoint{ServerID:id, URL:upstream.cfg.URL, Hostname:u.Hostname(), UpdatedAt:endpointUpdatedAt}
 		for _, raw := range ips {
