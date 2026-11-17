@@ -430,8 +430,11 @@ func TestUDPWorkerPoolBoundsQueueUnderLoad(t *testing.T) {
 	if active := r.activeUDP.Load(); active > 1 {
 		t.Fatalf("active UDP workers=%d, want at most 1 from config", active)
 	}
-	if queued := r.udpQueueDepth.Load(); queued > udpQueueCapacity {
-		t.Fatalf("UDP queue depth=%d, capacity=%d", queued, udpQueueCapacity)
+	// The counter includes the single packet handed to the only configured
+	// worker until that worker begins processing it.
+	const maxObservedQueueDepth = udpQueueCapacity + 1
+	if queued := r.udpQueueDepth.Load(); queued > maxObservedQueueDepth {
+		t.Fatalf("UDP pending+dispatch depth=%d, maximum=%d (queue=%d, workers=1)", queued, maxObservedQueueDepth, udpQueueCapacity)
 	}
 
 	cancel()
