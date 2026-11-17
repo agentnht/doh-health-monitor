@@ -291,6 +291,7 @@
     body.replaceChildren();
     sourceState[kind].forEach((row, index) => {
       const tr = document.createElement("tr");
+      if (kind === "doh" && row.system) tr.classList.add("source-system");
       if (!row.editable) {
         const td = document.createElement("td");
         td.colSpan = kind === "doh" ? 4 : 8;
@@ -312,28 +313,43 @@
 
       sourceFields[kind].forEach((fieldName, fieldIndex) => {
         const td = document.createElement("td");
-        const input = document.createElement("input");
-        input.type = "text";
-        input.value = row.fields[fieldIndex] || "";
-        input.placeholder = fieldName;
-        input.setAttribute("aria-label", fieldName + ", строка " + (index + 1));
-        input.addEventListener("input", () => { row.fields[fieldIndex] = input.value; });
-        if (!row.active) input.style.opacity = ".65";
-        td.append(input);
+        if (kind === "doh" && row.system && fieldIndex === 1) {
+          const note = document.createElement("span");
+          note.className = "source-system-note";
+          note.textContent = "Системные DNS VPS из /etc/resolv.conf";
+          td.append(note);
+        } else {
+          const input = document.createElement("input");
+          input.type = "text";
+          input.value = row.fields[fieldIndex] || "";
+          input.placeholder = fieldName;
+          input.setAttribute("aria-label", fieldName + ", строка " + (index + 1));
+          if (kind === "doh" && row.system) input.readOnly = true;
+          else input.addEventListener("input", () => { row.fields[fieldIndex] = input.value; });
+          if (!row.active) input.style.opacity = ".65";
+          td.append(input);
+        }
         tr.append(td);
       });
 
       const actionCell = document.createElement("td");
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "danger small";
-      remove.textContent = "del";
-      remove.setAttribute("aria-label", "Удалить строку " + (index + 1));
-      remove.addEventListener("click", () => {
-        sourceState[kind].splice(index, 1);
-        renderSource(kind);
-      });
-      actionCell.append(remove);
+      if (kind === "doh" && row.system) {
+        const protectedLabel = document.createElement("span");
+        protectedLabel.className = "source-protected";
+        protectedLabel.textContent = "Защищён";
+        actionCell.append(protectedLabel);
+      } else {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "danger small";
+        remove.textContent = "del";
+        remove.setAttribute("aria-label", "Удалить строку " + (index + 1));
+        remove.addEventListener("click", () => {
+          sourceState[kind].splice(index, 1);
+          renderSource(kind);
+        });
+        actionCell.append(remove);
+      }
       tr.append(actionCell);
       body.append(tr);
     });
@@ -501,16 +517,22 @@
   }
 
   function setPageOpen(name, open) {
-    const panels = Array.from(document.querySelectorAll("[data-page-panel]"))
-      .filter(panel => panel.dataset.pagePanel === name);
-    if (!panels.length) return;
-    const currentlyOpen = panels.some(panel => !panel.hidden);
+    const panels = Array.from(document.querySelectorAll("[data-page-panel]"));
+    const targetPanels = panels.filter(panel => panel.dataset.pagePanel === name);
+    if (!targetPanels.length) return;
+
+    const currentlyOpen = targetPanels.some(panel => !panel.hidden);
     const shouldOpen = open == null ? !currentlyOpen : Boolean(open);
-    panels.forEach(panel => { panel.hidden = !shouldOpen; });
+
+    // Only one management page may be active. Clicking the current tab closes it;
+    // clicking another tab replaces the previous page instead of stacking panels.
+    panels.forEach(panel => {
+      panel.hidden = !shouldOpen || panel.dataset.pagePanel !== name;
+    });
     document.querySelectorAll("[data-page]").forEach(button => {
-      if (button.dataset.page !== name) return;
-      button.setAttribute("aria-selected", String(shouldOpen));
-      button.setAttribute("aria-expanded", String(shouldOpen));
+      const selected = shouldOpen && button.dataset.page === name;
+      button.setAttribute("aria-selected", String(selected));
+      button.setAttribute("aria-expanded", String(selected));
     });
     if (shouldOpen && name === "logs") {
       loadLogs();
