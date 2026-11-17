@@ -1659,13 +1659,18 @@ func TestRRCacheTTLDoesNotTreatOPTFlagsAsTTL(t *testing.T) {
 
 	ttl, ok := minResponseTTL(packet)
 	if !ok || ttl != 120 { t.Fatalf("minResponseTTL = %d, %v; want 120, true", ttl, ok) }
+	cache := &Runtime{cache: map[string]cacheItem{}}
+	cache.cachePut("edns-key", packet, CacheConfig{Enabled: true, MinTTL: 1, MaxTTL: 300, NegativeTTL: 30, MaxEntries: 8, MaxBytes: 4096})
+	if _, ok := cache.cacheGet("edns-key", packetID(packet)); !ok {
+		t.Fatal("response containing OPT was not cached")
+	}
 	positions, err := rrTTLPositions(packet)
 	if err != nil || len(positions) != 1 { t.Fatalf("rrTTLPositions = %v, %v; want one real RR TTL", positions, err) }
 	decrementTTLs(packet, 5)
 	if got := binary.BigEndian.Uint32(packet[positions[0]:positions[0]+4]); got != 115 {
 		t.Fatalf("answer TTL = %d; want 115", got)
 	}
-	if got := binary.BigEndian.Uint32(packet[len(packet)-10:len(packet)-6]); got != 0x8000 {
+	if got := binary.BigEndian.Uint32(packet[len(packet)-6:len(packet)-2]); got != 0x8000 {
 		t.Fatalf("OPT flags = %#x; want DO bit %#x", got, uint32(0x8000))
 	}
 }
