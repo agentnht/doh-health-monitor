@@ -115,7 +115,7 @@
     for (const [id, ep] of Object.entries(s.endpoints || {})) { const option = document.createElement("option"); option.value = id; option.textContent = id + " · " + ep.hostname; pinSelect.append(option); }
     if (!pinSelect.options.length) { const option = document.createElement("option"); option.value = ""; option.textContent = "Сначала выполните первый цикл"; pinSelect.append(option); }
     pinSelect.value = cfg.pinned_server_id || ""; pinSelect.disabled = cfg.mode !== "pinned" || !Object.keys(s.endpoints || {}).length;
-    text("autohosts-active", s.active_server); text("autohosts-state-emergency", cfg.emergency_off ? "ВКЛЮЧЁН" : "выключен");
+    text("autohosts-active", s.active_server); const activeEndpoint = (s.endpoints || {})[s.active_server] || {}; text("autohosts-ipv4", (activeEndpoint.ipv4 || []).join(", ")); text("autohosts-ipv6", (activeEndpoint.ipv6 || []).join(", ")); text("autohosts-state-mode", cfg.mode === "pinned" ? "Pinned · " + cfg.pinned_server_id : "Auto"); text("autohosts-state-emergency", cfg.emergency_off ? "ВКЛЮЧЁН" : "выключен");
     $("autohosts-domains").textContent = Object.keys(s.domains || {}).join(", ") || "Нет доменов";
     $("autohosts-results").textContent = Object.values(s.probe_results || {}).map(x => x.server_id + " × " + x.domain + " · " + (x.success ? "OK" : "FAIL")).join("\n") || "Нет проверок";
   }
@@ -636,4 +636,5 @@
   loadIntegrationLog();
   loadAutoHosts().catch(e => notice("autohosts-note", e.message, false));
   window.setInterval(loadStatus, 15000);
+  window.setInterval(() => { if (autoHostsState) loadAutoHosts().catch(() => {}); }, 30000);
 })();
