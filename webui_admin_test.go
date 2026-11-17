@@ -116,7 +116,7 @@ func TestWebUISourceEditorCommentsRowsAndValidatesBeforeWriting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "system-dns;\\n") ||
+	if !strings.Contains(string(data), "system-dns;\n") ||
 		!strings.Contains(string(data), "example-provider;https://dns.example/dns-query") ||
 		!strings.Contains(string(data), "# disabled-provider;https://disabled.example/dns-query") {
 		t.Fatalf("source rows were not serialized as active/commented lines: %s", data)
@@ -143,13 +143,14 @@ func TestWebUISourceEditorCommentsRowsAndValidatesBeforeWriting(t *testing.T) {
 	if !bytes.Equal(before, after) {
 		t.Fatal("invalid source update changed the existing file")
 	}
-}
+
 	deleteSystem := webUISourceUpdate{Kind: "doh", Rows: []webUISourceRow{
 		{Active: true, Editable: true, Fields: []string{"example-provider", "https://dns.example/dns-query"}},
 	}}
 	if err := saveWebUISources(dir, deleteSystem); err == nil {
 		t.Fatal("deleting the protected system-dns row must be rejected")
 	}
+
 	disableSystem := webUISourceUpdate{Kind: "doh", Rows: []webUISourceRow{
 		{Active: false, Editable: true, System: true, Fields: []string{systemDNSUpstreamID, ""}},
 		{Active: true, Editable: true, Fields: []string{"example-provider", "https://dns.example/dns-query"}},
