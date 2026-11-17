@@ -955,8 +955,12 @@ func runWebUIDigTests(address string, checks []Check) []webUITestResult {
 			for query := range queue {
 				start := time.Now()
 				name := dnsQTypeName(query.qtype)
+				if !validDNSHostname(normalizeDomain(query.domain)) {
+					results[query.index] = webUIDigResult(query.domain, query.qtype, "", 0, errors.New("invalid DNS test domain"))
+					continue
+				}
 				ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-				command := exec.CommandContext(ctx, executable, "+time=2", "+tries=1", "+noall", "+answer", "@"+host, "-p", port, query.domain, name)
+				command := exec.CommandContext(ctx, executable, "+time=2", "+tries=1", "+noall", "+answer", "@"+host, "-p", port, "-q", normalizeDomain(query.domain), name)
 				output, commandErr := command.CombinedOutput()
 				cancel()
 				answer := strings.TrimSpace(string(output))
