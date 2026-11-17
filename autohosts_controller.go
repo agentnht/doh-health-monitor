@@ -302,6 +302,44 @@ func parseAddressRecords(packet []byte,qtype uint16)([]string,error) {
 }
 
 func isAutoHostsPublicIP(ip net.IP) bool {
-	if ip==nil || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() { return false }
+	if ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return false
+	}
+	if v4 := ip.To4(); v4 != nil {
+		a, b := int(v4[0]), int(v4[1])
+		switch {
+		case a == 0 || a == 10 || a == 127 || a >= 224:
+			return false
+		case a == 100 && b >= 64 && b <= 127: // shared address space (RFC 6598)
+			return false
+		case a == 169 && b == 254:
+			return false
+		case a == 172 && b >= 16 && b <= 31:
+			return false
+		case a == 192 && (b == 0 || b == 168):
+			return false
+		case a == 192 && b == 0 && v4[2] == 2: // documentation range
+			return false
+		case a == 192 && b == 88 && v4[2] == 99:
+			return false
+		case a == 198 && (b == 18 || b == 19):
+			return false
+		case a == 198 && b == 51 && v4[2] == 100:
+			return false
+		case a == 203 && b == 0 && v4[2] == 113:
+			return false
+		}
+		return true
+	}
+	// Only globally allocated unicast IPv6 space is accepted; documentation
+	// prefixes are explicitly excluded to prevent non-routable probe targets.
+	v6 := ip.To16()
+	if v6 == nil || (v6[0]&0xe0) != 0x20 {
+		return false
+	}
+	if v6[0] == 0x20 && v6[1] == 0x01 && v6[2] == 0x0d && v6[3] == 0xb8 {
+		return false // 2001:db8::/32
+	}
 	return true
 }
