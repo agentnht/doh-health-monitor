@@ -257,13 +257,25 @@ run_web_ui() {
     stop_web_ui
     return 1
   fi
-  if [[ ! "$ready" =~ ^WEB_UI_READY[[:space:]]port=([0-9]{1,5})[[:space:]]token=([A-Za-z0-9_-]{40,})$ ]]; then
+  if [[ ! "$ready" =~ ^WEB_UI_READY[[:space:]]port=([0-9]{1,5})$ ]]; then
     fail "Web UI вернул некорректный readiness-ответ."
     stop_web_ui
     return 1
   fi
   remote_port="${BASH_REMATCH[1]}"
-  launch_token="${BASH_REMATCH[2]}"
+  local launch_token_file="$PLUGIN_DATA_DIR/web-ui-launch.token"
+  if [[ ! -f "$launch_token_file" || -L "$launch_token_file" ]]; then
+    fail "Web UI не создал защищённый launch-token файл."
+    stop_web_ui
+    return 1
+  fi
+  launch_token="$(cat -- "$launch_token_file")"
+  rm -f -- "$launch_token_file"
+  if [[ ! "$launch_token" =~ ^[A-Za-z0-9_-]{40,}$ ]]; then
+    fail "Web UI создал некорректный launch-token."
+    stop_web_ui
+    return 1
+  fi
   if (( remote_port < 1 || remote_port > 65535 )); then
     fail "Web UI сообщил недопустимый TCP-порт."
     stop_web_ui
@@ -278,7 +290,7 @@ run_web_ui() {
   printf '\n[OK] Web UI слушает только 127.0.0.1:%s.\n' "$remote_port"
   printf '\nНа Windows откройте отдельный PowerShell и выполните:\n'
   printf 'ssh -o ExitOnForwardFailure=yes -L 19876:127.0.0.1:%s root@%s\n' "$remote_port" "$server_address"
-  printf 'Затем откройте в браузере: http://127.0.0.1:19876/?access_token=%s\n' "$launch_token"
+  printf 'Затем откройте в браузере: http://127.0.0.1:19876/#access_token=%s\n' "$launch_token"
   printf 'Если локальный порт 19876 занят, замените его в SSH-команде и URL браузера на один и тот же свободный порт. Удалённый порт %s не меняйте.\n' "$remote_port"
   printf 'Оставьте открытыми эту SSH-сессию и отдельную SSH-сессию туннеля.\n'
   printf 'Нажмите Enter здесь, чтобы остановить Web UI и вернуться в меню.\n'
