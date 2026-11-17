@@ -968,10 +968,28 @@ func runWebUIXrayIntegrationCheck(dataDir string) webUITestResult {
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return webUITest("Xray DNS integration", false, "Не найден штатный read-only scripts/check-dns-integration.sh")
 	}
+	config, err := loadConfigNoCreate(filepath.Join(root, "config.json"))
+	if err != nil {
+		return webUITest("Xray DNS integration", false, "Не удалось прочитать config.json: "+err.Error())
+	}
+	udpAddress, err := localListenAddress(config.DNSListenUDP)
+	if err != nil {
+		return webUITest("Xray DNS integration", false, err.Error())
+	}
+	_, pluginPort, _ := net.SplitHostPort(udpAddress)
+	httpAddress, err := localListenAddress(config.HTTPListen)
+	if err != nil {
+		return webUITest("Xray DNS integration", false, err.Error())
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, "bash", script)
-	command.Env = append(os.Environ(), "LUCX_PLUGIN_DATA="+root, "DOH_SKIP_PLUGIN_HEALTH_CHECK=1")
+	command.Env = append(os.Environ(),
+		"LUCX_PLUGIN_DATA="+root,
+		"DOH_SKIP_PLUGIN_HEALTH_CHECK=1",
+		"DOH_PLUGIN_PORT="+pluginPort,
+		"DOH_STATUS_URL=http://"+httpAddress+"/status",
+	)
 	output, commandErr := command.CombinedOutput()
 	text := strings.TrimSpace(string(output))
 	if len(text) > 4096 {
@@ -1004,10 +1022,28 @@ func runWebUIIntegration(dataDir, action string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	config, err := loadConfigNoCreate(filepath.Join(root, "config.json"))
+	if err != nil {
+		return "", fmt.Errorf("config.json is invalid: %w", err)
+	}
+	udpAddress, err := localListenAddress(config.DNSListenUDP)
+	if err != nil {
+		return "", fmt.Errorf("configured DNS listener: %w", err)
+	}
+	_, pluginPort, _ := net.SplitHostPort(udpAddress)
+	httpAddress, err := localListenAddress(config.HTTPListen)
+	if err != nil {
+		return "", fmt.Errorf("configured HTTP listener: %w", err)
+	}
+	statusURL := "http://" + httpAddress + "/status"
+	if !dohintegration.IsLocalURL(statusURL) {
+		return "", errors.New("configured status endpoint must use loopback")
+	}
 	logger := &webUIOperationLogger{dataDir: root}
+	args := []string{action, "--plugin-port", pluginPort, "--plugin-status-url", statusURL}
 	done := make(chan error, 1)
 	go func() {
-		done <- dohintegration.RunCommand([]string{action}, logger)
+		done <- dohintegration.RunCommand(args, logger)
 	}()
 	select {
 	case err := <-done:
