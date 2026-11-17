@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -13,6 +15,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"net/http/httptest"
 	"net"
 	"net/url"
 	"path/filepath"
@@ -154,3 +157,28 @@ func TestPinnedHTTPSProbePreservesSNIHostAndDoesNotFollowRedirect(t *testing.T) 
 	}
 }
 
+
+
+func TestDirectDoHProbeUsesTLSPostDNSMessage(t *testing.T) {
+	query:=makeDNSQuery("chatgpt.com",1)
+	response:=append([]byte(nil),query...)
+	binary.BigEndian.PutUint16(response[2:4],0x8180)
+	server:=httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+		if r.Method!=http.MethodPost { t.Errorf("DoH method=%s, want POST",r.Method) }
+		if got:=r.Header.Get("Content-Type");got!="application/dns-message" { t.Errorf("Content-Type=%q",got) }
+		if got:=r.Header.Get("Accept");got!="application/dns-message" { t.Errorf("Accept=%q",got) }
+		body,err:=io.ReadAll(r.Body)
+		if err!=nil { t.Errorf("read request body: %v",err) }
+		if !bytes.Equal(body,query) { t.Errorf("DoH request body differs from DNS query") }
+		w.Header().Set("Content-Type","application/dns-message")
+		w.WriteHeader(http.StatusOK)
+		_,_=w.Write(response)
+	}))
+	defer server.Close()
+	upstream:=&UpstreamRuntime{cfg:Upstream{ID:"test-doh",URL:server.URL},client:server.Client()}
+	ctx,cancel:=context.WithTimeout(context.Background(),2*time.Second)
+	defer cancel()
+	got,err:=sendDoH(ctx,upstream,query)
+	if err!=nil { t.Fatalf("direct DoH request failed: %v",err) }
+	if !bytes.Equal(got,response) { t.Fatal("direct DoH response differs from DNS response payload") }
+}
