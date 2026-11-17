@@ -137,7 +137,8 @@ func newWebUIHandlerWithDataDir(statusURL, sessionToken, dataDir string) http.Ha
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(status)
 		case "/api/v1/config", "/api/v1/config/defaults", "/api/v1/sources",
-			"/api/v1/gemini-key", "/api/v1/logs", "/api/v1/tests/run", "/api/v1/integration":
+			"/api/v1/gemini-key", "/api/v1/logs", "/api/v1/integration/logs",
+			"/api/v1/tests/run", "/api/v1/integration":
 			if !webUIRequestAuthorized(r, sessionToken) {
 				http.Error(w, "authentication required", http.StatusUnauthorized)
 				return
