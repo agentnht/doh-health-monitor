@@ -24,26 +24,29 @@ func newTestWebUIData(t *testing.T) string {
 	return dir
 }
 
-func newAuthenticatedWebUIRequest(t *testing.T, handler http.Handler, method, path string, body []byte) *httptest.ResponseRecorder {
+func newAuthenticatedWebUIRequest(t *testing.T, handler http.Handler, cookie *http.Cookie, method, path string, body []byte) (*httptest.ResponseRecorder, *http.Cookie) {
 	t.Helper()
 	const host = "127.0.0.1:19876"
-	exchange := httptest.NewRequest(http.MethodPost, "http://"+host+"/session/exchange", strings.NewReader(`{"token":"test-session"}`))
-	exchange.Host = host
-	exchange.Header.Set("Content-Type", "application/json")
-	exchangeRecorder := httptest.NewRecorder()
-	handler.ServeHTTP(exchangeRecorder, exchange)
-	cookies := exchangeRecorder.Result().Cookies()
-	if exchangeRecorder.Code != http.StatusNoContent || len(cookies) != 1 {
-		t.Fatalf("session exchange did not issue a cookie: status=%d", exchangeRecorder.Code)
+	if cookie == nil {
+		exchange := httptest.NewRequest(http.MethodPost, "http://"+host+"/session/exchange", strings.NewReader(`{"token":"test-session"}`))
+		exchange.Host = host
+		exchange.Header.Set("Content-Type", "application/json")
+		exchangeRecorder := httptest.NewRecorder()
+		handler.ServeHTTP(exchangeRecorder, exchange)
+		cookies := exchangeRecorder.Result().Cookies()
+		if exchangeRecorder.Code != http.StatusNoContent || len(cookies) != 1 {
+			t.Fatalf("session exchange did not issue a cookie: status=%d", exchangeRecorder.Code)
+		}
+		cookie = cookies[0]
 	}
 
 	request := httptest.NewRequest(method, "http://"+host+path, bytes.NewReader(body))
 	request.Host = host
 	request.Header.Set("Origin", "http://"+host)
-	request.AddCookie(cookies[0])
+	request.AddCookie(cookie)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	return recorder
+	return recorder, cookie
 }
 
 func TestWebUIAdminAPIRequiresSessionCookie(t *testing.T) {
@@ -62,7 +65,8 @@ func TestWebUIConfigAPIUpdatesValidatedSettingsAndDefaults(t *testing.T) {
 	dir := newTestWebUIData(t)
 	handler := newWebUIHandlerWithDataDir("http://127.0.0.1:18765/status", "test-session", dir)
 
-	get := newAuthenticatedWebUIRequest(t, handler, http.MethodGet, "/api/v1/config", nil)
+	var cookie *http.Cookie
+	get, cookie := newAuthenticatedWebUIRequest(t, handler, cookie, http.MethodGet, "/api/v1/config", nil)
 	if get.Code != http.StatusOK {
 		t.Fatalf("GET config status=%d body=%s", get.Code, get.Body.String())
 	}
@@ -75,7 +79,7 @@ func TestWebUIConfigAPIUpdatesValidatedSettingsAndDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	save := newAuthenticatedWebUIRequest(t, handler, http.MethodPost, "/api/v1/config", body)
+	save, cookie = newAuthenticatedWebUIRequest(t, handler, cookie, http.MethodPost, "/api/v1/config", body)
 	if save.Code != http.StatusOK {
 		t.Fatalf("POST config status=%d body=%s", save.Code, save.Body.String())
 	}
@@ -87,7 +91,7 @@ func TestWebUIConfigAPIUpdatesValidatedSettingsAndDefaults(t *testing.T) {
 		t.Fatalf("saved health timeout=%d, want 9", config.Health.TimeoutSeconds)
 	}
 
-	reset := newAuthenticatedWebUIRequest(t, handler, http.MethodPost, "/api/v1/config/defaults", []byte(`{"section":"health"}`))
+	reset, cookie = newAuthenticatedWebUIRequest(t, handler, cookie, http.MethodPost, "/api/v1/config/defaults", []byte(`{"section":"health"}`))
 	if reset.Code != http.StatusOK {
 		t.Fatalf("reset health status=%d body=%s", reset.Code, reset.Body.String())
 	}
@@ -315,7 +319,7 @@ func TestWebUIIntegrationLogAPIRequiresSessionAndReturnsPersistedOperations(t *t
 		t.Fatalf("unauthenticated integration log status=%d, want %d", unauthorizedRecorder.Code, http.StatusUnauthorized)
 	}
 
-	authorized := newAuthenticatedWebUIRequest(t, handler, http.MethodGet, "/api/v1/integration/logs", nil)
+	authorized, _ := newAuthenticatedWebUIRequest(t, handler, nil, http.MethodGet, "/api/v1/integration/logs", nil)
 	if authorized.Code != http.StatusOK {
 		t.Fatalf("authenticated integration log status=%d, body=%s", authorized.Code, authorized.Body.String())
 	}
