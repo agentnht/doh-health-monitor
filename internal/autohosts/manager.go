@@ -324,7 +324,7 @@ func (m *Manager) RecordProbeFailures(serverID string, domains []string, message
 		for _, raw := range domains {
 			domain, err := NormalizeDomain(raw)
 			if err != nil { return err }
-			s.ProbeResults[serverID+"\\x00"+domain] = ProbeResult{ServerID:serverID, Domain:domain, Success:false, CheckedAt:now.UTC(), Error:message}
+			s.ProbeResults[serverID+"\x00"+domain] = ProbeResult{ServerID:serverID, Domain:domain, Success:false, CheckedAt:now.UTC(), Error:message}
 		}
 		for key, result := range s.ProbeResults {
 			if now.Sub(result.CheckedAt) > 30*24*time.Hour { delete(s.ProbeResults, key) }
