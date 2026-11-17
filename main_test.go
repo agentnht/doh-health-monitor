@@ -868,6 +868,7 @@ func TestDNSGatewaySendsArbitraryQNAMEThroughGoogleProfile(t *testing.T) {
 		client: srv.Client(),
 	}
 	snapshot := &Snapshot{
+		cfg: Config{DNSQueryTimeoutSeconds: 3, Cache: CacheConfig{Enabled: false}},
 		groups: map[string]Group{
 			"google": {ID: "google", Upstreams: []string{"selected-google-doh"}},
 		},
