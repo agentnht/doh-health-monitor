@@ -6,6 +6,16 @@ readonly PLUGIN_ID="doh-health-monitor"
 readonly PLUGIN_BIN_NAME="doh-health-monitor"
 readonly RAW_BASE_URL="https://raw.githubusercontent.com/agentnht/doh-health-monitor/main"
 readonly CHECK_SCRIPT_URL="${RAW_BASE_URL}/scripts/check-dns-integration.sh"
+readonly DHM_SYMLINK_PATH="/usr/local/bin/dhm"
+
+MANAGEMENT_SCRIPT_PATH=""
+MANAGEMENT_SCRIPT_DIR=""
+if [[ -f "${BASH_SOURCE[0]:-}" ]]; then
+  MANAGEMENT_SCRIPT_PATH="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+  if [[ -n "$MANAGEMENT_SCRIPT_PATH" && -f "$MANAGEMENT_SCRIPT_PATH" ]]; then
+    MANAGEMENT_SCRIPT_DIR="$(cd -- "$(dirname -- "$MANAGEMENT_SCRIPT_PATH")" && pwd -P)"
+  fi
+fi
 
 WEB_CHILD_PID=""
 WEB_READ_FD=""
@@ -79,6 +89,46 @@ resolve_plugin_paths() {
   fi
 }
 
+
+ensure_dhm_symlink() {
+  local plugin_scripts_dir current_target
+
+  # A process-substitution launch (bash <(curl ...)) has no persistent script
+  # path. Keep that GitHub bootstrap mode working without creating a dangling
+  # link; only the installed copy inside the plugin package creates /usr/local/bin/dhm.
+  [[ -n "$MANAGEMENT_SCRIPT_PATH" && -n "$MANAGEMENT_SCRIPT_DIR" ]] || return 0
+  plugin_scripts_dir="$(cd -- "$(dirname -- "$PLUGIN_BIN")/../scripts" 2>/dev/null && pwd -P)" || return 0
+  [[ "$MANAGEMENT_SCRIPT_DIR" == "$plugin_scripts_dir" ]] || return 0
+  [[ "$MANAGEMENT_SCRIPT_PATH" == "$plugin_scripts_dir/plugin-management.sh" ]] || return 0
+
+  if ! mkdir -p "$(dirname -- "$DHM_SYMLINK_PATH")"; then
+    printf '[WARN] Не удалось создать каталог для команды dhm: %s\n' "$(dirname -- "$DHM_SYMLINK_PATH")" >&2
+    return 0
+  fi
+
+  if [[ -L "$DHM_SYMLINK_PATH" ]]; then
+    current_target="$(readlink -f -- "$DHM_SYMLINK_PATH" 2>/dev/null || true)"
+    if [[ "$current_target" == "$MANAGEMENT_SCRIPT_PATH" ]]; then
+      return 0
+    fi
+    printf '[WARN] %s уже указывает на другой файл; ссылка не изменена.\n' "$DHM_SYMLINK_PATH" >&2
+    return 0
+  fi
+  if [[ -e "$DHM_SYMLINK_PATH" ]]; then
+    printf '[WARN] %s уже существует и не является симлинком; файл не изменён.\n' "$DHM_SYMLINK_PATH" >&2
+    return 0
+  fi
+
+  if ln -s -- "$MANAGEMENT_SCRIPT_PATH" "$DHM_SYMLINK_PATH"; then
+    printf '[OK] Создана команда dhm -> %s\n' "$MANAGEMENT_SCRIPT_PATH"
+  elif [[ -L "$DHM_SYMLINK_PATH" ]] && [[ "$(readlink -f -- "$DHM_SYMLINK_PATH" 2>/dev/null || true)" == "$MANAGEMENT_SCRIPT_PATH" ]]; then
+    :
+  else
+    printf '[WARN] Не удалось создать симлинк %s.\n' "$DHM_SYMLINK_PATH" >&2
+  fi
+}
+
+
 confirm_action() {
   local prompt="$1" answer
   printf '%s [y/N]: ' "$prompt"
@@ -132,39 +182,49 @@ run_plugin_action() {
 }
 
 run_check() {
-  local tmp rc
+  local tmp="" checker_file="" cleanup_tmp=0 rc
   printf 'Проверка состояния плагина через Go read-only command...\\n'
   if ! "$PLUGIN_BIN" check; then
     fail "Go-проверка плагина завершилась с ошибкой."
     return 1
   fi
 
-  if command -v curl >/dev/null 2>&1; then
-    tmp="$(mktemp)"
-    if ! curl --fail --silent --show-error --location "$CHECK_SCRIPT_URL" --output "$tmp"; then
-      rm -f "$tmp"
-      fail "Не удалось загрузить read-only скрипт диагностики."
-      return 1
-    fi
-  elif command -v wget >/dev/null 2>&1; then
-    tmp="$(mktemp)"
-    if ! wget -q "$CHECK_SCRIPT_URL" -O "$tmp"; then
-      rm -f "$tmp"
-      fail "Не удалось загрузить read-only скрипт диагностики."
-      return 1
-    fi
+  # Prefer the checker shipped beside this menu in the plugin ZIP. The
+  # GitHub process-substitution entry point keeps its historical download fallback.
+  if [[ -n "$MANAGEMENT_SCRIPT_DIR" && -f "$MANAGEMENT_SCRIPT_DIR/check-dns-integration.sh" ]]; then
+    checker_file="$MANAGEMENT_SCRIPT_DIR/check-dns-integration.sh"
   else
-    fail "Для загрузки скрипта диагностики нужен curl или wget."
-    return 1
+    tmp="$(mktemp)"
+    checker_file="$tmp"
+    cleanup_tmp=1
+    if command -v curl >/dev/null 2>&1; then
+      if ! curl --fail --silent --show-error --location "$CHECK_SCRIPT_URL" --output "$tmp"; then
+        rm -f "$tmp"
+        fail "Не удалось загрузить read-only скрипт диагностики."
+        return 1
+      fi
+    elif command -v wget >/dev/null 2>&1; then
+      if ! wget -q "$CHECK_SCRIPT_URL" -O "$tmp"; then
+        rm -f "$tmp"
+        fail "Не удалось загрузить read-only скрипт диагностики."
+        return 1
+      fi
+    else
+      rm -f "$tmp"
+      fail "Для загрузки скрипта диагностики нужен curl или wget."
+      return 1
+    fi
   fi
 
-  printf 'Проверка выполняется в режиме read-only; конфигурация Xray не изменяется.\n'
-  if DOH_SKIP_PLUGIN_HEALTH_CHECK=1 bash "$tmp"; then
+  printf 'Проверка выполняется в режиме read-only; конфигурация Xray не изменяется.\\n'
+  if DOH_SKIP_PLUGIN_HEALTH_CHECK=1 bash "$checker_file"; then
     rc=0
   else
     rc=$?
   fi
-  rm -f "$tmp"
+  if (( cleanup_tmp )); then
+    rm -f "$tmp"
+  fi
   return "$rc"
 }
 
@@ -279,6 +339,7 @@ show_menu() {
 main() {
   require_root
   resolve_plugin_paths || exit 1
+  ensure_dhm_symlink
   trap 'stop_web_ui; exit 130' INT
   trap 'stop_web_ui; exit 129' HUP
   trap 'stop_web_ui; exit 143' TERM
