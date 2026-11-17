@@ -41,11 +41,27 @@ func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 	if got := strings.Count(page, `<section class="panel dashboard-panel">`); got != 1 {
 		t.Fatalf("dashboard should have exactly one combined data panel, got %d", got)
 	}
-	if got := strings.Count(page, `<section class="dashboard-column">`); got != 3 {
-		t.Fatalf("dashboard should have exactly three columns, got %d", got)
+	if got := strings.Count(page, `<section class="dashboard-column dashboard-`); got != 2 {
+		t.Fatalf("dashboard should have exactly two columns, got %d", got)
+	}
+	for _, want := range []string{
+		`class="dashboard-column dashboard-overview"`,
+		`class="dashboard-column dashboard-upstreams"`,
+		`class="metric-list"`,
+			`<h2>DNS listeners</h2>`,
+			`<h2>Запросы и ресурсы</h2>`,
+			`<h2>Upstream-группы</h2>`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("dashboard is missing expected layout element %q", want)
+		}
 	}
 	if strings.Index(page, `id="dns-udp"`) > strings.Index(page, `id="dns-tcp"`) {
 		t.Fatal("TCP listener must appear below UDP listener")
+	}
+	if !(strings.Index(page, `<h2>DNS listeners</h2>`) < strings.Index(page, `<h2>Запросы и ресурсы</h2>`) &&
+		strings.Index(page, `<h2>Запросы и ресурсы</h2>`) < strings.Index(page, `<h2>Upstream-группы</h2>`)) {
+		t.Fatal("dashboard sections must be ordered: DNS listeners, resources, upstream groups")
 	}
 
 	badHost := req.Clone(req.Context())
