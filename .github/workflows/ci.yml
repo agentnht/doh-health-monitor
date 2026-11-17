@@ -6,7 +6,7 @@ on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   test:
@@ -18,17 +18,6 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
-      - name: Normalize cache.go formatting on maintainer PR
-        if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'agentnht' && github.event.pull_request.head.repo.full_name == github.repository
-        run: |
-          gofmt -w cache.go
-          if ! git diff --quiet -- cache.go; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add cache.go
-            git commit -m "style: gofmt cache implementation"
-            git push origin "HEAD:${GITHUB_HEAD_REF}"
-          fi
       - name: Resolve and verify Go dependencies
         run: go mod tidy
       - name: Verify Go module files are tidy
