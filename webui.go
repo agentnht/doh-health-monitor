@@ -101,7 +101,7 @@ func bearerToken(header string) (string, bool) {
 
 func requireAutoHostsAPIToken(token string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !isLoopbackWebHost(r.Host) || !validWebUIOrigin(r) {
+		if !isLoopbackWebHost(r.Host) || !isLoopbackRemoteAddr(r.RemoteAddr) || !validWebUIOrigin(r) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -413,6 +413,15 @@ func validWebUIOrigin(r *http.Request) bool {
 		return false
 	}
 	return strings.EqualFold(parsed.Host, r.Host)
+}
+
+func isLoopbackRemoteAddr(value string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(value))
+	if err != nil {
+		host = strings.TrimSpace(value)
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
 }
 
 func isLoopbackWebHost(value string) bool {
