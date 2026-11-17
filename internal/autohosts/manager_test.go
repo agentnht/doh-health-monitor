@@ -125,3 +125,16 @@ func TestRecordPinnedFailurePersistsDegradationWithoutChangingActiveSnapshot(t *
 	failure := after.ProbeResults["edge\x00chatgpt.com"]
 	if failure.Success || failure.Error == "" { t.Fatalf("pinned degradation not recorded: %+v", failure) }
 }
+
+
+func TestEndpointWithoutResolutionTimestampIsNeverPublished(t *testing.T) {
+	now:=time.Now().UTC()
+	m,err:=New(filepath.Join(t.TempDir(),"state.json"))
+	if err!=nil { t.Fatal(err) }
+	ep:=Endpoint{ServerID:"fallback",URL:"https://dns.example/dns-query",Hostname:"dns.example",IPv4:[]string{"8.8.8.8"}}
+	if err=m.ApplyCycle("fallback",ep,[]ProbeResult{{Domain:"chatgpt.com",Success:true,CheckedAt:now}},now);err!=nil { t.Fatal(err) }
+	if err=m.SetEnabled(true);err!=nil { t.Fatal(err) }
+	if ips,_,matched:=m.Snapshot().Lookup("chatgpt.com",1,now);matched||len(ips)!=0 {
+		t.Fatalf("endpoint without a successful resolution timestamp must not be published: ips=%v matched=%v",ips,matched)
+	}
+}
