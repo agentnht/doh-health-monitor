@@ -1600,11 +1600,17 @@ func (r *Runtime) handleDNS(packet []byte) []byte {
 	if s.cfg.Cache.Enabled {
 		if v, ok := r.cacheGet(cacheKey, packetID(packet)); ok {
 			r.cacheHits.Add(1)
+			if cnameChainTargetsAutoHosts(v, normalizeDomain(name), qtype, r.autoHosts) {
+				return servfailResponse(packet)
+			}
 			return v
 		}
 	}
 	resolve := func() ([]byte, error) {
 		response, _, queryErr := r.query(context.Background(), packet)
+		if queryErr == nil && cnameChainTargetsAutoHosts(response, normalizeDomain(name), qtype, r.autoHosts) {
+			return nil, errors.New("upstream CNAME targets an Auto Hosts protected domain")
+		}
 		if queryErr == nil && s.cfg.Cache.Enabled {
 			r.cachePut(cacheKey, response, s.cfg.Cache)
 		}
@@ -1679,6 +1685,58 @@ func localHostsResponseWithTTL(query []byte, host string, qtype uint16, hosts ma
 		binary.BigEndian.PutUint16(response[10:12], 1)
 	}
 	return response, true
+}
+
+// cnameChainTargetsAutoHosts fails closed when an upstream CNAME chain points
+// at a name managed by Auto Hosts. Returning SERVFAIL avoids leaking the real
+// target address from either Answer or Additional while preserving exact-name
+// Auto Hosts handling for direct queries.
+func cnameChainTargetsAutoHosts(response []byte, originalName string, qtype uint16, manager *autohosts.Manager) bool {
+	if manager == nil || (qtype != 1 && qtype != 28) || len(response) < 12 {
+		return false
+	}
+	snapshot := manager.Snapshot()
+	if snapshot == nil || !snapshot.Enabled || snapshot.EmergencyOff {
+		return false
+	}
+	off := 12
+	qd := int(binary.BigEndian.Uint16(response[4:6]))
+	for i := 0; i < qd; i++ {
+		n, err := skipName(response, off)
+		if err != nil || n+4 > len(response) { return false }
+		off = n + 4
+	}
+	answerCount := int(binary.BigEndian.Uint16(response[6:8]))
+	aliases := make(map[string]string)
+	for i := 0; i < answerCount; i++ {
+		owner, next, err := decodeName(response, off)
+		if err != nil || next+10 > len(response) { return false }
+		typ := binary.BigEndian.Uint16(response[next:next+2])
+		rdlen := int(binary.BigEndian.Uint16(response[next+8:next+10]))
+		rdata := next + 10
+		end := rdata + rdlen
+		if end > len(response) { return false }
+		if typ == 5 {
+			target, _, nameErr := decodeName(response, rdata)
+			if nameErr == nil {
+				aliases[normalizeDomain(owner)] = normalizeDomain(target)
+			}
+		}
+		off = end
+	}
+	current := normalizeDomain(originalName)
+	seen := make(map[string]struct{}, 16)
+	for i := 0; i < 16; i++ {
+		target, ok := aliases[current]
+		if !ok { return false }
+		if _, duplicate := seen[target]; duplicate { return false }
+		seen[target] = struct{}{}
+		if _, _, matched := snapshot.Lookup(target, qtype, time.Now()); matched {
+			return true
+		}
+		current = target
+	}
+	return false
 }
 
 func autoHostsResponse(query []byte, host string, qtype uint16, manager *autohosts.Manager) ([]byte, bool) {
