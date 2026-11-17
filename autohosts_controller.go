@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -241,7 +242,7 @@ func (c *autoHostsController) probeDomain(ctx context.Context, job autoHostsProb
 	}
 	var lastErr error
 	for _,ip:=range websiteIPs {
-		status,body,probeErr:=probeHTTPSAtIP(ctx,probeURL,parsed.Hostname(),ip,job.domain)
+		status,body,probeErr:=probeHTTPSAtIP(ctx,probeURL,parsed.Hostname(),ip)
 		if probeErr!=nil { lastErr=probeErr; continue }
 		if len(job.check.ExpectedStatus)>0 {
 			accepted:=false
@@ -264,7 +265,7 @@ func (c *autoHostsController) probeDomain(ctx context.Context, job autoHostsProb
 	return result
 }
 
-func probeHTTPSAtIP(ctx context.Context, targetURL, host, ip, domain string) (int,[]byte,error) {
+func probeHTTPSAtIP(ctx context.Context, targetURL, host, ip string) (int,[]byte,error) {
 	if !isAutoHostsPublicIP(net.ParseIP(ip)) { return 0,nil,errors.New("refusing non-public website IP") }
 	client:=newPinnedHTTPClient(ip,host,autoHostsProbeTimeout)
 	defer client.CloseIdleConnections()
