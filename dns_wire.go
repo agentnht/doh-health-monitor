@@ -297,6 +297,7 @@ func decrementTTLs(p []byte, elapsed uint32) {
 }
 
 
+ 
 // negativeSOATTL returns the RFC 2308 negative-cache TTL from the authority
 // SOA: min(SOA RR TTL, SOA.MINIMUM). It returns false when no usable SOA exists.
 func negativeSOATTL(packet []byte) (uint32, bool) {
@@ -307,7 +308,9 @@ func negativeSOATTL(packet []byte) (uint32, bool) {
 	qd := int(binary.BigEndian.Uint16(packet[4:6]))
 	for i := 0; i < qd; i++ {
 		n, err := skipName(packet, off)
-		if err != nil || n+4 > len(packet) { return 0, false }
+		if err != nil || n+4 > len(packet) {
+			return 0, false
+		}
 		off = n + 4
 	}
 	an := int(binary.BigEndian.Uint16(packet[6:8]))
@@ -316,20 +319,26 @@ func negativeSOATTL(packet []byte) (uint32, bool) {
 	for section, count := range []int{an, ns, ar} {
 		for i := 0; i < count; i++ {
 			_, n, err := decodeName(packet, off)
-			if err != nil || n+10 > len(packet) { return 0, false }
-			typ := binary.BigEndian.Uint16(packet[n:n+2])
-			ttl := binary.BigEndian.Uint32(packet[n+4:n+8])
-			rdlen := int(binary.BigEndian.Uint16(packet[n+8:n+10]))
+			if err != nil || n+10 > len(packet) {
+				return 0, false
+			}
+			typ := binary.BigEndian.Uint16(packet[n : n+2])
+			ttl := binary.BigEndian.Uint32(packet[n+4 : n+8])
+			rdlen := int(binary.BigEndian.Uint16(packet[n+8 : n+10]))
 			rdata := n + 10
 			end := rdata + rdlen
-			if end > len(packet) { return 0, false }
+			if end > len(packet) {
+				return 0, false
+			}
 			if section == 1 && typ == 6 {
 				mnameEnd, err := skipName(packet, rdata)
 				if err == nil {
 					rnameEnd, err2 := skipName(packet, mnameEnd)
 					if err2 == nil && rnameEnd+20 == end {
-						minimum := binary.BigEndian.Uint32(packet[end-4:end])
-						if minimum < ttl { ttl = minimum }
+						minimum := binary.BigEndian.Uint32(packet[end-4 : end])
+						if minimum < ttl {
+							ttl = minimum
+						}
 						return ttl, true
 					}
 				}
@@ -344,11 +353,14 @@ func negativeSOATTL(packet []byte) (uint32, bool) {
 // and DO bit. Client options such as COOKIE and ECS are never reflected.
 func minimalResponseOPT(query []byte) []byte {
 	opt := extractEDNSOPT(query)
-	if len(opt) < 11 { return nil }
+	if len(opt) < 11 {
+		return nil
+	}
 	out := make([]byte, 11)
 	out[0] = 0
 	copy(out[1:9], opt[1:9])
-	out[7] &= 0x80 // preserve only the DNSSEC DO bit in the flags field
-	out[9], out[10] = 0, 0 // no echoed client options
+	out[7] &= 0x80
+	out[8] = 0
+	out[9], out[10] = 0, 0
 	return out
 }
