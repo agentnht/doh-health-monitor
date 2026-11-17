@@ -222,6 +222,17 @@ func TestConfigCanDisableSystemDNSWithoutNormalizerReaddingIt(t *testing.T) {
 	if err := validateConfig(normalized); err != nil {
 		t.Fatalf("configuration without system DNS should validate: %v", err)
 	}
+	urls := map[string]string{}
+	for _, upstream := range normalized.Upstreams {
+		urls[upstream.ID] = "https://resolver.example/dns-query"
+	}
+	snapshot, err := buildSnapshot(normalized, urls)
+	if err != nil {
+		t.Fatalf("build snapshot without system DNS: %v", err)
+	}
+	if _, exists := snapshot.upstreams[systemDNSUpstreamID]; exists {
+		t.Fatal("snapshot recreated disabled system-dns")
+	}
 }
 
 func TestDefaultConfigValid(t *testing.T) {
