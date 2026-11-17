@@ -23,6 +23,7 @@ type cacheOrderEntry struct {
 	key        string
 	generation uint64
 }
+
 func (r *Runtime) deleteCacheEntryLocked(key string, item cacheItem) {
 	if current, ok := r.cache[key]; ok && current.generation == item.generation {
 		delete(r.cache, key)
