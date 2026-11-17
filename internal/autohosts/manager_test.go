@@ -10,7 +10,7 @@ import (
 func TestLookupEmergencyOffAndFamilySpecificNODATA(t *testing.T) {
  now:=time.Now().UTC()
  m,err:=New(filepath.Join(t.TempDir(),"auto-hosts.json"));if err!=nil{t.Fatal(err)}
- ep:=Endpoint{ServerID:"doh-a",URL:"https://dns.example/dns-query",Hostname:"dns.example",IPv4:[]string{"192.0.2.10"},IPv6:[]string{"2001:db8::10"}}
+ ep:=Endpoint{ServerID:"doh-a",URL:"https://dns.example/dns-query",Hostname:"dns.example",IPv4:[]string{"192.0.2.10"},IPv6:[]string{"2001:db8::10"},UpdatedAt:now}
  if err=m.ApplyCycle("doh-a",ep,[]ProbeResult{{Domain:"ChatGPT.com.",Success:true,CheckedAt:now}},now);err!=nil{t.Fatal(err)}
  if err=m.SetEnabled(true);err!=nil{t.Fatal(err)}
  ips,ttl,matched:=m.Snapshot().Lookup("chatgpt.com",1,now.Add(time.Second))
