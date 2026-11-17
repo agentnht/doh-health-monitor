@@ -1939,8 +1939,6 @@ func TestCacheDoCoalescesConcurrentMisses(t *testing.T) {
 	}
 }
 
-
-
 func TestCNAMEChainIntoAutoHostsFailsClosed(t *testing.T) {
 	now := time.Now().UTC()
 	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
