@@ -134,9 +134,7 @@ func (c *autoHostsController) dryRunCycle(ctx context.Context, now time.Time) (a
 
 func (c *autoHostsController) probeAll(ctx context.Context, now time.Time) ([]autohosts.Endpoint, []autohosts.ProbeResult, error) {
 	s := c.runtime.currentSnapshot()
-	if s == nil { return errors.New("runtime snapshot is unavailable") }
-	jobs := make(chan autoHostsProbeJob)
-	resultsCh := make(chan autohosts.ProbeResult, len(s.upstreams)*len(autoHostsDomains))
+	if s == nil { return nil, nil, errors.New("runtime snapshot is unavailable") }
 	endpoints := make([]autohosts.Endpoint, 0, len(s.upstreams))
 	checks := make(map[string]Check)
 	for _, group := range s.groups {
@@ -158,7 +156,7 @@ func (c *autoHostsController) probeAll(ctx context.Context, now time.Time) ([]au
 		}
 		bootstrapStatus := upstream.bootstrap.status()
 		endpointUpdatedAt := bootstrapStatus.ResolvedAt
-		if endpointUpdatedAt.IsZero() { endpointUpdatedAt = now.UTC() } // configured bootstrap fallback
+		if endpointUpdatedAt.IsZero() { endpointUpdatedAt = now.UTC() }
 		if resolveErr != nil { logLine("WARN", "AUTO_HOSTS using cached/fallback endpoint IPs server=%s error=%v", id, resolveErr) }
 		ep := autohosts.Endpoint{ServerID:id, URL:upstream.cfg.URL, Hostname:u.Hostname(), UpdatedAt:endpointUpdatedAt}
 		for _, raw := range ips {
@@ -172,40 +170,10 @@ func (c *autoHostsController) probeAll(ctx context.Context, now time.Time) ([]au
 		}
 		endpoints = append(endpoints, ep)
 	}
-	if len(endpoints) == 0 { return errors.New("no eligible public DoH endpoints") }
-	// Execute with a bounded worker pool to cap outbound requests.
-	jobList := make([]autoHostsProbeJob, 0, len(endpoints)*len(autoHostsDomains))
-	for _, ep := range endpoints {
-		upstream := s.upstreams[ep.ServerID]
-		for _, domain := range autoHostsDomains {
-			check := checks[domain]
-			check.Domain = domain
-			jobList = append(jobList, autoHostsProbeJob{serverID:ep.ServerID, upstream:upstream, domain:domain, check:check})
-		}
-	}
-	workerCount := autoHostsProbeWorkers
-	if workerCount > len(jobList) { workerCount = len(jobList) }
-	var wg sync.WaitGroup
-	for i:=0; i<workerCount; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for job := range jobs {
-				probeCtx, cancel := context.WithTimeout(ctx, autoHostsProbeTimeout)
-				result := c.probeDomain(probeCtx, job, now)
-				cancel()
-				resultsCh <- result
-			}
-		}()
-	}
-	for _, job := range jobList { jobs <- job }
-	close(jobs)
-	wg.Wait()
-	close(resultsCh)
-	results := make([]autohosts.ProbeResult, 0, len(jobList))
-	for result := range resultsCh { results = append(results, result) }
+	if len(endpoints) == 0 { return nil, nil, errors.New("no eligible public DoH endpoints") }
 
-	// Execute with a bounded worker pool to cap outbound requests.
+	jobs := make(chan autoHostsProbeJob)
+	resultsCh := make(chan autohosts.ProbeResult, len(endpoints)*len(autoHostsDomains))
 	jobList := make([]autoHostsProbeJob, 0, len(endpoints)*len(autoHostsDomains))
 	for _, ep := range endpoints {
 		upstream := s.upstreams[ep.ServerID]
