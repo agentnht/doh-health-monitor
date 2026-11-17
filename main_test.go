@@ -1557,3 +1557,65 @@ func TestHandleDNSManualLocalHostsOverrideAutoHosts(t *testing.T) {
 	ips, err := parseARecords(response)
 	if err != nil || len(ips)!=1 || ips[0]!="203.0.113.9" { t.Fatalf("manual local_hosts did not win priority: %v err=%v",ips,err) }
 }
+
+
+func newAutoHostsDNSRuntimeForTransportTest(t *testing.T) *Runtime {
+	t.Helper()
+	now := time.Now().UTC()
+	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
+	if err != nil { t.Fatal(err) }
+	endpoint := autohosts.Endpoint{ServerID:"edge",URL:"https://dns.example/dns-query",Hostname:"dns.example",IPv4:[]string{"8.8.4.4"},UpdatedAt:now}
+	if err := manager.ApplyFullCycle("edge",[]autohosts.Endpoint{endpoint},[]autohosts.ProbeResult{{ServerID:"edge",Domain:"chatgpt.com",Success:true,CheckedAt:now}},now); err != nil { t.Fatal(err) }
+	enabled := true
+	if err := manager.Configure(&enabled,nil,nil); err != nil { t.Fatal(err) }
+	r := &Runtime{autoHosts:manager}
+	r.snapshot.Store(&Snapshot{cfg:Config{DNSMaxConcurrent:2},localHosts:map[string]LocalHost{},upstreams:map[string]*UpstreamRuntime{},groups:map[string]Group{}})
+	return r
+}
+
+func TestAutoHostsDNSOverUDPTransport(t *testing.T) {
+	r := newAutoHostsDNSRuntimeForTransportTest(t)
+	server, err := net.ListenUDP("udp", &net.UDPAddr{IP:net.ParseIP("127.0.0.1")})
+	if err != nil { t.Fatal(err) }
+	ctx,cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func(){ defer close(done); r.serveUDP(ctx,server) }()
+	client,err := net.DialUDP("udp",nil,server.LocalAddr().(*net.UDPAddr))
+	if err != nil { cancel(); _=server.Close(); t.Fatal(err) }
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(3*time.Second))
+	if _,err=client.Write(makeDNSQuery("chatgpt.com",1)); err!=nil { t.Fatal(err) }
+	buf:=make([]byte,2048)
+	n,err:=client.Read(buf)
+	if err!=nil { t.Fatal(err) }
+	ips,err:=parseARecords(buf[:n])
+	if err!=nil || len(ips)!=1 || ips[0]!="8.8.4.4" { t.Fatalf("UDP Auto Hosts response=%v err=%v",ips,err) }
+	cancel(); _=server.Close()
+	select { case <-done: case <-time.After(2*time.Second): t.Fatal("UDP server did not stop") }
+}
+
+func TestAutoHostsDNSOverTCPTransport(t *testing.T) {
+	r := newAutoHostsDNSRuntimeForTransportTest(t)
+	listener,err:=net.Listen("tcp","127.0.0.1:0")
+	if err!=nil { t.Fatal(err) }
+	ctx,cancel:=context.WithCancel(context.Background())
+	done:=make(chan struct{})
+	go func(){ defer close(done); r.serveTCP(ctx,listener) }()
+	conn,err:=net.DialTimeout("tcp",listener.Addr().String(),2*time.Second)
+	if err!=nil { cancel(); _=listener.Close(); t.Fatal(err) }
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(3*time.Second))
+	query:=makeDNSQuery("chatgpt.com",1)
+	frame:=make([]byte,2+len(query))
+	binary.BigEndian.PutUint16(frame[:2],uint16(len(query)))
+	copy(frame[2:],query)
+	if _,err=conn.Write(frame);err!=nil { t.Fatal(err) }
+	var length [2]byte
+	if _,err=io.ReadFull(conn,length[:]);err!=nil { t.Fatal(err) }
+	response:=make([]byte,binary.BigEndian.Uint16(length[:]))
+	if _,err=io.ReadFull(conn,response);err!=nil { t.Fatal(err) }
+	ips,err:=parseARecords(response)
+	if err!=nil || len(ips)!=1 || ips[0]!="8.8.4.4" { t.Fatalf("TCP Auto Hosts response=%v err=%v",ips,err) }
+	cancel(); _=listener.Close()
+	select { case <-done: case <-time.After(2*time.Second): t.Fatal("TCP server did not stop") }
+}
