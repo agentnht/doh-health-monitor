@@ -1433,33 +1433,43 @@ func (r *Runtime) markUpstreamSuccess(uid string) {
 }
 
 func (r *Runtime) query(ctx context.Context, packet []byte) ([]byte, string, error) {
-	name, _, _, e := parseQuestion(packet)
-	if e != nil {
-		return nil, "", e
+	name, _, _, err := parseQuestion(packet)
+	if err != nil {
+		return nil, "", err
 	}
 	s := r.currentSnapshot()
 	// Every DNS question received by this listener uses the single Google-qualified gateway.
 	const gid = "google"
 	order := r.upstreamsToAttempt(r.orderedUpstreams(gid, s), time.Now())
 	var errs []string
+	var lastDNSResponse []byte
+	var lastDNSUpstream string
+	attemptTimeout := time.Duration(s.cfg.DoHTimeoutSeconds) * time.Second
 	for _, uid := range order {
 		u := s.upstreams[uid]
 		if u == nil {
 			continue
 		}
-		resp, e := sendUpstreamDNS(ctx, u, packet)
-		if e == nil {
-			if dnsRCode(resp) == 2 || dnsRCode(resp) == 5 {
-				e = fmt.Errorf("upstream returned DNS RCODE %d", dnsRCode(resp))
-			} else if dnsTruncated(resp) {
-				e = errors.New("upstream returned truncated response; TCP retry not available over DoH")
-			} else {
-				r.markUpstreamSuccess(uid)
-				return resp, uid, nil
-			}
+		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
+		resp, attemptErr := sendUpstreamDNS(attemptCtx, u, packet)
+		cancel()
+		if attemptErr != nil {
+			r.markUpstreamFailure(uid, time.Now())
+			errs = append(errs, uid+": "+attemptErr.Error())
+			continue
 		}
-		r.markUpstreamFailure(uid, time.Now())
-		errs = append(errs, uid+": "+e.Error())
+		// A DNS-level SERVFAIL/REFUSED or TC response proves the endpoint
+		// answered the request. It is not evidence that the upstream is down
+		// and must never put it into the transport-failure cooldown.
+		r.markUpstreamSuccess(uid)
+		if dnsRCode(resp) == 2 || dnsRCode(resp) == 5 || dnsTruncated(resp) {
+			lastDNSResponse, lastDNSUpstream = resp, uid
+			continue
+		}
+		return resp, uid, nil
+	}
+	if lastDNSResponse != nil {
+		return lastDNSResponse, lastDNSUpstream, nil
 	}
 	r.failures.Add(1)
 	return nil, "", fmt.Errorf("all upstreams failed for %s (%s)", name, strings.Join(errs, "; "))
