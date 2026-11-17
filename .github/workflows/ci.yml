@@ -20,6 +20,11 @@ jobs:
         run: go mod tidy
       - name: Verify Go module files are tidy
         run: git diff --exit-code -- go.mod go.sum
+      - name: Check shell and Web UI JavaScript syntax
+        run: |
+          bash -n scripts/plugin-management.sh
+          bash -n scripts/check-dns-integration.sh
+          node --check webui/app.js
       - run: go vet ./...
       - run: go test ./...
       - name: Build Linux amd64 test package

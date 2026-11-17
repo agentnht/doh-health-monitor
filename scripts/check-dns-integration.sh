@@ -16,6 +16,7 @@ if ! command -v jq >/dev/null 2>&1; then
   printf '\nИтог: %d OK, %d WARN, %d FAIL\n' "$ok" "$warn" "$fail"
   exit 2
 fi
+if [[ "${DOH_SKIP_PLUGIN_HEALTH_CHECK:-0}" != "1" ]]; then
 if systemctl is-active --quiet "$DOH_SERVICE"; then
   pass "Сервис $DOH_SERVICE запущен"
 else
@@ -43,6 +44,8 @@ else
   error "Status API недоступен или вернул некорректный JSON: $DOH_STATUS_URL"
 fi
 rm -f "$status_file"
+
+fi
 
 if [[ ! -r "$XRAY_CONFIG" ]]; then
   error "Не найден доступный для чтения Xray config: $XRAY_CONFIG"

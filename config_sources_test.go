@@ -1,0 +1,285 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"testing"
+)
+
+func TestInitializeConfigSourceFilesCreatesEmbeddedDefaults(t *testing.T) {
+	dir := t.TempDir()
+	if err := initializeConfigSourceFiles(dir); err != nil {
+		t.Fatal(err)
+	}
+	dohPath := filepath.Join(dir, "doh-servers.txt")
+	checksPath := filepath.Join(dir, "tst-domen.txt")
+	dohInfo, err := os.Stat(dohPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checksInfo, err := os.Stat(checksPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dohInfo.Mode().Perm() != 0600 || checksInfo.Mode().Perm() != 0600 {
+		t.Fatalf("source file permissions = %o and %o; want 0600", dohInfo.Mode().Perm(), checksInfo.Mode().Perm())
+	}
+	sources, err := readConfigSources(dohPath, checksPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sources.Providers) != 5 {
+		t.Fatalf("default providers = %d, want 5", len(sources.Providers))
+	}
+	if len(sources.Checks) != 25 {
+		t.Fatalf("default checks = %d, want 25", len(sources.Checks))
+	}
+	if sources.DoHURLs["dagami"] != "https://dns.dagami.ru/dns-query" {
+		t.Fatalf("default Dagami endpoint = %q", sources.DoHURLs["dagami"])
+	}
+	var gemini, accounts, ssl, googleAPIs *Check
+	for i := range sources.Checks {
+		switch sources.Checks[i].Domain {
+		case "gemini.google.com":
+			gemini = &sources.Checks[i]
+		case "accounts.google.com":
+			accounts = &sources.Checks[i]
+		case "ssl.gstatic.com":
+			ssl = &sources.Checks[i]
+		case "www.googleapis.com":
+			googleAPIs = &sources.Checks[i]
+		}
+	}
+	if gemini == nil || !gemini.Required || gemini.HTTPURL != "https://gemini.google.com/" || !reflect.DeepEqual(gemini.ExpectedStatus, []int{200}) {
+		t.Errorf("Gemini default check = %+v", gemini)
+	}
+	if accounts == nil || !accounts.Required || !accounts.VerifyOIDC || accounts.HTTPURL != "https://accounts.google.com/.well-known/openid-configuration" {
+		t.Errorf("Accounts default check = %+v", accounts)
+	}
+	if ssl == nil || ssl.HTTPURL != "" || googleAPIs == nil || googleAPIs.HTTPURL != "" {
+		t.Errorf("optional static checks must be DNS-only: ssl=%+v googleapis=%+v", ssl, googleAPIs)
+	}
+}
+
+func TestInitializeConfigSourceFilesPreservesExistingUserFiles(t *testing.T) {
+	dir := t.TempDir()
+	doh := "# id;url\ncustom;https://resolver.example.net/dns-query\n"
+	checks := "# domain;qtypes;required;http_url;expected_status;verify_oidc\nresolver.example.net;TXT;1;;;0\n"
+	dohPath := filepath.Join(dir, "doh-servers.txt")
+	checksPath := filepath.Join(dir, "tst-domen.txt")
+	if err := os.WriteFile(dohPath, []byte(doh), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(checksPath, []byte(checks), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := initializeConfigSourceFiles(dir); err != nil {
+		t.Fatal(err)
+	}
+	gotDoH, err := os.ReadFile(dohPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotChecks, err := os.ReadFile(checksPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotDoH) != doh || string(gotChecks) != checks {
+		t.Fatal("existing user source files were unexpectedly replaced")
+	}
+}
+
+func TestMigrateLegacyDoHListUsesStableIDsAndPreservesURLs(t *testing.T) {
+	legacy := []byte("# old URL-only format\nhttps://eu.geohide.ru/dns-query\nhttps://doh.dagami.ru/dns-query\nhttps://custom.example.net/resolve\n")
+	got, changed, err := migrateLegacyDoHList(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("legacy list was not marked as migrated")
+	}
+	want := "# id;url — provider IDs remain stable when endpoint hostnames change\ngeohide-eu;https://eu.geohide.ru/dns-query\ndagami;https://doh.dagami.ru/dns-query\nprovider-custom-example-net;https://custom.example.net/resolve\n"
+	if string(got) != want {
+		t.Fatalf("migrated contents:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestMigrateLegacyDoHListRejectsMixedFormats(t *testing.T) {
+	legacy := []byte("https://doh.dagami.ru/dns-query\ndagami;https://dns.dagami.ru/dns-query\n")
+	if _, _, err := migrateLegacyDoHList(legacy); err == nil {
+		t.Fatal("expected mixed old and new formats to be rejected")
+	}
+}
+
+func TestParseDoHProvidersKeepsIDWhenEndpointHostnameChanges(t *testing.T) {
+	providers, err := parseDoHProviders([]byte("# id;url\ndagami;https://dns.dagami.ru/dns-query\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(providers) != 1 || providers[0].ID != "dagami" || providers[0].URL != "https://dns.dagami.ru/dns-query" {
+		t.Fatalf("parsed providers = %+v", providers)
+	}
+}
+
+func TestParseDoHProvidersRejectsDuplicateIDsAndReservedSystemDNS(t *testing.T) {
+	cases := [][]byte{
+		[]byte("dagami;https://one.example/dns-query\ndagami;https://two.example/dns-query\n"),
+		[]byte("system-dns;https://resolver.example/dns-query\n"),
+		[]byte("bad id;https://resolver.example/dns-query\n"),
+		[]byte("dagami;http://resolver.example/dns-query\n"),
+	}
+	for _, input := range cases {
+		if _, err := parseDoHProviders(input); err == nil {
+			t.Errorf("expected invalid DoH source to be rejected: %q", input)
+		}
+	}
+}
+
+func TestParseHealthChecksParsesEveryConfigurableField(t *testing.T) {
+	input := []byte("accounts.example.com;A,AAAA,TXT;1;https://accounts.example.com/.well-known/openid-configuration;200,302;1\n")
+	checks, err := parseHealthChecks(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("checks = %d, want 1", len(checks))
+	}
+	got := checks[0]
+	if got.Domain != "accounts.example.com" || !got.Required || got.HTTPURL != "https://accounts.example.com/.well-known/openid-configuration" || !got.VerifyOIDC {
+		t.Fatalf("parsed check = %+v", got)
+	}
+	if !reflect.DeepEqual(got.QTypes, []uint16{1, 28, 16}) {
+		t.Fatalf("qtypes = %v, want [1 28 16]", got.QTypes)
+	}
+	if !reflect.DeepEqual(got.ExpectedStatus, []int{200, 302}) {
+		t.Fatalf("expected statuses = %v, want [200 302]", got.ExpectedStatus)
+	}
+}
+
+func TestParseHealthChecksAllowsDNSOnlyOptionalChecks(t *testing.T) {
+	checks, err := parseHealthChecks([]byte("play.google.com;A,AAAA;0;;;0\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checks[0].Required || checks[0].HTTPURL != "" || checks[0].VerifyOIDC || len(checks[0].ExpectedStatus) != 0 {
+		t.Fatalf("DNS-only check has unexpected options: %+v", checks[0])
+	}
+}
+
+func TestParseHealthChecksRejectsInvalidFields(t *testing.T) {
+	cases := []string{
+		"not a domain;A;1;;;0\n",
+		"example.com;A;true;;;0\n",
+		"example.com;A;1;http://example.com/;200;0\n",
+		"example.com;A;1;https://other.example/;200;0\n",
+		"example.com;A;1;https://example.com/;404,;0\n",
+		"example.com;A;1;https://example.com/;200;1\n",
+		"example.com;;1;;;0\n",
+		"example.com;A;1;;;0\nexample.com;AAAA;0;;;0\n",
+	}
+	for _, input := range cases {
+		if _, err := parseHealthChecks([]byte(input)); err == nil {
+			t.Errorf("expected invalid health check source to be rejected: %q", input)
+		}
+	}
+}
+
+func TestApplyConfigSourcesGeneratesOrderedUpstreamsAndPreservesRuntimeSettings(t *testing.T) {
+	cfg := defaultConfig()
+	// Simulate an old config.json with hostname-based provider IDs.
+	for i := range cfg.Upstreams {
+		if cfg.Upstreams[i].ID == "dagami" {
+			cfg.Upstreams[i].ID = "doh.dagami.ru"
+			cfg.Upstreams[i].BootstrapIPs = []string{"192.0.2.10"}
+		}
+	}
+	for i, id := range cfg.Groups[0].Upstreams {
+		if id == "dagami" {
+			cfg.Groups[0].Upstreams[i] = "doh.dagami.ru"
+		}
+	}
+	cfg.Cache.MaxEntries = 321
+	cfg.LocalHosts = map[string]LocalHost{"internal.example": {IPv4: []string{"192.0.2.20"}}}
+	cfg.GeminiAPI.Enabled = true
+	cfg.Integration = true
+
+	providers, err := parseDoHProviders([]byte("dagami;https://dns.dagami.ru/dns-query\nextra;https://extra.example.net/dns-query\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks, err := parseHealthChecks([]byte("accounts.google.com;A,AAAA;1;https://accounts.google.com/.well-known/openid-configuration;200;1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	urls := make(map[string]string, len(providers))
+	for _, provider := range providers {
+		urls[provider.ID] = provider.URL
+	}
+	generated, err := applyConfigSources(cfg, ConfigSources{Providers: providers, Checks: checks, DoHURLs: urls})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantIDs := []string{systemDNSUpstreamID, "dagami", "extra"}
+	gotIDs := make([]string, 0, len(generated.Upstreams))
+	for _, upstream := range generated.Upstreams {
+		gotIDs = append(gotIDs, upstream.ID)
+	}
+	if !reflect.DeepEqual(gotIDs, wantIDs) {
+		t.Fatalf("generated upstream IDs = %v, want %v", gotIDs, wantIDs)
+	}
+	if generated.Upstreams[1].Name != "Dagami" || !reflect.DeepEqual(generated.Upstreams[1].BootstrapIPs, []string{"192.0.2.10"}) {
+		t.Fatalf("legacy Dagami metadata was not preserved: %+v", generated.Upstreams[1])
+	}
+	if !reflect.DeepEqual(generated.Groups[0].Upstreams, wantIDs) || len(generated.Groups[0].Checks) != 1 || !generated.Groups[0].Checks[0].VerifyOIDC {
+		t.Fatalf("generated Google group = %+v", generated.Groups[0])
+	}
+	if generated.Cache.MaxEntries != 321 || len(generated.LocalHosts) != 1 || !generated.GeminiAPI.Enabled || !generated.Integration {
+		t.Fatal("non-managed config settings were not preserved")
+	}
+}
+
+func TestConfigSourceChecksumsTrackBothFiles(t *testing.T) {
+	first := configSourceChecksums([]byte("a"), []byte("b"))
+	if first != configSourceChecksums([]byte("a"), []byte("b")) {
+		t.Fatal("identical source contents produced different hashes")
+	}
+	if first == configSourceChecksums([]byte("changed"), []byte("b")) {
+		t.Fatal("DoH source change did not change hashes")
+	}
+	if first == configSourceChecksums([]byte("a"), []byte("changed")) {
+		t.Fatal("health check source change did not change hashes")
+	}
+	if len(first.DoH) != 64 || len(first.Checks) != 64 || len(first.Combined) != 64 {
+		t.Fatalf("SHA-256 checksum length is invalid: %+v", first)
+	}
+}
+
+func TestWriteConfigAtomicProducesReadableJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := defaultConfig()
+	if err := writeConfigAtomic(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadConfigNoCreate(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DNSListenUDP != cfg.DNSListenUDP || got.Groups[0].ID != "google" {
+		t.Fatalf("read back generated config = %+v", got)
+	}
+}
+
+func TestRejectedConfigReloadKeepsPreviousSnapshot(t *testing.T) {
+	runtime := &Runtime{}
+	previous := &Snapshot{cfg: defaultConfig()}
+	runtime.snapshot.Store(previous)
+
+	runtime.rejectConfigReload("invalid-source", "test invalid source")
+	if runtime.currentSnapshot() != previous {
+		t.Fatal("rejected configuration replaced the last valid runtime snapshot")
+	}
+	if runtime.lastError == "" {
+		t.Fatal("rejected configuration did not publish an operational error")
+	}
+}

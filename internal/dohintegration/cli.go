@@ -11,7 +11,7 @@ import (
 func RunCommand(args []string,logger Logger)error{
 	if len(args)==0{return problem("Expected integrate or remove")}
 	action:=strings.ToLower(strings.TrimSpace(args[0]))
-	if action!="integrate"&&action!="remove"{return problem("Unknown directive %q; supported directives: integrate, remove",action)}
+	if action!="integrate"&&action!="remove"&&action!="check"{return problem("Unknown directive %q; supported directives: integrate, remove, check",action)}
 	if os.Geteuid()!=0{return problem("Run %s as root on the LucX-UI VPS",action)}
 	opts:=DefaultOptions()
 	fs:=flag.NewFlagSet("doh-health-monitor "+action,flag.ContinueOnError)
@@ -31,6 +31,9 @@ func RunCommand(args []string,logger Logger)error{
 	if opts.Timeout<=0{return problem("--timeout must be greater than zero")}
 	if opts.Port<1||opts.Port>65535{return problem("--plugin-port must be between 1 and 65535")}
 	if opts.BaseURL!=""&&opts.PanelDB!=""{return problem("--panel-db is only valid when --base-url is omitted")}
+	if action=="check" {
+		return checkPluginHealth(opts,logger)
+	}
 	if action=="integrate" {
 		if err:=checkPluginHealth(opts,logger);err!=nil{return fmt.Errorf("%s preflight failed: %w",action,err)}
 	}

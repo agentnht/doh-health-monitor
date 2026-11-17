@@ -1,0 +1,7 @@
+# id;url
+# The provider ID stays stable when its endpoint hostname changes.
+geohide-eu;https://eu.geohide.ru/dns-query
+dagami;https://dns.dagami.ru/dns-query
+comss-one;https://dns.comss.one/dns-query
+bezmezhau;https://dns.bezmezhau.com/dns-query
+zapret;https://dns.zapret.moe/dns-query

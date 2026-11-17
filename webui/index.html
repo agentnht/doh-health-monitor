@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>DoH Health Monitor</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #111827; color: #e5e7eb; }
+    body { margin: 0; padding: 2rem 1rem; }
+    main { width: min(70rem, 100%); margin: 0 auto; }
+    header, .panel, .metric { border: 1px solid #374151; border-radius: .8rem; background: #1f2937; }
+    header, .panel { padding: 1rem; margin-bottom: .85rem; }
+    h1 { margin: .2rem 0; font-size: 1.45rem; }
+    h2 { margin: 0 0 .6rem; font-size: 1rem; }
+    h3 { margin: 0 0 .25rem; font-size: .95rem; }
+    p { color: #cbd5e1; line-height: 1.4; }
+    .state { color: #a7f3d0; }
+    .muted { color: #9ca3af; font-size: .78rem; }
+    .dashboard-grid { display: grid; grid-template-columns: minmax(9rem, .8fr) minmax(15rem, 1.05fr) minmax(22rem, 1.8fr); gap: 1rem; align-items: start; }
+    .dashboard-column { min-width: 0; }
+    .dashboard-column + .dashboard-column { border-left: 1px solid #374151; padding-left: 1rem; }
+    .listener-list { display: flex; flex-direction: column; gap: .5rem; }
+    .listener { border: 1px solid #374151; border-radius: .55rem; padding: .55rem .65rem; background: #111827; }
+    .listener span { display: block; color: #9ca3af; font-size: .78rem; }
+    .listener strong { display: block; margin-top: .15rem; font-size: .95rem; overflow-wrap: anywhere; }
+    .metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .4rem; }
+    .metric { min-width: 0; padding: .45rem .55rem; background: #111827; }
+    .metric strong { display: block; font-size: 1rem; line-height: 1.2; margin-top: .12rem; overflow-wrap: anywhere; }
+    .metric span { color: #9ca3af; font-size: .72rem; }
+    .groups { display: block; min-width: 0; }
+    .group { padding: 0; margin: 0; }
+    .group > p { margin: .15rem 0 .35rem; font-size: .78rem; }
+    ul { padding-left: 1rem; color: #cbd5e1; }
+    li { margin: .22rem 0; overflow-wrap: anywhere; }
+    .upstream-list { list-style: none; padding: 0; margin: 0; }
+    .upstream { border-top: 1px solid #374151; padding: .35rem 0; margin: 0; }
+    .upstream summary { cursor: pointer; font-weight: 600; font-size: .8rem; line-height: 1.3; overflow-wrap: anywhere; }
+    .upstream-state { font-weight: 700; }
+    .upstream-state-up { color: #34d399; }
+    .upstream-state-down { color: #f87171; }
+    .upstream details[open] { max-height: 15rem; overflow-y: auto; }
+    .upstream details[open] summary { margin-bottom: .25rem; }
+    .upstream .muted { margin: .2rem 0; font-size: .72rem; }
+    .check-title { margin: .3rem 0 .15rem; font-size: .78rem; font-weight: 600; }
+    .check-list { margin: .15rem 0; padding-left: 1rem; font-size: .72rem; }
+    .check-list li { margin: .12rem 0; }
+    button { border: 0; border-radius: .5rem; padding: .55rem .85rem; color: #fff; background: #2563eb; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: wait; }
+    #error { color: #fca5a5; }
+    @media (max-width: 65rem) {
+      .dashboard-grid { grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); }
+      .dashboard-column:last-child { grid-column: 1 / -1; }
+      .dashboard-column + .dashboard-column { border-left: 0; padding-left: 0; }
+      .dashboard-column:last-child { border-top: 1px solid #374151; padding-top: .85rem; }
+    }
+    @media (max-width: 38rem) {
+      body { padding: .85rem .55rem; }
+      header, .panel { padding: .8rem; }
+      .dashboard-grid { grid-template-columns: minmax(0, 1fr); gap: .85rem; }
+      .dashboard-column:last-child { grid-column: auto; }
+      .dashboard-column + .dashboard-column { border-left: 0; padding-left: 0; border-top: 1px solid #374151; padding-top: .85rem; }
+      .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="state">Web UI запущен · read-only</p>
+      <h1>DoH Health Monitor</h1>
+      <p>Состояние DNS-демона и upstream-групп. На этом этапе интерфейс ничего не меняет в конфигурации.</p>
+      <p class="muted">Версия: <strong id="version">—</strong> · Демон: <strong id="daemon">Проверка…</strong> · Запущен: <strong id="started">—</strong></p>
+      <button id="refresh" type="button">Обновить состояние</button>
+      <span class="muted" id="updated">Загрузка…</span>
+      <p id="error" role="status"></p>
+    </header>
+
+    <section class="panel dashboard-panel">
+      <div class="dashboard-grid">
+        <section class="dashboard-column">
+          <h2>DNS listeners</h2>
+          <div class="listener-list">
+            <div class="listener"><span>UDP</span><strong id="dns-udp">—</strong></div>
+            <div class="listener"><span>TCP</span><strong id="dns-tcp">—</strong></div>
+          </div>
+        </section>
+
+        <section class="dashboard-column">
+          <h2>Запросы и ресурсы</h2>
+          <div class="metric-grid">
+            <div class="metric"><span>Запросы</span><strong id="queries">—</strong></div>
+            <div class="metric"><span>Ошибки</span><strong id="failures">—</strong></div>
+            <div class="metric"><span>Попадания в кеш</span><strong id="cache-hits">—</strong></div>
+            <div class="metric"><span>Активные UDP</span><strong id="active-udp">—</strong></div>
+            <div class="metric"><span>Активные TCP</span><strong id="active-tcp">—</strong></div>
+            <div class="metric"><span>Потерянные UDP</span><strong id="udp-dropped">—</strong></div>
+            <div class="metric"><span>DNS-кеш</span><strong id="cache">—</strong></div>
+            <div class="metric"><span>Gemini API</span><strong id="gemini">—</strong></div>
+          </div>
+        </section>
+
+        <section class="dashboard-column">
+          <h2>Upstream-группы</h2>
+          <p class="muted">Время в мс — полный цикл health-проверки, а не задержка одного DNS-запроса. Раскрой upstream для деталей.</p>
+          <div class="groups" id="groups">Загрузка…</div>
+        </section>
+      </div>
+    </section>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>

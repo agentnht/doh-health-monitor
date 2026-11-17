@@ -39,6 +39,102 @@ func testAResponse(q []byte, ttl uint32) []byte {
 	return p
 }
 
+
+func TestValidateDNSResponseMatchesFullQuestion(t *testing.T) {
+	query := makeDNSQuery("www.example.com", 1)
+	response := testAResponse(query, 60)
+	if err := validateDNSResponse(query, response, "test"); err != nil {
+		t.Fatalf("valid response rejected: %v", err)
+	}
+	t.Run("qclass mismatch", func(t *testing.T) {
+		bad := append([]byte(nil), response...)
+		_, _, end, err := parseQuestion(bad)
+		if err != nil {
+			t.Fatal(err)
+		}
+		binary.BigEndian.PutUint16(bad[end-2:end], 3)
+		if err := validateDNSResponse(query, bad, "test"); err == nil {
+			t.Fatal("expected QCLASS mismatch to be rejected")
+		}
+	})
+	t.Run("qtype mismatch", func(t *testing.T) {
+		bad := append([]byte(nil), response...)
+		_, _, end, err := parseQuestion(bad)
+		if err != nil {
+		t.Fatal(err)
+	}
+		binary.BigEndian.PutUint16(bad[end-4:end-2], 28)
+		if err := validateDNSResponse(query, bad, "test"); err == nil {
+			t.Fatal("expected QTYPE mismatch to be rejected")
+		}
+	})
+	t.Run("qname mismatch", func(t *testing.T) {
+		other := makeDNSQuery("other.example.com", 1)
+		bad := testAResponse(other, 60)
+		binary.BigEndian.PutUint16(bad[:2], packetID(query))
+		if err := validateDNSResponse(query, bad, "test"); err == nil {
+			t.Fatal("expected QNAME mismatch to be rejected")
+		}
+	})
+	t.Run("opcode mismatch", func(t *testing.T) {
+		bad := append([]byte(nil), response...)
+		flags := binary.BigEndian.Uint16(bad[2:4])
+		binary.BigEndian.PutUint16(bad[2:4], (flags&^0x7800)|0x0800)
+		if err := validateDNSResponse(query, bad, "test"); err == nil {
+			t.Fatal("expected opcode mismatch to be rejected")
+		}
+	})
+}
+
+func TestUpstreamCooldownSkipsFailedEndpointsAndRecovers(t *testing.T) {
+	now := time.Now()
+	r := &Runtime{upstreamCooldown: map[string]time.Time{"bad": now.Add(upstreamFailureCooldown)}}
+	got := r.upstreamsToAttempt([]string{"bad", "healthy"}, now)
+	if strings.Join(got, ",") != "healthy" {
+		t.Fatalf("attempt order = %v, want only healthy upstream", got)
+	}
+	got = r.upstreamsToAttempt([]string{"bad", "healthy"}, now.Add(upstreamFailureCooldown+time.Second))
+	if strings.Join(got, ",") != "bad,healthy" {
+		t.Fatalf("expired cooldown attempt order = %v, want [bad healthy]", got)
+	}
+}
+
+func TestUpstreamCooldownProbesOnlyEarliestWhenAllCooling(t *testing.T) {
+	now := time.Now()
+	r := &Runtime{upstreamCooldown: map[string]time.Time{"later": now.Add(20*time.Second), "first": now.Add(5*time.Second)}}
+	got := r.upstreamsToAttempt([]string{"later", "first"}, now)
+	if len(got) != 1 || got[0] != "first" {
+		t.Fatalf("attempt order = %v, want earliest-expiring upstream only", got)
+	}
+}
+
+func TestSelectAlternateIPExcludesFailedAddress(t *testing.T) {
+	now := time.Now()
+	b := &bootstrapResolver{
+		host: "doh.example", endpoint: "https://doh.example/dns-query",
+		ips: []string{"192.0.2.1", "192.0.2.2", "192.0.2.3"},
+		refreshed: now, refreshFor: time.Hour, selectedIP: "192.0.2.1",
+		probe: func(_ context.Context, _ string, ip string, _ time.Duration) (time.Duration, error) {
+			switch ip {
+			case "192.0.2.2":
+				return 30 * time.Millisecond, nil
+			case "192.0.2.3":
+				return 10 * time.Millisecond, nil
+			default:
+				return 0, errors.New("unexpected candidate")
+			}
+		},
+	}
+	got, err := b.selectAlternateIP(context.Background(), "192.0.2.1", time.Second)
+	if err != nil { t.Fatal(err) }
+	if got != "192.0.2.3" {
+		t.Fatalf("alternate IP = %s, want 192.0.2.3", got)
+	}
+	if b.status().SelectedIP != got {
+		t.Fatalf("selected IP = %s, want %s", b.status().SelectedIP, got)
+	}
+}
+
 func TestDNSQueryAndAResponse(t *testing.T) {
 	q := makeDNSQuery("www.example.com", 1)
 	name, typ, _, err := parseQuestion(q)
@@ -429,11 +525,11 @@ func TestGeminiRegionBlockDetection(t *testing.T) {
 func TestDefaultConfigUsesSystemDNSFirstAndDoHProviders(t *testing.T) {
 	want := []string{
 		systemDNSUpstreamID,
-		"eu.geohide.ru",
-		"doh.dagami.ru",
-		"dns.comss.one",
-		"dns.bezmezhau.com",
-		"dns.zapret.moe",
+		"geohide-eu",
+		"dagami",
+		"comss-one",
+		"bezmezhau",
+		"zapret",
 	}
 	c := defaultConfig()
 	got := make([]string, 0, len(c.Upstreams))
@@ -522,9 +618,12 @@ func TestNormalizeConfigMovesExistingSystemDNSFirst(t *testing.T) {
 
 func TestBuildSnapshotIncludesSystemDNSWithoutDoHURL(t *testing.T) {
 	c := defaultConfig()
-	urls := map[string]string{}
-	for _, id := range []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"} {
-		urls[id] = "https://" + id + "/dns-query"
+	urls := map[string]string{
+		"geohide-eu": "https://eu.geohide.ru/dns-query",
+		"dagami": "https://dns.dagami.ru/dns-query",
+		"comss-one": "https://dns.comss.one/dns-query",
+		"bezmezhau": "https://dns.bezmezhau.com/dns-query",
+		"zapret": "https://dns.zapret.moe/dns-query",
 	}
 	snapshot, err := buildSnapshot(c, urls)
 	if err != nil {
@@ -537,7 +636,7 @@ func TestBuildSnapshotIncludesSystemDNSWithoutDoHURL(t *testing.T) {
 	if system.client != nil || system.bootstrap != nil {
 		t.Fatal("system DNS must not use a DoH HTTP client or bootstrap resolver")
 	}
-	for _, id := range []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"} {
+	for _, id := range []string{"geohide-eu", "dagami", "comss-one", "bezmezhau", "zapret"} {
 		if u := snapshot.upstreams[id]; u == nil || u.client == nil || u.bootstrap == nil {
 			t.Errorf("DoH runtime %s was not built", id)
 		}
@@ -753,7 +852,7 @@ func TestLoadDoHListCreatesProxyProviderDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"eu.geohide.ru", "doh.dagami.ru", "dns.comss.one", "dns.bezmezhau.com", "dns.zapret.moe"}
+	want := []string{"geohide-eu", "dagami", "comss-one", "bezmezhau", "zapret"}
 	if len(urls) != len(want) {
 		t.Fatalf("default DoH URL count = %d, want %d: %#v", len(urls), len(want), urls)
 	}
@@ -1018,7 +1117,7 @@ func TestRFC8484DoHRoundTrip(t *testing.T) {
 
 func TestDoHListOneURLPerLine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "doh-servers.txt")
-	content := "# proxy providers\nhttps://eu.geohide.ru/dns-query\n\nhttps://doh.dagami.ru/dns-query\n"
+	content := "# id;url\ngeohide-eu;https://eu.geohide.ru/dns-query\n\ndagami;https://dns.dagami.ru/dns-query\n"
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -1026,11 +1125,11 @@ func TestDoHListOneURLPerLine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if urls["eu.geohide.ru"] != "https://eu.geohide.ru/dns-query" {
-		t.Fatalf("GeoHide URL: %q", urls["eu.geohide.ru"])
+	if urls["geohide-eu"] != "https://eu.geohide.ru/dns-query" {
+		t.Fatalf("GeoHide URL: %q", urls["geohide-eu"])
 	}
-	if urls["doh.dagami.ru"] != "https://doh.dagami.ru/dns-query" {
-		t.Fatalf("Dagami URL: %q", urls["doh.dagami.ru"])
+	if urls["dagami"] != "https://dns.dagami.ru/dns-query" {
+		t.Fatalf("Dagami URL: %q", urls["dagami"])
 	}
 }
 
