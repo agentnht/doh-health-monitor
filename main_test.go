@@ -1468,3 +1468,19 @@ func TestAutoHostsDNSAnswersUseActiveEndpointAndFamilyNODATA(t *testing.T) {
 	httpsResponse, matched := autoHostsResponse(makeDNSQuery("chatgpt.com", 65), "chatgpt.com", 65, manager)
 	if !matched || binary.BigEndian.Uint16(httpsResponse[6:8]) != 0 { t.Fatal("HTTPS query must be locally answered with NODATA for Auto Hosts domain") }
 }
+
+
+func TestManualLocalHostsTakePriorityOverAutoHosts(t *testing.T) {
+	now := time.Now().UTC()
+	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
+	if err != nil { t.Fatal(err) }
+	endpoint := autohosts.Endpoint{ServerID:"edge", URL:"https://dns.example/dns-query", Hostname:"dns.example", IPv4:[]string{"8.8.8.8"}}
+	if err := manager.ApplyCycle("edge", endpoint, []autohosts.ProbeResult{{Domain:"chatgpt.com",Success:true,CheckedAt:now}}, now); err != nil { t.Fatal(err) }
+	if err := manager.SetEnabled(true); err != nil { t.Fatal(err) }
+	runtime := &Runtime{autoHosts:manager, dnsSem:make(chan struct{},1)}
+	runtime.snapshot.Store(&Snapshot{localHosts:map[string]LocalHost{"chatgpt.com":{IPv4:[]string{"1.2.3.4"}}}})
+	response := runtime.handleDNS(makeDNSQuery("chatgpt.com",1))
+	ips, err := parseARecords(response)
+	if err != nil { t.Fatal(err) }
+	if len(ips)!=1 || ips[0]!="1.2.3.4" { t.Fatalf("manual local_hosts must win over Auto Hosts, got %v",ips) }
+}
