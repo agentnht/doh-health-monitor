@@ -318,6 +318,7 @@ func (m *Manager) ApplyFullCycle(activeID string, endpoints []Endpoint, results 
 
 func (m *Manager) DryRun(activeID string,ep Endpoint,results []ProbeResult,now time.Time)(map[string]DomainRecord,error){
  state:=m.State()
+ if activeID=="" || ep.ServerID!=activeID{return nil,errors.New("dry-run active server and endpoint mismatch")}
  if state.Config.Mode=="pinned"&&state.Config.PinnedServerID!=activeID{return nil,ErrPinnedServer}
  if _,err:=validateEndpoint(ep);err!=nil{return nil,err}
  proposed:=map[string]DomainRecord{}
