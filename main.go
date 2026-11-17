@@ -2925,6 +2925,7 @@ func (r *Runtime) handleAutoHostsConfig(w http.ResponseWriter, req *http.Request
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if state := r.autoHosts.State(); state.Config.Enabled && !state.Config.EmergencyOff && r.autoController != nil { r.autoController.Trigger() }
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(r.autoHosts.State())
