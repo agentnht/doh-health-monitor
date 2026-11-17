@@ -109,16 +109,8 @@ func (c *autoHostsController) runCycle(ctx context.Context, now time.Time) error
 			continue
 		}
 		endpoints = append(endpoints, ep)
-		for _, domain := range autoHostsDomains {
-			check := checks[domain]
-			check.Domain = domain
-			jobs <- autoHostsProbeJob{serverID:id, upstream:upstream, domain:domain, check:check}
-		}
 	}
 	if len(endpoints) == 0 { return errors.New("no eligible public DoH endpoints") }
-	close(jobs)
-	_ = jobs
-	// The job queue is intentionally populated only after endpoint validation.
 	// Execute with a bounded worker pool to cap outbound requests.
 	jobList := make([]autoHostsProbeJob, 0, len(endpoints)*len(autoHostsDomains))
 	for _, ep := range endpoints {
@@ -208,8 +200,8 @@ func (c *autoHostsController) chooseActive(endpoints []autohosts.Endpoint, resul
 	return bestID,nil
 }
 
-func (c *autoHostsController) probeDomain(ctx context.Context, job autoHostsProbeJob, now time.Time) autohosts.ProbeResult {
-	result := autohosts.ProbeResult{ServerID:job.serverID,Domain:job.domain,CheckedAt:now.UTC()}
+func (c *autoHostsController) probeDomain(ctx context.Context, job autoHostsProbeJob, now time.Time) (result autohosts.ProbeResult) {
+	result = autohosts.ProbeResult{ServerID:job.serverID,Domain:job.domain,CheckedAt:now.UTC()}
 	start:=time.Now()
 	defer func(){ result.DurationMS=time.Since(start).Milliseconds() }()
 	var websiteIPs []string
