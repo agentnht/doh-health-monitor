@@ -485,11 +485,11 @@
       }
       await loadIntegrationLog();
       try { await loadConfig(); } catch (_) { /* preserve operation result */ }
-      activatePage("logs");
+      setPageOpen("logs", true);
     } catch (error) {
       notice("integration-result", error.message, false);
       await loadIntegrationLog();
-      activatePage("logs");
+      setPageOpen("logs", true);
     } finally {
       if (configState) {
         $("integration-add").disabled = Boolean(configState.integration);
@@ -500,19 +500,26 @@
     }
   }
 
-  function activatePage(name) {
-    document.querySelectorAll("[data-page-panel]").forEach(panel => {
-      panel.hidden = panel.dataset.pagePanel !== name;
-    });
+  function setPageOpen(name, open) {
+    const panels = Array.from(document.querySelectorAll("[data-page-panel]"))
+      .filter(panel => panel.dataset.pagePanel === name);
+    if (!panels.length) return;
+    const currentlyOpen = panels.some(panel => !panel.hidden);
+    const shouldOpen = open == null ? !currentlyOpen : Boolean(open);
+    panels.forEach(panel => { panel.hidden = !shouldOpen; });
     document.querySelectorAll("[data-page]").forEach(button => {
-      const selected = button.dataset.page === name;
-      button.setAttribute("aria-selected", String(selected));
-      button.tabIndex = selected ? 0 : -1;
+      if (button.dataset.page !== name) return;
+      button.setAttribute("aria-selected", String(shouldOpen));
+      button.setAttribute("aria-expanded", String(shouldOpen));
     });
-    if (name === "logs") {
+    if (shouldOpen && name === "logs") {
       loadLogs();
       loadIntegrationLog();
     }
+  }
+
+  function activatePage(name) {
+    setPageOpen(name);
   }
 
   async function saveGeminiKey() {
