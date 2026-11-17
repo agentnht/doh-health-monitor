@@ -57,6 +57,14 @@
     .field-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .7rem; }
     .config-block { border-top: 1px solid #374151; margin-top: .9rem; padding-top: .75rem; }
     .section-actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .8rem; }
+    .header-controls { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: .65rem; margin-top: .75rem; }
+    .refresh-group, .integration-buttons { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
+    .integration-buttons { margin-left: auto; }
+    .tab-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0 0 .85rem; }
+    .tab-button { background: #374151; }
+    .tab-button[aria-selected="true"] { background: #1d4ed8; box-shadow: inset 0 0 0 1px #60a5fa; }
+    .tab-page[hidden] { display: none; }
+    button:disabled { opacity: .28; cursor: not-allowed; filter: saturate(.35); }
     .notice { color: #fde68a; font-size: .82rem; white-space: pre-wrap; margin-top: .55rem; }
     .success { color: #86efac; }
     .error { color: #fca5a5; }
@@ -104,8 +112,16 @@
       <h1>DoH Health Monitor</h1>
       <p>Мониторинг, редактирование конфигурации и списков, проверка DNS и управление интеграцией.</p>
       <p class="muted">Версия: <strong id="version">—</strong> · Демон: <strong id="daemon">Проверка…</strong> · Запущен: <strong id="started">—</strong></p>
-      <button id="refresh" type="button">Обновить состояние</button>
-      <span class="muted" id="updated">Загрузка…</span>
+      <div class="header-controls">
+        <div class="refresh-group">
+          <button id="refresh" type="button">Обновить состояние</button>
+          <span class="muted" id="updated">Загрузка…</span>
+        </div>
+        <div class="integration-buttons" aria-label="Управление DNS integration">
+          <button id="integration-add" type="button">Integrate</button>
+          <button id="integration-remove" class="danger" type="button">DeIntegrate</button>
+        </div>
+      </div>
       <p id="error" role="status"></p>
     </header>
 
@@ -139,7 +155,15 @@
       </div>
     </section>
 
-    <section class="panel">
+    <nav class="tab-nav" aria-label="Разделы управления">
+      <button class="tab-button" type="button" data-page="config" aria-selected="false">Конфигурация</button>
+      <button class="tab-button" type="button" data-page="doh" aria-selected="false">DoH-сервера</button>
+      <button class="tab-button" type="button" data-page="domains" aria-selected="false">Домены</button>
+      <button class="tab-button" type="button" data-page="tests" aria-selected="false">Проверка состояния</button>
+      <button class="tab-button" type="button" data-page="logs" aria-selected="false">Логи</button>
+    </nav>
+
+    <section class="panel tab-page" data-page-panel="config" hidden>
       <h2>Конфигурация config.json</h2>
       <p class="muted">Изменения проверяются перед сохранением. Параметры listener и dns_max_concurrent требуют перезапуска плагина.</p>
       <div class="config-block">
@@ -174,7 +198,7 @@
       </div>
     </section>
 
-    <section class="panel">
+    <section class="panel tab-page" data-page-panel="doh" hidden>
       <h2>Список DoH-серверов · doh-servers.txt</h2>
       <p class="muted">Формат строки: id;url. Флажок включает строку или комментирует её. Порядок записей сохраняется.</p>
       <div class="source-wrap">
@@ -183,7 +207,7 @@
       <div class="row-actions"><button class="secondary" id="doh-add" type="button">+ Добавить сервер</button><button id="doh-save" type="button">Сохранить список</button><span id="doh-note" class="muted" role="status"></span></div>
     </section>
 
-    <section class="panel">
+    <section class="panel tab-page" data-page-panel="domains" hidden>
       <h2>Домены для проверки · tst-domen.txt</h2>
       <p class="muted">Поля: domain; qtypes; required; http_url; expected_status; verify_oidc. Для нескольких qtype используйте запятую, флаги — 0 или 1.</p>
       <div class="source-wrap">
@@ -192,29 +216,23 @@
       <div class="row-actions"><button class="secondary" id="check-add" type="button">+ Добавить домен</button><button id="check-save" type="button">Сохранить список</button><span id="check-note" class="muted" role="status"></span></div>
     </section>
 
-    <section class="panel">
+    <section class="panel tab-page" data-page-panel="tests" hidden>
       <h2>Проверка состояния</h2>
       <p class="muted">Проверяются config.json, файлы списков, фактические DNS-запросы через dig, UDP/HTTP listeners и Xray DNS integration. Предыдущий результат остаётся до нового запуска.</p>
       <div class="section-actions"><button id="run-tests" type="button">Запустить проверки</button><strong id="tests-summary" class="muted">Проверки ещё не запускались</strong></div>
       <div class="results" id="test-results"></div>
     </section>
 
-    <section class="panel">
-      <h2>DNS integration</h2>
-      <p class="muted">Операции изменяют настройки LucX-UI/Xray. Перед выполнением Integrate или Remove потребуется подтверждение.</p>
-      <div class="section-actions">
-        <button id="integration-check" class="secondary" type="button">Проверить</button>
-        <button id="integration-add" type="button">Integrate</button>
-        <button id="integration-remove" class="danger" type="button">Remove</button>
-      </div>
-      <p id="integration-result" class="muted" role="status"></p>
-      <pre class="log-output" id="integration-output" hidden></pre>
+    <section class="panel tab-page" data-page-panel="logs" hidden>
+      <div class="result-head"><h2>Логи</h2><button id="refresh-logs" class="secondary" type="button">Обновить логи</button></div>
+      <p class="muted" id="logs-source">Источник: systemd journal / plugin.log.</p>
+      <pre class="log-output" id="logs">Нажмите «Обновить логи».</pre>
     </section>
 
-    <section class="panel">
-      <div class="result-head"><h2>Логи</h2><button id="refresh-logs" class="secondary" type="button">Обновить логи</button></div>
-      <p class="muted" id="logs-source">Источники: systemd journal и журнал операций Web UI.</p>
-      <pre class="log-output" id="logs">Нажмите «Обновить логи».</pre>
+    <section class="panel tab-page" data-page-panel="logs" hidden>
+      <div class="result-head"><h2>Лог интеграции / деинтеграции</h2><button id="refresh-integration-log" class="secondary" type="button">Обновить журнал операций</button></div>
+      <p class="muted">Результаты последних операций Integrate и DeIntegrate, включая ошибки и вывод штатной процедуры.</p>
+      <pre class="log-output" id="integration-log">Журнал пока не загружен.</pre>
     </section>
   </main>
   <script src="/app.js" defer></script>
