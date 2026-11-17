@@ -307,6 +307,8 @@ func TestWebUIAppScriptMakesManagementPagesMutuallyExclusive(t *testing.T) {
 		`panel.hidden = !shouldOpen || panel.dataset.pagePanel !== name`,
 		`const shouldOpen = open == null ? !currentlyOpen : Boolean(open)`,
 		`button.setAttribute("aria-expanded", String(selected))`,
+		`if (kind === "doh" && row.system)`,
+		`protectedLabel.textContent = "Защищён"`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("app.js is missing exclusive tab behaviour %q", want)
