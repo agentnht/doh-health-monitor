@@ -321,6 +321,7 @@ func (m *Manager) DryRun(activeID string,ep Endpoint,results []ProbeResult,now t
  if activeID=="" || ep.ServerID!=activeID{return nil,errors.New("dry-run active server and endpoint mismatch")}
  if state.Config.Mode=="pinned"&&state.Config.PinnedServerID!=activeID{return nil,ErrPinnedServer}
  if _,err:=validateEndpoint(ep);err!=nil{return nil,err}
+ if ep.UpdatedAt.IsZero() || now.Sub(ep.UpdatedAt)>state.Config.EndpointMaxAge{return nil,errors.New("DoH endpoint IP resolution is stale")}
  proposed:=map[string]DomainRecord{}
  for _,r:=range results {if r.ServerID!=""&&r.ServerID!=activeID{return nil,errors.New("probe result belongs to a different server")};d,err:=NormalizeDomain(r.Domain);if err!=nil{return nil,err};if r.Success{t:=r.CheckedAt;if t.IsZero(){t=now};proposed[d]=DomainRecord{Domain:d,ServerID:activeID,LastSuccess:t.UTC(),ExpiresAt:t.Add(state.Config.GracePeriod).UTC()}}}
  for d,r:=range state.Domains {if r.ServerID==activeID&&now.Before(r.ExpiresAt){if _,ok:=proposed[d];!ok{proposed[d]=r}}}
