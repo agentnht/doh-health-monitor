@@ -144,10 +144,71 @@ func newWebUIHandlerWithDataDir(statusURL, sessionToken, dataDir string) http.Ha
 				return
 			}
 			webUIAdminAPI(w, r, r.URL.Path, dataDir)
+		case "/api/v1/autohosts/status", "/api/v1/autohosts/config", "/api/v1/autohosts/dry-run":
+			if !webUIRequestAuthorized(r, sessionToken) {
+				http.Error(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			proxyWebUIAutoHostsAPI(w, r, statusURL)
 		default:
 			http.NotFound(w, r)
 		}
 	})
+}
+
+func proxyWebUIAutoHostsAPI(w http.ResponseWriter, r *http.Request, statusURL string) {
+	parsed, err := url.Parse(statusURL)
+	if err != nil || parsed.Scheme != "http" || parsed.User != nil || parsed.Host == "" ||
+		parsed.Path != "/status" || parsed.RawQuery != "" || parsed.Fragment != "" || !isLoopbackWebHost(parsed.Host) {
+		http.Error(w, "invalid local status URL", http.StatusServiceUnavailable)
+		return
+	}
+	var endpoint string
+	switch r.URL.Path {
+	case "/api/v1/autohosts/status":
+		if r.Method != http.MethodGet { w.Header().Set("Allow", "GET"); http.Error(w, "method not allowed", http.StatusMethodNotAllowed); return }
+		endpoint = "/autohosts/status"
+	case "/api/v1/autohosts/config":
+		if r.Method != http.MethodPost { w.Header().Set("Allow", "POST"); http.Error(w, "method not allowed", http.StatusMethodNotAllowed); return }
+		endpoint = "/autohosts/config"
+	case "/api/v1/autohosts/dry-run":
+		if r.Method != http.MethodPost { w.Header().Set("Allow", "POST"); http.Error(w, "method not allowed", http.StatusMethodNotAllowed); return }
+		endpoint = "/autohosts/dry-run"
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	var body io.Reader
+	if r.Body != nil {
+		data, readErr := io.ReadAll(io.LimitReader(r.Body, (16<<10)+1))
+		if readErr != nil || len(data) > 16<<10 {
+			http.Error(w, "request body is invalid or too large", http.StatusBadRequest)
+			return
+		}
+		body = bytes.NewReader(data)
+	}
+	target := parsed.Scheme + "://" + parsed.Host + endpoint
+	ctx := r.Context()
+	timeout := 10 * time.Second
+	if endpoint == "/autohosts/dry-run" { timeout = 5 * time.Minute }
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, r.Method, target, body)
+	if err != nil { http.Error(w, "could not create local Auto Hosts request", http.StatusBadGateway); return }
+	req.Header.Set("Accept", "application/json")
+	if body != nil { req.Header.Set("Content-Type", "application/json") }
+	transport := &http.Transport{Proxy:nil}
+	client := &http.Client{Transport:transport, Timeout:timeout, CheckRedirect:func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	defer transport.CloseIdleConnections()
+	resp, err := client.Do(req)
+	if err != nil { http.Error(w, "local Auto Hosts API is unavailable", http.StatusServiceUnavailable); return }
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, (2<<20)+1))
+	if err != nil || len(data) > 2<<20 { http.Error(w, "local Auto Hosts response is invalid or too large", http.StatusBadGateway); return }
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(data)
 }
 
 func webUIRequestAuthorized(r *http.Request, sessionToken string) bool {
