@@ -35,25 +35,8 @@ func loadOrCreateAutoHostsAPIToken(dataDir string) (string, error) {
 		return "", errors.New("plugin data directory is required for Auto Hosts API token")
 	}
 	path := filepath.Join(dataDir, autoHostsAPITokenFile)
-	read := func() (string, error) {
-		info, err := os.Lstat(path)
-		if err != nil {
-			return "", err
-		}
-		if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-			return "", errors.New("Auto Hosts API token file must be regular and mode 0600")
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return "", err
-		}
-		token := strings.TrimSpace(string(data))
-		if len(token) < 40 || len(token) > 128 {
-			return "", errors.New("Auto Hosts API token file has invalid length")
-		}
-		return token, nil
-	}
-	if token, err := read(); err == nil {
+
+	if token, err := readAutoHostsAPIToken(dataDir); err == nil {
 		return token, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
@@ -65,7 +48,7 @@ func loadOrCreateAutoHostsAPIToken(dataDir string) (string, error) {
 	token := base64.RawURLEncoding.EncodeToString(raw)
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if errors.Is(err, os.ErrExist) {
-		return read()
+		return readAutoHostsAPIToken(dataDir)
 	}
 	if err != nil {
 		return "", err
