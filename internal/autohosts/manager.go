@@ -194,7 +194,11 @@ func (m *Manager) SetPinned(id string)error{return m.update(func(s *State)error{
 // ApplyCycle commits endpoint, per-domain probe results and published domain set together.
 // Call only from the single background controller, never from DNS request handlers.
 func (m *Manager) ApplyCycle(activeID string, ep Endpoint, results []ProbeResult, now time.Time) error {
-	return m.ApplyFullCycle(activeID, []Endpoint{ep}, results, now)
+	copyResults := append([]ProbeResult(nil), results...)
+	for i := range copyResults {
+		if strings.TrimSpace(copyResults[i].ServerID) == "" { copyResults[i].ServerID = activeID }
+	}
+	return m.ApplyFullCycle(activeID, []Endpoint{ep}, copyResults, now)
 }
 
 // ApplyFullCycle atomically records every endpoint and every server×domain result,
