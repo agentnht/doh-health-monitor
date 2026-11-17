@@ -34,9 +34,11 @@ require_root() {
 }
 
 detect_panel_cwd() {
-  local proc exe cwd selected="" preferred=""
+  local proc exe cwd proc_uid selected="" preferred=""
   for proc in /proc/[0-9]*; do
     [[ -r "$proc/exe" && -r "$proc/cwd" ]] || continue
+    proc_uid="$(awk '/^Uid:/ { print $2; exit }' "$proc/status" 2>/dev/null || true)"
+    [[ "$proc_uid" == "$EUID" ]] || continue
     exe="$(readlink "$proc/exe" 2>/dev/null || true)"
     exe="${exe% (deleted)}"
     [[ "${exe##*/}" == "x-ui" ]] || continue
@@ -187,48 +189,26 @@ run_plugin_action() {
 }
 
 run_check() {
-  local tmp="" checker_file="" cleanup_tmp=0 rc
+  local checker_file="" rc
   printf 'Проверка состояния плагина через Go read-only command...\n'
   if ! "$PLUGIN_BIN" check; then
     fail "Go-проверка плагина завершилась с ошибкой."
     return 1
   fi
 
-  # Prefer the checker shipped beside this menu in the plugin ZIP. The
-  # GitHub process-substitution entry point keeps its historical download fallback.
-  if [[ -n "$MANAGEMENT_SCRIPT_DIR" && -f "$MANAGEMENT_SCRIPT_DIR/check-dns-integration.sh" ]]; then
-    checker_file="$MANAGEMENT_SCRIPT_DIR/check-dns-integration.sh"
-  else
-    tmp="$(mktemp)"
-    checker_file="$tmp"
-    cleanup_tmp=1
-    if command -v curl >/dev/null 2>&1; then
-      if ! curl --fail --silent --show-error --location "$CHECK_SCRIPT_URL" --output "$tmp"; then
-        rm -f "$tmp"
-        fail "Не удалось загрузить read-only скрипт диагностики."
-        return 1
-      fi
-    elif command -v wget >/dev/null 2>&1; then
-      if ! wget -q "$CHECK_SCRIPT_URL" -O "$tmp"; then
-        rm -f "$tmp"
-        fail "Не удалось загрузить read-only скрипт диагностики."
-        return 1
-      fi
-    else
-      rm -f "$tmp"
-      fail "Для загрузки скрипта диагностики нужен curl или wget."
-      return 1
-    fi
+  # Execute only the checker packaged with this plugin release. Never
+  # download mutable branch content and execute it as root.
+  if [[ -z "$MANAGEMENT_SCRIPT_DIR" || ! -f "$MANAGEMENT_SCRIPT_DIR/check-dns-integration.sh" ]]; then
+    fail "В ZIP плагина отсутствует check-dns-integration.sh; удалённое выполнение отключено."
+    return 1
   fi
+  checker_file="$MANAGEMENT_SCRIPT_DIR/check-dns-integration.sh"
 
   printf 'Проверка выполняется в режиме read-only; конфигурация Xray не изменяется.\n'
   if DOH_SKIP_PLUGIN_HEALTH_CHECK=1 bash "$checker_file"; then
     rc=0
   else
     rc=$?
-  fi
-  if (( cleanup_tmp )); then
-    rm -f "$tmp"
   fi
   return "$rc"
 }
