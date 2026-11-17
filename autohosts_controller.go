@@ -318,8 +318,8 @@ func (c *autoHostsController) probeDomain(ctx context.Context, job autoHostsProb
 	probeURL:=job.check.HTTPURL
 	if probeURL=="" { probeURL="https://"+job.domain+"/" }
 	parsed,err:=url.Parse(probeURL)
-	if err!=nil || parsed.Scheme!="https" || parsed.User!=nil || !strings.EqualFold(strings.TrimSuffix(parsed.Hostname(),"."),job.domain) {
-		result.Error="HTTP probe URL must be HTTPS and use the checked domain as host"
+	if err!=nil || parsed.Scheme!="https" || parsed.User!=nil || !strings.EqualFold(strings.TrimSuffix(parsed.Hostname(),"."),job.domain) || (parsed.Port()!="" && parsed.Port()!="443") {
+		result.Error="HTTP probe URL must use HTTPS on port 443 and the checked domain as host"
 		return result
 	}
 	var lastErr error
