@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,19 +17,26 @@ import (
 func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 	handler := newWebUIHandler("http://127.0.0.1:18765/status", "session-test-token")
 
-	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:19876/?access_token=session-test-token", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/", nil)
 	req.Host = "127.0.0.1:19876"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("initial GET / status=%d, want %d", rec.Code, http.StatusSeeOther)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("initial GET / status=%d, want %d", rec.Code, http.StatusOK)
 	}
-	cookies := rec.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Name != webUISessionCookie {
-		t.Fatal("valid launch token did not issue the HttpOnly session cookie")
+	exchange := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:19876/session/exchange", strings.NewReader(`{"token":"session-test-token"}`))
+	exchange.Host = "127.0.0.1:19876"
+	exchange.Header.Set("Content-Type", "application/json")
+	exchangeRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(exchangeRecorder, exchange)
+	cookies := exchangeRecorder.Result().Cookies()
+	if exchangeRecorder.Code != http.StatusNoContent || len(cookies) != 1 || cookies[0].Name != webUISessionCookie {
+		t.Fatal("valid one-time launch exchange did not issue the HttpOnly session cookie")
+	}
+	replay := httptest.NewRecorder()
+	handler.ServeHTTP(replay, exchange)
+	if replay.Code != http.StatusUnauthorized {
+		t.Fatalf("replayed launch token status=%d, want %d", replay.Code, http.StatusUnauthorized)
 	}
 	pageRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/", nil)
 	pageRequest.Host = "127.0.0.1:19876"
@@ -154,13 +162,14 @@ func TestWebUIStatusAPIRequiresSessionAndReturnsSanitizedStatus(t *testing.T) {
 		t.Fatalf("unauthenticated status request=%d, want %d", apiRecorder.Code, http.StatusUnauthorized)
 	}
 
-	rootRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/?access_token=session-test-token", nil)
+	rootRequest := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:19876/session/exchange", strings.NewReader(`{"token":"session-test-token"}`))
 	rootRequest.Host = "127.0.0.1:19876"
+	rootRequest.Header.Set("Content-Type", "application/json")
 	rootRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(rootRecorder, rootRequest)
 	cookies := rootRecorder.Result().Cookies()
-	if rootRecorder.Code != http.StatusSeeOther || len(cookies) != 1 {
-		t.Fatalf("launch-token root request failed: status=%d cookies=%d", rootRecorder.Code, len(cookies))
+	if rootRecorder.Code != http.StatusNoContent || len(cookies) != 1 {
+		t.Fatalf("launch-token exchange failed: status=%d cookies=%d", rootRecorder.Code, len(cookies))
 	}
 
 	apiRequest = httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/api/v1/status", nil)
@@ -232,6 +241,9 @@ func TestRunWebUIStopsWhenSupervisorPipeCloses(t *testing.T) {
 
 	os.Stdin = controlRead
 	os.Stdout = readyWrite
+	oldDataDir := os.Getenv("LUCX_PLUGIN_DATA")
+	dataDir := t.TempDir()
+	if err := os.Setenv("LUCX_PLUGIN_DATA", dataDir); err != nil { t.Fatal(err) }
 	done := make(chan error, 1)
 	go func() {
 		done <- runWebUIWithStatusURL("http://127.0.0.1:18765/status")
@@ -247,6 +259,7 @@ func TestRunWebUIStopsWhenSupervisorPipeCloses(t *testing.T) {
 			}
 		}
 		os.Stdin, os.Stdout = oldStdin, oldStdout
+		_ = os.Setenv("LUCX_PLUGIN_DATA", oldDataDir)
 		_ = controlRead.Close()
 		_ = readyRead.Close()
 		_ = readyWrite.Close()
@@ -273,7 +286,7 @@ func TestRunWebUIStopsWhenSupervisorPipeCloses(t *testing.T) {
 		t.Fatal("timed out waiting for Web UI readiness line")
 	}
 	fields := strings.Fields(strings.TrimSpace(line))
-	if len(fields) != 3 || fields[0] != "WEB_UI_READY" || !strings.HasPrefix(fields[1], "port=") || !strings.HasPrefix(fields[2], "token=") {
+	if len(fields) != 2 || fields[0] != "WEB_UI_READY" || !strings.HasPrefix(fields[1], "port=") {
 		t.Fatalf("unexpected readiness protocol: %q", line)
 	}
 	port, err := strconv.Atoi(strings.TrimPrefix(fields[1], "port="))
@@ -281,19 +294,26 @@ func TestRunWebUIStopsWhenSupervisorPipeCloses(t *testing.T) {
 		t.Fatalf("invalid readiness port in %q", line)
 	}
 
-	launchToken := strings.TrimPrefix(fields[2], "token=")
+	launchTokenData, err := os.ReadFile(filepath.Join(os.Getenv("LUCX_PLUGIN_DATA"), "web-ui-launch.token"))
+	if err != nil { t.Fatalf("read private launch token file: %v", err) }
+	launchToken := strings.TrimSpace(string(launchTokenData))
+	if strings.Contains(line, launchToken) || launchToken == "" { t.Fatal("launch token must not appear in readiness output") }
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/?access_token=%s", port, launchToken))
-	if err != nil {
-		t.Fatalf("request Web UI launch URL: %v", err)
+	pageResponse, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
+	if err != nil { t.Fatalf("request Web UI shell: %v", err) }
+	_ = pageResponse.Body.Close()
+	exchangeRequest, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/session/exchange", port), strings.NewReader(`{"token":"`+launchToken+`"}`))
+	exchangeRequest.Header.Set("Content-Type", "application/json")
+	exchangeResponse, err := client.Do(exchangeRequest)
+	if err != nil { t.Fatalf("exchange Web UI launch token: %v", err) }
+	if exchangeResponse.StatusCode != http.StatusNoContent || len(exchangeResponse.Cookies()) != 1 {
+		t.Fatalf("exchange response status=%d cookies=%d", exchangeResponse.StatusCode, len(exchangeResponse.Cookies()))
 	}
-	_ = response.Body.Close()
-	if response.StatusCode != http.StatusSeeOther || len(response.Cookies()) != 1 {
-		t.Fatalf("launch response status=%d cookies=%d; want redirect and session cookie", response.StatusCode, len(response.Cookies()))
-	}
+	cookie := exchangeResponse.Cookies()[0]
+	_ = exchangeResponse.Body.Close()
 	pageRequest, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/", port), nil)
-	pageRequest.AddCookie(response.Cookies()[0])
-	pageResponse, err := client.Do(pageRequest)
+	pageRequest.AddCookie(cookie)
+	pageResponse, err = client.Do(pageRequest)
 	if err != nil {
 		t.Fatalf("request authenticated Web UI page: %v", err)
 	}
