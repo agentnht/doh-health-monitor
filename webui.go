@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -189,7 +190,16 @@ func newWebUIHandler(statusURL, sessionToken string) http.Handler {
 	return newWebUIHandlerWithDataDir(statusURL, sessionToken, strings.TrimSpace(os.Getenv("LUCX_PLUGIN_DATA")))
 }
 
-func newWebUIHandlerWithDataDir(statusURL, sessionToken, dataDir string) http.Handler {
+func newWebUIHandlerWithDataDir(statusURL, launchToken, dataDir string) http.Handler {
+	cookieBytes := make([]byte, 32)
+	if _, err := rand.Read(cookieBytes); err != nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "Web UI session initialization failed", http.StatusInternalServerError)
+		})
+	}
+	cookieToken := base64.RawURLEncoding.EncodeToString(cookieBytes)
+	var launchMu sync.Mutex
+	launchUsed := false
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setWebUISecurityHeaders(w)
 		if !isLoopbackWebHost(r.Host) {
@@ -208,22 +218,37 @@ func newWebUIHandlerWithDataDir(statusURL, sessionToken, dataDir string) http.Ha
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
-			if !webUIRequestAuthorized(r, sessionToken) {
-				provided := r.URL.Query().Get("access_token")
-				if r.Method != http.MethodGet || provided == "" ||
-					subtle.ConstantTimeCompare([]byte(provided), []byte(sessionToken)) != 1 {
-					http.Error(w, "Web UI launch token required", http.StatusUnauthorized)
-					return
-				}
-				http.SetCookie(w, &http.Cookie{
-					Name: webUISessionCookie, Value: sessionToken, Path: "/",
-					HttpOnly: true, SameSite: http.SameSiteStrictMode,
-				})
-				w.Header().Set("Location", "/")
-				w.WriteHeader(http.StatusSeeOther)
+			// The shell contains no private data; API access requires the session
+			// cookie issued by the one-time fragment-token exchange below.
+			serveWebUIAsset(w, r, "webui/index.html", "text/html; charset=utf-8")
+		case "/session/exchange":
+			if r.Method != http.MethodPost {
+				w.Header().Set("Allow", "POST")
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
-			serveWebUIAsset(w, r, "webui/index.html", "text/html; charset=utf-8")
+			r.Body = http.MaxBytesReader(w, r.Body, 2048)
+			var input struct { Token string `json:"token"` }
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				http.Error(w, "invalid launch exchange", http.StatusBadRequest)
+				return
+			}
+			launchMu.Lock()
+			valid := !launchUsed && input.Token != "" &&
+				subtle.ConstantTimeCompare([]byte(input.Token), []byte(launchToken)) == 1
+			if valid { launchUsed = true }
+			launchMu.Unlock()
+			if !valid {
+				http.Error(w, "launch token expired or already used", http.StatusUnauthorized)
+				return
+			}
+			http.SetCookie(w, &http.Cookie{
+				Name: webUISessionCookie, Value: cookieToken, Path: "/",
+				HttpOnly: true, SameSite: http.SameSiteStrictMode,
+				MaxAge: 3600,
+			})
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusNoContent)
 		case "/app.js":
 			if r.Method != http.MethodGet && r.Method != http.MethodHead {
 				w.Header().Set("Allow", "GET, HEAD")
@@ -237,7 +262,7 @@ func newWebUIHandlerWithDataDir(statusURL, sessionToken, dataDir string) http.Ha
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
-			if !webUIRequestAuthorized(r, sessionToken) {
+			if !webUIRequestAuthorized(r, cookieToken) {
 				http.Error(w, "authentication required", http.StatusUnauthorized)
 				return
 			}
@@ -362,9 +387,9 @@ func proxyWebUIAutoHostsAPI(w http.ResponseWriter, r *http.Request, statusURL, d
 	_, _ = w.Write(data)
 }
 
-func webUIRequestAuthorized(r *http.Request, sessionToken string) bool {
+func webUIRequestAuthorized(r *http.Request, cookieToken string) bool {
 	cookie, err := r.Cookie(webUISessionCookie)
-	return err == nil && subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(sessionToken)) == 1
+	return err == nil && subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(cookieToken)) == 1
 }
 
 func setWebUISecurityHeaders(w http.ResponseWriter) {
@@ -500,6 +525,19 @@ func fetchWebUIStatus(ctx context.Context, statusURL string, tokens ...string) (
 	return out, nil
 }
 
+func writeWebUILaunchToken(dataDir, token string) error {
+	if err := os.MkdirAll(dataDir, 0700); err != nil { return err }
+	tmp, err := os.CreateTemp(dataDir, ".web-ui-launch-*")
+	if err != nil { return err }
+	name := tmp.Name()
+	defer os.Remove(name)
+	if err := tmp.Chmod(0600); err != nil { _ = tmp.Close(); return err }
+	if _, err := io.WriteString(tmp, token+"\n"); err != nil { _ = tmp.Close(); return err }
+	if err := tmp.Sync(); err != nil { _ = tmp.Close(); return err }
+	if err := tmp.Close(); err != nil { return err }
+	return os.Rename(name, filepath.Join(dataDir, "web-ui-launch.token"))
+}
+
 // runWebUI starts only the temporary management HTTP server. EOF on stdin is
 // the supervisor control signal: the SSH menu owns the pipe's write end.
 func runWebUI() error {
@@ -534,7 +572,16 @@ func runWebUIWithStatusURL(statusURL string) error {
 	}()
 
 	port := listener.Addr().(*net.TCPAddr).Port
-	if _, err := fmt.Fprintf(os.Stdout, "WEB_UI_READY port=%d token=%s\n", port, sessionToken); err != nil {
+	dataDir := strings.TrimSpace(os.Getenv("LUCX_PLUGIN_DATA"))
+	if dataDir == "" {
+		_ = listener.Close()
+		return errors.New("LUCX_PLUGIN_DATA is required for Web UI launch token")
+	}
+	if err := writeWebUILaunchToken(dataDir, sessionToken); err != nil {
+		_ = listener.Close()
+		return fmt.Errorf("write Web UI launch token: %w", err)
+	}
+	if _, err := fmt.Fprintf(os.Stdout, "WEB_UI_READY port=%d\n", port); err != nil {
 		_ = listener.Close()
 		return fmt.Errorf("write Web UI readiness: %w", err)
 	}
