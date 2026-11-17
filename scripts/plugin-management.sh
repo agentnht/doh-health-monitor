@@ -4,8 +4,6 @@ set -Eeuo pipefail
 
 readonly PLUGIN_ID="doh-health-monitor"
 readonly PLUGIN_BIN_NAME="doh-health-monitor"
-readonly RAW_BASE_URL="https://raw.githubusercontent.com/agentnht/doh-health-monitor/main"
-readonly CHECK_SCRIPT_URL="${RAW_BASE_URL}/scripts/check-dns-integration.sh"
 readonly DHM_SYMLINK_PATH="/usr/local/bin/dhm"
 
 MANAGEMENT_SCRIPT_PATH=""
