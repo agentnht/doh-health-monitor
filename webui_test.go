@@ -214,7 +214,10 @@ func TestAutoHostsMiddlewareRequiresBearerAndLoopbackHost(t *testing.T) {
 	handler := requireAutoHostsAPIToken("secret-token", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	for _, tc := range []struct { name, host, authorization string; want int }{
+	for _, tc := range []struct {
+		name, host, authorization string
+		want                      int
+	}{
 		{"bare token", "127.0.0.1:18765", "secret-token", http.StatusUnauthorized},
 		{"wrong scheme", "127.0.0.1:18765", "Basic secret-token", http.StatusUnauthorized},
 		{"bearer", "127.0.0.1:18765", "Bearer secret-token", http.StatusNoContent},
@@ -226,7 +229,9 @@ func TestAutoHostsMiddlewareRequiresBearerAndLoopbackHost(t *testing.T) {
 			req.Header.Set("Authorization", tc.authorization)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
-			if rec.Code != tc.want { t.Fatalf("status=%d, want %d", rec.Code, tc.want) }
+			if rec.Code != tc.want {
+				t.Fatalf("status=%d, want %d", rec.Code, tc.want)
+			}
 		})
 	}
 }
@@ -267,7 +272,9 @@ func TestRunWebUIStopsWhenSupervisorPipeCloses(t *testing.T) {
 	os.Stdout = readyWrite
 	oldDataDir := os.Getenv("LUCX_PLUGIN_DATA")
 	dataDir := t.TempDir()
-	if err := os.Setenv("LUCX_PLUGIN_DATA", dataDir); err != nil { t.Fatal(err) }
+	if err := os.Setenv("LUCX_PLUGIN_DATA", dataDir); err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan error, 1)
 	go func() {
 		done <- runWebUIWithStatusURL("http://127.0.0.1:18765/status")
@@ -319,17 +326,25 @@ func TestRunWebUIStopsWhenSupervisorPipeCloses(t *testing.T) {
 	}
 
 	launchTokenData, err := os.ReadFile(filepath.Join(os.Getenv("LUCX_PLUGIN_DATA"), "web-ui-launch.token"))
-	if err != nil { t.Fatalf("read private launch token file: %v", err) }
+	if err != nil {
+		t.Fatalf("read private launch token file: %v", err)
+	}
 	launchToken := strings.TrimSpace(string(launchTokenData))
-	if strings.Contains(line, launchToken) || launchToken == "" { t.Fatal("launch token must not appear in readiness output") }
+	if strings.Contains(line, launchToken) || launchToken == "" {
+		t.Fatal("launch token must not appear in readiness output")
+	}
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	pageResponse, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
-	if err != nil { t.Fatalf("request Web UI shell: %v", err) }
+	if err != nil {
+		t.Fatalf("request Web UI shell: %v", err)
+	}
 	_ = pageResponse.Body.Close()
 	exchangeRequest, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/session/exchange", port), strings.NewReader(`{"token":"`+launchToken+`"}`))
 	exchangeRequest.Header.Set("Content-Type", "application/json")
 	exchangeResponse, err := client.Do(exchangeRequest)
-	if err != nil { t.Fatalf("exchange Web UI launch token: %v", err) }
+	if err != nil {
+		t.Fatalf("exchange Web UI launch token: %v", err)
+	}
 	if exchangeResponse.StatusCode != http.StatusNoContent || len(exchangeResponse.Cookies()) != 1 {
 		t.Fatalf("exchange response status=%d cookies=%d", exchangeResponse.StatusCode, len(exchangeResponse.Cookies()))
 	}
