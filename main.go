@@ -698,8 +698,8 @@ func validateConfig(c Config) error {
 			}
 		}
 		for _, ch := range g.Checks {
-			if strings.TrimSpace(ch.Domain) == "" {
-				return fmt.Errorf("empty check domain in group %s", g.ID)
+			if !validDNSHostname(normalizeDomain(ch.Domain)) {
+				return fmt.Errorf("invalid check domain %q in group %s", ch.Domain, g.ID)
 			}
 			for _, qt := range ch.QTypes {
 				if qt == 0 {
