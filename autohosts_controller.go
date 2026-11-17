@@ -44,6 +44,7 @@ type autoHostsController struct {
 	activeFailures int
 	betterCandidate string
 	betterCandidateStreak int
+	consecutiveFailures int
 }
 
 func newAutoHostsController(r *Runtime, manager *autohosts.Manager) *autoHostsController {
@@ -55,14 +56,22 @@ func (c *autoHostsController) run(ctx context.Context) {
 		state := c.manager.State()
 		interval := state.Config.CheckInterval
 		if interval < 10*time.Second { interval = 5*time.Minute }
+		delay := interval
 		if state.Config.Enabled && !state.Config.EmergencyOff {
 			cycleCtx, cancel := context.WithTimeout(ctx, 2*interval)
-			if err := c.runCycle(cycleCtx, time.Now().UTC()); err != nil && !errors.Is(err, context.Canceled) {
-				logLine("WARN", "AUTO_HOSTS cycle failed: %v", err)
-			}
+			err := c.runCycle(cycleCtx, time.Now().UTC())
 			cancel()
+			c.mu.Lock()
+			if err != nil && !errors.Is(err, context.Canceled) {
+				c.consecutiveFailures++
+				logLine("WARN", "AUTO_HOSTS cycle failed streak=%d: %v", c.consecutiveFailures, err)
+				capDelay := time.Hour
+				if interval > capDelay { capDelay = interval }
+				for i:=0; i<c.consecutiveFailures && delay<capDelay; i++ { delay *= 2; if delay > capDelay { delay = capDelay } }
+			} else if err == nil { c.consecutiveFailures = 0 }
+			c.mu.Unlock()
 		}
-		timer := time.NewTimer(interval)
+		timer := time.NewTimer(autoHostsJitter(delay))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -72,6 +81,13 @@ func (c *autoHostsController) run(ctx context.Context) {
 		case <-timer.C:
 		}
 	}
+}
+
+func autoHostsJitter(interval time.Duration) time.Duration {
+	spread := interval / 10
+	if spread <= 0 { return interval }
+	jitter := time.Duration(time.Now().UnixNano() % int64(spread))
+	return interval - spread/2 + jitter
 }
 
 func (c *autoHostsController) Trigger() { select { case c.trigger <- struct{}{}: default: } }
