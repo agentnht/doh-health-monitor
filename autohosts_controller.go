@@ -28,6 +28,7 @@ var autoHostsDomains = []string{
 
 const (
 	autoHostsProbeWorkers = 6
+	autoHostsMaxServers = 64
 	autoHostsProbeTimeout = 9 * time.Second
 	autoHostsFailureCycles = 2
 	autoHostsMinimumHold = 10 * time.Minute
@@ -167,7 +168,12 @@ func (c *autoHostsController) probeAll(ctx context.Context, now time.Time) ([]au
 			if _, exists := checks[domain]; !exists { checks[domain] = check }
 		}
 	}
-	for id, upstream := range s.upstreams {
+	serverIDs := make([]string, 0, len(s.upstreams))
+	for id := range s.upstreams { serverIDs = append(serverIDs, id) }
+	sort.Strings(serverIDs)
+	if len(serverIDs) > autoHostsMaxServers { logLine("WARN", "AUTO_HOSTS server limit reached configured=%d limit=%d", len(serverIDs), autoHostsMaxServers); serverIDs = serverIDs[:autoHostsMaxServers] }
+	for _, id := range serverIDs {
+		upstream := s.upstreams[id]
 		if upstream == nil || upstream.systemDNS != nil || upstream.bootstrap == nil || strings.TrimSpace(upstream.cfg.URL) == "" { continue }
 		u, err := url.Parse(upstream.cfg.URL)
 		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil { continue }
