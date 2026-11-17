@@ -29,6 +29,7 @@ Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED
 
 Copy-Item manifest.json $stage
 Copy-Item scripts/plugin-management.sh, scripts/check-dns-integration.sh "$stage/scripts/"
+if (!(Test-Path "$stage/scripts/plugin-management.sh") -or !(Test-Path "$stage/scripts/check-dns-integration.sh")) { throw 'Management scripts are missing from the staging package' }
 
 $zip = Join-Path $root "dist/$id-v$version.zip"
 if (Test-Path $zip) { Remove-Item -LiteralPath $zip -Force }
