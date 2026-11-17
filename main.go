@@ -295,8 +295,9 @@ type Runtime struct {
 	dohPath    string
 	snapshot   atomic.Pointer[Snapshot]
 	mu         sync.RWMutex
-	health     map[string]map[string]HealthEntry
-	active     map[string]string
+	health           map[string]map[string]HealthEntry
+	active           map[string]string
+	upstreamCooldown map[string]time.Time
 	cacheMu        sync.Mutex
 	cache          map[string]cacheItem
 	cacheOrder     []cacheOrderEntry
@@ -985,19 +986,16 @@ func newDoHClient(u Upstream, resolvers []string, timeout time.Duration) (*http.
 				return conn, nil
 			}
 
-			refreshedIP, refreshErr := bootstrap.bestIP(ctx, true, timeout)
-			if refreshErr == nil && refreshedIP != ip {
+			alternateIP, alternateErr := bootstrap.selectAlternateIP(ctx, ip, timeout)
+			if alternateErr == nil {
 				retryConn, retryErr := (&net.Dialer{Timeout: minDuration(timeout, 5*time.Second), KeepAlive: 30 * time.Second}).
-					DialContext(ctx, network, net.JoinHostPort(refreshedIP, port))
+					DialContext(ctx, network, net.JoinHostPort(alternateIP, port))
 				if retryErr == nil {
 					return retryConn, nil
 				}
-				return nil, fmt.Errorf("selected IP %s failed (%v); refreshed fastest IP %s failed: %w", ip, dialErr, refreshedIP, retryErr)
+				return nil, fmt.Errorf("selected IP %s failed (%v); alternate IP %s failed: %w", ip, dialErr, alternateIP, retryErr)
 			}
-			if refreshErr != nil {
-				return nil, fmt.Errorf("selected IP %s failed: %v; bootstrap refresh failed: %w", ip, dialErr, refreshErr)
-			}
-			return nil, fmt.Errorf("selected IP %s failed: %w", ip, dialErr)
+			return nil, fmt.Errorf("selected IP %s failed: %v; alternate IP selection failed: %w", ip, dialErr, alternateErr)
 		},
 	}
 	client := &http.Client{
@@ -1158,6 +1156,43 @@ func (b *bootstrapResolver) bestIP(ctx context.Context, force bool, timeout time
 
 	logLine("INFO", "DoH IP selected hostname=%s ip=%s response_ms=%d candidates=%d fallback=%t selected_until=%s",
 		b.host, ip, latency.Milliseconds(), len(allCandidates), usingFallback, selectedUntil.UTC().Format(time.RFC3339))
+	return ip, nil
+}
+
+func (b *bootstrapResolver) selectAlternateIP(ctx context.Context, currentIP string, timeout time.Duration) (string, error) {
+	ips, resolveErr := b.addresses(ctx, false)
+	candidates := make([]string, 0, len(ips)+len(b.fallback))
+	for _, ip := range ips {
+		if ip != currentIP {
+			candidates = appendUniqueString(candidates, ip)
+		}
+	}
+	for _, ip := range b.fallback {
+		if ip != currentIP {
+			candidates = appendUniqueString(candidates, ip)
+		}
+	}
+	if len(candidates) == 0 {
+		if resolveErr != nil {
+			return "", fmt.Errorf("no alternate bootstrap IP available: %w", resolveErr)
+		}
+		return "", errors.New("no alternate bootstrap IP available")
+	}
+	ip, _, probes, probeErr := b.fastestIPDetailed(ctx, candidates, timeout)
+	b.recordProbeSnapshot(candidates, "alternate", probes)
+	if probeErr != nil {
+		return "", probeErr
+	}
+	b.mu.Lock()
+	b.selectedIP = ip
+	refreshUntil := b.refreshed.Add(b.refreshFor)
+	if !b.refreshed.IsZero() && time.Now().Before(refreshUntil) {
+		b.selectedTil = refreshUntil
+	} else {
+		b.selectedTil = time.Now().Add(time.Minute)
+	}
+	b.mu.Unlock()
+	logLine("WARN", "DoH alternate IP selected hostname=%s previous_ip=%s alternate_ip=%s", b.host, currentIP, ip)
 	return ip, nil
 }
 
@@ -1324,6 +1359,13 @@ func (r *Runtime) initHealth(s *Snapshot) {
 			delete(r.lastGemini, uid)
 		}
 	}
+	if r.upstreamCooldown != nil {
+		for uid := range r.upstreamCooldown {
+			if _, ok := validUpstreams[uid]; !ok {
+				delete(r.upstreamCooldown, uid)
+			}
+		}
+	}
 }
 func (r *Runtime) currentSnapshot() *Snapshot { return r.snapshot.Load() }
 func (r *Runtime) orderedUpstreams(gid string, s *Snapshot) []string {
@@ -1350,6 +1392,54 @@ func (r *Runtime) orderedUpstreams(gid string, s *Snapshot) []string {
 	}
 	return out
 }
+const upstreamFailureCooldown = 30 * time.Second
+
+func (r *Runtime) upstreamsToAttempt(order []string, now time.Time) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.upstreamCooldown == nil {
+		r.upstreamCooldown = make(map[string]time.Time)
+	}
+	available := make([]string, 0, len(order))
+	earliestID := ""
+	var earliest time.Time
+	for _, uid := range order {
+		until, cooling := r.upstreamCooldown[uid]
+		if !cooling || !now.Before(until) {
+			delete(r.upstreamCooldown, uid)
+			available = append(available, uid)
+			continue
+		}
+		if earliestID == "" || until.Before(earliest) {
+			earliestID, earliest = uid, until
+		}
+	}
+	if len(available) > 0 {
+		return available
+	}
+	// If every upstream is cooling down, probe only the one whose cooldown
+	// expires first to avoid hammering every known-bad endpoint on each query.
+	if earliestID != "" {
+		return []string{earliestID}
+	}
+	return append([]string(nil), order...)
+}
+
+func (r *Runtime) markUpstreamFailure(uid string, now time.Time) {
+	r.mu.Lock()
+	if r.upstreamCooldown == nil {
+		r.upstreamCooldown = make(map[string]time.Time)
+	}
+	r.upstreamCooldown[uid] = now.Add(upstreamFailureCooldown)
+	r.mu.Unlock()
+}
+
+func (r *Runtime) markUpstreamSuccess(uid string) {
+	r.mu.Lock()
+	delete(r.upstreamCooldown, uid)
+	r.mu.Unlock()
+}
+
 func (r *Runtime) query(ctx context.Context, packet []byte) ([]byte, string, error) {
 	name, _, _, e := parseQuestion(packet)
 	if e != nil {
@@ -1358,7 +1448,7 @@ func (r *Runtime) query(ctx context.Context, packet []byte) ([]byte, string, err
 	s := r.currentSnapshot()
 	// Every DNS question received by this listener uses the single Google-qualified gateway.
 	const gid = "google"
-	order := r.orderedUpstreams(gid, s)
+	order := r.upstreamsToAttempt(r.orderedUpstreams(gid, s), time.Now())
 	var errs []string
 	for _, uid := range order {
 		u := s.upstreams[uid]
@@ -1372,9 +1462,11 @@ func (r *Runtime) query(ctx context.Context, packet []byte) ([]byte, string, err
 			} else if dnsTruncated(resp) {
 				e = errors.New("upstream returned truncated response; TCP retry not available over DoH")
 			} else {
+				r.markUpstreamSuccess(uid)
 				return resp, uid, nil
 			}
 		}
+		r.markUpstreamFailure(uid, time.Now())
 		errs = append(errs, uid+": "+e.Error())
 	}
 	r.failures.Add(1)
@@ -1388,13 +1480,26 @@ func sendUpstreamDNS(ctx context.Context, u *UpstreamRuntime, packet []byte) ([]
 }
 
 func sendDoH(ctx context.Context, u *UpstreamRuntime, packet []byte) ([]byte, error) {
-	req, e := http.NewRequestWithContext(ctx, http.MethodPost, u.cfg.URL, bytes.NewReader(packet))
-	if e != nil {
-		return nil, e
+	do := func() (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.cfg.URL, bytes.NewReader(packet))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/dns-message")
+		req.Header.Set("Accept", "application/dns-message")
+		return u.client.Do(req)
 	}
-	req.Header.Set("Content-Type", "application/dns-message")
-	req.Header.Set("Accept", "application/dns-message")
-	resp, e := u.client.Do(req)
+	resp, e := do()
+	if e != nil && u.bootstrap != nil && ctx.Err() == nil {
+		currentIP := u.bootstrap.status().SelectedIP
+		if alternateIP, alternateErr := u.bootstrap.selectAlternateIP(ctx, currentIP, 3*time.Second); alternateErr == nil {
+			u.client.CloseIdleConnections()
+			logLine("WARN", "DoH request retry hostname=%s alternate_ip=%s", u.bootstrap.host, alternateIP)
+			resp, e = do()
+		} else {
+			e = fmt.Errorf("DoH request failed: %v; alternate IP retry unavailable: %w", e, alternateErr)
+		}
+	}
 	if e != nil {
 		return nil, e
 	}
@@ -1409,17 +1514,8 @@ func sendDoH(ctx context.Context, u *UpstreamRuntime, packet []byte) ([]byte, er
 	if e != nil {
 		return nil, e
 	}
-	if len(b) < 12 || len(b) > maxDNSMessage {
-		return nil, errors.New("invalid DNS response size")
-	}
-	if _, _, _, e = parseQuestion(b); e != nil {
-		return nil, fmt.Errorf("invalid DoH DNS response: %w", e)
-	}
-	if binary.BigEndian.Uint16(b[2:4])&0x8000 == 0 {
-		return nil, errors.New("DoH returned a DNS packet without QR response flag")
-	}
-	if packetID(b) != packetID(packet) {
-		return nil, errors.New("DoH response transaction ID does not match query")
+	if e = validateDNSResponse(packet, b, "DoH"); e != nil {
+		return nil, e
 	}
 	return b, nil
 }
@@ -2166,28 +2262,43 @@ func exchangeSystemDNSNetwork(ctx context.Context, address, network string, pack
 	return response, nil
 }
 
-func validateSystemDNSResponse(query, response []byte) error {
+func validateDNSResponse(query, response []byte, source string) error {
+	if len(query) < 12 {
+		return errors.New("original DNS query is too short")
+	}
 	if len(response) < 12 || len(response) > maxDNSMessage {
-		return errors.New("invalid system DNS response size")
+		return fmt.Errorf("invalid %s DNS response size", source)
 	}
 	if binary.BigEndian.Uint16(response[:2]) != packetID(query) {
-		return errors.New("system DNS response transaction ID does not match query")
+		return fmt.Errorf("%s DNS response transaction ID does not match query", source)
 	}
-	if binary.BigEndian.Uint16(response[2:4])&0x8000 == 0 {
-		return errors.New("system DNS returned a packet without QR response flag")
+	queryFlags := binary.BigEndian.Uint16(query[2:4])
+	responseFlags := binary.BigEndian.Uint16(response[2:4])
+	if responseFlags&0x8000 == 0 {
+		return fmt.Errorf("%s DNS returned a packet without QR response flag", source)
 	}
-	queryName, queryType, _, err := parseQuestion(query)
+	if queryFlags&0x7800 != responseFlags&0x7800 {
+		return fmt.Errorf("%s DNS response opcode does not match query", source)
+	}
+	queryName, queryType, queryEnd, err := parseQuestion(query)
 	if err != nil {
 		return fmt.Errorf("invalid original DNS query: %w", err)
 	}
-	responseName, responseType, _, err := parseQuestion(response)
+	responseName, responseType, responseEnd, err := parseQuestion(response)
 	if err != nil {
-		return fmt.Errorf("invalid system DNS response question: %w", err)
+		return fmt.Errorf("invalid %s DNS response question: %w", source, err)
 	}
-	if !strings.EqualFold(normalizeDomain(queryName), normalizeDomain(responseName)) || queryType != responseType {
-		return errors.New("system DNS response question does not match query")
+	queryClass := binary.BigEndian.Uint16(query[queryEnd-2 : queryEnd])
+	responseClass := binary.BigEndian.Uint16(response[responseEnd-2 : responseEnd])
+	if !strings.EqualFold(normalizeDomain(queryName), normalizeDomain(responseName)) ||
+		queryType != responseType || queryClass != responseClass {
+		return fmt.Errorf("%s DNS response question does not match query", source)
 	}
 	return nil
+}
+
+func validateSystemDNSResponse(query, response []byte) error {
+	return validateDNSResponse(query, response, "system")
 }
 
 func readHTTPProbeBody(body io.Reader) ([]byte, error) {
