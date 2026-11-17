@@ -206,3 +206,27 @@ func TestPinnedHTTPSProbeRejectsUntrustedCertificate(t *testing.T) {
 	_,err=client.Get("https://probe.example:"+fmt.Sprint(port)+"/")
 	if err==nil { t.Fatal("expected self-signed certificate to be rejected without a trusted root") }
 }
+
+func TestPinnedControllerNeverSwitchesAndPersistsDegradation(t *testing.T) {
+	now := time.Now().UTC()
+	manager, err := autohosts.New(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil { t.Fatal(err) }
+	a := autohosts.Endpoint{ServerID: "pinned", URL: "https://pinned.example/dns-query", Hostname: "pinned.example", IPv4: []string{"8.8.8.8"}, UpdatedAt: now}
+	b := autohosts.Endpoint{ServerID: "healthy", URL: "https://healthy.example/dns-query", Hostname: "healthy.example", IPv4: []string{"1.1.1.1"}, UpdatedAt: now}
+	if err := manager.ApplyFullCycle("pinned", []autohosts.Endpoint{a, b}, []autohosts.ProbeResult{{ServerID: "pinned", Domain: "chatgpt.com", Success: true, CheckedAt: now}}, now); err != nil { t.Fatal(err) }
+	if err := manager.SetPinned("pinned"); err != nil { t.Fatal(err) }
+	controller := newAutoHostsController(&Runtime{}, manager)
+	results := []autohosts.ProbeResult{
+		{ServerID: "pinned", Domain: "chatgpt.com", Success: false, CheckedAt: now, Error: "upstream timeout"},
+		{ServerID: "healthy", Domain: "chatgpt.com", Success: true, CheckedAt: now},
+	}
+	selected, err := controller.chooseActive([]autohosts.Endpoint{a, b}, results, now.Add(time.Hour))
+	if err != nil { t.Fatal(err) }
+	if selected != "pinned" { t.Fatalf("Pinned selected %q; must remain pinned despite healthier alternative", selected) }
+	controller.recordPinnedFailure(errors.New("pinned endpoint unavailable"), now.Add(time.Hour))
+	state := manager.State()
+	if state.ActiveServer != "pinned" { t.Fatalf("active server changed to %q while pinned", state.ActiveServer) }
+	failure, ok := state.ProbeResults["pinned\\x00chatgpt.com"]
+	if !ok { t.Fatal("pinned degradation was not persisted") }
+	if failure.Success || failure.Error != "pinned endpoint unavailable" { t.Fatalf("unexpected pinned diagnostic: %+v", failure) }
+}
