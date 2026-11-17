@@ -1,7 +1,6 @@
 package main
 
 import (
-	"lucx-doh-health-monitor/internal/autohosts"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -9,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"lucx-doh-health-monitor/internal/autohosts"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -42,7 +42,6 @@ func testAResponse(q []byte, ttl uint32) []byte {
 	return p
 }
 
-
 func TestValidateDNSResponseMatchesFullQuestion(t *testing.T) {
 	query := makeDNSQuery("www.example.com", 1)
 	response := testAResponse(query, 60)
@@ -64,8 +63,8 @@ func TestValidateDNSResponseMatchesFullQuestion(t *testing.T) {
 		bad := append([]byte(nil), response...)
 		_, _, end, err := parseQuestion(bad)
 		if err != nil {
-		t.Fatal(err)
-	}
+			t.Fatal(err)
+		}
 		binary.BigEndian.PutUint16(bad[end-4:end-2], 28)
 		if err := validateDNSResponse(query, bad, "test"); err == nil {
 			t.Fatal("expected QTYPE mismatch to be rejected")
@@ -104,7 +103,7 @@ func TestUpstreamCooldownSkipsFailedEndpointsAndRecovers(t *testing.T) {
 
 func TestUpstreamCooldownProbesOnlyEarliestWhenAllCooling(t *testing.T) {
 	now := time.Now()
-	r := &Runtime{upstreamCooldown: map[string]time.Time{"later": now.Add(20*time.Second), "first": now.Add(5*time.Second)}}
+	r := &Runtime{upstreamCooldown: map[string]time.Time{"later": now.Add(20 * time.Second), "first": now.Add(5 * time.Second)}}
 	got := r.upstreamsToAttempt([]string{"later", "first"}, now)
 	if len(got) != 1 || got[0] != "first" {
 		t.Fatalf("attempt order = %v, want earliest-expiring upstream only", got)
@@ -115,7 +114,7 @@ func TestSelectAlternateIPExcludesFailedAddress(t *testing.T) {
 	now := time.Now()
 	b := &bootstrapResolver{
 		host: "doh.example", endpoint: "https://doh.example/dns-query",
-		ips: []string{"192.0.2.1", "192.0.2.2", "192.0.2.3"},
+		ips:       []string{"192.0.2.1", "192.0.2.2", "192.0.2.3"},
 		refreshed: now, refreshFor: time.Hour, selectedIP: "192.0.2.1",
 		probe: func(_ context.Context, _ string, ip string, _ time.Duration) (time.Duration, error) {
 			switch ip {
@@ -129,7 +128,9 @@ func TestSelectAlternateIPExcludesFailedAddress(t *testing.T) {
 		},
 	}
 	got, err := b.selectAlternateIP(context.Background(), "192.0.2.1", time.Second)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got != "192.0.2.3" {
 		t.Fatalf("alternate IP = %s, want 192.0.2.3", got)
 	}
@@ -254,7 +255,6 @@ func TestDefaultConfigValid(t *testing.T) {
 	}
 }
 
-
 func TestCacheRejectsZeroEntryLimitWhenEnabled(t *testing.T) {
 	c := defaultConfig()
 	c.Cache.MaxEntries = 0
@@ -297,15 +297,15 @@ func TestCacheFIFOAndByteLimit(t *testing.T) {
 
 func TestInitHealthPrunesRemovedUpstreams(t *testing.T) {
 	s := &Snapshot{
-		groups: map[string]Group{"google": {ID: "google", Upstreams: []string{"current"}}},
+		groups:    map[string]Group{"google": {ID: "google", Upstreams: []string{"current"}}},
 		upstreams: map[string]*UpstreamRuntime{"current": {}},
 	}
 	r := &Runtime{
 		health: map[string]map[string]HealthEntry{
-			"google": {"current": {State: "up"}, "removed": {State: "down"}},
+			"google":    {"current": {State: "up"}, "removed": {State: "down"}},
 			"old-group": {"stale": {State: "down"}},
 		},
-		active: map[string]string{"google": "current", "old-group": "stale"},
+		active:     map[string]string{"google": "current", "old-group": "stale"},
 		lastGemini: map[string]time.Time{"current": time.Now(), "removed": time.Now()},
 	}
 	r.initHealth(s)
@@ -381,19 +381,19 @@ func TestUDPWorkerPoolBoundsQueueUnderLoad(t *testing.T) {
 	defer upstreamServer.Close()
 
 	upstream := &UpstreamRuntime{
-		cfg: Upstream{ID: "slow", URL: upstreamServer.URL},
+		cfg:    Upstream{ID: "slow", URL: upstreamServer.URL},
 		client: upstreamServer.Client(),
 	}
 	s := &Snapshot{
-		cfg: Config{DNSMaxConcurrent: 1, DNSQueryTimeoutSeconds: 3, Cache: CacheConfig{Enabled: false}},
-		groups: map[string]Group{"google": {ID: "google", Upstreams: []string{"slow"}}},
+		cfg:       Config{DNSMaxConcurrent: 1, DNSQueryTimeoutSeconds: 3, Cache: CacheConfig{Enabled: false}},
+		groups:    map[string]Group{"google": {ID: "google", Upstreams: []string{"slow"}}},
 		upstreams: map[string]*UpstreamRuntime{"slow": upstream},
 	}
 	r := &Runtime{
 		dnsSem: make(chan struct{}, 1),
 		health: map[string]map[string]HealthEntry{},
 		active: map[string]string{"google": "slow"},
-		cache: map[string]cacheItem{},
+		cache:  map[string]cacheItem{},
 	}
 	r.snapshot.Store(s)
 
@@ -677,10 +677,10 @@ func TestBuildSnapshotIncludesSystemDNSWithoutDoHURL(t *testing.T) {
 	c := defaultConfig()
 	urls := map[string]string{
 		"geohide-eu": "https://eu.geohide.ru/dns-query",
-		"dagami": "https://dns.dagami.ru/dns-query",
-		"comss-one": "https://dns.comss.one/dns-query",
-		"bezmezhau": "https://dns.bezmezhau.com/dns-query",
-		"zapret": "https://dns.zapret.moe/dns-query",
+		"dagami":     "https://dns.dagami.ru/dns-query",
+		"comss-one":  "https://dns.comss.one/dns-query",
+		"bezmezhau":  "https://dns.bezmezhau.com/dns-query",
+		"zapret":     "https://dns.zapret.moe/dns-query",
 	}
 	snapshot, err := buildSnapshot(c, urls)
 	if err != nil {
@@ -866,7 +866,7 @@ func TestDNSGatewaySendsArbitraryQNAMEThroughGoogleProfile(t *testing.T) {
 
 	query := makeDNSQuery("completely-unrelated.example", 1)
 	upstream := &UpstreamRuntime{
-		cfg: Upstream{ID: "selected-google-doh", URL: srv.URL},
+		cfg:    Upstream{ID: "selected-google-doh", URL: srv.URL},
 		client: srv.Client(),
 	}
 	snapshot := &Snapshot{
@@ -980,7 +980,7 @@ func TestLoadConfigCreatesAutomaticBootstrapDefaults(t *testing.T) {
 
 func TestBootstrapSelectsFastestDoHIP(t *testing.T) {
 	b := &bootstrapResolver{
-		host: "doh.example",
+		host:     "doh.example",
 		endpoint: "https://doh.example/dns-query",
 		probe: func(ctx context.Context, endpoint, ip string, timeout time.Duration) (time.Duration, error) {
 			switch ip {
@@ -1009,7 +1009,7 @@ func TestBootstrapSelectsFastestDoHIP(t *testing.T) {
 
 func TestBootstrapFastestIPDetailedReportsEveryCandidate(t *testing.T) {
 	b := &bootstrapResolver{
-		host: "doh.example",
+		host:     "doh.example",
 		endpoint: "https://doh.example/dns-query",
 		probe: func(ctx context.Context, endpoint, ip string, timeout time.Duration) (time.Duration, error) {
 			switch ip {
@@ -1083,16 +1083,16 @@ func TestBootstrapStatusReturnsDiagnosticSnapshot(t *testing.T) {
 		{IP: "192.0.2.10", Source: "dns", Result: "ok", ResponseMS: 12},
 	}
 	b := &bootstrapResolver{
-		host: "doh.example",
-		ips: []string{"192.0.2.10", "2001:db8::10"},
-		resolvedBy: "1.1.1.1",
-		refreshed: time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC),
-		selectedIP: "192.0.2.10",
-		selectedTil: time.Date(2026, 11, 10, 18, 0, 0, 0, time.UTC),
-		lastCandidates: []string{"192.0.2.10", "2001:db8::10"},
+		host:                "doh.example",
+		ips:                 []string{"192.0.2.10", "2001:db8::10"},
+		resolvedBy:          "1.1.1.1",
+		refreshed:           time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC),
+		selectedIP:          "192.0.2.10",
+		selectedTil:         time.Date(2026, 11, 10, 18, 0, 0, 0, time.UTC),
+		lastCandidates:      []string{"192.0.2.10", "2001:db8::10"},
 		lastCandidateSource: "dns",
-		lastProbeAt: time.Date(2026, 11, 10, 12, 1, 0, 0, time.UTC),
-		lastProbe: probes,
+		lastProbeAt:         time.Date(2026, 11, 10, 12, 1, 0, 0, time.UTC),
+		lastProbe:           probes,
 	}
 	status := b.status()
 	if status.Hostname != "doh.example" || status.ResolvedBy != "1.1.1.1" || status.SelectedIP != "192.0.2.10" {
@@ -1110,7 +1110,7 @@ func TestBootstrapStatusReturnsDiagnosticSnapshot(t *testing.T) {
 
 func TestBootstrapFastestIPReportsAllFailures(t *testing.T) {
 	b := &bootstrapResolver{
-		host: "doh.example",
+		host:     "doh.example",
 		endpoint: "https://doh.example/dns-query",
 		probe: func(ctx context.Context, endpoint, ip string, timeout time.Duration) (time.Duration, error) {
 			return 0, errors.New("probe failed")
@@ -1318,19 +1318,18 @@ func TestRemoveSocketIfSameRefusesReplacement(t *testing.T) {
 	}
 }
 
-
 func TestLocalHostsOptionalAndFamilySpecificAnswers(t *testing.T) {
 	if got, matched := localHostsResponse(makeDNSQuery("local.example", 1), "local.example", 1, nil); matched || got != nil {
 		t.Fatal("empty local_hosts must not intercept DNS")
 	}
 	hosts := map[string]LocalHost{
-		"local.example": {IPv4: []string{"192.0.2.10"}, IPv6: []string{"2001:db8::10"}},
+		"local.example":   {IPv4: []string{"192.0.2.10"}, IPv6: []string{"2001:db8::10"}},
 		"v4-only.example": {IPv4: []string{"192.0.2.20"}},
 	}
 	for _, tc := range []struct {
-		name string
-		qtype uint16
-		wantAnswers uint16
+		name          string
+		qtype         uint16
+		wantAnswers   uint16
 		wantAuthority uint16
 	}{
 		{"local.example", 1, 1, 0},
@@ -1345,16 +1344,32 @@ func TestLocalHostsOptionalAndFamilySpecificAnswers(t *testing.T) {
 			// Ask for authenticated data; locally synthesized answers must never assert AD.
 			binary.BigEndian.PutUint16(q[2:4], 0x0130)
 			got, matched := localHostsResponse(q, tc.name, tc.qtype, hosts)
-			if !matched { t.Fatal("expected local_hosts match") }
-			if dnsRCode(got) != 0 { t.Fatalf("rcode=%d", dnsRCode(got)) }
-			if binary.BigEndian.Uint16(got[2:4])&0x0020 != 0 { t.Fatal("AD flag must be clear") }
-			if binary.BigEndian.Uint16(got[6:8]) != tc.wantAnswers { t.Fatalf("answers=%d", binary.BigEndian.Uint16(got[6:8])) }
-			if binary.BigEndian.Uint16(got[8:10]) != tc.wantAuthority { t.Fatalf("authority=%d", binary.BigEndian.Uint16(got[8:10])) }
+			if !matched {
+				t.Fatal("expected local_hosts match")
+			}
+			if dnsRCode(got) != 0 {
+				t.Fatalf("rcode=%d", dnsRCode(got))
+			}
+			if binary.BigEndian.Uint16(got[2:4])&0x0020 != 0 {
+				t.Fatal("AD flag must be clear")
+			}
+			if binary.BigEndian.Uint16(got[6:8]) != tc.wantAnswers {
+				t.Fatalf("answers=%d", binary.BigEndian.Uint16(got[6:8]))
+			}
+			if binary.BigEndian.Uint16(got[8:10]) != tc.wantAuthority {
+				t.Fatalf("authority=%d", binary.BigEndian.Uint16(got[8:10]))
+			}
 			positions, err := rrTTLPositions(got)
-			if err != nil { t.Fatal(err) }
-			if len(positions) == 0 { t.Fatal("expected answer or SOA TTL") }
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(positions) == 0 {
+				t.Fatal("expected answer or SOA TTL")
+			}
 			for _, pos := range positions {
-				if ttl := binary.BigEndian.Uint32(got[pos:pos+4]); ttl != localHostsTTL { t.Fatalf("TTL=%d, want %d", ttl, localHostsTTL) }
+				if ttl := binary.BigEndian.Uint32(got[pos : pos+4]); ttl != localHostsTTL {
+					t.Fatalf("TTL=%d, want %d", ttl, localHostsTTL)
+				}
 			}
 		})
 	}
@@ -1362,7 +1377,10 @@ func TestLocalHostsOptionalAndFamilySpecificAnswers(t *testing.T) {
 
 func TestLocalHostsDoesNotInterceptOtherTypesOrNames(t *testing.T) {
 	hosts := map[string]LocalHost{"local.example": {IPv4: []string{"192.0.2.1"}}}
-	for _, tc := range []struct{name string; qtype uint16}{
+	for _, tc := range []struct {
+		name  string
+		qtype uint16
+	}{
 		{"local.example", 16}, // TXT continues through DoH
 		{"other.example", 1},
 	} {
@@ -1375,13 +1393,18 @@ func TestLocalHostsDoesNotInterceptOtherTypesOrNames(t *testing.T) {
 func TestLocalHostsConfigValidation(t *testing.T) {
 	c := defaultConfig()
 	c.LocalHosts = map[string]LocalHost{"LOCAL.example.": {IPv4: []string{"192.0.2.1"}, IPv6: []string{"2001:db8::1"}}}
-	if err := validateConfig(c); err != nil { t.Fatalf("valid local_hosts rejected: %v", err) }
+	if err := validateConfig(c); err != nil {
+		t.Fatalf("valid local_hosts rejected: %v", err)
+	}
 	c.LocalHosts = map[string]LocalHost{"bad.example": {IPv4: []string{"2001:db8::1"}}}
-	if err := validateConfig(c); err == nil { t.Fatal("expected IPv4 family validation error") }
+	if err := validateConfig(c); err == nil {
+		t.Fatal("expected IPv4 family validation error")
+	}
 	c.LocalHosts = map[string]LocalHost{"bad..example": {IPv4: []string{"192.0.2.1"}}}
-	if err := validateConfig(c); err == nil { t.Fatal("expected hostname validation error") }
+	if err := validateConfig(c); err == nil {
+		t.Fatal("expected hostname validation error")
+	}
 }
-
 
 func TestLocalHostsPreservesEDNSOPTAndDoesNotOverrideNonIN(t *testing.T) {
 	hosts := map[string]LocalHost{"local.example": {IPv4: []string{"192.0.2.1"}}}
@@ -1389,9 +1412,15 @@ func TestLocalHostsPreservesEDNSOPTAndDoesNotOverrideNonIN(t *testing.T) {
 	q = append(q, 0, 0, 41, 4, 208, 0, 0, 0, 0, 0, 0) // OPT, UDP payload 1232, empty options
 	binary.BigEndian.PutUint16(q[10:12], 1)
 	got, matched := localHostsResponse(q, "local.example", 1, hosts)
-	if !matched { t.Fatal("expected local host match") }
-	if binary.BigEndian.Uint16(got[10:12]) != 1 { t.Fatalf("additional count=%d, want 1", binary.BigEndian.Uint16(got[10:12])) }
-	if !bytes.Contains(got, []byte{0, 0, 41, 4, 208}) { t.Fatal("EDNS OPT record was not echoed") }
+	if !matched {
+		t.Fatal("expected local host match")
+	}
+	if binary.BigEndian.Uint16(got[10:12]) != 1 {
+		t.Fatalf("additional count=%d, want 1", binary.BigEndian.Uint16(got[10:12]))
+	}
+	if !bytes.Contains(got, []byte{0, 0, 41, 4, 208}) {
+		t.Fatal("EDNS OPT record was not echoed")
+	}
 
 	nonIN := makeDNSQuery("local.example", 1)
 	nonIN[len(nonIN)-2] = 0
@@ -1404,7 +1433,7 @@ func TestLocalHostsPreservesEDNSOPTAndDoesNotOverrideNonIN(t *testing.T) {
 func TestLocalHostsRejectsDuplicateNormalizedNames(t *testing.T) {
 	c := defaultConfig()
 	c.LocalHosts = map[string]LocalHost{
-		"LOCAL.example": {IPv4: []string{"192.0.2.1"}},
+		"LOCAL.example":  {IPv4: []string{"192.0.2.1"}},
 		"local.example.": {IPv4: []string{"192.0.2.2"}},
 	}
 	if err := validateConfig(c); err == nil {
@@ -1413,7 +1442,11 @@ func TestLocalHostsRejectsDuplicateNormalizedNames(t *testing.T) {
 }
 
 func containsString(values []string, want string) bool {
-	for _, value := range values { if value == want { return true } }
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
 	return false
 }
 
@@ -1429,207 +1462,330 @@ func TestSetIntegrationFlagPreservesConfigAndToggles(t *testing.T) {
 	read := func() map[string]any {
 		t.Helper()
 		data, err := os.ReadFile(path)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		var value map[string]any
-		if err := json.Unmarshal(data, &value); err != nil { t.Fatal(err) }
+		if err := json.Unmarshal(data, &value); err != nil {
+			t.Fatal(err)
+		}
 		return value
 	}
 	config := read()
-	if config["integration"] != true { t.Fatalf("integration flag=%v, want true", config["integration"]) }
-	if config["dns_listen_udp"] != "127.0.0.1:5355" { t.Fatalf("unrelated config key changed: %#v", config) }
-	if nested := config["custom"].(map[string]any); nested["keep"] != true { t.Fatalf("unknown nested config key changed: %#v", nested) }
+	if config["integration"] != true {
+		t.Fatalf("integration flag=%v, want true", config["integration"])
+	}
+	if config["dns_listen_udp"] != "127.0.0.1:5355" {
+		t.Fatalf("unrelated config key changed: %#v", config)
+	}
+	if nested := config["custom"].(map[string]any); nested["keep"] != true {
+		t.Fatalf("unknown nested config key changed: %#v", nested)
+	}
 	info, err := os.Stat(path)
-	if err != nil { t.Fatal(err) }
-	if info.Mode().Perm() != 0600 { t.Fatalf("config permissions=%#o, want 0600", info.Mode().Perm()) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("config permissions=%#o, want 0600", info.Mode().Perm())
+	}
 	if err := setIntegrationFlag(path, false); err != nil {
 		t.Fatalf("set integration=false: %v", err)
 	}
 	config = read()
-	if config["integration"] != false { t.Fatalf("integration flag=%v, want false", config["integration"]) }
+	if config["integration"] != false {
+		t.Fatalf("integration flag=%v, want false", config["integration"])
+	}
 }
-
 
 func TestAutoHostsDNSAnswersUseActiveEndpointAndFamilyNODATA(t *testing.T) {
 	now := time.Now().UTC()
 	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
-	if err != nil { t.Fatal(err) }
-	endpoint := autohosts.Endpoint{ServerID:"edge", URL:"https://dns.example/dns-query", Hostname:"dns.example", IPv4:[]string{"8.8.8.8"},UpdatedAt:now}
-	if err := manager.ApplyCycle("edge", endpoint, []autohosts.ProbeResult{{Domain:"chatgpt.com",Success:true,CheckedAt:now}}, now); err != nil { t.Fatal(err) }
-	if err := manager.SetEnabled(true); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := autohosts.Endpoint{ServerID: "edge", URL: "https://dns.example/dns-query", Hostname: "dns.example", IPv4: []string{"8.8.8.8"}, UpdatedAt: now}
+	if err := manager.ApplyCycle("edge", endpoint, []autohosts.ProbeResult{{Domain: "chatgpt.com", Success: true, CheckedAt: now}}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
 
 	aQuery := makeDNSQuery("chatgpt.com", 1)
 	aResponse, matched := autoHostsResponse(aQuery, "chatgpt.com", 1, manager)
-	if !matched { t.Fatal("expected Auto Hosts A match") }
+	if !matched {
+		t.Fatal("expected Auto Hosts A match")
+	}
 	aRecords, err := parseARecords(aResponse)
-	if err != nil { t.Fatal(err) }
-	if len(aRecords) != 1 || aRecords[0] != "8.8.8.8" { t.Fatalf("Auto Hosts must return active DoH endpoint IP, got %v", aRecords) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aRecords) != 1 || aRecords[0] != "8.8.8.8" {
+		t.Fatalf("Auto Hosts must return active DoH endpoint IP, got %v", aRecords)
+	}
 
 	aaaaResponse, matched := autoHostsResponse(makeDNSQuery("chatgpt.com", 28), "chatgpt.com", 28, manager)
-	if !matched { t.Fatal("IPv4-only endpoint must still match AAAA and return NODATA") }
+	if !matched {
+		t.Fatal("IPv4-only endpoint must still match AAAA and return NODATA")
+	}
 	if binary.BigEndian.Uint16(aaaaResponse[6:8]) != 0 || binary.BigEndian.Uint16(aaaaResponse[8:10]) != 1 {
 		t.Fatalf("expected NODATA with local SOA, answer=%d authority=%d", binary.BigEndian.Uint16(aaaaResponse[6:8]), binary.BigEndian.Uint16(aaaaResponse[8:10]))
 	}
 	httpsResponse, matched := autoHostsResponse(makeDNSQuery("chatgpt.com", 65), "chatgpt.com", 65, manager)
-	if !matched || binary.BigEndian.Uint16(httpsResponse[6:8]) != 0 { t.Fatal("HTTPS query must be locally answered with NODATA for Auto Hosts domain") }
+	if !matched || binary.BigEndian.Uint16(httpsResponse[6:8]) != 0 {
+		t.Fatal("HTTPS query must be locally answered with NODATA for Auto Hosts domain")
+	}
 }
-
 
 func TestManualLocalHostsTakePriorityOverAutoHosts(t *testing.T) {
 	now := time.Now().UTC()
 	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
-	if err != nil { t.Fatal(err) }
-	endpoint := autohosts.Endpoint{ServerID:"edge", URL:"https://dns.example/dns-query", Hostname:"dns.example", IPv4:[]string{"8.8.8.8"}}
-	if err := manager.ApplyCycle("edge", endpoint, []autohosts.ProbeResult{{Domain:"chatgpt.com",Success:true,CheckedAt:now}}, now); err != nil { t.Fatal(err) }
-	if err := manager.SetEnabled(true); err != nil { t.Fatal(err) }
-	runtime := &Runtime{autoHosts:manager, dnsSem:make(chan struct{},1)}
-	runtime.snapshot.Store(&Snapshot{localHosts:map[string]LocalHost{"chatgpt.com":{IPv4:[]string{"1.2.3.4"}}}})
-	response := runtime.handleDNS(makeDNSQuery("chatgpt.com",1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := autohosts.Endpoint{ServerID: "edge", URL: "https://dns.example/dns-query", Hostname: "dns.example", IPv4: []string{"8.8.8.8"}}
+	if err := manager.ApplyCycle("edge", endpoint, []autohosts.ProbeResult{{Domain: "chatgpt.com", Success: true, CheckedAt: now}}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &Runtime{autoHosts: manager, dnsSem: make(chan struct{}, 1)}
+	runtime.snapshot.Store(&Snapshot{localHosts: map[string]LocalHost{"chatgpt.com": {IPv4: []string{"1.2.3.4"}}}})
+	response := runtime.handleDNS(makeDNSQuery("chatgpt.com", 1))
 	ips, err := parseARecords(response)
-	if err != nil { t.Fatal(err) }
-	if len(ips)!=1 || ips[0]!="1.2.3.4" { t.Fatalf("manual local_hosts must win over Auto Hosts, got %v",ips) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ips) != 1 || ips[0] != "1.2.3.4" {
+		t.Fatalf("manual local_hosts must win over Auto Hosts, got %v", ips)
+	}
 }
-
 
 func TestAutoHostsHTTPSettingsAndStatusHandlers(t *testing.T) {
 	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
-	if err != nil { t.Fatal(err) }
-	runtime := &Runtime{autoHosts:manager}
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &Runtime{autoHosts: manager}
 	request := httptest.NewRequest(http.MethodPost, "/autohosts/config", strings.NewReader("{\"enabled\":true,\"emergency_off\":true}"))
 	response := httptest.NewRecorder()
 	runtime.handleAutoHostsConfig(response, request)
-	if response.Code != http.StatusOK { t.Fatalf("config handler returned %d: %s", response.Code, response.Body.String()) }
-	if !manager.State().Config.Enabled || !manager.State().Config.EmergencyOff { t.Fatal("settings were not applied") }
+	if response.Code != http.StatusOK {
+		t.Fatalf("config handler returned %d: %s", response.Code, response.Body.String())
+	}
+	if !manager.State().Config.Enabled || !manager.State().Config.EmergencyOff {
+		t.Fatal("settings were not applied")
+	}
 	statusRequest := httptest.NewRequest(http.MethodGet, "/autohosts/status", nil)
 	statusResponse := httptest.NewRecorder()
 	runtime.handleAutoHostsStatus(statusResponse, statusRequest)
-	if statusResponse.Code != http.StatusOK { t.Fatalf("status handler returned %d", statusResponse.Code) }
+	if statusResponse.Code != http.StatusOK {
+		t.Fatalf("status handler returned %d", statusResponse.Code)
+	}
 	var state autohosts.State
-	if err := json.Unmarshal(statusResponse.Body.Bytes(), &state); err != nil { t.Fatal(err) }
-	if !state.Config.Enabled || !state.Config.EmergencyOff { t.Fatal("status response omitted persisted settings") }
+	if err := json.Unmarshal(statusResponse.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if !state.Config.Enabled || !state.Config.EmergencyOff {
+		t.Fatal("status response omitted persisted settings")
+	}
 }
 
 func TestAutoHostsDryRunHandlerDoesNotMutateStateOnUnavailableEndpoints(t *testing.T) {
 	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
-	if err != nil { t.Fatal(err) }
-	runtime := &Runtime{autoHosts:manager}
-	runtime.snapshot.Store(&Snapshot{upstreams:map[string]*UpstreamRuntime{},groups:map[string]Group{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &Runtime{autoHosts: manager}
+	runtime.snapshot.Store(&Snapshot{upstreams: map[string]*UpstreamRuntime{}, groups: map[string]Group{}})
 	runtime.autoController = newAutoHostsController(runtime, manager)
 	before := manager.State()
 	request := httptest.NewRequest(http.MethodPost, "/autohosts/dry-run", strings.NewReader("{}"))
 	response := httptest.NewRecorder()
 	runtime.handleAutoHostsDryRun(response, request)
-	if response.Code != http.StatusServiceUnavailable { t.Fatalf("expected unavailable endpoint result, got %d", response.Code) }
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected unavailable endpoint result, got %d", response.Code)
+	}
 	after := manager.State()
 	if before.ActiveServer != after.ActiveServer || len(before.Domains) != len(after.Domains) || before.UpdatedAt != after.UpdatedAt {
 		t.Fatal("failed Dry Run mutated Auto Hosts persistent state")
 	}
 }
 
-
 func TestHandleDNSAutoHostsEndToEndAndEmergencyBypass(t *testing.T) {
 	now := time.Now().UTC()
 	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
-	if err != nil { t.Fatal(err) }
-	endpoint := autohosts.Endpoint{ServerID:"edge", URL:"https://dns.example/dns-query", Hostname:"dns.example", IPv4:[]string{"8.8.4.4"}, UpdatedAt:now}
-	if err := manager.ApplyCycle("edge", endpoint, []autohosts.ProbeResult{{Domain:"chatgpt.com",Success:true,CheckedAt:now}}, now); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := autohosts.Endpoint{ServerID: "edge", URL: "https://dns.example/dns-query", Hostname: "dns.example", IPv4: []string{"8.8.4.4"}, UpdatedAt: now}
+	if err := manager.ApplyCycle("edge", endpoint, []autohosts.ProbeResult{{Domain: "chatgpt.com", Success: true, CheckedAt: now}}, now); err != nil {
+		t.Fatal(err)
+	}
 	enabled := true
-	if err := manager.SetEnabled(enabled); err != nil { t.Fatal(err) }
-	if ips,_,matched:=manager.Snapshot().Lookup("chatgpt.com",1,time.Now()); !matched || len(ips)!=1 { t.Fatalf("test setup did not publish Auto Hosts record: enabled=%v emergency=%v active=%s domains=%+v endpoint=%+v lookup=%v",manager.State().Config.Enabled,manager.State().Config.EmergencyOff,manager.State().ActiveServer,manager.State().Domains,manager.State().Endpoints,ips) }
-	runtime := &Runtime{autoHosts:manager, dnsSem:make(chan struct{},1)}
-	runtime.snapshot.Store(&Snapshot{cfg:Config{Cache:CacheConfig{Enabled:false}},localHosts:map[string]LocalHost{},upstreams:map[string]*UpstreamRuntime{},groups:map[string]Group{}})
-	a := runtime.handleDNS(makeDNSQuery("CHATGPT.COM",1))
+	if err := manager.SetEnabled(enabled); err != nil {
+		t.Fatal(err)
+	}
+	if ips, _, matched := manager.Snapshot().Lookup("chatgpt.com", 1, time.Now()); !matched || len(ips) != 1 {
+		t.Fatalf("test setup did not publish Auto Hosts record: enabled=%v emergency=%v active=%s domains=%+v endpoint=%+v lookup=%v", manager.State().Config.Enabled, manager.State().Config.EmergencyOff, manager.State().ActiveServer, manager.State().Domains, manager.State().Endpoints, ips)
+	}
+	runtime := &Runtime{autoHosts: manager, dnsSem: make(chan struct{}, 1)}
+	runtime.snapshot.Store(&Snapshot{cfg: Config{Cache: CacheConfig{Enabled: false}}, localHosts: map[string]LocalHost{}, upstreams: map[string]*UpstreamRuntime{}, groups: map[string]Group{}})
+	a := runtime.handleDNS(makeDNSQuery("CHATGPT.COM", 1))
 	ips, err := parseARecords(a)
-	if err != nil || len(ips)!=1 || ips[0]!="8.8.4.4" { t.Fatalf("A answer = %v, err=%v",ips,err) }
-	aaaa := runtime.handleDNS(makeDNSQuery("chatgpt.com",28))
-	if dnsRCode(aaaa)!=0 || binary.BigEndian.Uint16(aaaa[6:8])!=0 { t.Fatalf("AAAA without endpoint IPv6 must be NODATA: %x",aaaa) }
+	if err != nil || len(ips) != 1 || ips[0] != "8.8.4.4" {
+		t.Fatalf("A answer = %v, err=%v", ips, err)
+	}
+	aaaa := runtime.handleDNS(makeDNSQuery("chatgpt.com", 28))
+	if dnsRCode(aaaa) != 0 || binary.BigEndian.Uint16(aaaa[6:8]) != 0 {
+		t.Fatalf("AAAA without endpoint IPv6 must be NODATA: %x", aaaa)
+	}
 	off := true
-	if err := manager.SetEmergencyOff(off); err != nil { t.Fatal(err) }
-	bypassed := runtime.handleDNS(makeDNSQuery("chatgpt.com",1))
-	if dnsRCode(bypassed)!=2 { t.Fatalf("Emergency OFF should bypass Auto Hosts and use ordinary gateway path; with no upstream expected SERVFAIL, got rcode=%d",dnsRCode(bypassed)) }
+	if err := manager.SetEmergencyOff(off); err != nil {
+		t.Fatal(err)
+	}
+	bypassed := runtime.handleDNS(makeDNSQuery("chatgpt.com", 1))
+	if dnsRCode(bypassed) != 2 {
+		t.Fatalf("Emergency OFF should bypass Auto Hosts and use ordinary gateway path; with no upstream expected SERVFAIL, got rcode=%d", dnsRCode(bypassed))
+	}
 }
 
 func TestHandleDNSManualLocalHostsOverrideAutoHosts(t *testing.T) {
 	now := time.Now().UTC()
 	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
-	if err != nil { t.Fatal(err) }
-	endpoint := autohosts.Endpoint{ServerID:"edge", URL:"https://dns.example/dns-query", Hostname:"dns.example", IPv4:[]string{"8.8.4.4"}, UpdatedAt:now}
-	if err := manager.ApplyFullCycle("edge", []autohosts.Endpoint{endpoint}, []autohosts.ProbeResult{{ServerID:"edge",Domain:"chatgpt.com",Success:true,CheckedAt:now}}, now); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := autohosts.Endpoint{ServerID: "edge", URL: "https://dns.example/dns-query", Hostname: "dns.example", IPv4: []string{"8.8.4.4"}, UpdatedAt: now}
+	if err := manager.ApplyFullCycle("edge", []autohosts.Endpoint{endpoint}, []autohosts.ProbeResult{{ServerID: "edge", Domain: "chatgpt.com", Success: true, CheckedAt: now}}, now); err != nil {
+		t.Fatal(err)
+	}
 	enabled := true
-	if err := manager.SetEnabled(enabled); err != nil { t.Fatal(err) }
-	runtime := &Runtime{autoHosts:manager, dnsSem:make(chan struct{},1)}
-	runtime.snapshot.Store(&Snapshot{cfg:Config{},localHosts:map[string]LocalHost{"chatgpt.com":{IPv4:[]string{"203.0.113.9"}}},upstreams:map[string]*UpstreamRuntime{},groups:map[string]Group{}})
-	response := runtime.handleDNS(makeDNSQuery("chatgpt.com",1))
+	if err := manager.SetEnabled(enabled); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &Runtime{autoHosts: manager, dnsSem: make(chan struct{}, 1)}
+	runtime.snapshot.Store(&Snapshot{cfg: Config{}, localHosts: map[string]LocalHost{"chatgpt.com": {IPv4: []string{"203.0.113.9"}}}, upstreams: map[string]*UpstreamRuntime{}, groups: map[string]Group{}})
+	response := runtime.handleDNS(makeDNSQuery("chatgpt.com", 1))
 	ips, err := parseARecords(response)
-	if err != nil || len(ips)!=1 || ips[0]!="203.0.113.9" { t.Fatalf("manual local_hosts did not win priority: %v err=%v",ips,err) }
+	if err != nil || len(ips) != 1 || ips[0] != "203.0.113.9" {
+		t.Fatalf("manual local_hosts did not win priority: %v err=%v", ips, err)
+	}
 }
-
 
 func newAutoHostsDNSRuntimeForTransportTest(t *testing.T) *Runtime {
 	t.Helper()
 	now := time.Now().UTC()
 	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
-	if err != nil { t.Fatal(err) }
-	endpoint := autohosts.Endpoint{ServerID:"edge",URL:"https://dns.example/dns-query",Hostname:"dns.example",IPv4:[]string{"8.8.4.4"},UpdatedAt:now}
-	if err := manager.ApplyCycle("edge",endpoint,[]autohosts.ProbeResult{{Domain:"chatgpt.com",Success:true,CheckedAt:now}},now); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := autohosts.Endpoint{ServerID: "edge", URL: "https://dns.example/dns-query", Hostname: "dns.example", IPv4: []string{"8.8.4.4"}, UpdatedAt: now}
+	if err := manager.ApplyCycle("edge", endpoint, []autohosts.ProbeResult{{Domain: "chatgpt.com", Success: true, CheckedAt: now}}, now); err != nil {
+		t.Fatal(err)
+	}
 	enabled := true
-	if err := manager.Configure(&enabled,nil,nil); err != nil { t.Fatal(err) }
-	r := &Runtime{autoHosts:manager, dnsSem:make(chan struct{},2)}
-	r.snapshot.Store(&Snapshot{cfg:Config{DNSMaxConcurrent:2},localHosts:map[string]LocalHost{},upstreams:map[string]*UpstreamRuntime{},groups:map[string]Group{}})
+	if err := manager.Configure(&enabled, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runtime{autoHosts: manager, dnsSem: make(chan struct{}, 2)}
+	r.snapshot.Store(&Snapshot{cfg: Config{DNSMaxConcurrent: 2}, localHosts: map[string]LocalHost{}, upstreams: map[string]*UpstreamRuntime{}, groups: map[string]Group{}})
 	return r
 }
 
 func TestAutoHostsDNSOverUDPTransport(t *testing.T) {
 	r := newAutoHostsDNSRuntimeForTransportTest(t)
-	server, err := net.ListenUDP("udp", &net.UDPAddr{IP:net.ParseIP("127.0.0.1")})
-	if err != nil { t.Fatal(err) }
-	ctx,cancel := context.WithCancel(context.Background())
+	server, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func(){ defer close(done); r.serveUDP(ctx,server) }()
-	client,err := net.DialUDP("udp",nil,server.LocalAddr().(*net.UDPAddr))
-	if err != nil { cancel(); _=server.Close(); t.Fatal(err) }
+	go func() { defer close(done); r.serveUDP(ctx, server) }()
+	client, err := net.DialUDP("udp", nil, server.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		cancel()
+		_ = server.Close()
+		t.Fatal(err)
+	}
 	defer client.Close()
-	_ = client.SetDeadline(time.Now().Add(3*time.Second))
-	if _,err=client.Write(makeDNSQuery("chatgpt.com",1)); err!=nil { t.Fatal(err) }
-	buf:=make([]byte,2048)
-	n,err:=client.Read(buf)
-	if err!=nil { t.Fatal(err) }
-	ips,err:=parseARecords(buf[:n])
-	if err!=nil || len(ips)!=1 || ips[0]!="8.8.4.4" { t.Fatalf("UDP Auto Hosts response=%v err=%v",ips,err) }
-	cancel(); _=server.Close()
-	select { case <-done: case <-time.After(2*time.Second): t.Fatal("UDP server did not stop") }
+	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, err = client.Write(makeDNSQuery("chatgpt.com", 1)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 2048)
+	n, err := client.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ips, err := parseARecords(buf[:n])
+	if err != nil || len(ips) != 1 || ips[0] != "8.8.4.4" {
+		t.Fatalf("UDP Auto Hosts response=%v err=%v", ips, err)
+	}
+	cancel()
+	_ = server.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("UDP server did not stop")
+	}
 }
 
 func TestAutoHostsDNSOverTCPTransport(t *testing.T) {
 	r := newAutoHostsDNSRuntimeForTransportTest(t)
-	listener,err:=net.Listen("tcp","127.0.0.1:0")
-	if err!=nil { t.Fatal(err) }
-	ctx,cancel:=context.WithCancel(context.Background())
-	done:=make(chan struct{})
-	go func(){ defer close(done); r.serveTCP(ctx,listener) }()
-	conn,err:=net.DialTimeout("tcp",listener.Addr().String(),2*time.Second)
-	if err!=nil { cancel(); _=listener.Close(); t.Fatal(err) }
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); r.serveTCP(ctx, listener) }()
+	conn, err := net.DialTimeout("tcp", listener.Addr().String(), 2*time.Second)
+	if err != nil {
+		cancel()
+		_ = listener.Close()
+		t.Fatal(err)
+	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(3*time.Second))
-	query:=makeDNSQuery("chatgpt.com",1)
-	frame:=make([]byte,2+len(query))
-	binary.BigEndian.PutUint16(frame[:2],uint16(len(query)))
-	copy(frame[2:],query)
-	if _,err=conn.Write(frame);err!=nil { t.Fatal(err) }
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+	query := makeDNSQuery("chatgpt.com", 1)
+	frame := make([]byte, 2+len(query))
+	binary.BigEndian.PutUint16(frame[:2], uint16(len(query)))
+	copy(frame[2:], query)
+	if _, err = conn.Write(frame); err != nil {
+		t.Fatal(err)
+	}
 	var length [2]byte
-	if _,err=io.ReadFull(conn,length[:]);err!=nil { t.Fatal(err) }
-	response:=make([]byte,binary.BigEndian.Uint16(length[:]))
-	if _,err=io.ReadFull(conn,response);err!=nil { t.Fatal(err) }
-	ips,err:=parseARecords(response)
-	if err!=nil || len(ips)!=1 || ips[0]!="8.8.4.4" { t.Fatalf("TCP Auto Hosts response=%v err=%v",ips,err) }
-	cancel(); _=listener.Close()
-	select { case <-done: case <-time.After(2*time.Second): t.Fatal("TCP server did not stop") }
+	if _, err = io.ReadFull(conn, length[:]); err != nil {
+		t.Fatal(err)
+	}
+	response := make([]byte, binary.BigEndian.Uint16(length[:]))
+	if _, err = io.ReadFull(conn, response); err != nil {
+		t.Fatal(err)
+	}
+	ips, err := parseARecords(response)
+	if err != nil || len(ips) != 1 || ips[0] != "8.8.4.4" {
+		t.Fatalf("TCP Auto Hosts response=%v err=%v", ips, err)
+	}
+	cancel()
+	_ = listener.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("TCP server did not stop")
+	}
 }
 
 func TestAutoHostsConfigHotReloadTriggersBackgroundController(t *testing.T) {
 	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	enabled := true
-	if err := manager.Configure(&enabled, nil, nil); err != nil { t.Fatal(err) }
+	if err := manager.Configure(&enabled, nil, nil); err != nil {
+		t.Fatal(err)
+	}
 	runtime := &Runtime{autoHosts: manager}
 	runtime.autoController = newAutoHostsController(runtime, manager)
 	runtime.triggerAutoHostsConfigReload()
@@ -1638,8 +1794,10 @@ func TestAutoHostsConfigHotReloadTriggersBackgroundController(t *testing.T) {
 	default:
 		t.Fatal("hot reload did not trigger an immediate Auto Hosts controller cycle")
 	}
-	 emergencyOff := true
-	if err := manager.Configure(nil, &emergencyOff, nil); err != nil { t.Fatal(err) }
+	emergencyOff := true
+	if err := manager.Configure(nil, &emergencyOff, nil); err != nil {
+		t.Fatal(err)
+	}
 	runtime.triggerAutoHostsConfigReload()
 	select {
 	case <-runtime.autoController.trigger:
@@ -1647,7 +1805,6 @@ func TestAutoHostsConfigHotReloadTriggersBackgroundController(t *testing.T) {
 	default:
 	}
 }
-
 
 func TestRRCacheTTLDoesNotTreatOPTFlagsAsTTL(t *testing.T) {
 	packet := make([]byte, 12)
@@ -1660,19 +1817,23 @@ func TestRRCacheTTLDoesNotTreatOPTFlagsAsTTL(t *testing.T) {
 	packet = append(packet, 0, 0, 41, 0x10, 0, 0, 0, 0x80, 0, 0, 0, 0)
 
 	ttl, ok := minResponseTTL(packet)
-	if !ok || ttl != 120 { t.Fatalf("minResponseTTL = %d, %v; want 120, true", ttl, ok) }
+	if !ok || ttl != 120 {
+		t.Fatalf("minResponseTTL = %d, %v; want 120, true", ttl, ok)
+	}
 	cache := &Runtime{cache: map[string]cacheItem{}}
 	cache.cachePut("edns-key", packet, CacheConfig{Enabled: true, MinTTL: 1, MaxTTL: 300, NegativeTTL: 30, MaxEntries: 8, MaxBytes: 4096})
 	if _, ok := cache.cacheGet("edns-key", packetID(packet)); !ok {
 		t.Fatal("response containing OPT was not cached")
 	}
 	positions, err := rrTTLPositions(packet)
-	if err != nil || len(positions) != 1 { t.Fatalf("rrTTLPositions = %v, %v; want one real RR TTL", positions, err) }
+	if err != nil || len(positions) != 1 {
+		t.Fatalf("rrTTLPositions = %v, %v; want one real RR TTL", positions, err)
+	}
 	decrementTTLs(packet, 5)
-	if got := binary.BigEndian.Uint32(packet[positions[0]:positions[0]+4]); got != 115 {
+	if got := binary.BigEndian.Uint32(packet[positions[0] : positions[0]+4]); got != 115 {
 		t.Fatalf("answer TTL = %d; want 115", got)
 	}
-	if got := binary.BigEndian.Uint32(packet[len(packet)-6:len(packet)-2]); got != 0x8000 {
+	if got := binary.BigEndian.Uint32(packet[len(packet)-6 : len(packet)-2]); got != 0x8000 {
 		t.Fatalf("OPT flags = %#x; want DO bit %#x", got, uint32(0x8000))
 	}
 }
@@ -1681,10 +1842,18 @@ func TestErrorResponseKeepsQuestionConsistentWithQDCount(t *testing.T) {
 	query := makeDNSQuery("example.com", 1)
 	for _, code := range []uint16{1, 2} {
 		response := errorResponse(query, code)
-		if got := binary.BigEndian.Uint16(response[4:6]); got != 1 { t.Fatalf("QDCOUNT = %d; want 1", got) }
-		if len(response) != len(query) { t.Fatalf("response length = %d; want question length %d", len(response), len(query)) }
-		if binary.BigEndian.Uint16(response[6:12]) != 0 { t.Fatal("error response retained RR counts") }
-		if got := dnsRCode(response); got != int(code) { t.Fatalf("rcode = %d; want %d", got, code) }
+		if got := binary.BigEndian.Uint16(response[4:6]); got != 1 {
+			t.Fatalf("QDCOUNT = %d; want 1", got)
+		}
+		if len(response) != len(query) {
+			t.Fatalf("response length = %d; want question length %d", len(response), len(query))
+		}
+		if binary.BigEndian.Uint16(response[6:12]) != 0 {
+			t.Fatal("error response retained RR counts")
+		}
+		if got := dnsRCode(response); got != int(code) {
+			t.Fatalf("rcode = %d; want %d", got, code)
+		}
 	}
 	malformed := make([]byte, 16)
 	binary.BigEndian.PutUint16(malformed[4:6], 1)
@@ -1709,12 +1878,19 @@ func TestTruncateDNSUDPResponseSetsTCAndKeepsWholeRecords(t *testing.T) {
 	response = append(response, 0xc0, 0x0c, 0, 16, 0, 1, 0, 0, 0, 60, byte(len(rdata)>>8), byte(len(rdata)))
 	response = append(response, rdata...)
 	got := truncateDNSUDPResponse(response, 512)
-	if len(got) > 512 { t.Fatalf("truncated response length = %d; max 512", len(got)) }
-	if !dnsTruncated(got) { t.Fatal("truncated response is missing TC flag") }
-	if binary.BigEndian.Uint16(got[4:6]) != 1 { t.Fatal("truncated response lost its question") }
-	if binary.BigEndian.Uint16(got[6:8]) != 0 { t.Fatal("partial answer RR was retained") }
+	if len(got) > 512 {
+		t.Fatalf("truncated response length = %d; max 512", len(got))
+	}
+	if !dnsTruncated(got) {
+		t.Fatal("truncated response is missing TC flag")
+	}
+	if binary.BigEndian.Uint16(got[4:6]) != 1 {
+		t.Fatal("truncated response lost its question")
+	}
+	if binary.BigEndian.Uint16(got[6:8]) != 0 {
+		t.Fatal("partial answer RR was retained")
+	}
 }
-
 
 func TestCachePutCachesNOERRORNODATA(t *testing.T) {
 	query := makeDNSQuery("nodata.example", 1)
@@ -1743,12 +1919,16 @@ func TestCacheDoCoalescesConcurrentMisses(t *testing.T) {
 		go func(id uint16) {
 			defer wg.Done()
 			_, err := runtime.cacheDo("singleflight", id, func() ([]byte, error) {
-				if calls.Add(1) == 1 { close(started) }
+				if calls.Add(1) == 1 {
+					close(started)
+				}
 				<-release
 				runtime.cachePut("singleflight", response, config)
 				return response, nil
 			})
-			if err != nil { t.Errorf("cacheDo: %v", err) }
+			if err != nil {
+				t.Errorf("cacheDo: %v", err)
+			}
 		}(uint16(i + 1))
 	}
 	<-started

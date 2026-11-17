@@ -36,42 +36,74 @@ func loadOrCreateAutoHostsAPIToken(dataDir string) (string, error) {
 	path := filepath.Join(dataDir, autoHostsAPITokenFile)
 	read := func() (string, error) {
 		info, err := os.Lstat(path)
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
 			return "", errors.New("Auto Hosts API token file must be regular and mode 0600")
 		}
 		data, err := os.ReadFile(path)
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		token := strings.TrimSpace(string(data))
-		if len(token) < 40 || len(token) > 128 { return "", errors.New("Auto Hosts API token file has invalid length") }
+		if len(token) < 40 || len(token) > 128 {
+			return "", errors.New("Auto Hosts API token file has invalid length")
+		}
 		return token, nil
 	}
-	if token, err := read(); err == nil { return token, nil } else if !errors.Is(err, os.ErrNotExist) { return "", err }
+	if token, err := read(); err == nil {
+		return token, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
 	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil { return "", fmt.Errorf("generate Auto Hosts API token: %w", err) }
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate Auto Hosts API token: %w", err)
+	}
 	token := base64.RawURLEncoding.EncodeToString(raw)
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if errors.Is(err, os.ErrExist) { return read() }
-	if err != nil { return "", err }
-	if _, err = io.WriteString(file, token+"\n"); err == nil { err = file.Sync() }
+	if errors.Is(err, os.ErrExist) {
+		return read()
+	}
+	if err != nil {
+		return "", err
+	}
+	if _, err = io.WriteString(file, token+"\n"); err == nil {
+		err = file.Sync()
+	}
 	closeErr := file.Close()
-	if err != nil { _ = os.Remove(path); return "", err }
-	if closeErr != nil { _ = os.Remove(path); return "", closeErr }
+	if err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	if closeErr != nil {
+		_ = os.Remove(path)
+		return "", closeErr
+	}
 	return token, nil
 }
 
 func readAutoHostsAPIToken(dataDir string) (string, error) {
-	if strings.TrimSpace(dataDir) == "" { return "", errors.New("plugin data directory is required") }
+	if strings.TrimSpace(dataDir) == "" {
+		return "", errors.New("plugin data directory is required")
+	}
 	path := filepath.Join(dataDir, autoHostsAPITokenFile)
 	info, err := os.Lstat(path)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
 		return "", errors.New("Auto Hosts API token file must be regular and mode 0600")
 	}
 	data, err := os.ReadFile(path)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	token := strings.TrimSpace(string(data))
-	if len(token) < 40 || len(token) > 128 { return "", errors.New("Auto Hosts API token file has invalid length") }
+	if len(token) < 40 || len(token) > 128 {
+		return "", errors.New("Auto Hosts API token file has invalid length")
+	}
 	return token, nil
 }
 
@@ -100,39 +132,39 @@ type webUIProbeStatus struct {
 }
 
 type webUIUpstreamStatus struct {
-	State         string             `json:"state"`
-	SuccessStreak int                `json:"success_streak"`
-	FailureStreak int                `json:"failure_streak"`
-	LastCheck     *time.Time         `json:"last_check,omitempty"`
+	State           string             `json:"state"`
+	SuccessStreak   int                `json:"success_streak"`
+	FailureStreak   int                `json:"failure_streak"`
+	LastCheck       *time.Time         `json:"last_check,omitempty"`
 	CheckDurationMS int64              `json:"check_duration_ms,omitempty"`
-	LastHTTP      int                `json:"last_http_status,omitempty"`
-	Checks        []webUIProbeStatus `json:"checks,omitempty"`
+	LastHTTP        int                `json:"last_http_status,omitempty"`
+	Checks          []webUIProbeStatus `json:"checks,omitempty"`
 }
 
 type webUIGroupStatus struct {
-	ActiveUpstream string                            `json:"active_upstream"`
-	Upstreams      map[string]webUIUpstreamStatus    `json:"upstreams"`
+	ActiveUpstream string                         `json:"active_upstream"`
+	Upstreams      map[string]webUIUpstreamStatus `json:"upstreams"`
 }
 
 type webUIStatus struct {
-	ID            string                     `json:"id"`
-	Version       string                     `json:"version"`
-	StartedAt     time.Time                  `json:"started_at"`
-	UpdatedAt     time.Time                  `json:"updated_at"`
-	DNSUDP        string                     `json:"dns_udp"`
-	DNSTCP        string                     `json:"dns_tcp"`
-	HTTP          string                     `json:"http"`
-	Cache         CacheStatus                `json:"cache"`
+	ID            string                      `json:"id"`
+	Version       string                      `json:"version"`
+	StartedAt     time.Time                   `json:"started_at"`
+	UpdatedAt     time.Time                   `json:"updated_at"`
+	DNSUDP        string                      `json:"dns_udp"`
+	DNSTCP        string                      `json:"dns_tcp"`
+	HTTP          string                      `json:"http"`
+	Cache         CacheStatus                 `json:"cache"`
 	Groups        map[string]webUIGroupStatus `json:"groups"`
-	GeminiAPI     string                     `json:"gemini_api"`
-	Queries       uint64                     `json:"queries"`
-	CacheHits     uint64                     `json:"cache_hits"`
-	Failures      uint64                     `json:"failures"`
-	ActiveUDP     int64                      `json:"active_udp"`
-	UDPQueueDepth int64                      `json:"udp_queue_depth"`
-	UDPDropped    uint64                     `json:"udp_dropped"`
-	ActiveTCP     int64                      `json:"active_tcp"`
-	TCPRejected   uint64                     `json:"tcp_rejected"`
+	GeminiAPI     string                      `json:"gemini_api"`
+	Queries       uint64                      `json:"queries"`
+	CacheHits     uint64                      `json:"cache_hits"`
+	Failures      uint64                      `json:"failures"`
+	ActiveUDP     int64                       `json:"active_udp"`
+	UDPQueueDepth int64                       `json:"udp_queue_depth"`
+	UDPDropped    uint64                      `json:"udp_dropped"`
+	ActiveTCP     int64                       `json:"active_tcp"`
+	TCPRejected   uint64                      `json:"tcp_rejected"`
 }
 
 func webUIHandler() http.Handler {
@@ -246,13 +278,25 @@ func proxyWebUIAutoHostsAPI(w http.ResponseWriter, r *http.Request, statusURL, d
 	var endpoint string
 	switch r.URL.Path {
 	case "/api/v1/autohosts/status":
-		if r.Method != http.MethodGet { w.Header().Set("Allow", "GET"); http.Error(w, "method not allowed", http.StatusMethodNotAllowed); return }
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		endpoint = "/autohosts/status"
 	case "/api/v1/autohosts/config":
-		if r.Method != http.MethodPost { w.Header().Set("Allow", "POST"); http.Error(w, "method not allowed", http.StatusMethodNotAllowed); return }
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		endpoint = "/autohosts/config"
 	case "/api/v1/autohosts/dry-run":
-		if r.Method != http.MethodPost { w.Header().Set("Allow", "POST"); http.Error(w, "method not allowed", http.StatusMethodNotAllowed); return }
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		endpoint = "/autohosts/dry-run"
 	default:
 		http.NotFound(w, r)
@@ -270,22 +314,35 @@ func proxyWebUIAutoHostsAPI(w http.ResponseWriter, r *http.Request, statusURL, d
 	target := parsed.Scheme + "://" + parsed.Host + endpoint
 	ctx := r.Context()
 	timeout := 10 * time.Second
-	if endpoint == "/autohosts/dry-run" { timeout = 5 * time.Minute }
+	if endpoint == "/autohosts/dry-run" {
+		timeout = 5 * time.Minute
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, r.Method, target, body)
-	if err != nil { http.Error(w, "could not create local Auto Hosts request", http.StatusBadGateway); return }
+	if err != nil {
+		http.Error(w, "could not create local Auto Hosts request", http.StatusBadGateway)
+		return
+	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiToken)
-	if body != nil { req.Header.Set("Content-Type", "application/json") }
-	transport := &http.Transport{Proxy:nil}
-	client := &http.Client{Transport:transport, Timeout:timeout, CheckRedirect:func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	transport := &http.Transport{Proxy: nil}
+	client := &http.Client{Transport: transport, Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	defer transport.CloseIdleConnections()
 	resp, err := client.Do(req)
-	if err != nil { http.Error(w, "local Auto Hosts API is unavailable", http.StatusServiceUnavailable); return }
+	if err != nil {
+		http.Error(w, "local Auto Hosts API is unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, (2<<20)+1))
-	if err != nil || len(data) > 2<<20 { http.Error(w, "local Auto Hosts response is invalid or too large", http.StatusBadGateway); return }
+	if err != nil || len(data) > 2<<20 {
+		http.Error(w, "local Auto Hosts response is invalid or too large", http.StatusBadGateway)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(resp.StatusCode)

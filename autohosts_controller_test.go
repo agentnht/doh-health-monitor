@@ -1,10 +1,8 @@
 package main
 
 import (
-	"errors"
 	"bytes"
 	"context"
-	"io"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -13,11 +11,13 @@ import (
 	"crypto/x509/pkix"
 	"encoding/binary"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
-	"net"
 	"net/url"
 	"path/filepath"
 	"testing"
@@ -36,198 +36,297 @@ func TestParseAAAARecordsAndRejectPrivateProbeTargets(t *testing.T) {
 	ip := net.ParseIP("2001:4860:4860::8888").To16()
 	response = append(response, ip...)
 	ips, err := parseAddressRecords(response, 28)
-	if err != nil { t.Fatal(err) }
-	if len(ips) != 1 || ips[0] != "2001:4860:4860::8888" { t.Fatalf("unexpected AAAA records: %v", ips) }
-	for _, raw := range []string{"127.0.0.1", "10.0.0.1", "192.168.1.1", "169.254.1.1", "100.64.0.1", "192.0.2.1", "198.18.0.1", "::1", "fc00::1", "2001:db8::1", "2002::1"} {
-		if isAutoHostsPublicIP(net.ParseIP(raw)) { t.Errorf("private/reserved address accepted: %s", raw) }
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !isAutoHostsPublicIP(net.ParseIP("8.8.8.8")) { t.Fatal("public IPv4 rejected") }
+	if len(ips) != 1 || ips[0] != "2001:4860:4860::8888" {
+		t.Fatalf("unexpected AAAA records: %v", ips)
+	}
+	for _, raw := range []string{"127.0.0.1", "10.0.0.1", "192.168.1.1", "169.254.1.1", "100.64.0.1", "192.0.2.1", "198.18.0.1", "::1", "fc00::1", "2001:db8::1", "2002::1"} {
+		if isAutoHostsPublicIP(net.ParseIP(raw)) {
+			t.Errorf("private/reserved address accepted: %s", raw)
+		}
+	}
+	if !isAutoHostsPublicIP(net.ParseIP("8.8.8.8")) {
+		t.Fatal("public IPv4 rejected")
+	}
 }
 
 func TestAutoHostsControllerRequiresRepeatedFailureBeforeSwitch(t *testing.T) {
 	now := time.Now().UTC()
 	manager, err := autohosts.New(filepath.Join(t.TempDir(), "state.json"))
-	if err != nil { t.Fatal(err) }
-	a := autohosts.Endpoint{ServerID:"a", URL:"https://a.example/dns-query", Hostname:"a.example", IPv4:[]string{"8.8.8.8"}}
-	b := autohosts.Endpoint{ServerID:"b", URL:"https://b.example/dns-query", Hostname:"b.example", IPv4:[]string{"1.1.1.1"}}
-	if err := manager.ApplyFullCycle("a", []autohosts.Endpoint{a,b}, nil, now); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := autohosts.Endpoint{ServerID: "a", URL: "https://a.example/dns-query", Hostname: "a.example", IPv4: []string{"8.8.8.8"}}
+	b := autohosts.Endpoint{ServerID: "b", URL: "https://b.example/dns-query", Hostname: "b.example", IPv4: []string{"1.1.1.1"}}
+	if err := manager.ApplyFullCycle("a", []autohosts.Endpoint{a, b}, nil, now); err != nil {
+		t.Fatal(err)
+	}
 	controller := newAutoHostsController(nil, manager)
-	controller.activeSince = now.Add(-20*time.Minute)
-	first, err := controller.chooseActive([]autohosts.Endpoint{a,b}, []autohosts.ProbeResult{{ServerID:"b",Domain:"chatgpt.com",Success:true}}, now)
-	if err != nil { t.Fatal(err) }
-	if first != "a" { t.Fatalf("first failed cycle switched too early: %s", first) }
-	second, err := controller.chooseActive([]autohosts.Endpoint{a,b}, []autohosts.ProbeResult{{ServerID:"b",Domain:"chatgpt.com",Success:true}}, now.Add(time.Minute))
-	if err != nil { t.Fatal(err) }
-	if second != "b" { t.Fatalf("expected switch after repeated failure, got %s", second) }
+	controller.activeSince = now.Add(-20 * time.Minute)
+	first, err := controller.chooseActive([]autohosts.Endpoint{a, b}, []autohosts.ProbeResult{{ServerID: "b", Domain: "chatgpt.com", Success: true}}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != "a" {
+		t.Fatalf("first failed cycle switched too early: %s", first)
+	}
+	second, err := controller.chooseActive([]autohosts.Endpoint{a, b}, []autohosts.ProbeResult{{ServerID: "b", Domain: "chatgpt.com", Success: true}}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second != "b" {
+		t.Fatalf("expected switch after repeated failure, got %s", second)
+	}
 }
 
-
 func TestAutoHostsJitterIsBounded(t *testing.T) {
-	base := 5*time.Minute
-	for i:=0; i<20; i++ {
+	base := 5 * time.Minute
+	for i := 0; i < 20; i++ {
 		got := autoHostsJitter(base)
 		if got < base*95/100 || got > base*105/100 {
-			t.Fatalf("jitter outside ±5%%: base=%s got=%s",base,got)
+			t.Fatalf("jitter outside ±5%%: base=%s got=%s", base, got)
 		}
 	}
 }
 
-
 func TestAutoHostsProbeURLRejectsNonHTTPSAndNon443Ports(t *testing.T) {
-	cases:=[]struct{raw,domain string; want bool}{
-		{"https://chatgpt.com/","chatgpt.com",true},
-		{"https://chatgpt.com:443/","chatgpt.com",true},
-		{"https://chatgpt.com:8443/","chatgpt.com",false},
-		{"http://chatgpt.com/","chatgpt.com",false},
-		{"https://evil.example/","chatgpt.com",false},
-		{"https://user:pass@chatgpt.com/","chatgpt.com",false},
-		{"https://chatgpt.com./","chatgpt.com",true},
+	cases := []struct {
+		raw, domain string
+		want        bool
+	}{
+		{"https://chatgpt.com/", "chatgpt.com", true},
+		{"https://chatgpt.com:443/", "chatgpt.com", true},
+		{"https://chatgpt.com:8443/", "chatgpt.com", false},
+		{"http://chatgpt.com/", "chatgpt.com", false},
+		{"https://evil.example/", "chatgpt.com", false},
+		{"https://user:pass@chatgpt.com/", "chatgpt.com", false},
+		{"https://chatgpt.com./", "chatgpt.com", true},
 	}
-	for _,tc:=range cases {
-		parsed,err:=url.Parse(tc.raw)
-		if err!=nil { t.Fatalf("parse %q: %v",tc.raw,err) }
-		if got:=validAutoHostsProbeURL(parsed,tc.domain);got!=tc.want { t.Errorf("validAutoHostsProbeURL(%q)=%v want %v",tc.raw,got,tc.want) }
+	for _, tc := range cases {
+		parsed, err := url.Parse(tc.raw)
+		if err != nil {
+			t.Fatalf("parse %q: %v", tc.raw, err)
+		}
+		if got := validAutoHostsProbeURL(parsed, tc.domain); got != tc.want {
+			t.Errorf("validAutoHostsProbeURL(%q)=%v want %v", tc.raw, got, tc.want)
+		}
 	}
 }
 
-
 func TestPinnedHTTPSProbePreservesSNIHostAndDoesNotFollowRedirect(t *testing.T) {
-	key,err:=ecdsa.GenerateKey(elliptic.P256(),rand.Reader)
-	if err!=nil { t.Fatal(err) }
-	now:=time.Now()
-	template:=&x509.Certificate{
-		SerialNumber:big.NewInt(42),
-		Subject:pkix.Name{CommonName:"probe.example"},
-		DNSNames:[]string{"probe.example"},
-		NotBefore:now.Add(-time.Minute),
-		NotAfter:now.Add(time.Hour),
-		KeyUsage:x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
 	}
-	der,err:=x509.CreateCertificate(rand.Reader,template,template,&key.PublicKey,key)
-	if err!=nil { t.Fatal(err) }
-	keyDER,err:=x509.MarshalECPrivateKey(key)
-	if err!=nil { t.Fatal(err) }
-	cert,err:=tls.X509KeyPair(pem.EncodeToMemory(&pem.Block{Type:"CERTIFICATE",Bytes:der}),pem.EncodeToMemory(&pem.Block{Type:"EC PRIVATE KEY",Bytes:keyDER}))
-	if err!=nil { t.Fatal(err) }
-	parsedCert,err:=x509.ParseCertificate(der)
-	if err!=nil { t.Fatal(err) }
-	roots:=x509.NewCertPool()
+	now := time.Now()
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(42),
+		Subject:      pkix.Name{CommonName: "probe.example"},
+		DNSNames:     []string{"probe.example"},
+		NotBefore:    now.Add(-time.Minute),
+		NotAfter:     now.Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := tls.X509KeyPair(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsedCert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
 	roots.AddCert(parsedCert)
 
-	listener,err:=net.Listen("tcp","127.0.0.1:0")
-	if err!=nil { t.Fatal(err) }
-	type observedRequest struct { host,sni,path string }
-	observed:=make(chan observedRequest,2)
-	server:=&http.Server{TLSConfig:&tls.Config{Certificates:[]tls.Certificate{cert},MinVersion:tls.VersionTLS12},Handler:http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
-		sni:=""
-		if r.TLS!=nil { sni=r.TLS.ServerName }
-		observed<-observedRequest{host:r.Host,sni:sni,path:r.URL.Path}
-		http.Redirect(w,r,"https://redirect-target.example/elsewhere",http.StatusFound)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type observedRequest struct{ host, sni, path string }
+	observed := make(chan observedRequest, 2)
+	server := &http.Server{TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sni := ""
+		if r.TLS != nil {
+			sni = r.TLS.ServerName
+		}
+		observed <- observedRequest{host: r.Host, sni: sni, path: r.URL.Path}
+		http.Redirect(w, r, "https://redirect-target.example/elsewhere", http.StatusFound)
 	})}
-	serveErr:=make(chan error,1)
-	go func(){ serveErr<-server.Serve(tls.NewListener(listener,server.TLSConfig)) }()
-	defer func(){ ctx,cancel:=context.WithTimeout(context.Background(),time.Second);defer cancel();_ = server.Shutdown(ctx) }()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.Serve(tls.NewListener(listener, server.TLSConfig)) }()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = server.Shutdown(ctx)
+	}()
 
-	port:=listener.Addr().(*net.TCPAddr).Port
-	client:=newPinnedHTTPClient("127.0.0.1","probe.example",3*time.Second)
+	port := listener.Addr().(*net.TCPAddr).Port
+	client := newPinnedHTTPClient("127.0.0.1", "probe.example", 3*time.Second)
 	defer client.CloseIdleConnections()
-	transport,ok:=client.Transport.(*http.Transport)
-	if !ok { t.Fatal("pinned client transport has unexpected type") }
-	transport.TLSClientConfig.RootCAs=roots
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("pinned client transport has unexpected type")
+	}
+	transport.TLSClientConfig.RootCAs = roots
 
-	target:= "https://probe.example:"+fmt.Sprint(port)+"/health"
-	req,err:=http.NewRequest(http.MethodGet,target,nil)
-	if err!=nil { t.Fatal(err) }
-	resp,err:=client.Do(req)
-	if err!=nil { t.Fatalf("TLS request to pinned IP failed: %v",err) }
+	target := "https://probe.example:" + fmt.Sprint(port) + "/health"
+	req, err := http.NewRequest(http.MethodGet, target, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("TLS request to pinned IP failed: %v", err)
+	}
 	_ = resp.Body.Close()
-	if resp.StatusCode!=http.StatusFound { t.Fatalf("status=%d, want redirect response 302",resp.StatusCode) }
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status=%d, want redirect response 302", resp.StatusCode)
+	}
 	select {
-	case got:=<-observed:
-		if got.sni!="probe.example" { t.Errorf("TLS SNI=%q, want probe.example",got.sni) }
-		if got.host!="probe.example:"+fmt.Sprint(port) { t.Errorf("HTTP Host=%q, want probe.example:%d",got.host,port) }
-		if got.path!="/health" { t.Errorf("path=%q, want /health",got.path) }
+	case got := <-observed:
+		if got.sni != "probe.example" {
+			t.Errorf("TLS SNI=%q, want probe.example", got.sni)
+		}
+		if got.host != "probe.example:"+fmt.Sprint(port) {
+			t.Errorf("HTTP Host=%q, want probe.example:%d", got.host, port)
+		}
+		if got.path != "/health" {
+			t.Errorf("path=%q, want /health", got.path)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("HTTPS server did not receive the probe")
 	}
 	select {
-	case extra:=<-observed:
-		t.Fatalf("redirect was followed unexpectedly: %+v",extra)
-	case <-time.After(100*time.Millisecond):
+	case extra := <-observed:
+		t.Fatalf("redirect was followed unexpectedly: %+v", extra)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
-
-
 func TestDirectDoHProbeUsesTLSPostDNSMessage(t *testing.T) {
-	query:=makeDNSQuery("chatgpt.com",1)
-	response:=append([]byte(nil),query...)
-	binary.BigEndian.PutUint16(response[2:4],0x8180)
-	server:=httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
-		if r.Method!=http.MethodPost { t.Errorf("DoH method=%s, want POST",r.Method) }
-		if got:=r.Header.Get("Content-Type");got!="application/dns-message" { t.Errorf("Content-Type=%q",got) }
-		if got:=r.Header.Get("Accept");got!="application/dns-message" { t.Errorf("Accept=%q",got) }
-		body,err:=io.ReadAll(r.Body)
-		if err!=nil { t.Errorf("read request body: %v",err) }
-		if !bytes.Equal(body,query) { t.Errorf("DoH request body differs from DNS query") }
-		w.Header().Set("Content-Type","application/dns-message")
+	query := makeDNSQuery("chatgpt.com", 1)
+	response := append([]byte(nil), query...)
+	binary.BigEndian.PutUint16(response[2:4], 0x8180)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("DoH method=%s, want POST", r.Method)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/dns-message" {
+			t.Errorf("Content-Type=%q", got)
+		}
+		if got := r.Header.Get("Accept"); got != "application/dns-message" {
+			t.Errorf("Accept=%q", got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		if !bytes.Equal(body, query) {
+			t.Errorf("DoH request body differs from DNS query")
+		}
+		w.Header().Set("Content-Type", "application/dns-message")
 		w.WriteHeader(http.StatusOK)
-		_,_=w.Write(response)
+		_, _ = w.Write(response)
 	}))
 	defer server.Close()
-	upstream:=&UpstreamRuntime{cfg:Upstream{ID:"test-doh",URL:server.URL},client:server.Client()}
-	ctx,cancel:=context.WithTimeout(context.Background(),2*time.Second)
+	upstream := &UpstreamRuntime{cfg: Upstream{ID: "test-doh", URL: server.URL}, client: server.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	got,err:=sendDoH(ctx,upstream,query)
-	if err!=nil { t.Fatalf("direct DoH request failed: %v",err) }
-	if !bytes.Equal(got,response) { t.Fatal("direct DoH response differs from DNS response payload") }
+	got, err := sendDoH(ctx, upstream, query)
+	if err != nil {
+		t.Fatalf("direct DoH request failed: %v", err)
+	}
+	if !bytes.Equal(got, response) {
+		t.Fatal("direct DoH response differs from DNS response payload")
+	}
 }
 
-
 func TestPinnedHTTPSProbeRejectsUntrustedCertificate(t *testing.T) {
-	key,err:=ecdsa.GenerateKey(elliptic.P256(),rand.Reader)
-	if err!=nil { t.Fatal(err) }
-	now:=time.Now()
-	template:=&x509.Certificate{SerialNumber:big.NewInt(43),Subject:pkix.Name{CommonName:"probe.example"},DNSNames:[]string{"probe.example"},NotBefore:now.Add(-time.Minute),NotAfter:now.Add(time.Hour),KeyUsage:x509.KeyUsageDigitalSignature,ExtKeyUsage:[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
-	der,err:=x509.CreateCertificate(rand.Reader,template,template,&key.PublicKey,key)
-	if err!=nil { t.Fatal(err) }
-	keyDER,err:=x509.MarshalECPrivateKey(key)
-	if err!=nil { t.Fatal(err) }
-	cert,err:=tls.X509KeyPair(pem.EncodeToMemory(&pem.Block{Type:"CERTIFICATE",Bytes:der}),pem.EncodeToMemory(&pem.Block{Type:"EC PRIVATE KEY",Bytes:keyDER}))
-	if err!=nil { t.Fatal(err) }
-	listener,err:=net.Listen("tcp","127.0.0.1:0")
-	if err!=nil { t.Fatal(err) }
-	server:=&http.Server{TLSConfig:&tls.Config{Certificates:[]tls.Certificate{cert}},Handler:http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){w.WriteHeader(http.StatusOK)})}
-	go func(){ _=server.Serve(tls.NewListener(listener,server.TLSConfig)) }()
-	defer func(){ctx,cancel:=context.WithTimeout(context.Background(),time.Second);defer cancel();_ = server.Shutdown(ctx)}()
-	port:=listener.Addr().(*net.TCPAddr).Port
-	client:=newPinnedHTTPClient("127.0.0.1","probe.example",2*time.Second)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	template := &x509.Certificate{SerialNumber: big.NewInt(43), Subject: pkix.Name{CommonName: "probe.example"}, DNSNames: []string{"probe.example"}, NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := tls.X509KeyPair(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}}, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })}
+	go func() { _ = server.Serve(tls.NewListener(listener, server.TLSConfig)) }()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = server.Shutdown(ctx)
+	}()
+	port := listener.Addr().(*net.TCPAddr).Port
+	client := newPinnedHTTPClient("127.0.0.1", "probe.example", 2*time.Second)
 	defer client.CloseIdleConnections()
-	_,err=client.Get("https://probe.example:"+fmt.Sprint(port)+"/")
-	if err==nil { t.Fatal("expected self-signed certificate to be rejected without a trusted root") }
+	_, err = client.Get("https://probe.example:" + fmt.Sprint(port) + "/")
+	if err == nil {
+		t.Fatal("expected self-signed certificate to be rejected without a trusted root")
+	}
 }
 
 func TestPinnedControllerNeverSwitchesAndPersistsDegradation(t *testing.T) {
 	now := time.Now().UTC()
 	manager, err := autohosts.New(filepath.Join(t.TempDir(), "state.json"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	a := autohosts.Endpoint{ServerID: "pinned", URL: "https://pinned.example/dns-query", Hostname: "pinned.example", IPv4: []string{"8.8.8.8"}, UpdatedAt: now}
 	b := autohosts.Endpoint{ServerID: "healthy", URL: "https://healthy.example/dns-query", Hostname: "healthy.example", IPv4: []string{"1.1.1.1"}, UpdatedAt: now}
-	if err := manager.ApplyFullCycle("pinned", []autohosts.Endpoint{a, b}, []autohosts.ProbeResult{{ServerID: "pinned", Domain: "chatgpt.com", Success: true, CheckedAt: now}}, now); err != nil { t.Fatal(err) }
-	if err := manager.SetPinned("pinned"); err != nil { t.Fatal(err) }
+	if err := manager.ApplyFullCycle("pinned", []autohosts.Endpoint{a, b}, []autohosts.ProbeResult{{ServerID: "pinned", Domain: "chatgpt.com", Success: true, CheckedAt: now}}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetPinned("pinned"); err != nil {
+		t.Fatal(err)
+	}
 	controller := newAutoHostsController(&Runtime{}, manager)
 	results := []autohosts.ProbeResult{
 		{ServerID: "pinned", Domain: "chatgpt.com", Success: false, CheckedAt: now, Error: "upstream timeout"},
 		{ServerID: "healthy", Domain: "chatgpt.com", Success: true, CheckedAt: now},
 	}
 	selected, err := controller.chooseActive([]autohosts.Endpoint{a, b}, results, now.Add(time.Hour))
-	if err != nil { t.Fatal(err) }
-	if selected != "pinned" { t.Fatalf("Pinned selected %q; must remain pinned despite healthier alternative", selected) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != "pinned" {
+		t.Fatalf("Pinned selected %q; must remain pinned despite healthier alternative", selected)
+	}
 	controller.recordPinnedFailure(errors.New("pinned endpoint unavailable"), now.Add(time.Hour))
 	state := manager.State()
-	if state.ActiveServer != "pinned" { t.Fatalf("active server changed to %q while pinned", state.ActiveServer) }
+	if state.ActiveServer != "pinned" {
+		t.Fatalf("active server changed to %q while pinned", state.ActiveServer)
+	}
 	failure, ok := state.ProbeResults["pinned\x00chatgpt.com"]
-	if !ok { t.Fatal("pinned degradation was not persisted") }
-	if failure.Success || failure.Error != "pinned endpoint unavailable" { t.Fatalf("unexpected pinned diagnostic: %+v", failure) }
+	if !ok {
+		t.Fatal("pinned degradation was not persisted")
+	}
+	if failure.Success || failure.Error != "pinned endpoint unavailable" {
+		t.Fatalf("unexpected pinned diagnostic: %+v", failure)
+	}
 }

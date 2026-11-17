@@ -4,9 +4,9 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"encoding/json"
 	"io/fs"
 	"net/url"
 	"os"
@@ -175,12 +175,12 @@ func migrateLegacyDoHList(data []byte) ([]byte, bool, error) {
 func legacyProviderID(host string) string {
 	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
 	known := map[string]string{
-		"eu.geohide.ru":    "geohide-eu",
-		"doh.dagami.ru":    "dagami",
-		"dns.dagami.ru":    "dagami",
-		"dns.comss.one":    "comss-one",
+		"eu.geohide.ru":     "geohide-eu",
+		"doh.dagami.ru":     "dagami",
+		"dns.dagami.ru":     "dagami",
+		"dns.comss.one":     "comss-one",
 		"dns.bezmezhau.com": "bezmezhau",
-		"dns.zapret.moe":   "zapret",
+		"dns.zapret.moe":    "zapret",
 	}
 	if id, ok := known[host]; ok {
 		return id

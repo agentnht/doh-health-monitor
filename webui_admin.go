@@ -413,7 +413,7 @@ func editableWebUIConfig(config Config) webUIEditableConfig {
 		DoHTimeoutSeconds: config.DoHTimeoutSeconds, DNSMaxConcurrent: config.DNSMaxConcurrent,
 		Health: config.Health, Cache: config.Cache,
 		BootstrapResolvers: append([]string(nil), config.BootstrapResolvers...),
-		GeminiAPI: config.GeminiAPI, Integration: config.Integration,
+		GeminiAPI:          config.GeminiAPI, Integration: config.Integration,
 	}
 }
 
@@ -502,7 +502,7 @@ func readWebUISources(dataDir string) (webUISourcesResponse, error) {
 		return webUISourcesResponse{}, err
 	}
 	return webUISourcesResponse{
-		DoH: parseWebUISourceRows(dohData, 2, "id;url"),
+		DoH:    parseWebUISourceRows(dohData, 2, "id;url"),
 		Checks: parseWebUISourceRows(checksData, 6, "domain;qtypes"),
 	}, nil
 }

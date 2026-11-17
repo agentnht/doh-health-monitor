@@ -26,43 +26,43 @@ import (
 	"syscall"
 	"time"
 
-	"lucx-doh-health-monitor/internal/dohintegration"
 	"lucx-doh-health-monitor/internal/autohosts"
+	"lucx-doh-health-monitor/internal/dohintegration"
 )
 
 const (
-	pluginID      = "doh-health-monitor"
-	pluginVersion = "2.2.1"
-	systemDNSUpstreamID = "system-dns"
-	systemResolvConfPath = "/etc/resolv.conf"
+	pluginID                  = "doh-health-monitor"
+	pluginVersion             = "2.2.1"
+	systemDNSUpstreamID       = "system-dns"
+	systemResolvConfPath      = "/etc/resolv.conf"
 	systemDNSPerServerTimeout = 2 * time.Second
-	maxDNSMessage        = 65535
-	maxHTTPBody          = 2 << 20
-	defaultCacheMaxBytes = 8 << 20
-	maxCacheMaxBytes     = 256 << 20
-	maxUDPWorkers        = 64
-	udpQueueCapacity     = 128
-	maxTCPConnections    = 128
-	tcpIdleTimeout       = 30 * time.Second
-	tcpWriteTimeout      = 10 * time.Second
+	maxDNSMessage             = 65535
+	maxHTTPBody               = 2 << 20
+	defaultCacheMaxBytes      = 8 << 20
+	maxCacheMaxBytes          = 256 << 20
+	maxUDPWorkers             = 64
+	udpQueueCapacity          = 128
+	maxTCPConnections         = 128
+	tcpIdleTimeout            = 30 * time.Second
+	tcpWriteTimeout           = 10 * time.Second
 )
 
 type Config struct {
 	LocalHosts             map[string]LocalHost `json:"local_hosts"`
-	DNSListenUDP           string          `json:"dns_listen_udp"`
-	DNSListenTCP           string          `json:"dns_listen_tcp"`
-	HTTPListen             string          `json:"http_listen"`
-	ReloadSecs             int             `json:"reload_interval_seconds"`
-	DNSQueryTimeoutSeconds int             `json:"dns_query_timeout_seconds"`
-	DoHTimeoutSeconds      int             `json:"doh_timeout_seconds"`
-	DNSMaxConcurrent       int             `json:"dns_max_concurrent"`
-	Health                 HealthConfig    `json:"health"`
-	Cache                  CacheConfig     `json:"cache"`
-	Upstreams              []Upstream      `json:"upstreams"`
-	BootstrapResolvers     []string        `json:"bootstrap_resolvers,omitempty"`
-	Groups                 []Group         `json:"groups"`
-	GeminiAPI              GeminiAPIConfig `json:"gemini_api"`
-	Integration            bool            `json:"integration"`
+	DNSListenUDP           string               `json:"dns_listen_udp"`
+	DNSListenTCP           string               `json:"dns_listen_tcp"`
+	HTTPListen             string               `json:"http_listen"`
+	ReloadSecs             int                  `json:"reload_interval_seconds"`
+	DNSQueryTimeoutSeconds int                  `json:"dns_query_timeout_seconds"`
+	DoHTimeoutSeconds      int                  `json:"doh_timeout_seconds"`
+	DNSMaxConcurrent       int                  `json:"dns_max_concurrent"`
+	Health                 HealthConfig         `json:"health"`
+	Cache                  CacheConfig          `json:"cache"`
+	Upstreams              []Upstream           `json:"upstreams"`
+	BootstrapResolvers     []string             `json:"bootstrap_resolvers,omitempty"`
+	Groups                 []Group              `json:"groups"`
+	GeminiAPI              GeminiAPIConfig      `json:"gemini_api"`
+	Integration            bool                 `json:"integration"`
 }
 type LocalHost struct {
 	IPv4 []string `json:"ipv4"`
@@ -90,7 +90,7 @@ type Upstream struct {
 	BootstrapIPs []string `json:"bootstrap_ips"`
 }
 type Group struct {
-	ID        string   `json:"id"`
+	ID string `json:"id"`
 	// Deprecated legacy fields are accepted for config compatibility and ignored.
 	FakeDNS   bool     `json:"fake_dns,omitempty"`
 	Domains   []string `json:"domains,omitempty"`
@@ -202,6 +202,7 @@ func (b *bootstrapResolver) recordProbeSnapshot(candidates []string, source stri
 	b.lastProbe = append([]DoHIPProbeStatus(nil), probes...)
 	b.mu.Unlock()
 }
+
 type ProbeStatus struct {
 	Domain      string `json:"domain"`
 	Required    bool   `json:"required"`
@@ -212,51 +213,51 @@ type ProbeStatus struct {
 	Error       string `json:"error,omitempty"`
 }
 type HealthEntry struct {
-	State            string        `json:"state"`
-	Checks           []ProbeStatus `json:"checks,omitempty"`
-	SuccessStreak    int           `json:"success_streak"`
-	FailureStreak    int           `json:"failure_streak"`
-	LastCheck        time.Time     `json:"last_check,omitempty"`
-	CheckDurationMS  int64         `json:"check_duration_ms,omitempty"`
-	LastError        string        `json:"last_error,omitempty"`
-	LastHTTP         int           `json:"last_http_status,omitempty"`
-	GeminiState      string        `json:"gemini_api_state,omitempty"`
+	State           string        `json:"state"`
+	Checks          []ProbeStatus `json:"checks,omitempty"`
+	SuccessStreak   int           `json:"success_streak"`
+	FailureStreak   int           `json:"failure_streak"`
+	LastCheck       time.Time     `json:"last_check,omitempty"`
+	CheckDurationMS int64         `json:"check_duration_ms,omitempty"`
+	LastError       string        `json:"last_error,omitempty"`
+	LastHTTP        int           `json:"last_http_status,omitempty"`
+	GeminiState     string        `json:"gemini_api_state,omitempty"`
 }
 type GroupStatus struct {
 	ActiveUpstream string                 `json:"active_upstream"`
 	Upstreams      map[string]HealthEntry `json:"upstreams"`
 }
 type Status struct {
-	ID           string                          `json:"id"`
-	Version      string                          `json:"version"`
-	StartedAt    time.Time                       `json:"started_at"`
-	UpdatedAt    time.Time                       `json:"updated_at"`
-	DNSUDP       string                          `json:"dns_udp"`
-	DNSTCP       string                          `json:"dns_tcp"`
-	HTTP         string                          `json:"http"`
-	Config       string                          `json:"config"`
-	Cache        CacheStatus                     `json:"cache"`
-	Groups       map[string]GroupStatus          `json:"groups"`
-	DoHBootstrap       map[string]DoHBootstrapStatus `json:"doh_bootstrap,omitempty"`
-	SystemDNSServers    []string                      `json:"system_dns_servers,omitempty"`
-	SystemDNSError      string                        `json:"system_dns_error,omitempty"`
-	GeminiAPI           string                        `json:"gemini_api"`
-	Queries      uint64                          `json:"queries"`
-	CacheHits      uint64                          `json:"cache_hits"`
-	Failures       uint64                          `json:"failures"`
-	ActiveUDP      int64                           `json:"active_udp"`
-	UDPQueueDepth  int64                           `json:"udp_queue_depth"`
-	UDPDropped     uint64                          `json:"udp_dropped"`
-	ActiveTCP      int64                           `json:"active_tcp"`
-	TCPRejected    uint64                          `json:"tcp_rejected"`
-	Goroutines     int                             `json:"goroutines"`
-	HeapAllocBytes uint64                          `json:"heap_alloc_bytes"`
-	HeapInuseBytes uint64                          `json:"heap_inuse_bytes"`
-	HeapSysBytes   uint64                          `json:"heap_sys_bytes"`
-	CPUUserNS      uint64                          `json:"cpu_user_ns"`
-	CPUSystemNS    uint64                          `json:"cpu_system_ns"`
-	LastReload   time.Time                       `json:"last_reload,omitempty"`
-	LastError    string                          `json:"last_error,omitempty"`
+	ID               string                        `json:"id"`
+	Version          string                        `json:"version"`
+	StartedAt        time.Time                     `json:"started_at"`
+	UpdatedAt        time.Time                     `json:"updated_at"`
+	DNSUDP           string                        `json:"dns_udp"`
+	DNSTCP           string                        `json:"dns_tcp"`
+	HTTP             string                        `json:"http"`
+	Config           string                        `json:"config"`
+	Cache            CacheStatus                   `json:"cache"`
+	Groups           map[string]GroupStatus        `json:"groups"`
+	DoHBootstrap     map[string]DoHBootstrapStatus `json:"doh_bootstrap,omitempty"`
+	SystemDNSServers []string                      `json:"system_dns_servers,omitempty"`
+	SystemDNSError   string                        `json:"system_dns_error,omitempty"`
+	GeminiAPI        string                        `json:"gemini_api"`
+	Queries          uint64                        `json:"queries"`
+	CacheHits        uint64                        `json:"cache_hits"`
+	Failures         uint64                        `json:"failures"`
+	ActiveUDP        int64                         `json:"active_udp"`
+	UDPQueueDepth    int64                         `json:"udp_queue_depth"`
+	UDPDropped       uint64                        `json:"udp_dropped"`
+	ActiveTCP        int64                         `json:"active_tcp"`
+	TCPRejected      uint64                        `json:"tcp_rejected"`
+	Goroutines       int                           `json:"goroutines"`
+	HeapAllocBytes   uint64                        `json:"heap_alloc_bytes"`
+	HeapInuseBytes   uint64                        `json:"heap_inuse_bytes"`
+	HeapSysBytes     uint64                        `json:"heap_sys_bytes"`
+	CPUUserNS        uint64                        `json:"cpu_user_ns"`
+	CPUSystemNS      uint64                        `json:"cpu_system_ns"`
+	LastReload       time.Time                     `json:"last_reload,omitempty"`
+	LastError        string                        `json:"last_error,omitempty"`
 }
 type CacheStatus struct {
 	Enabled    bool `json:"enabled"`
@@ -294,40 +295,40 @@ type cacheOrderEntry struct {
 	generation uint64
 }
 type Runtime struct {
-	dnsSem       chan struct{}
-	dataDir      string
-	autoHosts    *autohosts.Manager
-	autoController *autoHostsController
-	configPath   string
-	dohPath      string
-	checksPath   string
-	sourceHashes ConfigSourceChecksums
+	dnsSem                 chan struct{}
+	dataDir                string
+	autoHosts              *autohosts.Manager
+	autoController         *autoHostsController
+	configPath             string
+	dohPath                string
+	checksPath             string
+	sourceHashes           ConfigSourceChecksums
 	lastRejectedSourceHash string
-	healthCheckTrigger chan struct{}
-	snapshot     atomic.Pointer[Snapshot]
-	mu           sync.RWMutex
-	health           map[string]map[string]HealthEntry
-	active           map[string]string
-	upstreamCooldown map[string]time.Time
-	cacheMu        sync.Mutex
-	cache          map[string]cacheItem
-	cacheFlights   map[string]*cacheFlight
-	cacheOrder     []cacheOrderEntry
-	cacheOrderHead int
-	cacheBytes     int
-	cacheSeq       uint64
-	cacheHits      atomic.Uint64
-	activeUDP      atomic.Int64
-	udpQueueDepth  atomic.Int64
-	udpDropped     atomic.Uint64
-	activeTCP      atomic.Int64
-	tcpRejected    atomic.Uint64
-	queries    atomic.Uint64
-	failures   atomic.Uint64
-	lastGemini map[string]time.Time
-	statusMu   sync.RWMutex
-	lastError  string
-	lastReload time.Time
+	healthCheckTrigger     chan struct{}
+	snapshot               atomic.Pointer[Snapshot]
+	mu                     sync.RWMutex
+	health                 map[string]map[string]HealthEntry
+	active                 map[string]string
+	upstreamCooldown       map[string]time.Time
+	cacheMu                sync.Mutex
+	cache                  map[string]cacheItem
+	cacheFlights           map[string]*cacheFlight
+	cacheOrder             []cacheOrderEntry
+	cacheOrderHead         int
+	cacheBytes             int
+	cacheSeq               uint64
+	cacheHits              atomic.Uint64
+	activeUDP              atomic.Int64
+	udpQueueDepth          atomic.Int64
+	udpDropped             atomic.Uint64
+	activeTCP              atomic.Int64
+	tcpRejected            atomic.Uint64
+	queries                atomic.Uint64
+	failures               atomic.Uint64
+	lastGemini             map[string]time.Time
+	statusMu               sync.RWMutex
+	lastError              string
+	lastReload             time.Time
 }
 
 func main() {
@@ -445,12 +446,14 @@ func main() {
 		snap.configMod = fi.ModTime()
 	}
 	autoHostsManager, err := autohosts.New(filepath.Join(dataDir, "auto-hosts.json"))
-	if err != nil { fatal("AUTO_HOSTS state initialization failed: %v", err) }
+	if err != nil {
+		fatal("AUTO_HOSTS state initialization failed: %v", err)
+	}
 	rt := &Runtime{
 		dataDir: dataDir, autoHosts: autoHostsManager, configPath: configPath, dohPath: dohPath, checksPath: checksPath,
-		sourceHashes: sources.Checksums,
+		sourceHashes:       sources.Checksums,
 		healthCheckTrigger: make(chan struct{}, 1),
-		health: map[string]map[string]HealthEntry{}, active: map[string]string{},
+		health:             map[string]map[string]HealthEntry{}, active: map[string]string{},
 		cache: map[string]cacheItem{}, lastGemini: map[string]time.Time{},
 		dnsSem: make(chan struct{}, cfg.DNSMaxConcurrent),
 	}
@@ -550,40 +553,68 @@ func main() {
 	logLine("INFO", "STOP clean=true")
 }
 
+type lucxIntegrationLogger struct{ file *os.File }
 
-type lucxIntegrationLogger struct { file *os.File }
 func (l lucxIntegrationLogger) Printf(format string, args ...any) {
 	message := fmt.Sprintf(format, args...)
 	logLine("INFO", "%s", message)
 	if l.file != nil {
 		_, err := fmt.Fprintf(l.file, "%s level=INFO %s\n", time.Now().UTC().Format(time.RFC3339), message)
-		if err == nil { err = l.file.Sync() }
-		if err != nil { logLine("ERROR", "INTEGRATION log write failed: %v", err) }
+		if err == nil {
+			err = l.file.Sync()
+		}
+		if err != nil {
+			logLine("ERROR", "INTEGRATION log write failed: %v", err)
+		}
 	}
 }
 
 func setIntegrationFlag(path string, enabled bool) error {
 	data, err := os.ReadFile(path)
-	if err != nil { return fmt.Errorf("read config: %w", err) }
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	var config map[string]any
-	if err := decoder.Decode(&config); err != nil || config == nil { return errors.New("config.json is not a JSON object") }
+	if err := decoder.Decode(&config); err != nil || config == nil {
+		return errors.New("config.json is not a JSON object")
+	}
 	config["integration"] = enabled
 	encoded, err := json.MarshalIndent(config, "", "  ")
-	if err != nil { return fmt.Errorf("encode config: %w", err) }
+	if err != nil {
+		return fmt.Errorf("encode config: %w", err)
+	}
 	encoded = append(encoded, '\n')
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".config.json-*")
-	if err != nil { return fmt.Errorf("create temporary config: %w", err) }
+	if err != nil {
+		return fmt.Errorf("create temporary config: %w", err)
+	}
 	name := tmp.Name()
 	defer os.Remove(name)
-	if err := tmp.Chmod(0600); err != nil { tmp.Close(); return err }
-	if _, err := tmp.Write(encoded); err != nil { tmp.Close(); return err }
-	if err := tmp.Sync(); err != nil { tmp.Close(); return err }
-	if err := tmp.Close(); err != nil { return err }
-	if err := os.Rename(name, path); err != nil { return fmt.Errorf("replace config atomically: %w", err) }
-	if d, err := os.Open(dir); err == nil { _ = d.Sync(); _ = d.Close() }
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(encoded); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(name, path); err != nil {
+		return fmt.Errorf("replace config atomically: %w", err)
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
 	return nil
 }
 
@@ -616,7 +647,9 @@ func loadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("decode config: %w", e)
 	}
 	c, e = normalizeConfigGroups(c)
-	if e != nil { return Config{}, e }
+	if e != nil {
+		return Config{}, e
+	}
 	c = normalizeCacheConfig(c)
 	if e = validateConfig(c); e != nil {
 		return Config{}, e
@@ -627,9 +660,9 @@ func defaultConfig() Config {
 	c := Config{
 		DNSListenUDP: "127.0.0.1:5355", DNSListenTCP: "127.0.0.1:5355", HTTPListen: "127.0.0.1:18765", ReloadSecs: 5,
 		DNSQueryTimeoutSeconds: 15, DoHTimeoutSeconds: 10, DNSMaxConcurrent: 256,
-		Health: HealthConfig{IntervalSeconds: 25 * 60, TimeoutSeconds: 5, FailureThreshold: 1, SuccessThreshold: 1},
-		Cache:  CacheConfig{Enabled: true, MinTTL: 5, MaxTTL: 300, NegativeTTL: 15, MaxEntries: 8192, MaxBytes: defaultCacheMaxBytes},
-		LocalHosts: map[string]LocalHost{},
+		Health:             HealthConfig{IntervalSeconds: 25 * 60, TimeoutSeconds: 5, FailureThreshold: 1, SuccessThreshold: 1},
+		Cache:              CacheConfig{Enabled: true, MinTTL: 5, MaxTTL: 300, NegativeTTL: 15, MaxEntries: 8192, MaxBytes: defaultCacheMaxBytes},
+		LocalHosts:         map[string]LocalHost{},
 		BootstrapResolvers: []string{"1.1.1.1", "8.8.8.8"},
 		Upstreams: []Upstream{
 			{ID: systemDNSUpstreamID, Name: "System DNS (VPS)", Type: "system"},
@@ -933,7 +966,7 @@ func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
 	for _, u := range c.Upstreams {
 		if u.Type == "system" {
 			s.upstreams[u.ID] = &UpstreamRuntime{
-				cfg: u,
+				cfg:       u,
 				systemDNS: &systemDNSResolver{resolvConfPath: systemResolvConfPath},
 			}
 			continue
@@ -971,7 +1004,7 @@ func newDoHClient(u Upstream, resolvers []string, timeout time.Duration) (*http.
 		fallback: append([]string(nil), u.BootstrapIPs...), refreshFor: 6 * time.Hour,
 	}
 	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: pu.Hostname()},
+		TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12, ServerName: pu.Hostname()},
 		ForceAttemptHTTP2: true, MaxIdleConns: 16, MaxIdleConnsPerHost: 8,
 		IdleConnTimeout: 60 * time.Second, ResponseHeaderTimeout: 10 * time.Second,
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
@@ -1275,7 +1308,7 @@ func probeDoHIP(ctx context.Context, endpoint, ip string, timeout time.Duration)
 	}
 	start := time.Now()
 	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: parsed.Hostname()},
+		TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12, ServerName: parsed.Hostname()},
 		ForceAttemptHTTP2: true, DisableKeepAlives: true,
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			return (&net.Dialer{Timeout: minDuration(timeout, 5*time.Second)}).
@@ -1289,7 +1322,7 @@ func probeDoHIP(ctx context.Context, endpoint, ip string, timeout time.Duration)
 	defer transport.CloseIdleConnections()
 
 	probe := &UpstreamRuntime{
-		cfg: Upstream{ID: parsed.Hostname(), URL: endpoint},
+		cfg:    Upstream{ID: parsed.Hostname(), URL: endpoint},
 		client: client,
 	}
 	if _, err := sendDoH(ctx, probe, makeDNSQuery("example.com", 1)); err != nil {
@@ -1395,6 +1428,7 @@ func (r *Runtime) orderedUpstreams(gid string, s *Snapshot) []string {
 	}
 	return out
 }
+
 const upstreamFailureCooldown = 30 * time.Second
 
 func (r *Runtime) upstreamsToAttempt(order []string, now time.Time) []string {
@@ -1461,7 +1495,9 @@ func (r *Runtime) query(ctx context.Context, packet []byte) ([]byte, string, err
 	)
 	// Keep fallback attempts independent, but cap one client query to four
 	// upstreams so a large configuration cannot multiply worst-case latency.
-	if len(order) > 4 { order = order[:4] }
+	if len(order) > 4 {
+		order = order[:4]
+	}
 	for _, uid := range order {
 		u := s.upstreams[uid]
 		if u == nil {
@@ -1804,7 +1840,6 @@ func localHostsResponseWithTTL(query []byte, host string, qtype uint16, hosts ma
 	return response, true
 }
 
-
 func autoHostsResponse(query []byte, host string, qtype uint16, manager *autohosts.Manager) ([]byte, bool) {
 	if manager == nil {
 		return nil, false
@@ -1824,7 +1859,9 @@ func autoHostsResponse(query []byte, host string, qtype uint16, manager *autohos
 		entry.IPv6 = ips
 	}
 	ttl := uint32(ttlDuration / time.Second)
-	if ttl == 0 { ttl = 1 }
+	if ttl == 0 {
+		ttl = 1
+	}
 	return localHostsResponseWithTTL(query, host, qtype, map[string]LocalHost{normalizeDomain(host): entry}, ttl)
 }
 
@@ -1898,8 +1935,8 @@ func extractEDNSOPT(query []byte) []byte {
 			if err != nil || n+10 > len(query) {
 				return nil
 			}
-			typ := binary.BigEndian.Uint16(query[n:n+2])
-			rdlen := int(binary.BigEndian.Uint16(query[n+8:n+10]))
+			typ := binary.BigEndian.Uint16(query[n : n+2])
+			rdlen := int(binary.BigEndian.Uint16(query[n+8 : n+10]))
 			off = n + 10 + rdlen
 			if off > len(query) {
 				return nil
@@ -1923,18 +1960,28 @@ func (r *Runtime) deleteCacheEntryLocked(key string, item cacheItem) {
 }
 
 func (r *Runtime) cacheDo(key string, id uint16, resolve func() ([]byte, error)) ([]byte, error) {
-	if cached, ok := r.cacheGet(key, id); ok { return cached, nil }
+	if cached, ok := r.cacheGet(key, id); ok {
+		return cached, nil
+	}
 	r.cacheMu.Lock()
 	if flight := r.cacheFlights[key]; flight != nil {
 		r.cacheMu.Unlock()
 		<-flight.done
-		if flight.err != nil { return nil, flight.err }
-		if cached, ok := r.cacheGet(key, id); ok { return cached, nil }
+		if flight.err != nil {
+			return nil, flight.err
+		}
+		if cached, ok := r.cacheGet(key, id); ok {
+			return cached, nil
+		}
 		response := append([]byte(nil), flight.packet...)
-		if len(response) >= 2 { binary.BigEndian.PutUint16(response[:2], id) }
+		if len(response) >= 2 {
+			binary.BigEndian.PutUint16(response[:2], id)
+		}
 		return response, nil
 	}
-	if r.cacheFlights == nil { r.cacheFlights = make(map[string]*cacheFlight) }
+	if r.cacheFlights == nil {
+		r.cacheFlights = make(map[string]*cacheFlight)
+	}
 	flight := &cacheFlight{done: make(chan struct{})}
 	r.cacheFlights[key] = flight
 	r.cacheMu.Unlock()
@@ -2035,8 +2082,8 @@ func (r *Runtime) cachePut(key string, packet []byte, c CacheConfig) {
 	}
 	r.cacheSeq++
 	item := cacheItem{
-		packet: append([]byte(nil), packet...),
-		expires: now.Add(time.Duration(ttl) * time.Second),
+		packet:   append([]byte(nil), packet...),
+		expires:  now.Add(time.Duration(ttl) * time.Second),
 		inserted: now, size: cost, generation: r.cacheSeq,
 	}
 	r.cache[key] = item
@@ -2850,7 +2897,6 @@ func (r *Runtime) reloadLoop(ctx context.Context) {
 	}
 }
 
-
 func (r *Runtime) triggerAutoHostsConfigReload() {
 	if r.autoHosts == nil || r.autoController == nil {
 		return
@@ -2881,7 +2927,9 @@ func loadConfigNoCreate(path string) (Config, error) {
 		return Config{}, e
 	}
 	c, e = normalizeConfigGroups(c)
-	if e != nil { return Config{}, e }
+	if e != nil {
+		return Config{}, e
+	}
 	c = normalizeCacheConfig(c)
 	if e = validateConfig(c); e != nil {
 		return Config{}, e
@@ -2902,7 +2950,7 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 		ID: envOr("LUCX_PLUGIN_ID", pluginID), Version: envOr("LUCX_PLUGIN_VERSION", pluginVersion),
 		StartedAt: startedAt, UpdatedAt: time.Now().UTC(), DNSUDP: s.cfg.DNSListenUDP,
 		DNSTCP: s.cfg.DNSListenTCP, HTTP: s.cfg.HTTPListen, Config: r.configPath,
-		Cache: CacheStatus{Enabled: s.cfg.Cache.Enabled, Entries: cacheEntries, MaxEntries: s.cfg.Cache.MaxEntries, Bytes: cacheBytes, MaxBytes: s.cfg.Cache.MaxBytes},
+		Cache:  CacheStatus{Enabled: s.cfg.Cache.Enabled, Entries: cacheEntries, MaxEntries: s.cfg.Cache.MaxEntries, Bytes: cacheBytes, MaxBytes: s.cfg.Cache.MaxBytes},
 		Groups: map[string]GroupStatus{}, DoHBootstrap: map[string]DoHBootstrapStatus{},
 		Queries: r.queries.Load(), CacheHits: r.cacheHits.Load(), Failures: r.failures.Load(),
 		ActiveUDP: r.activeUDP.Load(), UDPQueueDepth: r.udpQueueDepth.Load(), UDPDropped: r.udpDropped.Load(),
@@ -2983,8 +3031,8 @@ func (r *Runtime) handleAutoHostsConfig(w http.ResponseWriter, req *http.Request
 	}
 	req.Body = http.MaxBytesReader(w, req.Body, 16<<10)
 	var input struct {
-		Enabled *bool `json:"enabled"`
-		EmergencyOff *bool `json:"emergency_off"`
+		Enabled        *bool   `json:"enabled"`
+		EmergencyOff   *bool   `json:"emergency_off"`
 		PinnedServerID *string `json:"pinned_server_id"`
 	}
 	decoder := json.NewDecoder(req.Body)
@@ -2997,7 +3045,9 @@ func (r *Runtime) handleAutoHostsConfig(w http.ResponseWriter, req *http.Request
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if state := r.autoHosts.State(); state.Config.Enabled && !state.Config.EmergencyOff && r.autoController != nil { r.autoController.Trigger() }
+	if state := r.autoHosts.State(); state.Config.Enabled && !state.Config.EmergencyOff && r.autoController != nil {
+		r.autoController.Trigger()
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(r.autoHosts.State())

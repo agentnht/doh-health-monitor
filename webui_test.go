@@ -1,9 +1,9 @@
 package main
 
 import (
-	"io"
 	"bufio"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -36,7 +36,9 @@ func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 	pageRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(pageRecorder, pageRequest)
 	rec = pageRecorder
-	if rec.Code != http.StatusOK { t.Fatalf("authenticated GET / status=%d", rec.Code) }
+	if rec.Code != http.StatusOK {
+		t.Fatalf("authenticated GET / status=%d", rec.Code)
+	}
 	if !strings.Contains(rec.Body.String(), "DoH Health Monitor") {
 		t.Fatal("placeholder page content is missing")
 	}
@@ -57,9 +59,9 @@ func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 		`class="dashboard-column dashboard-overview"`,
 		`class="dashboard-column dashboard-upstreams"`,
 		`class="metric-list"`,
-			`<h2>DNS listeners</h2>`,
-			`<h2>Запросы и ресурсы</h2>`,
-			`<h2>Upstream-группы</h2>`,
+		`<h2>DNS listeners</h2>`,
+		`<h2>Запросы и ресурсы</h2>`,
+		`<h2>Upstream-группы</h2>`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("dashboard is missing expected layout element %q", want)
@@ -282,7 +284,9 @@ func TestRunWebUIStopsWhenSupervisorPipeCloses(t *testing.T) {
 	launchToken := strings.TrimPrefix(fields[2], "token=")
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/?access_token=%s", port, launchToken))
-	if err != nil { t.Fatalf("request Web UI launch URL: %v", err) }
+	if err != nil {
+		t.Fatalf("request Web UI launch URL: %v", err)
+	}
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusSeeOther || len(response.Cookies()) != 1 {
 		t.Fatalf("launch response status=%d cookies=%d; want redirect and session cookie", response.StatusCode, len(response.Cookies()))
@@ -290,9 +294,13 @@ func TestRunWebUIStopsWhenSupervisorPipeCloses(t *testing.T) {
 	pageRequest, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/", port), nil)
 	pageRequest.AddCookie(response.Cookies()[0])
 	pageResponse, err := client.Do(pageRequest)
-	if err != nil { t.Fatalf("request authenticated Web UI page: %v", err) }
+	if err != nil {
+		t.Fatalf("request authenticated Web UI page: %v", err)
+	}
 	_ = pageResponse.Body.Close()
-	if pageResponse.StatusCode != http.StatusOK { t.Fatalf("authenticated Web UI status=%d, want %d", pageResponse.StatusCode, http.StatusOK) }
+	if pageResponse.StatusCode != http.StatusOK {
+		t.Fatalf("authenticated Web UI status=%d, want %d", pageResponse.StatusCode, http.StatusOK)
+	}
 
 	if err := controlWrite.Close(); err != nil {
 		t.Fatal(err)
@@ -331,7 +339,6 @@ func TestWebUIAppScriptMakesManagementPagesMutuallyExclusive(t *testing.T) {
 	}
 }
 
-
 func TestWebUIAutoHostsProxyOnlyTargetsLoopbackDaemon(t *testing.T) {
 	var gotPath, gotMethod, gotBody string
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -345,7 +352,9 @@ func TestWebUIAutoHostsProxyOnlyTargetsLoopbackDaemon(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/autohosts/config", strings.NewReader("{\"enabled\":true}"))
 	response := httptest.NewRecorder()
 	dataDir := t.TempDir()
-	if _, err := loadOrCreateAutoHostsAPIToken(dataDir); err != nil { t.Fatal(err) }
+	if _, err := loadOrCreateAutoHostsAPIToken(dataDir); err != nil {
+		t.Fatal(err)
+	}
 	proxyWebUIAutoHostsAPI(response, request, daemon.URL+"/status", dataDir)
 	if response.Code != http.StatusOK || gotPath != "/autohosts/config" || gotMethod != http.MethodPost || gotBody != "{\"enabled\":true}" {
 		t.Fatalf("unexpected proxy result: status=%d path=%s method=%s body=%s", response.Code, gotPath, gotMethod, gotBody)
@@ -353,49 +362,63 @@ func TestWebUIAutoHostsProxyOnlyTargetsLoopbackDaemon(t *testing.T) {
 	badRequest := httptest.NewRequest(http.MethodGet, "/api/v1/autohosts/status", nil)
 	badResponse := httptest.NewRecorder()
 	proxyWebUIAutoHostsAPI(badResponse, badRequest, "http://example.com/status", dataDir)
-	if badResponse.Code != http.StatusServiceUnavailable { t.Fatalf("non-loopback status URL was accepted: %d", badResponse.Code) }
+	if badResponse.Code != http.StatusServiceUnavailable {
+		t.Fatalf("non-loopback status URL was accepted: %d", badResponse.Code)
+	}
 }
-
 
 func TestWebUIAutoHostsRoutesRequireSessionAndProxyFullFlow(t *testing.T) {
 	var calls []string
 	dataDir := t.TempDir()
 	apiToken, err := loadOrCreateAutoHostsAPIToken(dataDir)
-	if err != nil { t.Fatal(err) }
-	daemon:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
-		body,_:=io.ReadAll(r.Body)
-		if r.Header.Get("Authorization") != "Bearer "+apiToken { t.Errorf("daemon request missing bearer token") }
-		calls=append(calls,r.Method+" "+r.URL.Path+" "+string(body))
-		w.Header().Set("Content-Type","application/json")
-		_,_=w.Write([]byte(`{"ok":true,"active_server":"edge"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if r.Header.Get("Authorization") != "Bearer "+apiToken {
+			t.Errorf("daemon request missing bearer token")
+		}
+		calls = append(calls, r.Method+" "+r.URL.Path+" "+string(body))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"active_server":"edge"}`))
 	}))
 	defer daemon.Close()
-	handler:=newWebUIHandlerWithDataDir(daemon.URL+"/status","auto-hosts-session",dataDir)
-	request:=func(method,path,body string,authenticated bool)*httptest.ResponseRecorder{
-		req:=httptest.NewRequest(method,"http://127.0.0.1:19876"+path,strings.NewReader(body))
-		req.Host="127.0.0.1:19876"
-		if authenticated { req.AddCookie(&http.Cookie{Name:webUISessionCookie,Value:"auto-hosts-session"}) }
-		rec:=httptest.NewRecorder()
-		handler.ServeHTTP(rec,req)
+	handler := newWebUIHandlerWithDataDir(daemon.URL+"/status", "auto-hosts-session", dataDir)
+	request := func(method, path, body string, authenticated bool) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, "http://127.0.0.1:19876"+path, strings.NewReader(body))
+		req.Host = "127.0.0.1:19876"
+		if authenticated {
+			req.AddCookie(&http.Cookie{Name: webUISessionCookie, Value: "auto-hosts-session"})
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
 		return rec
 	}
-	for _,tc:=range []struct{method,path,body,want string}{
-		{http.MethodGet,"/api/v1/autohosts/status","","GET /autohosts/status "},
-		{http.MethodPost,"/api/v1/autohosts/config",`{"enabled":true,"pinned_server_id":"edge"}`,"POST /autohosts/config "},
-		{http.MethodPost,"/api/v1/autohosts/dry-run",`{}`,"POST /autohosts/dry-run "},
-	}{
-		unauth:=request(tc.method,tc.path,tc.body,false)
-		if unauth.Code!=http.StatusUnauthorized { t.Errorf("unauthenticated %s: status=%d",tc.path,unauth.Code) }
-		rec:=request(tc.method,tc.path,tc.body,true)
-		if rec.Code!=http.StatusOK { t.Errorf("authenticated %s: status=%d body=%s",tc.path,rec.Code,rec.Body.String()) }
-		if !strings.Contains(rec.Body.String(),`"active_server":"edge"`) { t.Errorf("%s response missing daemon payload: %s",tc.path,rec.Body.String()) }
+	for _, tc := range []struct{ method, path, body, want string }{
+		{http.MethodGet, "/api/v1/autohosts/status", "", "GET /autohosts/status "},
+		{http.MethodPost, "/api/v1/autohosts/config", `{"enabled":true,"pinned_server_id":"edge"}`, "POST /autohosts/config "},
+		{http.MethodPost, "/api/v1/autohosts/dry-run", `{}`, "POST /autohosts/dry-run "},
+	} {
+		unauth := request(tc.method, tc.path, tc.body, false)
+		if unauth.Code != http.StatusUnauthorized {
+			t.Errorf("unauthenticated %s: status=%d", tc.path, unauth.Code)
+		}
+		rec := request(tc.method, tc.path, tc.body, true)
+		if rec.Code != http.StatusOK {
+			t.Errorf("authenticated %s: status=%d body=%s", tc.path, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"active_server":"edge"`) {
+			t.Errorf("%s response missing daemon payload: %s", tc.path, rec.Body.String())
+		}
 	}
-	if len(calls)!=3 { t.Fatalf("daemon calls=%d, want 3: %v",len(calls),calls) }
-	if calls[0]!="GET /autohosts/status "||calls[1]!="POST /autohosts/config "+`{"enabled":true,"pinned_server_id":"edge"}`||calls[2]!="POST /autohosts/dry-run {}" {
-		t.Fatalf("unexpected proxied calls: %v",calls)
+	if len(calls) != 3 {
+		t.Fatalf("daemon calls=%d, want 3: %v", len(calls), calls)
+	}
+	if calls[0] != "GET /autohosts/status " || calls[1] != "POST /autohosts/config "+`{"enabled":true,"pinned_server_id":"edge"}` || calls[2] != "POST /autohosts/dry-run {}" {
+		t.Fatalf("unexpected proxied calls: %v", calls)
 	}
 }
-
 
 func TestAutoHostsDaemonAPIRequiresLoopbackAndBearerToken(t *testing.T) {
 	const token = "0123456789abcdef0123456789abcdef0123456789"
@@ -407,8 +430,12 @@ func TestAutoHostsDaemonAPIRequiresLoopbackAndBearerToken(t *testing.T) {
 	request := func(host, origin, bearer string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "http://"+host+"/autohosts/config", nil)
 		req.Host = host
-		if origin != "" { req.Header.Set("Origin", origin) }
-		if bearer != "" { req.Header.Set("Authorization", "Bearer "+bearer) }
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 		return rec
@@ -425,7 +452,9 @@ func TestAutoHostsDaemonAPIRequiresLoopbackAndBearerToken(t *testing.T) {
 	if got := request("127.0.0.1:18765", "http://127.0.0.1:18765", token); got.Code != http.StatusNoContent {
 		t.Fatalf("valid authenticated request status=%d; want 204", got.Code)
 	}
-	if !called { t.Fatal("authenticated request did not reach the handler") }
+	if !called {
+		t.Fatal("authenticated request did not reach the handler")
+	}
 }
 
 func TestWebUILaunchDoesNotIssueSessionToArbitraryLoopbackGET(t *testing.T) {
