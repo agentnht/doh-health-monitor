@@ -354,6 +354,9 @@ func TestWebUIAutoHostsProxyOnlyTargetsLoopbackDaemon(t *testing.T) {
 
 func TestWebUIAutoHostsRoutesRequireSessionAndProxyFullFlow(t *testing.T) {
 	var calls []string
+	dataDir := t.TempDir()
+	apiToken, err := loadOrCreateAutoHostsAPIToken(dataDir)
+	if err != nil { t.Fatal(err) }
 	daemon:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
 		body,_:=io.ReadAll(r.Body)
 		if r.Header.Get("Authorization") != "Bearer "+apiToken { t.Errorf("daemon request missing bearer token") }
@@ -362,9 +365,6 @@ func TestWebUIAutoHostsRoutesRequireSessionAndProxyFullFlow(t *testing.T) {
 		_,_=w.Write([]byte(`{"ok":true,"active_server":"edge"}`))
 	}))
 	defer daemon.Close()
-	dataDir := t.TempDir()
-	apiToken, err := loadOrCreateAutoHostsAPIToken(dataDir)
-	if err != nil { t.Fatal(err) }
 	handler:=newWebUIHandlerWithDataDir(daemon.URL+"/status","auto-hosts-session",dataDir)
 	request:=func(method,path,body string,authenticated bool)*httptest.ResponseRecorder{
 		req:=httptest.NewRequest(method,"http://127.0.0.1:19876"+path,strings.NewReader(body))
