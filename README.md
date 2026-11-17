@@ -243,6 +243,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/agentnht/doh-health-monitor/
 
 ```text
 # id;url
+system-dns;
 geohide-eu;https://eu.geohide.ru/dns-query
 dagami;https://dns.dagami.ru/dns-query
 comss-one;https://dns.comss.one/dns-query
@@ -251,7 +252,7 @@ zapret;https://dns.zapret.moe/dns-query
 ```
 
 - ID — постоянный идентификатор провайдера, не зависящий от hostname URL.
-- Порядок строк задаёт приоритет DoH-кандидатов после автоматически добавляемого первого кандидата `system-dns`.
+- Порядок строк задаёт приоритет upstream-кандидатов; по умолчанию `system-dns` указан первым.
 - Добавить сервер — добавить строку; удалить — удалить строку; изменить адрес — изменить только URL после `;`.
 - Для смены адреса Dagami достаточно заменить URL в строке с ID `dagami`. Изменять `config.json` не нужно.
 - `system-dns;` — отдельная системная запись без DoH URL. Она использует nameserver-ы VPS из `/etc/resolv.conf`, отображается первой в редакторе и не может быть удалена или переименована.
