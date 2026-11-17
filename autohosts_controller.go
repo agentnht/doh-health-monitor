@@ -100,7 +100,11 @@ func (c *autoHostsController) runCycle(ctx context.Context, now time.Time) error
 			logLine("WARN", "AUTO_HOSTS endpoint resolution failed server=%s error=%v", id, resolveErr)
 			continue
 		}
-		ep := autohosts.Endpoint{ServerID:id, URL:upstream.cfg.URL, Hostname:u.Hostname()}
+		bootstrapStatus := upstream.bootstrap.status()
+		endpointUpdatedAt := bootstrapStatus.ResolvedAt
+		if endpointUpdatedAt.IsZero() { endpointUpdatedAt = now.UTC() } // configured bootstrap fallback
+		if resolveErr != nil { logLine("WARN", "AUTO_HOSTS using cached/fallback endpoint IPs server=%s error=%v", id, resolveErr) }
+		ep := autohosts.Endpoint{ServerID:id, URL:upstream.cfg.URL, Hostname:u.Hostname(), UpdatedAt:endpointUpdatedAt}
 		for _, raw := range ips {
 			ip := net.ParseIP(raw)
 			if !isAutoHostsPublicIP(ip) { continue }
