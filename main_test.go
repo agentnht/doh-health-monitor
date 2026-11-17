@@ -1,6 +1,7 @@
 package main
 
 import (
+	"lucx-doh-health-monitor/internal/autohosts"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -1441,4 +1442,29 @@ func TestSetIntegrationFlagPreservesConfigAndToggles(t *testing.T) {
 	}
 	config = read()
 	if config["integration"] != false { t.Fatalf("integration flag=%v, want false", config["integration"]) }
+}
+
+
+func TestAutoHostsDNSAnswersUseActiveEndpointAndFamilyNODATA(t *testing.T) {
+	now := time.Now().UTC()
+	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
+	if err != nil { t.Fatal(err) }
+	endpoint := autohosts.Endpoint{ServerID:"edge", URL:"https://dns.example/dns-query", Hostname:"dns.example", IPv4:[]string{"8.8.8.8"}}
+	if err := manager.ApplyCycle("edge", endpoint, []autohosts.ProbeResult{{Domain:"chatgpt.com",Success:true,CheckedAt:now}}, now); err != nil { t.Fatal(err) }
+	if err := manager.SetEnabled(true); err != nil { t.Fatal(err) }
+
+	aQuery := makeDNSQuery("chatgpt.com", 1)
+	aResponse, matched := autoHostsResponse(aQuery, "chatgpt.com", 1, manager)
+	if !matched { t.Fatal("expected Auto Hosts A match") }
+	aRecords, err := parseARecords(aResponse)
+	if err != nil { t.Fatal(err) }
+	if len(aRecords) != 1 || aRecords[0] != "8.8.8.8" { t.Fatalf("Auto Hosts must return active DoH endpoint IP, got %v", aRecords) }
+
+	aaaaResponse, matched := autoHostsResponse(makeDNSQuery("chatgpt.com", 28), "chatgpt.com", 28, manager)
+	if !matched { t.Fatal("IPv4-only endpoint must still match AAAA and return NODATA") }
+	if binary.BigEndian.Uint16(aaaaResponse[6:8]) != 0 || binary.BigEndian.Uint16(aaaaResponse[8:10]) != 1 {
+		t.Fatalf("expected NODATA with local SOA, answer=%d authority=%d", binary.BigEndian.Uint16(aaaaResponse[6:8]), binary.BigEndian.Uint16(aaaaResponse[8:10]))
+	}
+	httpsResponse, matched := autoHostsResponse(makeDNSQuery("chatgpt.com", 65), "chatgpt.com", 65, manager)
+	if !matched || binary.BigEndian.Uint16(httpsResponse[6:8]) != 0 { t.Fatal("HTTPS query must be locally answered with NODATA for Auto Hosts domain") }
 }
