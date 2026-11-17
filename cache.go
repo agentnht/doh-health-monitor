@@ -39,6 +39,21 @@ func (r *Runtime) cacheDo(key string, id uint16, resolve func() ([]byte, error))
 		return cached, nil
 	}
 	r.cacheMu.Lock()
+	// Close the race between the optimistic cacheGet above and acquiring the
+	// flight lock: a previous resolver may have populated the cache and removed
+	// its flight while this caller was waiting for cacheMu.
+	if item, ok := r.cache[key]; ok {
+		if time.Now().Before(item.expires) {
+			packet := append([]byte(nil), item.packet...)
+			if len(packet) >= 2 {
+				binary.BigEndian.PutUint16(packet[:2], id)
+			}
+			decrementTTLs(packet, uint32(time.Since(item.inserted).Seconds()))
+			r.cacheMu.Unlock()
+			return packet, nil
+		}
+		r.deleteCacheEntryLocked(key, item)
+	}
 	if flight := r.cacheFlights[key]; flight != nil {
 		r.cacheMu.Unlock()
 		<-flight.done
