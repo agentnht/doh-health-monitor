@@ -239,7 +239,7 @@ func (m *Manager) ApplyFullCycle(activeID string, endpoints []Endpoint, results 
 				return fmt.Errorf("duplicate endpoint %q", checked.ServerID)
 			}
 			seenEndpoints[checked.ServerID] = true
-			if checked.UpdatedAt.IsZero() { checked.UpdatedAt = now.UTC() }
+			// Keep a zero timestamp when no successful endpoint DNS resolution was recorded.
 			s.Endpoints[checked.ServerID] = checked
 		}
 		for id := range s.Endpoints {
