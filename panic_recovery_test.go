@@ -55,7 +55,7 @@ func TestCacheDoResolverPanicReleasesFlightAndWaiters(t *testing.T) {
 		rt.cacheMu.Lock()
 		flight := rt.cacheFlights["panic-key"]
 		rt.cacheMu.Unlock()
-		if flight != nil {
+		if flight != nil && flight.waiters == 1 {
 			break
 		}
 		if time.Now().After(deadline) {
