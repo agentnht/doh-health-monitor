@@ -17,20 +17,16 @@
     p { color: #cbd5e1; line-height: 1.4; }
     .state { color: #a7f3d0; }
     .muted { color: #9ca3af; font-size: .78rem; }
-    .dashboard-grid { display: grid; grid-template-columns: minmax(9rem, .8fr) minmax(15rem, 1.05fr) minmax(22rem, 1.8fr); gap: 1rem; align-items: start; }
+    .dashboard-grid { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 1rem; align-items: start; }
     .dashboard-column { min-width: 0; }
     .dashboard-column + .dashboard-column { border-left: 1px solid #374151; padding-left: 1rem; }
-    .listener-list { display: flex; flex-direction: column; gap: .5rem; }
-    .listener { border: 1px solid #374151; border-radius: .55rem; padding: .55rem .65rem; background: #111827; }
-    .listener span { display: block; color: #9ca3af; font-size: .78rem; }
-    .listener strong { display: block; margin-top: .15rem; font-size: .95rem; overflow-wrap: anywhere; }
-    .metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .4rem; }
-    .metric { min-width: 0; padding: .45rem .55rem; background: #111827; }
-    .metric strong { display: block; font-size: 1rem; line-height: 1.2; margin-top: .12rem; overflow-wrap: anywhere; }
-    .metric span { color: #9ca3af; font-size: .72rem; }
+    .dashboard-overview { display: flex; flex-direction: column; gap: 1rem; }
+    .dashboard-section + .dashboard-section { border-top: 1px solid #374151; padding-top: .85rem; }
+    .listener-list, .metric-list { display: flex; flex-direction: column; gap: .32rem; }
+    .listener, .metric { display: flex; align-items: baseline; gap: .65rem; min-width: 0; padding: .42rem .6rem; border-radius: .45rem; background: #111827; }
+    .listener span, .metric span { flex: 0 0 9.5rem; color: #9ca3af; font-size: .78rem; }
+    .listener strong, .metric strong { min-width: 0; flex: 1; font-size: .9rem; line-height: 1.3; overflow-wrap: anywhere; text-align: right; }
     .groups { display: block; min-width: 0; }
-    .group { padding: 0; margin: 0; }
-    .group > p { margin: .15rem 0 .35rem; font-size: .78rem; }
     ul { padding-left: 1rem; color: #cbd5e1; }
     li { margin: .22rem 0; overflow-wrap: anywhere; }
     .upstream-list { list-style: none; padding: 0; margin: 0; }
@@ -78,29 +74,33 @@
     .source-comment { color: #9ca3af; font-size: .75rem; font-style: italic; }
     .row-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .6rem; }
     .results { display: grid; gap: .42rem; margin-top: .8rem; }
-    .result { border: 1px solid #374151; background: #111827; border-radius: .5rem; padding: .55rem .65rem; min-width: 0; }
+    .result { border: 1px solid #374151; background: #111827; border-radius: .5rem; min-width: 0; }
     .result-head { display: flex; justify-content: space-between; gap: .7rem; align-items: center; }
-    .result-name { font-weight: 650; font-size: .82rem; overflow-wrap: anywhere; }
+    details.result { padding: 0; overflow: hidden; }
+    .result-summary { display: flex; justify-content: space-between; align-items: center; gap: .7rem; padding: .55rem .65rem; cursor: pointer; list-style: none; }
+    .result-summary::-webkit-details-marker { display: none; }
+    .result-summary::marker { content: ""; }
+    .result-name { min-width: 0; flex: 1; font-weight: 650; font-size: .82rem; overflow-wrap: anywhere; }
     .result-status { font-size: .75rem; font-weight: 700; white-space: nowrap; }
     .result-status.ok { color: #86efac; }
     .result-status.bad { color: #fca5a5; }
+    .result-toggle { flex: 0 0 1.25rem; text-align: center; font-size: 1rem; font-weight: 800; color: #86efac; }
+    .result-status.bad + .result-toggle { color: #fca5a5; }
+    .result-details { border-top: 1px solid #374151; padding: .5rem .65rem .6rem; }
+    .result-details .muted { margin: .1rem 0 .4rem; }
     .result pre { white-space: pre-wrap; overflow-wrap: anywhere; color: #cbd5e1; font: .76rem/1.4 ui-monospace, monospace; margin: .35rem 0 0; }
     .log-output { max-height: 26rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #111827; border: 1px solid #374151; border-radius: .5rem; padding: .7rem; color: #cbd5e1; font: .75rem/1.45 ui-monospace, monospace; }
     #error { color: #fca5a5; }
     @media (max-width: 65rem) {
-      .dashboard-grid { grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); }
-      .dashboard-column:last-child { grid-column: 1 / -1; }
-      .dashboard-column + .dashboard-column { border-left: 0; padding-left: 0; }
-      .dashboard-column:last-child { border-top: 1px solid #374151; padding-top: .85rem; }
+      .dashboard-grid { grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); }
       .field-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 38rem) {
       body { padding: .85rem .55rem 2rem; }
       header, .panel { padding: .8rem; }
       .dashboard-grid { grid-template-columns: minmax(0, 1fr); gap: .85rem; }
-      .dashboard-column:last-child { grid-column: auto; }
       .dashboard-column + .dashboard-column { border-left: 0; padding-left: 0; border-top: 1px solid #374151; padding-top: .85rem; }
-      .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .listener span, .metric span { flex-basis: 8.5rem; }
       .field-grid { grid-template-columns: minmax(0, 1fr); }
     }
   </style>
@@ -128,27 +128,29 @@
 
     <section class="panel dashboard-panel">
       <div class="dashboard-grid">
-        <section class="dashboard-column">
-          <h2>DNS listeners</h2>
-          <div class="listener-list">
-            <div class="listener"><span>UDP</span><strong id="dns-udp">—</strong></div>
-            <div class="listener"><span>TCP</span><strong id="dns-tcp">—</strong></div>
-          </div>
+        <section class="dashboard-column dashboard-overview">
+          <section class="dashboard-section">
+            <h2>DNS listeners</h2>
+            <div class="listener-list">
+              <div class="listener"><span>UDP:</span><strong id="dns-udp">—</strong></div>
+              <div class="listener"><span>TCP:</span><strong id="dns-tcp">—</strong></div>
+            </div>
+          </section>
+          <section class="dashboard-section">
+            <h2>Запросы и ресурсы</h2>
+            <div class="metric-list">
+              <div class="metric"><span>Запросы:</span><strong id="queries">—</strong></div>
+              <div class="metric"><span>Ошибки:</span><strong id="failures">—</strong></div>
+              <div class="metric"><span>Попадания в кеш:</span><strong id="cache-hits">—</strong></div>
+              <div class="metric"><span>Активные UDP:</span><strong id="active-udp">—</strong></div>
+              <div class="metric"><span>Активные TCP:</span><strong id="active-tcp">—</strong></div>
+              <div class="metric"><span>Потерянные UDP:</span><strong id="udp-dropped">—</strong></div>
+              <div class="metric"><span>DNS-кеш:</span><strong id="cache">—</strong></div>
+              <div class="metric"><span>Gemini API:</span><strong id="gemini">—</strong></div>
+            </div>
+          </section>
         </section>
-        <section class="dashboard-column">
-          <h2>Запросы и ресурсы</h2>
-          <div class="metric-grid">
-            <div class="metric"><span>Запросы</span><strong id="queries">—</strong></div>
-            <div class="metric"><span>Ошибки</span><strong id="failures">—</strong></div>
-            <div class="metric"><span>Попадания в кеш</span><strong id="cache-hits">—</strong></div>
-            <div class="metric"><span>Активные UDP</span><strong id="active-udp">—</strong></div>
-            <div class="metric"><span>Активные TCP</span><strong id="active-tcp">—</strong></div>
-            <div class="metric"><span>Потерянные UDP</span><strong id="udp-dropped">—</strong></div>
-            <div class="metric"><span>DNS-кеш</span><strong id="cache">—</strong></div>
-            <div class="metric"><span>Gemini API</span><strong id="gemini">—</strong></div>
-          </div>
-        </section>
-        <section class="dashboard-column">
+        <section class="dashboard-column dashboard-upstreams">
           <h2>Upstream-группы</h2>
           <p class="muted">Время в мс — полный цикл health-проверки, а не задержка одного DNS-запроса. Раскрой upstream для деталей.</p>
           <div class="groups" id="groups">Загрузка…</div>
