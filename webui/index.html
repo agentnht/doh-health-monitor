@@ -163,12 +163,55 @@
     </section>
 
     <nav class="tab-nav" aria-label="Разделы управления">
+      <button class="tab-button" type="button" data-page="autohosts" aria-selected="false" aria-expanded="false">Auto Hosts</button>
       <button class="tab-button" type="button" data-page="config" aria-selected="false" aria-expanded="false">Конфигурация</button>
       <button class="tab-button" type="button" data-page="doh" aria-selected="false" aria-expanded="false">DoH-сервера</button>
       <button class="tab-button" type="button" data-page="domains" aria-selected="false" aria-expanded="false">Домены</button>
       <button class="tab-button" type="button" data-page="tests" aria-selected="false" aria-expanded="false">Проверка состояния</button>
       <button class="tab-button" type="button" data-page="logs" aria-selected="false" aria-expanded="false">Логи</button>
     </nav>
+
+    <section class="panel tab-page" data-page-panel="autohosts" hidden>
+      <h2>Auto Hosts · DNS endpoint mapping</h2>
+      <p class="muted">Auto Hosts подменяет DNS-ответы только для проверяемых доменов: A/AAAA указывают на IP активного DoH endpoint. Обычный DNS Gateway для остальных запросов не меняется. Все проверки выполняются с VPS.</p>
+      <div class="field-grid">
+        <label class="check-field"><input id="autohosts-enabled" type="checkbox"><span>Включить Auto Hosts</span></label>
+        <label class="field">Режим
+          <select id="autohosts-mode"><option value="auto">Auto — автоматический выбор</option><option value="pinned">Pinned — закреплённый сервер</option></select>
+        </label>
+        <label class="field">Закреплённый DoH-сервер
+          <select id="autohosts-pinned"><option value="">Сначала выполните первый цикл проверок</option></select>
+        </label>
+      </div>
+      <div class="section-actions">
+        <button id="autohosts-save" type="button">Сохранить настройки</button>
+        <button id="autohosts-emergency" class="danger" type="button">Emergency OFF</button>
+        <button id="autohosts-dry-run" class="secondary" type="button">Dry Run · предпросмотр</button>
+        <span id="autohosts-note" class="muted" role="status"></span>
+      </div>
+      <div class="config-block">
+        <h3>Текущее состояние</h3>
+        <div class="metric-list">
+          <div class="metric"><span>Активный сервер:</span><strong id="autohosts-active">—</strong></div>
+          <div class="metric"><span>Endpoint IPv4:</span><strong id="autohosts-ipv4">—</strong></div>
+          <div class="metric"><span>Endpoint IPv6:</span><strong id="autohosts-ipv6">—</strong></div>
+          <div class="metric"><span>Режим:</span><strong id="autohosts-state-mode">—</strong></div>
+          <div class="metric"><span>Emergency OFF:</span><strong id="autohosts-state-emergency">—</strong></div>
+        </div>
+      </div>
+      <div class="config-block">
+        <h3>Домены Auto Hosts</h3>
+        <div id="autohosts-domains" class="results">Нет опубликованных доменов.</div>
+      </div>
+      <div class="config-block">
+        <h3>Результаты проверок «сервер × домен»</h3>
+        <div id="autohosts-results" class="results">Проверки ещё не выполнялись.</div>
+      </div>
+      <div class="config-block">
+        <h3>Dry Run · предлагаемый результат</h3>
+        <div id="autohosts-preview" class="results">Нажмите Dry Run для проверки без изменения DNS-снимка и активного сервера.</div>
+      </div>
+    </section>
 
     <section class="panel tab-page" data-page-panel="config" hidden>
       <h2>Конфигурация config.json</h2>
