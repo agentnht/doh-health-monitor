@@ -44,3 +44,14 @@ func TestAutoHostsControllerRequiresRepeatedFailureBeforeSwitch(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	if second != "b" { t.Fatalf("expected switch after repeated failure, got %s", second) }
 }
+
+
+func TestAutoHostsJitterIsBounded(t *testing.T) {
+	base := 5*time.Minute
+	for i:=0; i<20; i++ {
+		got := autoHostsJitter(base)
+		if got < base*95/100 || got > base*105/100 {
+			t.Fatalf("jitter outside ±5%%: base=%s got=%s",base,got)
+		}
+	}
+}
