@@ -1541,9 +1541,7 @@ func (r *Runtime) serveUDP(ctx context.Context, c *net.UDPConn) {
 					r.activeUDP.Add(1)
 					resp := r.handleDNS(job.packet)
 					r.activeUDP.Add(-1)
-					if len(resp) > 4096 {
-						resp = resp[:4096]
-					}
+					resp = truncateDNSUDPResponse(resp, 4096)
 					_, _ = c.WriteToUDP(resp, job.addr)
 				}
 			}
@@ -2407,7 +2405,7 @@ func (r *Runtime) httpProbe(ctx context.Context, u *UpstreamRuntime, ch Check) (
 	if e != nil {
 		return 0, e
 	}
-	req.Header.Set("User-Agent", "LucX-DoH-HealthMonitor/1.4.0")
+	req.Header.Set("User-Agent", "LucX-DoH-HealthMonitor/"+pluginVersion)
 	resp, e := client.Do(req)
 	if e != nil {
 		return 0, e
@@ -3124,15 +3122,12 @@ func decodeName(p []byte, start int) (string, int, error) {
 	labels := []string{}
 	off := start
 	end := -1
-	visited := map[int]bool{}
+	// The bounded step count also terminates compression-pointer loops without
+	// allocating a map for every decoded DNS name.
 	for steps := 0; steps < 128; steps++ {
 		if off >= len(p) {
 			return "", 0, errors.New("DNS name out of range")
 		}
-		if visited[off] {
-			return "", 0, errors.New("DNS compression loop")
-		}
-		visited[off] = true
 		l := int(p[off])
 		if l&0xc0 == 0xc0 {
 			if off+1 >= len(p) {
@@ -3197,12 +3192,20 @@ func errorResponse(q []byte, rcode uint16) []byte {
 	if len(q) < 12 {
 		return []byte{}
 	}
-	p := append([]byte(nil), q...)
+	// Keep QDCOUNT consistent with the bytes we echo. Malformed or
+	// multi-question packets receive a header-only error response.
+	end, qd := 12, uint16(0)
+	if _, _, questionEnd, err := parseQuestion(q); err == nil &&
+		binary.BigEndian.Uint16(q[4:6]) == 1 && questionEnd <= len(q) {
+		end, qd = questionEnd, 1
+	}
+	p := append([]byte(nil), q[:end]...)
 	flags := binary.BigEndian.Uint16(p[2:4])
 	flags = (flags | 0x8000) &^ 0x0200
-	flags = (flags &^ 0x000f) | rcode
+	flags = (flags &^ 0x000f) | (rcode & 0x000f)
 	binary.BigEndian.PutUint16(p[2:4], flags)
-	for i := 4; i < 12; i += 2 {
+	binary.BigEndian.PutUint16(p[4:6], qd)
+	for i := 6; i < 12; i += 2 {
 		binary.BigEndian.PutUint16(p[i:i+2], 0)
 	}
 	return p
@@ -3278,7 +3281,11 @@ func rrTTLPositions(p []byte) ([]int, error) {
 			if off+10 > len(p) {
 				return nil, errors.New("truncated RR")
 			}
-			pos = append(pos, off+4)
+			typ := binary.BigEndian.Uint16(p[off : off+2])
+			// OPT (type 41) uses this field for EDNS flags, not a record TTL.
+			if typ != 41 {
+				pos = append(pos, off+4)
+			}
 			rd := int(binary.BigEndian.Uint16(p[off+8 : off+10]))
 			off += 10 + rd
 			if off > len(p) {
