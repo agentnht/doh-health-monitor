@@ -250,6 +250,7 @@ func (m *Manager) ApplyFullCycle(activeID string, endpoints []Endpoint, results 
 					return errors.New("invalid temporary website IP")
 				}
 			}
+			if len(r.Error) > 512 { r.Error = r.Error[:512] }
 			s.ProbeResults[serverID+"\x00"+d] = r
 			if serverID == activeID && r.Success {
 				s.Domains[d] = DomainRecord{
