@@ -160,7 +160,14 @@ func (s *Snapshot) Lookup(qname string,qtype uint16,now time.Time)([]string,time
  d,err:=NormalizeDomain(qname);if err!=nil{return nil,0,false}
  rec,ok:=s.Domains[d];if !ok||rec.ServerID!=s.ActiveServer||rec.ExpiresAt.IsZero()||!now.Before(rec.ExpiresAt){return nil,0,false}
  ttl:=s.TTL;if remain:=rec.ExpiresAt.Sub(now);remain<ttl{ttl=remain};if ttl<0{ttl=0}
- switch qtype {case 1:return append([]string(nil),s.Endpoint.IPv4...),ttl,true;case 28:return append([]string(nil),s.Endpoint.IPv6...),ttl,true}
+ switch qtype {
+ case 1:
+  return append([]string(nil),s.Endpoint.IPv4...),ttl,true
+ case 28:
+  return append([]string(nil),s.Endpoint.IPv6...),ttl,true
+ case 64,65:
+  return nil,ttl,true
+ }
  return nil,0,false
 }
 func (m *Manager) SetEnabled(v bool)error{return m.update(func(s *State)error{s.Config.Enabled=v;return nil})}
