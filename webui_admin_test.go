@@ -27,7 +27,7 @@ func newTestWebUIData(t *testing.T) string {
 func newAuthenticatedWebUIRequest(t *testing.T, handler http.Handler, method, path string, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
 	const host = "127.0.0.1:19876"
-	root := httptest.NewRequest(http.MethodGet, "http://"+host+"/", nil)
+	root := httptest.NewRequest(http.MethodGet, "http://"+host+"/?access_token=test-session", nil)
 	root.Host = host
 	rootRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(rootRecorder, root)
@@ -270,9 +270,18 @@ func TestWebUIIntegrationOperationLogPersistsAndRedactsCredentials(t *testing.T)
 }
 
 func TestWebUIPageHasTabsAndHeaderIntegrationActions(t *testing.T) {
-	handler := webUIHandler()
+	handler := newWebUIHandler("http://127.0.0.1:18765/status", "page-session")
+	launch := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/?access_token=page-session", nil)
+	launch.Host = "127.0.0.1:19876"
+	launchRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(launchRecorder, launch)
+	cookies := launchRecorder.Result().Cookies()
+	if launchRecorder.Code != http.StatusSeeOther || len(cookies) != 1 {
+		t.Fatalf("Web UI launch status=%d cookies=%d", launchRecorder.Code, len(cookies))
+	}
 	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/", nil)
 	request.Host = "127.0.0.1:19876"
+	request.AddCookie(cookies[0])
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	page := recorder.Body.String()
