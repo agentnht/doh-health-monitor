@@ -53,3 +53,24 @@ func TestPersistenceAndDomainNormalization(t *testing.T){
  if _,ok:=reloaded.State().Domains["www.example.com"];!ok{t.Fatal("normalized domain was not persisted")}
  if reloaded.Snapshot().ActiveServer!="a"{t.Fatal("active server was not restored")}
 }
+
+
+func TestFullCyclePersistsAllServerDomainPairsButPublishesOnlyActive(t *testing.T) {
+	now := time.Now().UTC()
+	m, err := New(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil { t.Fatal(err) }
+	a := Endpoint{ServerID:"a", URL:"https://a.example/dns-query", Hostname:"a.example", IPv4:[]string{"192.0.2.1"}}
+	b := Endpoint{ServerID:"b", URL:"https://b.example/dns-query", Hostname:"b.example", IPv4:[]string{"192.0.2.2"}}
+	results := []ProbeResult{
+		{ServerID:"a", Domain:"chatgpt.com", Success:true, CheckedAt:now},
+		{ServerID:"b", Domain:"chatgpt.com", Success:false, CheckedAt:now, Error:"website unreachable"},
+		{ServerID:"b", Domain:"claude.ai", Success:true, CheckedAt:now},
+	}
+	if err := m.ApplyFullCycle("a", []Endpoint{a,b}, results, now); err != nil { t.Fatal(err) }
+	state := m.State()
+	if len(state.ProbeResults) != 3 { t.Fatalf("expected all 3 pair results persisted, got %d", len(state.ProbeResults)) }
+	if len(state.Domains) != 1 { t.Fatalf("only active-server domain should be published, got %v", state.Domains) }
+	if _, ok := state.Domains["chatgpt.com"]; !ok { t.Fatal("active server's successful domain missing") }
+	if _, ok := state.Domains["claude.ai"]; ok { t.Fatal("inactive server's successful domain must not be published") }
+	if _, ok := state.Endpoints["b"]; !ok { t.Fatal("inactive endpoint missing from state") }
+}
