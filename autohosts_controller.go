@@ -295,7 +295,7 @@ func (c *autoHostsController) probeDomain(ctx context.Context, job autoHostsProb
 		if dnsTruncated(response) { result.Error=fmt.Sprintf("DNS qtype=%d response is truncated",qtype); continue }
 		ips,err:=parseAddressRecords(response,qtype)
 		if err!=nil { result.Error="DNS parse: "+err.Error(); continue }
-		for _,ip:=range ips { if isAutoHostsPublicIP(net.ParseIP(ip)) { websiteIPs=appendUniqueString(websiteIPs,ip) } }
+		for _,ip:=range ips { if len(websiteIPs)>=32 { break }; if isAutoHostsPublicIP(net.ParseIP(ip)) { websiteIPs=appendUniqueString(websiteIPs,ip) } }
 	}
 	if len(websiteIPs)==0 {
 		if result.Error=="" { result.Error="DNS returned no public A/AAAA address" }
