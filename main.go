@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"lucx-doh-health-monitor/internal/dohintegration"
+	"lucx-doh-health-monitor/internal/autohosts"
 )
 
 const (
@@ -289,6 +290,8 @@ type cacheOrderEntry struct {
 type Runtime struct {
 	dnsSem       chan struct{}
 	dataDir      string
+	autoHosts    *autohosts.Manager
+	autoController *autoHostsController
 	configPath   string
 	dohPath      string
 	checksPath   string
@@ -430,8 +433,10 @@ func main() {
 	if fi, e := os.Stat(configPath); e == nil {
 		snap.configMod = fi.ModTime()
 	}
+	autoHostsManager, err := autohosts.New(filepath.Join(dataDir, "auto-hosts.json"))
+	if err != nil { fatal("AUTO_HOSTS state initialization failed: %v", err) }
 	rt := &Runtime{
-		dataDir: dataDir, configPath: configPath, dohPath: dohPath, checksPath: checksPath,
+		dataDir: dataDir, autoHosts: autoHostsManager, configPath: configPath, dohPath: dohPath, checksPath: checksPath,
 		sourceHashes: sources.Checksums,
 		healthCheckTrigger: make(chan struct{}, 1),
 		health: map[string]map[string]HealthEntry{}, active: map[string]string{},
@@ -439,6 +444,7 @@ func main() {
 		dnsSem: make(chan struct{}, cfg.DNSMaxConcurrent),
 	}
 	rt.snapshot.Store(snap)
+	rt.autoController = newAutoHostsController(rt, autoHostsManager)
 	rt.initHealth(snap)
 	logLine("INFO", "CONFIG loaded path=%s doh_list=%s checks_list=%s groups=%d upstreams=%d checks=%d dns_udp=%s dns_tcp=%s gemini_api=%t", configPath, dohPath, checksPath, len(cfg.Groups), len(cfg.Upstreams), len(sources.Checks), cfg.DNSListenUDP, cfg.DNSListenTCP, cfg.GeminiAPI.Enabled)
 
@@ -492,7 +498,7 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
-	wg.Add(5)
+	wg.Add(6)
 	go func() { defer wg.Done(); rt.serveUDP(ctx, udpConn) }()
 	go func() { defer wg.Done(); rt.serveTCP(ctx, tcpLn) }()
 	go func() {
@@ -504,6 +510,7 @@ func main() {
 	}()
 	go func() { defer wg.Done(); rt.monitorLoop(ctx) }()
 	go func() { defer wg.Done(); rt.reloadLoop(ctx) }()
+	go func() { defer wg.Done(); rt.autoController.run(ctx) }()
 	logLine("INFO", "READY DNS=%s/%s HTTP=%s", cfg.DNSListenUDP, cfg.DNSListenTCP, cfg.HTTPListen)
 
 	sigc := make(chan os.Signal, 2)
