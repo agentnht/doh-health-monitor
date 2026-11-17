@@ -256,7 +256,7 @@ func TestApplyConfigSourcesGeneratesOrderedUpstreamsAndPreservesRuntimeSettings(
 
 func TestApplyConfigSourcesCanDisableSystemDNS(t *testing.T) {
 	cfg := defaultConfig()
-	providers, err := parseDoHProviders([]byte("# system-dns;\\ndagami;https://dns.dagami.ru/dns-query\\n"))
+	providers, err := parseDoHProviders([]byte("# system-dns;\ndagami;https://dns.dagami.ru/dns-query\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
