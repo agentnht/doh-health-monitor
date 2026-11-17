@@ -292,3 +292,24 @@ func TestRunWebUIStopsWhenSupervisorPipeCloses(t *testing.T) {
 		t.Fatal("Web UI did not stop after supervisor pipe EOF")
 	}
 }
+
+func TestWebUIAppScriptMakesManagementPagesMutuallyExclusive(t *testing.T) {
+	handler := webUIHandler()
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/app.js", nil)
+	request.Host = "127.0.0.1:19876"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /app.js status=%d, want %d", recorder.Code, http.StatusOK)
+	}
+	script := recorder.Body.String()
+	for _, want := range []string{
+		`panel.hidden = !shouldOpen || panel.dataset.pagePanel !== name`,
+		`const shouldOpen = open == null ? !currentlyOpen : Boolean(open)`,
+		`button.setAttribute("aria-expanded", String(selected))`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js is missing exclusive tab behaviour %q", want)
+		}
+	}
+}
