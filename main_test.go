@@ -188,6 +188,42 @@ func TestTimevalNanoseconds(t *testing.T) {
 	}
 }
 
+func TestConfigCanDisableSystemDNSWithoutNormalizerReaddingIt(t *testing.T) {
+	cfg := defaultConfig()
+	upstreams := make([]Upstream, 0, len(cfg.Upstreams)-1)
+	for _, upstream := range cfg.Upstreams {
+		if upstream.ID != systemDNSUpstreamID {
+			upstreams = append(upstreams, upstream)
+		}
+	}
+	cfg.Upstreams = upstreams
+	groupUpstreams := make([]string, 0, len(cfg.Groups[0].Upstreams)-1)
+	for _, id := range cfg.Groups[0].Upstreams {
+		if id != systemDNSUpstreamID {
+			groupUpstreams = append(groupUpstreams, id)
+		}
+	}
+	cfg.Groups[0].Upstreams = groupUpstreams
+
+	normalized, err := normalizeConfigGroups(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, upstream := range normalized.Upstreams {
+		if upstream.ID == systemDNSUpstreamID {
+			t.Fatal("normalizer re-added disabled system-dns")
+		}
+	}
+	for _, id := range normalized.Groups[0].Upstreams {
+		if id == systemDNSUpstreamID {
+			t.Fatal("normalizer re-added system-dns to the group")
+		}
+	}
+	if err := validateConfig(normalized); err != nil {
+		t.Fatalf("configuration without system DNS should validate: %v", err)
+	}
+}
+
 func TestDefaultConfigValid(t *testing.T) {
 	c := defaultConfig()
 	if err := validateConfig(c); err != nil {
