@@ -35,7 +35,7 @@ func (r *Runtime) deleteCacheEntryLocked(key string, item cacheItem) {
 	}
 }
 
-func (r *Runtime) cacheDo(key string, id uint16, resolve func() ([]byte, error)) ([]byte, error) {
+func (r *Runtime) cacheDo(key string, id uint16, resolve func() ([]byte, error)) (result []byte, resultErr error) {
 	if cached, ok := r.cacheGet(key, id); ok {
 		return cached, nil
 	}
@@ -77,24 +77,21 @@ func (r *Runtime) cacheDo(key string, id uint16, resolve func() ([]byte, error))
 	r.cacheFlights[key] = flight
 	r.cacheMu.Unlock()
 
-	var response []byte
-	var err error
-	// A resolver panic must not strand callers waiting on this singleflight.
-	func() {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				err = fmt.Errorf("cache resolver panic: %v", recovered)
-			}
-		}()
-		response, err = resolve()
+	// Always publish the result and wake waiters, including when resolve
+	// panics. The recovery belongs to this goroutine because it owns the flight.
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			result = nil
+			resultErr = fmt.Errorf("cache resolver panic: %v", recovered)
+		}
+		r.cacheMu.Lock()
+		flight.packet = append([]byte(nil), result...)
+		flight.err = resultErr
+		delete(r.cacheFlights, key)
+		close(flight.done)
+		r.cacheMu.Unlock()
 	}()
-	r.cacheMu.Lock()
-	flight.packet = append([]byte(nil), response...)
-	flight.err = err
-	delete(r.cacheFlights, key)
-	close(flight.done)
-	r.cacheMu.Unlock()
-	return response, err
+	return resolve()
 }
 
 func (r *Runtime) cacheGet(key string, id uint16) ([]byte, bool) {
