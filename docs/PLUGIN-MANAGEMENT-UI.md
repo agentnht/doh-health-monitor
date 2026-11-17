@@ -1,4 +1,4 @@
-# Plugin management UI — architecture proposal
+# Plugin management UI
 
 **Status:** Implemented in release 2.2.0; this document records the current behavior and the remaining scope boundaries.
 
@@ -6,7 +6,7 @@
 
 Provide two ways to administer the DoH Health Monitor plugin:
 
-1. An interactive SSH menu, launched by a shell script hosted in this GitHub repository.
+1. An interactive SSH menu, launched from the script bundled in the plugin ZIP; the GitHub-hosted invocation remains available as a bootstrap alternative.
 2. A browser-based management UI, started on demand from that SSH menu and accessed through an SSH local port-forward.
 
 The SSH and web interfaces must call the same Go-side management logic. They must not implement separate versions of integration, removal, or diagnostics.
@@ -38,7 +38,7 @@ The menu requires root. It locates the installed plugin executable from `LUCX_PL
 
 The existing daemon behavior remains unchanged: starting the binary without a management command starts the DNS daemon. The `check` action must not modify Xray or plugin configuration.
 
-The script is an orchestration/presentation layer. Administrative operations and their validation remain in Go. The current menu invokes the existing Go `integrate` and `remove` commands after explicit confirmation. Integrate saves permanent DNS objects first, then performs a temporary TCP/UDP Tunnel self-test. LucX-UI applies pending Xray changes asynchronously on a 30-second background cadence, so the self-test allows up to 75 seconds for the temporary Tunnel listeners to appear and polls only once (rather than timing out before the panel's next apply cycle). A failed self-test does not roll back or remove the already verified permanent DNS integration; temporary diagnostic resources are cleaned up separately. Its `check` item first invokes the Go `check` command for read-only service/listener/status diagnostics, then runs the adjacent `scripts/check-dns-integration.sh` included in the ZIP for read-only Xray configuration checks. When the menu is launched from GitHub by process substitution, it downloads the checker from the stable `main` branch as a fallback. The shell checker skips duplicate service/listener/status probes when called by the menu; standalone use still performs the complete check. The menu requires `jq` for Xray JSON checks, and the GitHub bootstrap mode additionally requires `curl` or `wget`. The menu reports a missing plugin binary or failed operation rather than silently continuing. The `web` menu item starts the separate Go Web UI process. The shell keeps the coprocess stdin writer open as a control pipe, parses the readiness line, and prints the SSH tunnel command plus browser URL.
+For a package-installed launch, the adjacent `scripts/check-dns-integration.sh` is used locally; the GitHub process-substitution launch keeps the remote `main`-branch download fallback. The script is an orchestration/presentation layer. Administrative operations and their validation remain in Go. The current menu invokes the existing Go `integrate` and `remove` commands after explicit confirmation. Integrate saves permanent DNS objects first, then performs a temporary TCP/UDP Tunnel self-test. LucX-UI applies pending Xray changes asynchronously on a 30-second background cadence, so the self-test allows up to 75 seconds for the temporary Tunnel listeners to appear and polls only once (rather than timing out before the panel's next apply cycle). A failed self-test does not roll back or remove the already verified permanent DNS integration; temporary diagnostic resources are cleaned up separately. Its `check` item first invokes the Go `check` command for read-only service/listener/status diagnostics, then runs the adjacent `scripts/check-dns-integration.sh` included in the ZIP for read-only Xray configuration checks. When the menu is launched from GitHub by process substitution, it downloads the checker from the stable `main` branch as a fallback. The shell checker skips duplicate service/listener/status probes when called by the menu; standalone use still performs the complete check. The menu requires `jq` for Xray JSON checks, and the GitHub bootstrap mode additionally requires `curl` or `wget`. The menu reports a missing plugin binary or failed operation rather than silently continuing. The `web` menu item starts the separate Go Web UI process. The shell keeps the coprocess stdin writer open as a control pipe, parses the readiness line, and prints the SSH tunnel command plus browser URL.
 
 ## 2. On-demand Web UI
 
