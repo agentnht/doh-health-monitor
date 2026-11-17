@@ -395,3 +395,46 @@ func TestWebUIAutoHostsRoutesRequireSessionAndProxyFullFlow(t *testing.T) {
 		t.Fatalf("unexpected proxied calls: %v",calls)
 	}
 }
+
+
+func TestAutoHostsDaemonAPIRequiresLoopbackAndBearerToken(t *testing.T) {
+	const token = "0123456789abcdef0123456789abcdef0123456789"
+	called := false
+	handler := requireAutoHostsAPIToken(token, func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	request := func(host, origin, bearer string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "http://"+host+"/autohosts/config", nil)
+		req.Host = host
+		if origin != "" { req.Header.Set("Origin", origin) }
+		if bearer != "" { req.Header.Set("Authorization", "Bearer "+bearer) }
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	if got := request("127.0.0.1:18765", "", ""); got.Code != http.StatusUnauthorized {
+		t.Fatalf("missing bearer token status=%d; want 401", got.Code)
+	}
+	if got := request("example.com", "", token); got.Code != http.StatusForbidden {
+		t.Fatalf("non-loopback Host status=%d; want 403", got.Code)
+	}
+	if got := request("127.0.0.1:18765", "http://evil.example", token); got.Code != http.StatusForbidden {
+		t.Fatalf("foreign Origin status=%d; want 403", got.Code)
+	}
+	if got := request("127.0.0.1:18765", "http://127.0.0.1:18765", token); got.Code != http.StatusNoContent {
+		t.Fatalf("valid authenticated request status=%d; want 204", got.Code)
+	}
+	if !called { t.Fatal("authenticated request did not reach the handler") }
+}
+
+func TestWebUILaunchDoesNotIssueSessionToArbitraryLoopbackGET(t *testing.T) {
+	handler := newWebUIHandler("http://127.0.0.1:18765/status", "private-launch-token")
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/", nil)
+	req.Host = "127.0.0.1:19876"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("unauthenticated GET / issued a session: status=%d cookies=%d", rec.Code, len(rec.Result().Cookies()))
+	}
+}
