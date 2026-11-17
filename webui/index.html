@@ -217,6 +217,17 @@
       <div class="row-actions"><button class="secondary" id="check-add" type="button">+ Добавить домен</button><button id="check-save" type="button">Сохранить список</button><span id="check-note" class="muted" role="status"></span></div>
     </section>
 
+    <section class="panel tab-page" data-page-panel="logs" hidden>
+      <div class="result-head"><h2>Лог интеграции / деинтеграции</h2><button id="refresh-integration-log" class="secondary" type="button">Обновить журнал операций</button></div>
+      <p class="muted">Результаты последних операций Integrate и DeIntegrate, включая ошибки и вывод штатной процедуры.</p>
+      <pre class="log-output" id="integration-log">Журнал пока не загружен.</pre>
+    </section>
+    <section class="panel tab-page" data-page-panel="logs" hidden>
+      <div class="result-head"><h2>Логи</h2><button id="refresh-logs" class="secondary" type="button">Обновить логи</button></div>
+      <p class="muted" id="logs-source">Источник: systemd journal / plugin.log.</p>
+      <pre class="log-output" id="logs">Нажмите «Обновить логи».</pre>
+    </section>
+
     <section class="panel tab-page" data-page-panel="tests" hidden>
       <h2>Проверка состояния</h2>
       <p class="muted">Проверяются config.json, файлы списков, фактические DNS-запросы через dig, UDP/HTTP listeners и Xray DNS integration. Предыдущий результат остаётся до нового запуска.</p>
@@ -224,17 +235,6 @@
       <div class="results" id="test-results"></div>
     </section>
 
-    <section class="panel tab-page" data-page-panel="logs" hidden>
-      <div class="result-head"><h2>Логи</h2><button id="refresh-logs" class="secondary" type="button">Обновить логи</button></div>
-      <p class="muted" id="logs-source">Источник: systemd journal / plugin.log.</p>
-      <pre class="log-output" id="logs">Нажмите «Обновить логи».</pre>
-    </section>
-
-    <section class="panel tab-page" data-page-panel="logs" hidden>
-      <div class="result-head"><h2>Лог интеграции / деинтеграции</h2><button id="refresh-integration-log" class="secondary" type="button">Обновить журнал операций</button></div>
-      <p class="muted">Результаты последних операций Integrate и DeIntegrate, включая ошибки и вывод штатной процедуры.</p>
-      <pre class="log-output" id="integration-log">Журнал пока не загружен.</pre>
-    </section>
   </main>
   <script src="/app.js" defer></script>
 </body>
