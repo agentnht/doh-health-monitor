@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"bytes"
 	"context"
 	"io"
@@ -226,7 +227,7 @@ func TestPinnedControllerNeverSwitchesAndPersistsDegradation(t *testing.T) {
 	controller.recordPinnedFailure(errors.New("pinned endpoint unavailable"), now.Add(time.Hour))
 	state := manager.State()
 	if state.ActiveServer != "pinned" { t.Fatalf("active server changed to %q while pinned", state.ActiveServer) }
-	failure, ok := state.ProbeResults["pinned\\x00chatgpt.com"]
+	failure, ok := state.ProbeResults["pinned\x00chatgpt.com"]
 	if !ok { t.Fatal("pinned degradation was not persisted") }
 	if failure.Success || failure.Error != "pinned endpoint unavailable" { t.Fatalf("unexpected pinned diagnostic: %+v", failure) }
 }
