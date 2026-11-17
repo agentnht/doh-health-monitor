@@ -226,6 +226,7 @@ func TestAutoHostsMiddlewareRequiresBearerAndLoopbackHost(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "http://"+tc.host+"/status", nil)
 			req.Host = tc.host
+			req.RemoteAddr = "127.0.0.1:1234"
 			req.Header.Set("Authorization", tc.authorization)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
@@ -498,6 +499,7 @@ func TestAutoHostsDaemonAPIRequiresLoopbackAndBearerToken(t *testing.T) {
 	request := func(host, origin, bearer string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "http://"+host+"/autohosts/config", nil)
 		req.Host = host
+		req.RemoteAddr = "127.0.0.1:1234"
 		if origin != "" {
 			req.Header.Set("Origin", origin)
 		}
