@@ -1577,7 +1577,16 @@ func (r *Runtime) handleTCPConn(ctx context.Context, c net.Conn) {
 		}
 	}
 }
-func (r *Runtime) handleDNS(packet []byte) []byte {
+func (r *Runtime) handleDNS(packet []byte) (response []byte) {
+	// DNS requests are isolated: an unexpected panic must fail only this
+	// request, never take down the daemon's UDP/TCP serving goroutines.
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			r.failures.Add(1)
+			logLine("ERROR", "DNS request panic recovered: %v", recovered)
+			response = servfailResponse(packet)
+		}
+	}()
 	select {
 	case r.dnsSem <- struct{}{}:
 		defer func() { <-r.dnsSem }()
