@@ -1938,3 +1938,63 @@ func TestCacheDoCoalescesConcurrentMisses(t *testing.T) {
 		t.Fatalf("upstream resolver invoked %d times; want exactly once", got)
 	}
 }
+
+
+func TestCNAMEChainIntoAutoHostsFailsClosed(t *testing.T) {
+	now := time.Now().UTC()
+	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
+	if err != nil { t.Fatal(err) }
+	endpoint := autohosts.Endpoint{ServerID:"edge", URL:"https://dns.example/dns-query", Hostname:"dns.example", IPv4:[]string{"8.8.8.8"}, UpdatedAt:now}
+	if err := manager.ApplyCycle("edge", endpoint, []autohosts.ProbeResult{{Domain:"chatgpt.com", Success:true, CheckedAt:now}}, now); err != nil { t.Fatal(err) }
+	if err := manager.SetEnabled(true); err != nil { t.Fatal(err) }
+
+	query := makeDNSQuery("alias.example", 1)
+	response := append([]byte(nil), query...)
+	binary.BigEndian.PutUint16(response[2:4], 0x8180)
+	binary.BigEndian.PutUint16(response[6:8], 1)
+	binary.BigEndian.PutUint16(response[10:12], 1)
+	target := appendDNSName(nil, "chatgpt.com")
+	response = append(response, 0xc0, 0x0c, 0, 5, 0, 1, 0, 0, 0, 60, byte(len(target)>>8), byte(len(target)))
+	response = append(response, target...)
+	// A real target address in Additional must not leak through the CNAME.
+	response = append(response, appendDNSName(nil, "chatgpt.com")...)
+	response = append(response, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 7)
+	if !cnameChainTargetsAutoHosts(response, "alias.example", 1, manager) {
+		t.Fatal("CNAME into Auto Hosts must be detected and blocked")
+	}
+}
+
+func TestNegativeSOATTLUsesRFC2308Minimum(t *testing.T) {
+	query := makeDNSQuery("negative.example", 1)
+	response := append([]byte(nil), query...)
+	binary.BigEndian.PutUint16(response[2:4], 0x8183) // NXDOMAIN
+	binary.BigEndian.PutUint16(response[8:10], 1) // one authority SOA
+	soa := appendDNSName(nil, "ns.example")
+	soa = append(soa, appendDNSName(nil, "hostmaster.example")...)
+	for _, v := range []uint32{1, 2, 3, 4, 60} {
+		var b [4]byte
+		binary.BigEndian.PutUint32(b[:], v)
+		soa = append(soa, b[:]...)
+	}
+	response = append(response, 0xc0, 0x0c, 0, 6, 0, 1, 0, 0, 2, 88, byte(len(soa)>>8), byte(len(soa)))
+	response = append(response, soa...)
+	ttl, ok := negativeSOATTL(response)
+	if !ok || ttl != 60 {
+		t.Fatalf("negative SOA TTL = %d, %v; want min(600, 60)", ttl, ok)
+	}
+}
+
+func TestLocalDNSReplyDoesNotReflectEDNSClientOptions(t *testing.T) {
+	query := makeDNSQuery("local.example", 1)
+	// OPT: UDP size 1232, DO bit, and a COOKIE option.
+	query = append(query, 0, 0, 41, 4, 208, 0, 0, 128, 0, 0, 8, 0, 10, 0, 4, 1, 2, 3, 4)
+	binary.BigEndian.PutUint16(query[10:12], 1)
+	response, matched := localHostsResponse(query, "local.example", 1, map[string]LocalHost{"local.example":{IPv4:[]string{"192.0.2.1"}}})
+	if !matched { t.Fatal("expected local-host response") }
+	if bytes.Contains(response, []byte{0, 10, 0, 4, 1, 2, 3, 4}) {
+		t.Fatal("server response reflected client COOKIE option")
+	}
+	if !bytes.Contains(response, []byte{0, 0, 41, 4, 208, 0, 0, 128, 0, 0, 0}) {
+		t.Fatal("response OPT must retain UDP size and DO bit but contain no options")
+	}
+}
