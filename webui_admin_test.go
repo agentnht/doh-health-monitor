@@ -190,3 +190,43 @@ func TestWebUISafeListenerProbeRejectsPublicAddresses(t *testing.T) {
 		}
 	}
 }
+
+func TestWebUIIntegrationOperationLogPersistsAndRedactsCredentials(t *testing.T) {
+	dir := t.TempDir()
+	logger := &webUIOperationLogger{dataDir: dir}
+	logger.Printf("INTEGRATION action=INTEGRATE started")
+	logger.Printf("Authorization: Bearer secret-token-value")
+
+	lines, err := readWebUIIntegrationLog(dir, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "INTEGRATION action=INTEGRATE started") {
+		t.Fatalf("integration log is missing operation record: %s", joined)
+	}
+	if strings.Contains(joined, "secret-token-value") || !strings.Contains(joined, "[REDACTED]") {
+		t.Fatalf("integration log did not redact credential: %s", joined)
+	}
+}
+
+func TestWebUIPageHasTabsAndHeaderIntegrationActions(t *testing.T) {
+	handler := webUIHandler()
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/", nil)
+	request.Host = "127.0.0.1:19876"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	page := recorder.Body.String()
+
+	for _, label := range []string{"Конфигурация", "DoH-сервера", "Домены", "Проверка состояния", "Логи", "DeIntegrate", "Integrate"} {
+		if !strings.Contains(page, label) {
+			t.Errorf("Web UI page is missing %q", label)
+		}
+	}
+	if strings.Contains(page, "integration-check") {
+		t.Fatal("standalone integration check control must be removed from the UI")
+	}
+	if !strings.Contains(page, `data-page="tests"`) || !strings.Contains(page, `data-page-panel="tests"`) {
+		t.Fatal("tests tab is not connected to its page")
+	}
+}
