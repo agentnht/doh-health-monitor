@@ -442,7 +442,8 @@ func runWebUIWithStatusURL(statusURL string) error {
 	if _, err := rand.Read(token); err != nil {
 		return fmt.Errorf("create Web UI session token: %w", err)
 	}
-	handler := newWebUIHandlerWithDataDir(statusURL, base64.RawURLEncoding.EncodeToString(token), strings.TrimSpace(os.Getenv("LUCX_PLUGIN_DATA")))
+	sessionToken := base64.RawURLEncoding.EncodeToString(token)
+	handler := newWebUIHandlerWithDataDir(statusURL, sessionToken, strings.TrimSpace(os.Getenv("LUCX_PLUGIN_DATA")))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return fmt.Errorf("listen on Web UI loopback: %w", err)
@@ -460,7 +461,7 @@ func runWebUIWithStatusURL(statusURL string) error {
 	}()
 
 	port := listener.Addr().(*net.TCPAddr).Port
-	if _, err := fmt.Fprintf(os.Stdout, "WEB_UI_READY port=%d\n", port); err != nil {
+	if _, err := fmt.Fprintf(os.Stdout, "WEB_UI_READY port=%d token=%s\n", port, sessionToken); err != nil {
 		_ = listener.Close()
 		return fmt.Errorf("write Web UI readiness: %w", err)
 	}
