@@ -223,6 +223,7 @@ func newWebUIHandlerWithDataDir(statusURL, launchToken, dataDir string) http.Han
 				subtle.ConstantTimeCompare([]byte(input.Token), []byte(launchToken)) == 1
 			if valid {
 				launchUsed = true
+				launchToken = ""
 			}
 			launchMu.Unlock()
 			if !valid {
