@@ -219,6 +219,11 @@ func (m *Manager) ApplyFullCycle(activeID string, endpoints []Endpoint, results 
 			if checked.UpdatedAt.IsZero() { checked.UpdatedAt = now.UTC() }
 			s.Endpoints[checked.ServerID] = checked
 		}
+		for id := range s.Endpoints {
+			if !seenEndpoints[id] && !(s.Config.Mode == "pinned" && s.Config.PinnedServerID == id) {
+				delete(s.Endpoints, id)
+			}
+		}
 		if _, ok := s.Endpoints[activeID]; !ok {
 			return fmt.Errorf("active endpoint %q is missing", activeID)
 		}
