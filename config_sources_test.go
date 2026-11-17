@@ -229,7 +229,9 @@ func TestApplyConfigSourcesGeneratesOrderedUpstreamsAndPreservesRuntimeSettings(
 	}
 	urls := make(map[string]string, len(providers))
 	for _, provider := range providers {
-		urls[provider.ID] = provider.URL
+		if !provider.System {
+			urls[provider.ID] = provider.URL
+		}
 	}
 	generated, err := applyConfigSources(cfg, ConfigSources{Providers: providers, Checks: checks, DoHURLs: urls, SystemDNSEnabled: true})
 	if err != nil {
