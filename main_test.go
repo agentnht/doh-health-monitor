@@ -1645,3 +1645,65 @@ func TestAutoHostsConfigHotReloadTriggersBackgroundController(t *testing.T) {
 	default:
 	}
 }
+
+
+func TestRRCacheTTLDoesNotTreatOPTFlagsAsTTL(t *testing.T) {
+	packet := make([]byte, 12)
+	binary.BigEndian.PutUint16(packet[2:4], 0x8180)
+	binary.BigEndian.PutUint16(packet[4:6], 1)
+	binary.BigEndian.PutUint16(packet[6:8], 1)
+	binary.BigEndian.PutUint16(packet[10:12], 1)
+	packet = append(packet, 1, 'a', 0, 0, 1, 0, 1)
+	packet = append(packet, 0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 120, 0, 4, 192, 0, 2, 1)
+	packet = append(packet, 0, 0, 41, 0x10, 0, 0, 0, 0x80, 0, 0, 0, 0)
+
+	ttl, ok := minResponseTTL(packet)
+	if !ok || ttl != 120 { t.Fatalf("minResponseTTL = %d, %v; want 120, true", ttl, ok) }
+	positions, err := rrTTLPositions(packet)
+	if err != nil || len(positions) != 1 { t.Fatalf("rrTTLPositions = %v, %v; want one real RR TTL", positions, err) }
+	decrementTTLs(packet, 5)
+	if got := binary.BigEndian.Uint32(packet[positions[0]:positions[0]+4]); got != 115 {
+		t.Fatalf("answer TTL = %d; want 115", got)
+	}
+	if got := binary.BigEndian.Uint32(packet[len(packet)-10:len(packet)-6]); got != 0x8000 {
+		t.Fatalf("OPT flags = %#x; want DO bit %#x", got, uint32(0x8000))
+	}
+}
+
+func TestErrorResponseKeepsQuestionConsistentWithQDCount(t *testing.T) {
+	query := makeDNSQuery("example.com", 1)
+	for _, code := range []uint16{1, 2} {
+		response := errorResponse(query, code)
+		if got := binary.BigEndian.Uint16(response[4:6]); got != 1 { t.Fatalf("QDCOUNT = %d; want 1", got) }
+		if len(response) != len(query) { t.Fatalf("response length = %d; want question length %d", len(response), len(query)) }
+		if binary.BigEndian.Uint16(response[6:12]) != 0 { t.Fatal("error response retained RR counts") }
+		if got := dnsRCode(response); got != int(code) { t.Fatalf("rcode = %d; want %d", got, code) }
+	}
+	malformed := make([]byte, 16)
+	binary.BigEndian.PutUint16(malformed[4:6], 1)
+	malformed[12] = 0xc0
+	malformed[13] = 0xff
+	response := formerrResponse(malformed)
+	if len(response) != 12 || binary.BigEndian.Uint16(response[4:6]) != 0 {
+		t.Fatalf("malformed error response must be header-only: len=%d qd=%d", len(response), binary.BigEndian.Uint16(response[4:6]))
+	}
+}
+
+func TestTruncateDNSUDPResponseSetsTCAndKeepsWholeRecords(t *testing.T) {
+	query := makeDNSQuery("example.com", 1)
+	response := append([]byte(nil), query...)
+	binary.BigEndian.PutUint16(response[2:4], 0x8180)
+	binary.BigEndian.PutUint16(response[6:8], 1)
+	rdata := make([]byte, 900)
+	rdata[0] = 192
+	rdata[1] = 0
+	rdata[2] = 2
+	rdata[3] = 1
+	response = append(response, 0xc0, 0x0c, 0, 16, 0, 1, 0, 0, 0, 60, byte(len(rdata)>>8), byte(len(rdata)))
+	response = append(response, rdata...)
+	got := truncateDNSUDPResponse(response, 512)
+	if len(got) > 512 { t.Fatalf("truncated response length = %d; max 512", len(got)) }
+	if !dnsTruncated(got) { t.Fatal("truncated response is missing TC flag") }
+	if binary.BigEndian.Uint16(got[4:6]) != 1 { t.Fatal("truncated response lost its question") }
+	if binary.BigEndian.Uint16(got[6:8]) != 0 { t.Fatal("partial answer RR was retained") }
+}
