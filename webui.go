@@ -27,6 +27,69 @@ var webUIAssets embed.FS
 
 const webUISessionCookie = "doh_web_session"
 
+const autoHostsAPITokenFile = "auto-hosts-api.token"
+
+func loadOrCreateAutoHostsAPIToken(dataDir string) (string, error) {
+	if strings.TrimSpace(dataDir) == "" {
+		return "", errors.New("plugin data directory is required for Auto Hosts API token")
+	}
+	path := filepath.Join(dataDir, autoHostsAPITokenFile)
+	read := func() (string, error) {
+		info, err := os.Lstat(path)
+		if err != nil { return "", err }
+		if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+			return "", errors.New("Auto Hosts API token file must be regular and mode 0600")
+		}
+		data, err := os.ReadFile(path)
+		if err != nil { return "", err }
+		token := strings.TrimSpace(string(data))
+		if len(token) < 40 || len(token) > 128 { return "", errors.New("Auto Hosts API token file has invalid length") }
+		return token, nil
+	}
+	if token, err := read(); err == nil { return token, nil } else if !errors.Is(err, os.ErrNotExist) { return "", err }
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil { return "", fmt.Errorf("generate Auto Hosts API token: %w", err) }
+	token := base64.RawURLEncoding.EncodeToString(raw)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if errors.Is(err, os.ErrExist) { return read() }
+	if err != nil { return "", err }
+	if _, err = io.WriteString(file, token+"\n"); err == nil { err = file.Sync() }
+	closeErr := file.Close()
+	if err != nil { _ = os.Remove(path); return "", err }
+	if closeErr != nil { _ = os.Remove(path); return "", closeErr }
+	return token, nil
+}
+
+func readAutoHostsAPIToken(dataDir string) (string, error) {
+	if strings.TrimSpace(dataDir) == "" { return "", errors.New("plugin data directory is required") }
+	path := filepath.Join(dataDir, autoHostsAPITokenFile)
+	info, err := os.Lstat(path)
+	if err != nil { return "", err }
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+		return "", errors.New("Auto Hosts API token file must be regular and mode 0600")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil { return "", err }
+	token := strings.TrimSpace(string(data))
+	if len(token) < 40 || len(token) > 128 { return "", errors.New("Auto Hosts API token file has invalid length") }
+	return token, nil
+}
+
+func requireAutoHostsAPIToken(token string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !isLoopbackWebHost(r.Host) || !validWebUIOrigin(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		provided := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		if provided == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
+}
+
 type webUIProbeStatus struct {
 	Domain      string `json:"domain"`
 	Required    bool   `json:"required"`
@@ -105,10 +168,21 @@ func newWebUIHandlerWithDataDir(statusURL, sessionToken, dataDir string) http.Ha
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
-			http.SetCookie(w, &http.Cookie{
-				Name: webUISessionCookie, Value: sessionToken, Path: "/",
-				HttpOnly: true, SameSite: http.SameSiteStrictMode,
-			})
+			if !webUIRequestAuthorized(r, sessionToken) {
+				provided := r.URL.Query().Get("access_token")
+				if r.Method != http.MethodGet || provided == "" ||
+					subtle.ConstantTimeCompare([]byte(provided), []byte(sessionToken)) != 1 {
+					http.Error(w, "Web UI launch token required", http.StatusUnauthorized)
+					return
+				}
+				http.SetCookie(w, &http.Cookie{
+					Name: webUISessionCookie, Value: sessionToken, Path: "/",
+					HttpOnly: true, SameSite: http.SameSiteStrictMode,
+				})
+				w.Header().Set("Location", "/")
+				w.WriteHeader(http.StatusSeeOther)
+				return
+			}
 			serveWebUIAsset(w, r, "webui/index.html", "text/html; charset=utf-8")
 		case "/app.js":
 			if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -150,14 +224,19 @@ func newWebUIHandlerWithDataDir(statusURL, sessionToken, dataDir string) http.Ha
 				http.Error(w, "authentication required", http.StatusUnauthorized)
 				return
 			}
-			proxyWebUIAutoHostsAPI(w, r, statusURL)
+			proxyWebUIAutoHostsAPI(w, r, statusURL, dataDir)
 		default:
 			http.NotFound(w, r)
 		}
 	})
 }
 
-func proxyWebUIAutoHostsAPI(w http.ResponseWriter, r *http.Request, statusURL string) {
+func proxyWebUIAutoHostsAPI(w http.ResponseWriter, r *http.Request, statusURL, dataDir string) {
+	apiToken, tokenErr := readAutoHostsAPIToken(dataDir)
+	if tokenErr != nil {
+		http.Error(w, "local Auto Hosts API authentication is unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	parsed, err := url.Parse(statusURL)
 	if err != nil || parsed.Scheme != "http" || parsed.User != nil || parsed.Host == "" ||
 		parsed.Path != "/status" || parsed.RawQuery != "" || parsed.Fragment != "" || !isLoopbackWebHost(parsed.Host) {
@@ -197,6 +276,7 @@ func proxyWebUIAutoHostsAPI(w http.ResponseWriter, r *http.Request, statusURL st
 	req, err := http.NewRequestWithContext(ctx, r.Method, target, body)
 	if err != nil { http.Error(w, "could not create local Auto Hosts request", http.StatusBadGateway); return }
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiToken)
 	if body != nil { req.Header.Set("Content-Type", "application/json") }
 	transport := &http.Transport{Proxy:nil}
 	client := &http.Client{Transport:transport, Timeout:timeout, CheckRedirect:func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
