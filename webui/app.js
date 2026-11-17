@@ -383,34 +383,57 @@
       " · " + when(summary.run_at);
     text("tests-summary", label);
     for (const test of summary.tests || []) {
-      const card = document.createElement("div");
+      const card = document.createElement("details");
       card.className = "result";
-      const head = document.createElement("div");
-      head.className = "result-head";
+
+      const head = document.createElement("summary");
+      head.className = "result-summary";
       const name = document.createElement("span");
       name.className = "result-name";
       name.textContent = test.name || "Проверка";
+
       const state = document.createElement("span");
-      state.className = "result-status " + (test.status === "OK" ? "ok" : "bad");
-      state.textContent = test.status || "NotOK";
-      head.append(name, state);
+      const passed = test.status === "OK";
+      state.className = "result-status " + (passed ? "ok" : "bad");
+      state.textContent = passed ? "OK" : (test.status || "NotOK");
+
+      const toggle = document.createElement("span");
+      toggle.className = "result-toggle";
+      toggle.setAttribute("aria-hidden", "true");
+      toggle.textContent = passed ? "✓" : "›";
+      head.append(name, state, toggle);
       card.append(head);
+
+      const content = document.createElement("div");
+      content.className = "result-details";
       if (test.domain) {
         const meta = document.createElement("p");
         meta.className = "muted";
         meta.textContent = test.domain + " · " + test.qtype + " · " + number(test.duration_ms) + " мс";
-        card.append(meta);
+        content.append(meta);
+      } else if (test.duration_ms) {
+        const meta = document.createElement("p");
+        meta.className = "muted";
+        meta.textContent = number(test.duration_ms) + " мс";
+        content.append(meta);
       }
       if (test.answer) {
         const answer = document.createElement("pre");
         answer.textContent = test.answer;
-        card.append(answer);
+        content.append(answer);
       }
       if (test.reason) {
         const reason = document.createElement("pre");
         reason.textContent = test.reason;
-        card.append(reason);
+        content.append(reason);
       }
+      if (!content.childNodes.length) {
+        const empty = document.createElement("p");
+        empty.className = "muted";
+        empty.textContent = "Дополнительные сведения отсутствуют.";
+        content.append(empty);
+      }
+      card.append(content);
       root.append(card);
     }
   }
