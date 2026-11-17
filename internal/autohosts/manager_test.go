@@ -180,3 +180,28 @@ func TestConcurrentSnapshotReadsAndAtomicCycles(t *testing.T) {
 	if err!=nil { t.Fatal(err) }
 	if reloaded.Snapshot()==nil||reloaded.Snapshot().ActiveServer!="edge" { t.Fatal("atomic cycle state was not restored after concurrent reads") }
 }
+
+
+func TestPinnedAndEmergencyOffPersistAcrossRestart(t *testing.T) {
+	path:=filepath.Join(t.TempDir(),"state.json")
+	now:=time.Now().UTC()
+	m,err:=New(path)
+	if err!=nil { t.Fatal(err) }
+	ep:=Endpoint{ServerID:"edge",URL:"https://dns.example/dns-query",Hostname:"dns.example",IPv4:[]string{"8.8.8.8"},UpdatedAt:now}
+	if err=m.ApplyCycle("edge",ep,[]ProbeResult{{Domain:"chatgpt.com",Success:true,CheckedAt:now}},now);err!=nil { t.Fatal(err) }
+	enabled,emergency,pinned:=true,true,"edge"
+	if err=m.Configure(&enabled,&emergency,&pinned);err!=nil { t.Fatal(err) }
+	reloaded,err:=New(path)
+	if err!=nil { t.Fatal(err) }
+	state:=reloaded.State()
+	if !state.Config.Enabled||!state.Config.EmergencyOff||state.Config.Mode!="pinned"||state.Config.PinnedServerID!="edge" {
+		t.Fatalf("pinned/Emergency OFF settings did not survive restart: %+v",state.Config)
+	}
+	if _,_,matched:=reloaded.Snapshot().Lookup("chatgpt.com",1,now);matched { t.Fatal("Emergency OFF must remain active after restart") }
+	restore:=false
+	auto:=""
+	if err=reloaded.Configure(nil,&restore,&auto);err!=nil { t.Fatal(err) }
+	again,err:=New(path)
+	if err!=nil { t.Fatal(err) }
+	if again.State().Config.EmergencyOff||again.State().Config.Mode!="auto" { t.Fatalf("explicit restore was not persisted: %+v",again.State().Config) }
+}
