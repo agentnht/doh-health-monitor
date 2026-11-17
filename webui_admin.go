@@ -686,7 +686,7 @@ func readWebUILogs(dataDir string, count int) ([]string, string, error) {
 			source = "systemd journal"
 		}
 	}
-	_, rootErr := webUIDataRoot(dataDir)
+	root, rootErr := webUIDataRoot(dataDir)
 	if len(all) == 0 && rootErr == nil {
 		parentLog := filepath.Join(filepath.Dir(root), "plugin.log")
 		if lines, err := readWebUILogFile(parentLog, count); err == nil && len(lines) > 0 {
