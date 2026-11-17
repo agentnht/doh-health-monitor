@@ -279,12 +279,13 @@ run_web_ui() {
     stop_web_ui
     return 1
   fi
-  if [[ ! "$ready" =~ ^WEB_UI_READY\ port=([0-9]{1,5})$ ]]; then
-    fail "Web UI вернул некорректный readiness-ответ: $ready"
+  if [[ ! "$ready" =~ ^WEB_UI_READY\\ port=([0-9]{1,5})\\ token=([A-Za-z0-9_-]{40,})$ ]]; then
+    fail "Web UI вернул некорректный readiness-ответ."
     stop_web_ui
     return 1
   fi
   remote_port="${BASH_REMATCH[1]}"
+  launch_token="${BASH_REMATCH[2]}"
   if (( remote_port < 1 || remote_port > 65535 )); then
     fail "Web UI сообщил недопустимый TCP-порт."
     stop_web_ui
