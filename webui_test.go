@@ -339,3 +339,39 @@ func TestWebUIAutoHostsProxyOnlyTargetsLoopbackDaemon(t *testing.T) {
 	proxyWebUIAutoHostsAPI(badResponse, badRequest, "http://example.com/status")
 	if badResponse.Code != http.StatusServiceUnavailable { t.Fatalf("non-loopback status URL was accepted: %d", badResponse.Code) }
 }
+
+
+func TestWebUIAutoHostsRoutesRequireSessionAndProxyFullFlow(t *testing.T) {
+	var calls []string
+	daemon:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+		body,_:=io.ReadAll(r.Body)
+		calls=append(calls,r.Method+" "+r.URL.Path+" "+string(body))
+		w.Header().Set("Content-Type","application/json")
+		_,_=w.Write([]byte(`{"ok":true,"active_server":"edge"}`))
+	}))
+	defer daemon.Close()
+	handler:=newWebUIHandler(daemon.URL+"/status","auto-hosts-session")
+	request:=func(method,path,body string,authenticated bool)*httptest.ResponseRecorder{
+		req:=httptest.NewRequest(method,"http://127.0.0.1:19876"+path,strings.NewReader(body))
+		req.Host="127.0.0.1:19876"
+		if authenticated { req.AddCookie(&http.Cookie{Name:webUISessionCookie,Value:"auto-hosts-session"}) }
+		rec:=httptest.NewRecorder()
+		handler.ServeHTTP(rec,req)
+		return rec
+	}
+	for _,tc:=range []struct{method,path,body,want string}{
+		{http.MethodGet,"/api/v1/autohosts/status","","GET /autohosts/status "},
+		{http.MethodPost,"/api/v1/autohosts/config",`{"enabled":true,"pinned_server_id":"edge"}`,"POST /autohosts/config "},
+		{http.MethodPost,"/api/v1/autohosts/dry-run",`{}`,"POST /autohosts/dry-run "},
+	}{
+		unauth:=request(tc.method,tc.path,tc.body,false)
+		if unauth.Code!=http.StatusUnauthorized { t.Errorf("unauthenticated %s: status=%d",tc.path,unauth.Code) }
+		rec:=request(tc.method,tc.path,tc.body,true)
+		if rec.Code!=http.StatusOK { t.Errorf("authenticated %s: status=%d body=%s",tc.path,rec.Code,rec.Body.String()) }
+		if !strings.Contains(rec.Body.String(),`"active_server":"edge"`) { t.Errorf("%s response missing daemon payload: %s",tc.path,rec.Body.String()) }
+	}
+	if len(calls)!=3 { t.Fatalf("daemon calls=%d, want 3: %v",len(calls),calls) }
+	if calls[0]!="GET /autohosts/status "||calls[1]!="POST /autohosts/config "+`{"enabled":true,"pinned_server_id":"edge"}`||calls[2]!="POST /autohosts/dry-run {}" {
+		t.Fatalf("unexpected proxied calls: %v",calls)
+	}
+}
