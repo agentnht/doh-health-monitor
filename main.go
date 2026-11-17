@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"lucx-doh-health-monitor/internal/autohosts"
 	"lucx-doh-health-monitor/internal/dohintegration"
 )
 
@@ -341,76 +342,76 @@ func main() {
 
 func runManagementCommand(args []string) {
 	if len(args) == 0 {
-		return
+	return
 	}
-		action := strings.ToLower(strings.TrimSpace(args[0]))
-		if action == "web" {
-			if len(args) != 2 {
-				logLine("ERROR", "WEB_UI does not accept additional arguments")
-				os.Exit(2)
-			}
-			if err := runWebUI(); err != nil {
-				logLine("ERROR", "WEB_UI: %v", err)
-				os.Exit(1)
-			}
-			return
-		}
-		if action == "check" {
-			logger := lucxIntegrationLogger{}
-			if err := dohintegration.RunCommand(args, logger); err != nil {
-				logLine("ERROR", "CHECK: %v", err)
-				os.Exit(1)
-			}
-			return
-		}
-		if action != "integrate" && action != "remove" {
-			logLine("ERROR", "CLI supports integrate, remove, check, and web")
+	action := strings.ToLower(strings.TrimSpace(args[0]))
+	if action == "web" {
+		if len(args) != 2 {
+			logLine("ERROR", "WEB_UI does not accept additional arguments")
 			os.Exit(2)
 		}
-		dataDir, err := dohintegration.PluginDataDir()
-		if err != nil {
-			logLine("ERROR", "INTEGRATION data directory: %v", err)
+		if err := runWebUI(); err != nil {
+			logLine("ERROR", "WEB_UI: %v", err)
 			os.Exit(1)
 		}
-		if err := os.MkdirAll(dataDir, 0700); err != nil {
-			logLine("ERROR", "INTEGRATION create data directory failed")
-			os.Exit(1)
-		}
-		configPath := filepath.Join(dataDir, "config.json")
-		if _, err := loadConfig(configPath); err != nil {
-			logLine("ERROR", "INTEGRATION config is invalid: %v", err)
-			os.Exit(1)
-		}
-		pluginLog, err := os.OpenFile(filepath.Join(filepath.Dir(dataDir), "plugin.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-		if err != nil {
-			logLine("ERROR", "INTEGRATION cannot open plugin.log: %v", err)
-			os.Exit(1)
-		}
-		info, err := pluginLog.Stat()
-		if err != nil || !info.Mode().IsRegular() {
-			_ = pluginLog.Close()
-			logLine("ERROR", "INTEGRATION plugin.log is not a regular file")
-			os.Exit(1)
-		}
-		if err := pluginLog.Chmod(0600); err != nil {
-			_ = pluginLog.Close()
-			logLine("ERROR", "INTEGRATION cannot secure plugin.log: %v", err)
-			os.Exit(1)
-		}
-		defer pluginLog.Close()
-		logger := lucxIntegrationLogger{file: pluginLog}
-		logger.Printf("INTEGRATION directive=%s started", strings.ToUpper(action))
-		if err := dohintegration.RunCommand(args, logger); err != nil {
-			logger.Printf("INTEGRATION directive=%s failed: %v", strings.ToUpper(action), err)
-			os.Exit(1)
-		}
-		enabled := action == "integrate"
-		if err := setIntegrationFlag(configPath, enabled); err != nil {
-			logger.Printf("INTEGRATION directive=%s succeeded but config flag update failed: %v", strings.ToUpper(action), err)
-			os.Exit(1)
-		}
-		logger.Printf("INTEGRATION directive=%s completed integration=%t", strings.ToUpper(action), enabled)
 		return
+	}
+	if action == "check" {
+		logger := lucxIntegrationLogger{}
+		if err := dohintegration.RunCommand(args, logger); err != nil {
+			logLine("ERROR", "CHECK: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if action != "integrate" && action != "remove" {
+		logLine("ERROR", "CLI supports integrate, remove, check, and web")
+		os.Exit(2)
+	}
+	dataDir, err := dohintegration.PluginDataDir()
+	if err != nil {
+		logLine("ERROR", "INTEGRATION data directory: %v", err)
+		os.Exit(1)
+	}
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		logLine("ERROR", "INTEGRATION create data directory failed")
+		os.Exit(1)
+	}
+	configPath := filepath.Join(dataDir, "config.json")
+	if _, err := loadConfig(configPath); err != nil {
+		logLine("ERROR", "INTEGRATION config is invalid: %v", err)
+		os.Exit(1)
+	}
+	pluginLog, err := os.OpenFile(filepath.Join(filepath.Dir(dataDir), "plugin.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		logLine("ERROR", "INTEGRATION cannot open plugin.log: %v", err)
+		os.Exit(1)
+	}
+	info, err := pluginLog.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		_ = pluginLog.Close()
+		logLine("ERROR", "INTEGRATION plugin.log is not a regular file")
+		os.Exit(1)
+	}
+	if err := pluginLog.Chmod(0600); err != nil {
+		_ = pluginLog.Close()
+		logLine("ERROR", "INTEGRATION cannot secure plugin.log: %v", err)
+		os.Exit(1)
+	}
+	defer pluginLog.Close()
+	logger := lucxIntegrationLogger{file: pluginLog}
+	logger.Printf("INTEGRATION directive=%s started", strings.ToUpper(action))
+	if err := dohintegration.RunCommand(args, logger); err != nil {
+		logger.Printf("INTEGRATION directive=%s failed: %v", strings.ToUpper(action), err)
+		os.Exit(1)
+	}
+	enabled := action == "integrate"
+	if err := setIntegrationFlag(configPath, enabled); err != nil {
+		logger.Printf("INTEGRATION directive=%s succeeded but config flag update failed: %v", strings.ToUpper(action), err)
+		os.Exit(1)
+	}
+	logger.Printf("INTEGRATION directive=%s completed integration=%t", strings.ToUpper(action), enabled)
+	return
 }
 
 type lucxIntegrationLogger struct{ file *os.File }
