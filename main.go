@@ -3190,6 +3190,70 @@ func dnsRCode(p []byte) int {
 	return int(binary.BigEndian.Uint16(p[2:4]) & 0x000f)
 }
 func dnsTruncated(p []byte) bool { return len(p) >= 4 && (binary.BigEndian.Uint16(p[2:4])&0x0200) != 0 }
+
+func truncateDNSUDPResponse(packet []byte, limit int) []byte {
+	if len(packet) <= limit || limit < 12 || len(packet) < 12 {
+		return packet
+	}
+	questionEnd := 12
+	qd := int(binary.BigEndian.Uint16(packet[4:6]))
+	for i := 0; i < qd; i++ {
+		next, err := skipName(packet, questionEnd)
+		if err != nil || next+4 > len(packet) {
+			return dnsTruncatedHeader(packet)
+		}
+		questionEnd = next + 4
+	}
+	if questionEnd > limit {
+		return dnsTruncatedHeader(packet)
+	}
+	out := append([]byte(nil), packet[:questionEnd]...)
+	counts := [3]uint16{}
+	off := questionEnd
+	truncated := false
+	for section := 0; section < 3; section++ {
+		count := int(binary.BigEndian.Uint16(packet[6+section*2 : 8+section*2]))
+		for i := 0; i < count; i++ {
+			start := off
+			next, err := skipName(packet, off)
+			if err != nil || next+10 > len(packet) {
+				truncated = true
+				break
+			}
+			rdlen := int(binary.BigEndian.Uint16(packet[next+8 : next+10]))
+			off = next + 10 + rdlen
+			if off > len(packet) || len(out)+(off-start) > limit {
+				truncated = true
+				break
+			}
+			out = append(out, packet[start:off]...)
+			counts[section]++
+		}
+		if truncated {
+			break
+		}
+	}
+	for i, count := range counts {
+		binary.BigEndian.PutUint16(out[6+i*2:8+i*2], count)
+	}
+	if truncated || len(out) < len(packet) {
+		flags := binary.BigEndian.Uint16(out[2:4]) | 0x0200
+		binary.BigEndian.PutUint16(out[2:4], flags)
+	}
+	return out
+}
+
+func dnsTruncatedHeader(packet []byte) []byte {
+	if len(packet) < 12 {
+		return packet
+	}
+	out := append([]byte(nil), packet[:12]...)
+	binary.BigEndian.PutUint16(out[2:4], binary.BigEndian.Uint16(out[2:4])|0x0200)
+	for i := 4; i < 12; i += 2 {
+		binary.BigEndian.PutUint16(out[i:i+2], 0)
+	}
+	return out
+}
 func dnsAnswerCount(p []byte) int {
 	if len(p) < 8 {
 		return 0
