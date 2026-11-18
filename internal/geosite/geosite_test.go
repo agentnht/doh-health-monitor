@@ -57,3 +57,20 @@ func TestParseRejectsEmptySelection(t *testing.T) {
 		t.Fatal("expected empty selection error")
 	}
 }
+
+func TestParseCategoriesAndMatchAny(t *testing.T) {
+	categories, err := ParseCategories(fixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(categories) != 1 || categories[0] != "TEST" {
+		t.Fatalf("categories = %#v; want [TEST]", categories)
+	}
+	matcher, err := Parse(fixture(), categories)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !matcher.MatchAny("www.example.com") || matcher.MatchAny("notexample.com") {
+		t.Fatal("MatchAny did not apply the selected category suffix boundary")
+	}
+}

@@ -1737,6 +1737,45 @@ func TestHandleDNSAutoHostsEndToEndAndEmergencyBypass(t *testing.T) {
 		t.Fatalf("Emergency OFF Quad9 calls=%d qname=%q", fallbackCalls.Load(), fallbackName)
 	}
 }
+
+func TestDNSGeositeHitRecordsUserDomainAndMapsActiveEndpoint(t *testing.T) {
+	now := time.Now().UTC()
+	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := autohosts.Endpoint{
+		ServerID: "edge", URL: "https://dns.example/dns-query", Hostname: "dns.example",
+		IPv4: []string{"8.8.4.4"}, UpdatedAt: now,
+	}
+	probes := []autohosts.ProbeResult{{Domain: "chatgpt.com", Success: true, CheckedAt: now}}
+	if err := manager.ApplyCycle("edge", endpoint, probes, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := &Runtime{autoHosts: manager, dnsSem: make(chan struct{}, 1)}
+	startTestAutoHostsRecorder(t, runtime, "protected.example")
+	runtime.snapshot.Store(&Snapshot{
+		cfg:        Config{Cache: CacheConfig{Enabled: false}},
+		localHosts: map[string]LocalHost{},
+		upstreams:  map[string]*UpstreamRuntime{},
+		groups:     map[string]Group{},
+	})
+
+	response := runtime.handleDNS(makeDNSQuery("protected.example", 1))
+	ips, err := parseARecords(response)
+	if err != nil || len(ips) != 1 || ips[0] != "8.8.4.4" {
+		t.Fatalf("Geosite endpoint A response=%v err=%v", ips, err)
+	}
+	record, ok := manager.State().Domains["protected.example"]
+	if !ok || record.Source != "query" || record.LastSeen.IsZero() {
+		t.Fatalf("user QNAME was not persisted with query lifecycle metadata: %+v", record)
+	}
+}
+
 func TestHandleDNSManualLocalHostsOverrideAutoHosts(t *testing.T) {
 	now := time.Now().UTC()
 	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
@@ -2051,6 +2090,22 @@ func TestCNAMEChainIntoAutoHostsFailsClosed(t *testing.T) {
 	response = append(response, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 7)
 	if !cnameChainTargetsAutoHosts(response, "alias.example", 1, manager) {
 		t.Fatal("CNAME into Auto Hosts must be detected and blocked")
+	}
+
+	// A Geosite-selected target is protected before it has been persisted.
+	selectedTarget := "protected.example"
+	geoResponse := append([]byte(nil), query...)
+	binary.BigEndian.PutUint16(geoResponse[2:4], 0x8180)
+	binary.BigEndian.PutUint16(geoResponse[6:8], 1)
+	binary.BigEndian.PutUint16(geoResponse[10:12], 1)
+	targetName := appendDNSName(nil, selectedTarget)
+	geoResponse = append(geoResponse, 0xc0, 0x0c, 0, 5, 0, 1, 0, 0, 0, 60, byte(len(targetName)>>8), byte(len(targetName)))
+	geoResponse = append(geoResponse, targetName...)
+	geoResponse = append(geoResponse, appendDNSName(nil, selectedTarget)...)
+	geoResponse = append(geoResponse, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 7)
+	geo := newTestGeositeIndex(t, selectedTarget)
+	if !cnameChainTargetsAutoHosts(geoResponse, "alias.example", 1, manager, geo) {
+		t.Fatal("CNAME into selected Geosite category must be blocked before target is persisted")
 	}
 	// A Geosite-selected target is protected before it has been persisted.
 	selectedTarget := "protected.example"
