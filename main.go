@@ -1258,9 +1258,9 @@ func (r *Runtime) initHealth(s *Snapshot) {
 			delete(r.active, gid)
 		}
 	}
-	for uid := range r.lastGemini {
-		if _, ok := validUpstreams[uid]; !ok {
-			delete(r.lastGemini, uid)
+	for groupID := range r.lastGemini {
+		if _, ok := validGroups[groupID]; !ok {
+			delete(r.lastGemini, groupID)
 		}
 	}
 	if r.upstreamCooldown != nil {
@@ -1921,6 +1921,12 @@ func (r *Runtime) runChecks(ctx context.Context) {
 	sem := make(chan struct{}, 12)
 	var wg sync.WaitGroup
 	for gid, g := range s.groups {
+		r.mu.RLock()
+		geminiProbeUID := r.active[gid]
+		r.mu.RUnlock()
+		if geminiProbeUID == "" && len(g.Upstreams) > 0 {
+			geminiProbeUID = g.Upstreams[0]
+		}
 		for _, uid := range g.Upstreams {
 			u := s.upstreams[uid]
 			if u == nil {
@@ -1992,16 +1998,18 @@ func (r *Runtime) runChecks(ctx context.Context) {
 				}
 				gemState := "disabled"
 				if s.cfg.GeminiAPI.Enabled && s.cfg.GeminiAPI.GroupID == gid {
-					if r.geminiDue(uid, s.cfg.GeminiAPI.IntervalSeconds) {
+					if uid != geminiProbeUID {
+						gemState = "not_selected"
+					} else if r.geminiDue(gid, s.cfg.GeminiAPI.IntervalSeconds) {
 						apiCtx, cancel := context.WithTimeout(ctx, time.Duration(s.cfg.DoHTimeoutSeconds+5)*time.Second)
 						_, ge := r.geminiProbe(apiCtx, u, s.cfg.GeminiAPI)
 						cancel()
 						if ge != nil {
 							gemState = "failed"
-							logLine("WARN", "Gemini API probe failed group=%s upstream=%s error=%s", gid, uid, ge.Error())
+							logLine("WARN", "Gemini API group probe failed group=%s upstream=%s error=%s", gid, uid, safeLog(ge.Error()))
 							if s.cfg.GeminiAPI.RequiredForGroup && !geminiFailureIsShared(ge) {
 								ok = false
-								lastErr = "Gemini API: " + ge.Error()
+								lastErr = "Gemini API transport: " + safeLog(ge.Error())
 							}
 						} else {
 							gemState = "ok"
