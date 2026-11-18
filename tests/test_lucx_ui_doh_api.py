@@ -1721,6 +1721,57 @@ class PluginPreflightTests(unittest.TestCase):
         with self.assertRaises(api_tool.IntegrationError):
             api_tool.validate_plugin_status(b"[]")
 
+    def test_status_clients_send_plugin_bearer_token(self):
+        token = "0123456789abcdefghijklmnopqrstuvwxyzABCDE"
+
+        class Response:
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self, limit):
+                return b'{"queries":3,"failures":0,"version":"test"}'
+
+        with patch.object(api_tool, "load_plugin_status_token", return_value=token), \
+             patch.object(api_tool, "urlopen", return_value=Response()) as urlopen:
+            self.assertEqual(
+                api_tool.read_plugin_counters(api_tool.DEFAULT_PLUGIN_STATUS_URL),
+                (3, 0),
+            )
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.get_header("Authorization"), "Bearer " + token)
+
+    def test_check_plugin_health_sends_plugin_bearer_token(self):
+        token = "0123456789abcdefghijklmnopqrstuvwxyzABCDE"
+        calls = []
+        def completed(command, **kwargs):
+            calls.append(command)
+            if command[1] == "show":
+                return SimpleNamespace(returncode=0, stdout="loaded")
+            if command[1] == "is-active":
+                return SimpleNamespace(returncode=0, stdout="")
+            return SimpleNamespace(returncode=0, stdout="LISTEN 0 128 127.0.0.1:5355 *:*\\nUNCONN 0 0 127.0.0.1:5355 *:*\\n")
+
+        class Response:
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self, limit):
+                return b'{"version":"test"}'
+
+        with patch.object(api_tool.shutil, "which", side_effect=lambda name: "/usr/bin/" + name), \
+             patch.object(api_tool.subprocess, "run", side_effect=completed), \
+             patch.object(api_tool, "load_plugin_status_token", return_value=token), \
+             patch.object(api_tool, "urlopen", return_value=Response()) as urlopen:
+            api_tool.check_plugin_health(
+                api_tool.DEFAULT_PLUGIN_SERVICE,
+                api_tool.DEFAULT_PLUGIN_STATUS_URL,
+                5355,
+            )
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.get_header("Authorization"), "Bearer " + token)
+
     def test_inactive_service_stops_before_status_api_or_panel_api(self):
         completed = [
             SimpleNamespace(returncode=0, stdout="loaded"),
