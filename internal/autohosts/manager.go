@@ -63,6 +63,7 @@ const (
 	DomainSourceProbe = "probe"
 	DomainSourceQuery = "query"
 )
+
 type State struct {
 	SchemaVersion int                     `json:"schema_version"`
 	Config        Config                  `json:"config"`
