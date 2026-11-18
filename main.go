@@ -2764,8 +2764,6 @@ func (r *Runtime) reloadOnce() {
 	r.mu.Unlock()
 	if writeErr != nil {
 		r.setError(fmt.Sprintf("CONFIG generated file write failed: %v", writeErr))
-	} else if configErr != nil {
-		r.setError(fmt.Sprintf("Invalid config.json was replaced using the last valid config and updated sources: %v", configErr))
 	} else {
 		r.setError("")
 	}
