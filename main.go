@@ -505,7 +505,6 @@ func loadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("decode config: %w", e)
 	}
 	c = normalizeDNSPortMode(c)
-	c = normalizeDNSPortMode(c)
 	c, e = normalizeConfigGroups(c)
 	if e != nil {
 		return Config{}, e
@@ -2976,6 +2975,7 @@ func loadConfigNoCreate(path string) (Config, error) {
 	if e = d.Decode(&c); e != nil {
 		return Config{}, e
 	}
+	c = normalizeDNSPortMode(c)
 	c, e = normalizeConfigGroups(c)
 	if e != nil {
 		return Config{}, e

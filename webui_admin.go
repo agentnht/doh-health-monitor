@@ -33,6 +33,7 @@ const (
 var webUIAdminMu sync.Mutex
 
 type webUIEditableConfig struct {
+	DNSPortMode            string          `json:"dns_port_mode"`
 	DNSListenUDP           string          `json:"dns_listen_udp"`
 	DNSListenTCP           string          `json:"dns_listen_tcp"`
 	HTTPListen             string          `json:"http_listen"`
@@ -422,6 +423,7 @@ func readWebUIConfig(dataDir string) (webUIEditableConfig, error) {
 
 func editableWebUIConfig(config Config) webUIEditableConfig {
 	return webUIEditableConfig{
+		DNSPortMode: config.DNSPortMode,
 		DNSListenUDP: config.DNSListenUDP, DNSListenTCP: config.DNSListenTCP, HTTPListen: config.HTTPListen,
 		ReloadSecs: config.ReloadSecs, DNSQueryTimeoutSeconds: config.DNSQueryTimeoutSeconds,
 		DoHTimeoutSeconds: config.DoHTimeoutSeconds, DNSMaxConcurrent: config.DNSMaxConcurrent,
@@ -446,10 +448,13 @@ func saveWebUIConfig(dataDir string, view webUIEditableConfig) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("existing config.json is invalid: %w", err)
 	}
-	restartRequired := config.DNSListenUDP != view.DNSListenUDP ||
+	restartRequired := config.DNSPortMode != view.DNSPortMode ||
+		config.DNSListenUDP != view.DNSListenUDP ||
 		config.DNSListenTCP != view.DNSListenTCP ||
 		config.HTTPListen != view.HTTPListen ||
 		config.DNSMaxConcurrent != view.DNSMaxConcurrent
+	config.DNSPortMode = strings.ToLower(strings.TrimSpace(view.DNSPortMode))
+	config = normalizeDNSPortMode(config)
 	config.DNSListenUDP = strings.TrimSpace(view.DNSListenUDP)
 	config.DNSListenTCP = strings.TrimSpace(view.DNSListenTCP)
 	config.HTTPListen = strings.TrimSpace(view.HTTPListen)

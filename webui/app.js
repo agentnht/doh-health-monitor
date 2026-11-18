@@ -249,6 +249,7 @@
     $("config-gemini").replaceChildren();
 
     const general = $("config-general");
+    addConfigField(general, "DNS port mode (fixed/auto)", "dns_port_mode", config.dns_port_mode);
     addConfigField(general, "DNS UDP listener", "dns_listen_udp", config.dns_listen_udp);
     addConfigField(general, "DNS TCP listener", "dns_listen_tcp", config.dns_listen_tcp);
     addConfigField(general, "HTTP listener", "http_listen", config.http_listen);
@@ -325,7 +326,7 @@
       const result = await api("/api/v1/config", { method: "POST", body: JSON.stringify(collectConfig()) });
       renderConfig(result.config);
       const message = result.restart_required
-        ? "Сохранено. Изменение listener/dns_max_concurrent вступит в силу после перезапуска плагина."
+        ? "Сохранено. Изменение DNS port mode/listener/dns_max_concurrent вступит в силу после перезапуска плагина."
         : "Конфигурация сохранена. Новые значения будут применены механизмом reload.";
       notice("config-note", message, true);
     } catch (error) {
