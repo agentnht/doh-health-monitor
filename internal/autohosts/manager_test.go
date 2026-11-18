@@ -345,7 +345,6 @@ func TestPinnedAndEmergencyOffPersistAcrossRestart(t *testing.T) {
 	}
 }
 
-
 func TestQueryDomainsSurviveProbeCyclesAndRefreshLastSeen(t *testing.T) {
 	now := time.Now().UTC()
 	path := filepath.Join(t.TempDir(), "state.json")

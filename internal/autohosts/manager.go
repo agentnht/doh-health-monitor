@@ -471,7 +471,6 @@ func (m *Manager) ApplyFullCycle(activeID string, endpoints []Endpoint, results 
 	})
 }
 
-
 // RecordQuery adds or refreshes a user QNAME after the caller has confirmed a
 // Geosite match. Probe-owned control domains remain governed by probe success.
 func (m *Manager) RecordQuery(rawDomain string, now time.Time) error {

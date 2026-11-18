@@ -102,7 +102,6 @@ func (c *autoHostsController) run(ctx context.Context) {
 	}
 }
 
-
 func (c *autoHostsController) runGarbageCollector(ctx context.Context) {
 	interval := time.Minute
 	ticker := time.NewTicker(interval)
