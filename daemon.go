@@ -74,8 +74,14 @@ func runDaemon() {
 	if geoErr != nil {
 		logLine("WARN", "GEOSITE initial load failed: %v", geoErr)
 	}
+	vpsResolve, err := newVPSResolveUpstream(time.Duration(cfg.DoHTimeoutSeconds) * time.Second)
+	if err != nil {
+		fatal("VPS_RESOLVE Quad9 initialization failed: %v", err)
+	}
 	rt := &Runtime{
-		dataDir: dataDir, autoHosts: autoHostsManager, geo: geoIndex, configPath: configPath, dohPath: dohPath, checksPath: checksPath,
+		dataDir: dataDir, autoHosts: autoHostsManager, geo: geoIndex, vpsResolve: vpsResolve,
+		autoHostsQueryQueue: make(chan *autoHostsQueryJob, 256), autoHostsQueued: make(map[string]*autoHostsQueryJob),
+		configPath: configPath, dohPath: dohPath, checksPath: checksPath,
 		sourceHashes:       sources.Checksums,
 		healthCheckTrigger: make(chan struct{}, 1),
 		health:             map[string]map[string]HealthEntry{}, active: map[string]string{},
@@ -141,7 +147,7 @@ func runDaemon() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
-	wg.Add(7)
+	wg.Add(8)
 	go func() { defer wg.Done(); rt.serveUDP(ctx, udpConn) }()
 	go func() { defer wg.Done(); rt.serveTCP(ctx, tcpLn) }()
 	go func() {
@@ -155,6 +161,7 @@ func runDaemon() {
 	go func() { defer wg.Done(); rt.reloadLoop(ctx) }()
 	go func() { defer wg.Done(); rt.autoController.run(ctx) }()
 	go func() { defer wg.Done(); rt.geo.run(ctx) }()
+	go func() { defer wg.Done(); rt.runAutoHostsQueryRecorder(ctx) }()
 	logLine("INFO", "READY DNS=%s/%s HTTP=%s", cfg.DNSListenUDP, cfg.DNSListenTCP, cfg.HTTPListen)
 
 	sigc := make(chan os.Signal, 2)

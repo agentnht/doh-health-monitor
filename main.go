@@ -276,11 +276,21 @@ type Event struct {
 	Time   json.RawMessage `json:"time"`
 	Data   json.RawMessage `json:"data"`
 }
+type autoHostsQueryJob struct {
+	domain string
+	done   chan struct{}
+	err    error
+}
+
 type Runtime struct {
 	dnsSem                 chan struct{}
 	dataDir                string
 	autoHosts              *autohosts.Manager
 	geo                    *geositeIndex
+	vpsResolve             *UpstreamRuntime
+	autoHostsQueryQueue    chan *autoHostsQueryJob
+	autoHostsQueueMu       sync.Mutex
+	autoHostsQueued        map[string]*autoHostsQueryJob
 	autoController         *autoHostsController
 	configPath             string
 	dohPath                string
@@ -863,6 +873,18 @@ func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
 }
 func defaultBootstrapResolvers() []string { return []string{"1.1.1.1", "8.8.8.8"} }
 
+func newVPSResolveUpstream(timeout time.Duration) (*UpstreamRuntime, error) {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	cfg := Upstream{ID: "vps-resolve", Name: "Quad9 Secure", Type: "doh", URL: "https://dns.quad9.net/dns-query"}
+	client, bootstrap, err := newDoHClient(cfg, defaultBootstrapResolvers(), timeout)
+	if err != nil {
+		return nil, err
+	}
+	return &UpstreamRuntime{cfg: cfg, client: client, bootstrap: bootstrap}, nil
+}
+
 func newDoHClient(u Upstream, resolvers []string, timeout time.Duration) (*http.Client, *bootstrapResolver, error) {
 	pu, err := url.Parse(u.URL)
 	if err != nil || pu.Scheme != "https" || pu.Hostname() == "" {
@@ -1346,6 +1368,79 @@ func (r *Runtime) markUpstreamSuccess(uid string) {
 	r.mu.Unlock()
 }
 
+
+func (r *Runtime) queryVPSResolve(ctx context.Context, packet []byte) ([]byte, error) {
+	if r.vpsResolve == nil {
+		return nil, errors.New("vps-resolve Quad9 upstream is unavailable")
+	}
+	snapshot := r.currentSnapshot()
+	if snapshot == nil {
+		return nil, errors.New("DNS runtime snapshot is unavailable")
+	}
+	timeout := minDuration(
+		time.Duration(snapshot.cfg.DoHTimeoutSeconds)*time.Second,
+		time.Duration(snapshot.cfg.DNSQueryTimeoutSeconds)*time.Second,
+	)
+	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	response, err := sendUpstreamDNS(attemptCtx, r.vpsResolve, packet)
+	if err != nil {
+		r.failures.Add(1)
+		return nil, fmt.Errorf("vps-resolve: %w", err)
+	}
+	return response, nil
+}
+
+func (r *Runtime) enqueueAutoHostsQuery(rawDomain string) (*autoHostsQueryJob, bool) {
+	if r.autoHosts == nil || r.autoHostsQueryQueue == nil {
+		return nil, false
+	}
+	domain, err := autohosts.NormalizeDomain(rawDomain)
+	if err != nil {
+		return nil, false
+	}
+	r.autoHostsQueueMu.Lock()
+	defer r.autoHostsQueueMu.Unlock()
+	if existing := r.autoHostsQueued[domain]; existing != nil {
+		return existing, true
+	}
+	job := &autoHostsQueryJob{domain: domain, done: make(chan struct{})}
+	select {
+	case r.autoHostsQueryQueue <- job:
+		r.autoHostsQueued[domain] = job
+		return job, true
+	default:
+		return nil, false
+	}
+}
+
+func (r *Runtime) runAutoHostsQueryRecorder(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case job := <-r.autoHostsQueryQueue:
+			if job == nil {
+				continue
+			}
+			if r.autoHosts == nil {
+				job.err = errors.New("Auto Hosts manager is unavailable")
+			} else {
+				job.err = r.autoHosts.RecordQuery(job.domain, time.Now().UTC())
+			}
+			close(job.done)
+			r.autoHostsQueueMu.Lock()
+			if r.autoHostsQueued[job.domain] == job {
+				delete(r.autoHostsQueued, job.domain)
+			}
+			r.autoHostsQueueMu.Unlock()
+			if job.err != nil {
+				logLine("WARN", "AUTO_HOSTS query record failed domain=%s: %v", job.domain, job.err)
+			}
+		}
+	}
+}
+
 func (r *Runtime) query(ctx context.Context, packet []byte) ([]byte, string, error) {
 	name, _, _, err := parseQuestion(packet)
 	if err != nil {
@@ -1428,6 +1523,9 @@ func sendDoH(ctx context.Context, u *UpstreamRuntime, packet []byte) ([]byte, er
 		return nil, e
 	}
 	defer resp.Body.Close()
+	if u.cfg.ID == "vps-resolve" && resp.ProtoMajor != 2 {
+		return nil, fmt.Errorf("vps-resolve requires HTTP/2, negotiated %s", resp.Proto)
+	}
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("DoH HTTP %d", resp.StatusCode)
 	}
@@ -1630,8 +1728,24 @@ func (r *Runtime) handleDNS(packet []byte) (response []byte) {
 	if response, matched := localHostsResponse(packet, normalizeDomain(name), qtype, s.localHosts); matched {
 		return response
 	}
-	if response, matched := autoHostsResponse(packet, normalizeDomain(name), qtype, r.autoHosts); matched {
-		return response
+	if r.geo != nil && r.geo.MatchAny(normalizeDomain(name)) && r.autoHosts != nil {
+		autoSnapshot := r.autoHosts.Snapshot()
+		if autoSnapshot != nil && autoSnapshot.CanRecordQuery(name) {
+			job, queued := r.enqueueAutoHostsQuery(name)
+			if queued {
+				select {
+				case <-job.done:
+					if job.err == nil {
+						if response, matched := autoHostsEndpointResponse(packet, normalizeDomain(name), qtype, r.autoHosts.Snapshot(), time.Now()); matched {
+							return response
+						}
+					}
+				case <-time.After(150 * time.Millisecond):
+					// Persistence remains off the DNS handler. A slow or failed
+					// write falls through to the dedicated Quad9 resolver.
+				}
+			}
+		}
 	}
 	cacheKey := cacheKey(packet)
 	if s.cfg.Cache.Enabled {
@@ -1644,7 +1758,7 @@ func (r *Runtime) handleDNS(packet []byte) (response []byte) {
 		}
 	}
 	resolve := func() ([]byte, error) {
-		response, _, queryErr := r.query(context.Background(), packet)
+		response, queryErr := r.queryVPSResolve(context.Background(), packet)
 		if queryErr == nil && cnameChainTargetsAutoHosts(response, normalizeDomain(name), qtype, r.autoHosts) {
 			return nil, errors.New("upstream CNAME targets an Auto Hosts protected domain")
 		}
@@ -1786,6 +1900,25 @@ func cnameChainTargetsAutoHosts(response []byte, originalName string, qtype uint
 		current = target
 	}
 	return false
+}
+
+
+func autoHostsEndpointResponse(query []byte, host string, qtype uint16, snapshot *autohosts.Snapshot, now time.Time) ([]byte, bool) {
+	ips, ttlDuration, matched := snapshot.EndpointForQuery(qtype, now)
+	if !matched {
+		return nil, false
+	}
+	entry := LocalHost{}
+	if qtype == 1 {
+		entry.IPv4 = ips
+	} else if qtype == 28 {
+		entry.IPv6 = ips
+	}
+	ttl := uint32(ttlDuration / time.Second)
+	if ttl == 0 {
+		ttl = 1
+	}
+	return localHostsResponseWithTTL(query, host, qtype, map[string]LocalHost{normalizeDomain(host): entry}, ttl)
 }
 
 func autoHostsResponse(query []byte, host string, qtype uint16, manager *autohosts.Manager) ([]byte, bool) {
