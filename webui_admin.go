@@ -423,7 +423,7 @@ func readWebUIConfig(dataDir string) (webUIEditableConfig, error) {
 
 func editableWebUIConfig(config Config) webUIEditableConfig {
 	return webUIEditableConfig{
-		DNSPortMode: config.DNSPortMode,
+		DNSPortMode:  config.DNSPortMode,
 		DNSListenUDP: config.DNSListenUDP, DNSListenTCP: config.DNSListenTCP, HTTPListen: config.HTTPListen,
 		ReloadSecs: config.ReloadSecs, DNSQueryTimeoutSeconds: config.DNSQueryTimeoutSeconds,
 		DoHTimeoutSeconds: config.DoHTimeoutSeconds, DNSMaxConcurrent: config.DNSMaxConcurrent,
