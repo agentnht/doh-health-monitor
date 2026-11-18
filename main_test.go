@@ -146,6 +146,22 @@ func TestGeositeIndexRetainsLastKnownGoodMatcherOnReloadFailure(t *testing.T) {
 	}
 }
 
+func TestGeositeCategoryReloadRetriesWhenFileHashIsUnchanged(t *testing.T) {
+	index := newTestGeositeIndex(t, "old.example")
+	if err := index.Reload([]string{"MISSING"}); err == nil {
+		t.Fatal("expected unknown selected category to fail")
+	}
+	if err := index.reloadIfChanged(); err == nil {
+		t.Fatal("unchanged file hash must not suppress retry for changed categories")
+	}
+	if !index.MatchAny("old.example") {
+		t.Fatal("failed category reload discarded the last known-good matcher")
+	}
+	if status := index.Status(); status.LastError == "" {
+		t.Fatal("failed category retry was not retained in status")
+	}
+}
+
 func TestGeositeAtomicReplacementDetectedByContentHash(t *testing.T) {
 	index := newTestGeositeIndex(t, "old.example")
 	oldInfo, err := os.Stat(index.path)
