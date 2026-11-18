@@ -173,7 +173,7 @@
 
     <section class="panel tab-page" data-page-panel="autohosts" hidden>
       <h2>Auto Hosts · DNS endpoint mapping</h2>
-      <p class="muted">Auto Hosts подменяет DNS-ответы только для проверяемых доменов: A/AAAA указывают на IP активного DoH endpoint. Обычный DNS Gateway для остальных запросов не меняется. Все проверки выполняются с VPS.</p>
+      <p class="muted">При Geosite HIT и включённом Auto Hosts ответы A/AAAA указывают на IP активного DoH endpoint. Geosite MISS, выключенный Auto Hosts, Emergency OFF или устаревший endpoint направляют запрос в отдельный Quad9 Secure DoH. Восемь контрольных доменов используются только для оценки качества DoH endpoint; пользовательские домены определяются выбранными категориями geosite.dat.</p>
       <div class="field-grid">
         <label class="check-field"><input id="autohosts-enabled" type="checkbox"><span>Включить Auto Hosts</span></label>
         <label class="field">Режим

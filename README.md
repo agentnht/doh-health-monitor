@@ -20,11 +20,11 @@ DNS listener сначала применяет `local_hosts`. Затем QNAME �
 - DNS-шлюз UDP/TCP на loopback; адреса и порты задаются конфигурацией (текущий default не является архитектурным контрактом).
 - Единственный профиль пригодности `google` с 25 контрольными доменами.
 - Проверка DNS A/AAAA, дополнительных HTTPS endpoint, TLS и OIDC issuer для Google Accounts.
-- Автоматический выбор здорового DoH-сервера с учётом заданного приоритета.
-- Мгновенный последовательный fallback на другой upstream при ошибке конкретного запроса.
+- Автоматический выбор здорового DoH endpoint для Auto Hosts с учётом заданного приоритета; пользовательские DNS-запросы не выбирают сервер из этого пула.
+- Отдельный `vps-resolve` Quad9 Secure DoH для Geosite MISS, выключенного Auto Hosts, Emergency OFF и недоступного/устаревшего Auto Hosts endpoint.
 - Пороговые значения для устойчивого изменения статуса upstream.
 - DNS cache с TTL и ограничением числа записей.
-- Системный DNS VPS как первый полноценный upstream-кандидат; nameserver-ы читаются из `/etc/resolv.conf`.
+- Системный DNS VPS остаётся в отдельном профиле проверок/диагностики; он не заменяет выделенный Quad9 resolver пользовательского DNS-пути.
 - Автоматическое разрешение bootstrap IP для DoH endpoint через независимые `bootstrap_resolvers`.
 - Автопроверка `doh-servers.txt` и `tst-domen.txt` по SHA-256 с интервалом `reload_interval_seconds` (по умолчанию 5 секунд); генерация `config.json` и применение валидных изменений без остановки DNS.
 - `/healthz` и `/status` на localhost.
@@ -43,25 +43,32 @@ DNS listener сначала применяет `local_hosts`. Затем QNAME �
 ## 2. Схема работы
 
 ```text
-Панель / Xray выбирает DNS-запросы для локального шлюза
-                         |
-                         v
-                127.0.0.1:5355
-                  UDP и TCP
-                         |
-                         v
-                 DNS Gateway
-                       |
-             текущий выбранный upstream
-                       |
-       +---------------+----------------+
-       |                                |
-       v                                v
-   System DNS                       DoH proxy
-   /etc/resolv.conf              GeoHide / Dagami / ...
+Фоновая проверка Auto Hosts:
+DoH-серверы × 8 контрольных доменов
+                 |
+                 v
+        Выбранный DoH endpoint
+                 |
+                 v
+             Auto Hosts
+
+Пользовательский DNS:
+Клиент → туннель → Xray TProxy → DNS outbound плагина
+                                      |
+                                      v
+                                  local_hosts
+                                      |
+                                      v
+                                    Geosite
+                         +------------+------------+
+                         |                         |
+                       HIT                       MISS / OFF
+                         |                         |
+                         v                         v
+             IP активного DoH endpoint       Quad9 Secure DoH
 ```
 
-Контрольные запросы выполняются отдельно от пользовательских DNS-запросов и обновляют состояние DoH endpoint для Auto Hosts. Контрольный список не ограничивает клиентские QNAME. Пользовательские запросы не отправляются через этот пул: Geosite HIT при активном Auto Hosts получает IP выбранного DoH endpoint, остальные запросы идут в отдельный Quad9 Secure DoH.
+Контрольные запросы выполняются отдельно от пользовательских DNS-запросов и обновляют состояние DoH endpoint для Auto Hosts. Восемь контрольных доменов — это тестовый набор, а не allowlist и не перечень пользовательских доменов. Пользовательский QNAME сопоставляется с выбранными категориями `geosite.dat`: Geosite HIT при активном Auto Hosts получает IP выбранного DoH endpoint, остальные запросы идут в отдельный Quad9 Secure DoH.
 
 Слушатель привязан к loopback и не должен публиковаться на внешнем интерфейсе. Системный upstream пересылает исходные DNS-пакеты на nameserver-ы из `/etc/resolv.conf` в их порядке, с TCP-повтором при усечённом UDP-ответе. `bootstrap_resolvers` используются только для разрешения hostname DoH endpoint и не обрабатывают пользовательские DNS-запросы.
 
