@@ -2591,3 +2591,55 @@ func TestReloadLoopUsesConfiguredInterval(t *testing.T) {
 	<-done
 	t.Fatal("reloadLoop did not apply source changes within its configured one-second interval")
 }
+
+
+func TestValidateConfigRequiresStaticNonZeroDNSPorts(t *testing.T) {
+	cfg := defaultConfig()
+	if err := validateConfig(cfg); err != nil {
+		t.Fatalf("default static DNS listeners rejected: %v", err)
+	}
+	cfg.DNSListenUDP = "127.0.0.1:0"
+	if err := validateConfig(cfg); err == nil {
+		t.Fatal("ephemeral UDP listener port must be rejected")
+	}
+	cfg = defaultConfig()
+	cfg.DNSListenTCP = "127.0.0.1:0"
+	if err := validateConfig(cfg); err == nil {
+		t.Fatal("ephemeral TCP listener port must be rejected")
+	}
+}
+
+func TestLoadConfigIgnoresAndRemovesLegacyDNSPortMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := defaultConfig()
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	raw["dns_port_mode"] = "auto"
+	data, err = json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadConfigNoCreate(path)
+	if err != nil {
+		t.Fatalf("legacy config should load with static listener addresses: %v", err)
+	}
+	if loaded.DeprecatedDNSPortMode != "" {
+		t.Fatalf("legacy dns_port_mode was not discarded: %q", loaded.DeprecatedDNSPortMode)
+	}
+	normalized, err := json.Marshal(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(normalized), "dns_port_mode") {
+		t.Fatalf("legacy dns_port_mode was written back: %s", normalized)
+	}
+}

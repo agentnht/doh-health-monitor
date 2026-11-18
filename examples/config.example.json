@@ -1,6 +1,5 @@
 {
   "geosite_path": "",
-  "dns_port_mode": "fixed",
   "dns_listen_udp": "127.0.0.1:5355",
   "dns_listen_tcp": "127.0.0.1:5355",
   "http_listen": "127.0.0.1:18765",

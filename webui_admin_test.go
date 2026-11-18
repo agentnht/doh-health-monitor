@@ -76,9 +76,8 @@ func TestWebUIConfigAPIUpdatesValidatedSettingsAndDefaults(t *testing.T) {
 	}
 	view.Health.TimeoutSeconds = 9
 	view.GeositePath = "/opt/xray-assets/geosite.dat"
-	view.DNSPortMode = "auto"
-	view.DNSListenUDP = "127.0.0.1:0"
-	view.DNSListenTCP = "127.0.0.1:0"
+	view.DNSListenUDP = "127.0.0.1:5356"
+	view.DNSListenTCP = "127.0.0.1:5356"
 	body, err := json.Marshal(view)
 	if err != nil {
 		t.Fatal(err)
@@ -94,7 +93,7 @@ func TestWebUIConfigAPIUpdatesValidatedSettingsAndDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !saveResult.RestartRequired {
-		t.Fatal("changing DNS port mode and listener must require a restart")
+		t.Fatal("changing static DNS listener addresses must require a restart")
 	}
 	config, err := loadConfigNoCreate(filepath.Join(dir, "config.json"))
 	if err != nil {
@@ -106,8 +105,8 @@ func TestWebUIConfigAPIUpdatesValidatedSettingsAndDefaults(t *testing.T) {
 	if config.GeositePath != "/opt/xray-assets/geosite.dat" {
 		t.Fatalf("saved geosite path=%q, want configured override", config.GeositePath)
 	}
-	if config.DNSPortMode != "auto" || config.DNSListenUDP != "127.0.0.1:0" || config.DNSListenTCP != "127.0.0.1:0" {
-		t.Fatalf("auto DNS listener settings were not persisted: mode=%q udp=%q tcp=%q", config.DNSPortMode, config.DNSListenUDP, config.DNSListenTCP)
+	if config.DNSListenUDP != "127.0.0.1:5356" || config.DNSListenTCP != "127.0.0.1:5356" {
+		t.Fatalf("static DNS listener settings were not persisted: udp=%q tcp=%q", config.DNSListenUDP, config.DNSListenTCP)
 	}
 
 	reset, cookie := newAuthenticatedWebUIRequest(t, handler, cookie, http.MethodPost, "/api/v1/config/defaults", []byte(`{"section":"health"}`))

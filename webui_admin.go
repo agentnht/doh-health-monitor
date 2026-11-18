@@ -34,7 +34,6 @@ var webUIAdminMu sync.Mutex
 
 type webUIEditableConfig struct {
 	GeositePath            string          `json:"geosite_path,omitempty"`
-	DNSPortMode            string          `json:"dns_port_mode"`
 	DNSListenUDP           string          `json:"dns_listen_udp"`
 	DNSListenTCP           string          `json:"dns_listen_tcp"`
 	HTTPListen             string          `json:"http_listen"`
@@ -425,7 +424,6 @@ func readWebUIConfig(dataDir string) (webUIEditableConfig, error) {
 func editableWebUIConfig(config Config) webUIEditableConfig {
 	return webUIEditableConfig{
 		GeositePath:  config.GeositePath,
-		DNSPortMode:  config.DNSPortMode,
 		DNSListenUDP: config.DNSListenUDP, DNSListenTCP: config.DNSListenTCP, HTTPListen: config.HTTPListen,
 		ReloadSecs: config.ReloadSecs, DNSQueryTimeoutSeconds: config.DNSQueryTimeoutSeconds,
 		DoHTimeoutSeconds: config.DoHTimeoutSeconds, DNSMaxConcurrent: config.DNSMaxConcurrent,
@@ -451,14 +449,11 @@ func saveWebUIConfig(dataDir string, view webUIEditableConfig) (bool, error) {
 		return false, fmt.Errorf("existing config.json is invalid: %w", err)
 	}
 	restartRequired := config.GeositePath != view.GeositePath ||
-		config.DNSPortMode != view.DNSPortMode ||
 		config.DNSListenUDP != view.DNSListenUDP ||
 		config.DNSListenTCP != view.DNSListenTCP ||
 		config.HTTPListen != view.HTTPListen ||
 		config.DNSMaxConcurrent != view.DNSMaxConcurrent
 	config.GeositePath = strings.TrimSpace(view.GeositePath)
-	config.DNSPortMode = strings.ToLower(strings.TrimSpace(view.DNSPortMode))
-	config = normalizeDNSPortMode(config)
 	config.DNSListenUDP = strings.TrimSpace(view.DNSListenUDP)
 	config.DNSListenTCP = strings.TrimSpace(view.DNSListenTCP)
 	config.HTTPListen = strings.TrimSpace(view.HTTPListen)
@@ -840,11 +835,7 @@ func runWebUIAdminTests(dataDir string) webUITestSummary {
 	}
 	summary.Tests = append(summary.Tests, webUITest("Проверка файлов списков", true, fmt.Sprintf("DoH-серверов: %d, DNS-проверок: %d", len(sources.Providers), len(sources.Checks))))
 
-	dnsUDPAddress, _, listenerErr := effectiveDNSListenerAddresses(dataDir, config)
-	if listenerErr != nil {
-		summary.Tests = append(summary.Tests, webUITest("DNS listener", false, listenerErr.Error()))
-		return finalizeWebUITests(summary)
-	}
+	dnsUDPAddress := config.DNSListenUDP
 	digResults := runWebUIDigTests(dnsUDPAddress, sources.Checks)
 	summary.Tests = append(summary.Tests, digResults...)
 	udpOK := false
@@ -1046,11 +1037,7 @@ func runWebUIXrayIntegrationCheck(dataDir string) webUITestResult {
 	if err != nil {
 		return webUITest("Xray DNS integration", false, "Не удалось прочитать config.json: "+err.Error())
 	}
-	dnsUDPAddress, _, err := effectiveDNSListenerAddresses(root, config)
-	if err != nil {
-		return webUITest("Xray DNS integration", false, err.Error())
-	}
-	udpAddress, err := localListenAddress(dnsUDPAddress)
+	udpAddress, err := localListenAddress(config.DNSListenUDP)
 	if err != nil {
 		return webUITest("Xray DNS integration", false, err.Error())
 	}
@@ -1104,14 +1091,7 @@ func runWebUIIntegration(dataDir, action string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("config.json is invalid: %w", err)
 	}
-	dnsUDPAddress := config.DNSListenUDP
-	if action == "check" {
-		dnsUDPAddress, _, err = effectiveDNSListenerAddresses(root, config)
-		if err != nil {
-			return "", fmt.Errorf("configured DNS listener: %w", err)
-		}
-	}
-	udpAddress, err := localListenAddress(dnsUDPAddress)
+	udpAddress, err := localListenAddress(config.DNSListenUDP)
 	if err != nil {
 		return "", fmt.Errorf("configured DNS listener: %w", err)
 	}

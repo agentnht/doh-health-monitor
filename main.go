@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -48,7 +49,9 @@ const (
 type Config struct {
 	LocalHosts             map[string]LocalHost `json:"local_hosts"`
 	GeositePath            string               `json:"geosite_path,omitempty"`
-	DNSPortMode            string               `json:"dns_port_mode"`
+	// Deprecated compatibility field for configs written by the removed
+	// dynamic-port experiment. It is cleared on load and never affects binding.
+	DeprecatedDNSPortMode string `json:"dns_port_mode,omitempty"`
 	DNSListenUDP           string               `json:"dns_listen_udp"`
 	DNSListenTCP           string               `json:"dns_listen_tcp"`
 	HTTPListen             string               `json:"http_listen"`
@@ -233,7 +236,6 @@ type Status struct {
 	Version          string                        `json:"version"`
 	StartedAt        time.Time                     `json:"started_at"`
 	UpdatedAt        time.Time                     `json:"updated_at"`
-	DNSPortMode      string                        `json:"dns_port_mode"`
 	DNSUDP           string                        `json:"dns_udp"`
 	DNSTCP           string                        `json:"dns_tcp"`
 	HTTP             string                        `json:"http"`
@@ -287,8 +289,6 @@ type autoHostsQueryJob struct {
 
 type Runtime struct {
 	dnsSem                 chan struct{}
-	dnsUDPAddress          string
-	dnsTCPAddress          string
 	dataDir                string
 	autoHosts              *autohosts.Manager
 	geo                    *geositeIndex
@@ -505,7 +505,7 @@ func loadConfig(path string) (Config, error) {
 	if e = dec.Decode(&c); e != nil {
 		return Config{}, fmt.Errorf("decode config: %w", e)
 	}
-	c = normalizeDNSPortMode(c)
+	c.DeprecatedDNSPortMode = ""
 	c, e = normalizeConfigGroups(c)
 	if e != nil {
 		return Config{}, e
@@ -516,18 +516,9 @@ func loadConfig(path string) (Config, error) {
 	}
 	return c, nil
 }
-func normalizeDNSPortMode(c Config) Config {
-	mode := strings.ToLower(strings.TrimSpace(c.DNSPortMode))
-	if mode == "" {
-		mode = "fixed"
-	}
-	c.DNSPortMode = mode
-	return c
-}
-
 func defaultConfig() Config {
 	c := Config{
-		DNSPortMode: "fixed", DNSListenUDP: "127.0.0.1:5355", DNSListenTCP: "127.0.0.1:5355", HTTPListen: "127.0.0.1:18765", ReloadSecs: 5,
+		DNSListenUDP: "127.0.0.1:5355", DNSListenTCP: "127.0.0.1:5355", HTTPListen: "127.0.0.1:18765", ReloadSecs: 5,
 		DNSQueryTimeoutSeconds: 15, DoHTimeoutSeconds: 10, DNSMaxConcurrent: 256,
 		Health:             HealthConfig{IntervalSeconds: 25 * 60, TimeoutSeconds: 5, FailureThreshold: 1, SuccessThreshold: 1},
 		Cache:              CacheConfig{Enabled: true, MinTTL: 5, MaxTTL: 300, NegativeTTL: 15, MaxEntries: 8192, MaxBytes: defaultCacheMaxBytes},
@@ -627,27 +618,8 @@ func validateConfig(c Config) error {
 	if !validListen(c.DNSListenUDP) || !validListen(c.DNSListenTCP) || !validListen(c.HTTPListen) {
 		return errors.New("dns_listen_udp, dns_listen_tcp and http_listen must be host:port")
 	}
-	mode := strings.ToLower(strings.TrimSpace(c.DNSPortMode))
-	if mode == "" {
-		mode = "fixed"
-	}
-	if mode != "fixed" && mode != "auto" {
-		return errors.New("dns_port_mode must be fixed or auto")
-	}
-	if mode == "fixed" {
-		_, udpPort, _ := net.SplitHostPort(c.DNSListenUDP)
-		_, tcpPort, _ := net.SplitHostPort(c.DNSListenTCP)
-		if udpPort == "0" || tcpPort == "0" {
-			return errors.New("port 0 requires dns_port_mode auto")
-		}
-	}
-	if mode == "auto" {
-		udpHost, udpPort, _ := net.SplitHostPort(c.DNSListenUDP)
-		tcpHost, tcpPort, _ := net.SplitHostPort(c.DNSListenTCP)
-		ip := net.ParseIP(udpHost)
-		if udpHost == "" || udpHost != tcpHost || udpPort != "0" || tcpPort != "0" || ip == nil || !ip.Equal(net.ParseIP("127.0.0.1")) {
-			return errors.New("auto DNS mode requires matching loopback listeners with port 0 (for example 127.0.0.1:0)")
-		}
+	if !validStaticDNSListener(c.DNSListenUDP) || !validStaticDNSListener(c.DNSListenTCP) {
+		return errors.New("DNS listeners must use explicit non-zero ports")
 	}
 	if c.ReloadSecs < 1 || c.ReloadSecs > 300 {
 		return errors.New("reload_interval_seconds must be 1..300")
@@ -829,6 +801,15 @@ func validDNSHostname(host string) bool {
 func validListen(s string) bool {
 	h, p, e := net.SplitHostPort(s)
 	return e == nil && h != "" && p != ""
+}
+
+func validStaticDNSListener(s string) bool {
+	_, portText, err := net.SplitHostPort(s)
+	if err != nil {
+		return false
+	}
+	port, err := strconv.Atoi(portText)
+	return err == nil && port > 0 && port <= 65535
 }
 func normalizeDomain(s string) string {
 	return strings.Trim(strings.ToLower(strings.TrimSpace(s)), ".")
@@ -2903,7 +2884,7 @@ func (r *Runtime) reloadOnce() {
 		cfg = old.cfg
 		logLine("WARN", "CONFIG file is invalid; applying validated source changes using the last valid config: %v", configErr)
 	}
-	if cfg.DNSPortMode != old.cfg.DNSPortMode || cfg.DNSListenUDP != old.cfg.DNSListenUDP || cfg.DNSListenTCP != old.cfg.DNSListenTCP || cfg.HTTPListen != old.cfg.HTTPListen || cfg.DNSMaxConcurrent != old.cfg.DNSMaxConcurrent {
+	if cfg.DNSListenUDP != old.cfg.DNSListenUDP || cfg.DNSListenTCP != old.cfg.DNSListenTCP || cfg.HTTPListen != old.cfg.HTTPListen || cfg.DNSMaxConcurrent != old.cfg.DNSMaxConcurrent {
 		r.rejectConfigReload("listener-change:"+fmt.Sprintf("%x", observedConfigHash), "CONFIG listener/dns_max_concurrent change requires plugin restart")
 		return
 	}
@@ -2988,7 +2969,7 @@ func loadConfigNoCreate(path string) (Config, error) {
 	if e = d.Decode(&c); e != nil {
 		return Config{}, e
 	}
-	c = normalizeDNSPortMode(c)
+	c.DeprecatedDNSPortMode = ""
 	c, e = normalizeConfigGroups(c)
 	if e != nil {
 		return Config{}, e
@@ -3007,19 +2988,12 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 	}
 	s := r.currentSnapshot()
 	cacheEntries, cacheBytes := r.cacheStats()
-	dnsUDP, dnsTCP := r.dnsUDPAddress, r.dnsTCPAddress
-	if dnsUDP == "" {
-		dnsUDP = s.cfg.DNSListenUDP
-	}
-	if dnsTCP == "" {
-		dnsTCP = s.cfg.DNSListenTCP
-	}
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 	out := Status{
 		ID: envOr("LUCX_PLUGIN_ID", pluginID), Version: envOr("LUCX_PLUGIN_VERSION", pluginVersion),
-		StartedAt: startedAt, UpdatedAt: time.Now().UTC(), DNSPortMode: s.cfg.DNSPortMode,
-		DNSUDP: dnsUDP, DNSTCP: dnsTCP, HTTP: s.cfg.HTTPListen, Config: r.configPath,
+		StartedAt: startedAt, UpdatedAt: time.Now().UTC(),
+		DNSUDP: s.cfg.DNSListenUDP, DNSTCP: s.cfg.DNSListenTCP, HTTP: s.cfg.HTTPListen, Config: r.configPath,
 		Cache:  CacheStatus{Enabled: s.cfg.Cache.Enabled, Entries: cacheEntries, MaxEntries: s.cfg.Cache.MaxEntries, Bytes: cacheBytes, MaxBytes: s.cfg.Cache.MaxBytes},
 		Groups: map[string]GroupStatus{}, DoHBootstrap: map[string]DoHBootstrapStatus{},
 		Queries: r.queries.Load(), CacheHits: r.cacheHits.Load(), Failures: r.failures.Load(),
