@@ -15,7 +15,8 @@ func varint(v uint64) []byte {
 	return append(out, byte(v))
 }
 func bytesField(field int, value []byte) []byte {
-	out := varint(uint64(field<<3 | 2)); out = append(out, varint(uint64(len(value)))...)
+	out := varint(uint64(field<<3 | 2))
+	out = append(out, varint(uint64(len(value)))...)
 	return append(out, value...)
 }
 func varintField(field int, value uint64) []byte {
