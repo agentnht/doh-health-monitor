@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -2018,5 +2019,142 @@ func TestLocalDNSReplyDoesNotReflectEDNSClientOptions(t *testing.T) {
 	}
 	if !bytes.Contains(response, []byte{0, 0, 41, 4, 208, 0, 0, 128, 0, 0, 0}) {
 		t.Fatal("response OPT must retain UDP size and DO bit but contain no options")
+	}
+}
+
+
+func TestGeminiConfigValidationRejectsUnsafeValues(t *testing.T) {
+	base := defaultConfig()
+	base.GeminiAPI.Enabled = true
+	base.GeminiAPI.GroupID = "google"
+	base.GeminiAPI.KeyFile = "gemini_api_key"
+	base.GeminiAPI.IntervalSeconds = 1800
+	base.GeminiAPI.Model = "gemini-3.8-flash"
+	base.GeminiAPI.Prompt = "Reply with exactly OK."
+	base.GeminiAPI.MaxOutputTokens = 64
+	if err := validateConfig(base); err != nil {
+		t.Fatalf("valid Gemini config rejected: %v", err)
+	}
+	cases := []struct {
+		name string
+		edit func(*GeminiAPIConfig)
+	}{
+		{"negative token budget", func(c *GeminiAPIConfig) { c.MaxOutputTokens = -5 }},
+		{"excessive token budget", func(c *GeminiAPIConfig) { c.MaxOutputTokens = 1_000_000 }},
+		{"empty prompt", func(c *GeminiAPIConfig) { c.Prompt = "  " }},
+		{"oversized prompt", func(c *GeminiAPIConfig) { c.Prompt = strings.Repeat("x", 4097) }},
+		{"path-like model", func(c *GeminiAPIConfig) { c.Model = "a/b?x=1" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			tc.edit(&cfg.GeminiAPI)
+			if err := validateConfig(cfg); err == nil {
+				t.Fatal("invalid Gemini configuration was accepted")
+			}
+		})
+	}
+}
+
+func TestGeminiHTTPFailuresDoNotMarkUpstreamUnhealthy(t *testing.T) {
+	for _, status := range []int{400, 401, 403, 404, 429, 500, 503} {
+		if !geminiFailureIsShared(GeminiHTTPError{Status: status}) {
+			t.Errorf("HTTP %d should be classified as a shared Gemini API failure", status)
+		}
+	}
+	if geminiFailureIsShared(errors.New("dial tcp: connection refused")) {
+		t.Fatal("upstream-specific transport failure must remain attributable to the upstream")
+	}
+}
+
+func TestConfigSourceReloadIntervalUsesConfiguredValue(t *testing.T) {
+	if got := configSourceReloadInterval(&Snapshot{cfg: Config{ReloadSecs: 7}}); got != 7*time.Second {
+		t.Fatalf("reload interval=%s, want 7s", got)
+	}
+	if got := configSourceReloadInterval(&Snapshot{cfg: Config{ReloadSecs: 0}}); got != configSourcePollInterval {
+		t.Fatalf("invalid config reload interval=%s, want fallback %s", got, configSourcePollInterval)
+	}
+}
+
+func newReloadTestRuntime(t *testing.T) *Runtime {
+	t.Helper()
+	dir := t.TempDir()
+	if err := initializeConfigSourceFiles(dir); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dir, "config.json")
+	dohPath := filepath.Join(dir, "doh-servers.txt")
+	checksPath := filepath.Join(dir, "tst-domen.txt")
+	cfg := defaultConfig()
+	sources, err := readConfigSources(dohPath, checksPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = applyConfigSources(cfg, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeConfigAtomic(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := buildSnapshot(cfg, sources.DoHURLs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.configHash = sha256.Sum256(data)
+	if info, err := os.Stat(configPath); err == nil {
+		snapshot.configMod = info.ModTime()
+	}
+	runtime := &Runtime{
+		configPath: configPath, dohPath: dohPath, checksPath: checksPath,
+		sourceHashes: sources.Checksums,
+		healthCheckTrigger: make(chan struct{}, 1),
+		health: map[string]map[string]HealthEntry{}, active: map[string]string{},
+		lastGemini: map[string]time.Time{}, cache: map[string]cacheItem{},
+	}
+	runtime.snapshot.Store(snapshot)
+	return runtime
+}
+
+func TestReloadOnceDetectsConfigContentWithOlderMtime(t *testing.T) {
+	runtime := newReloadTestRuntime(t)
+	cfg := runtime.currentSnapshot().cfg
+	cfg.DNSQueryTimeoutSeconds++
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(runtime.configPath, append(data, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(runtime.configPath, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	runtime.reloadOnce()
+	if got := runtime.currentSnapshot().cfg.DNSQueryTimeoutSeconds; got != cfg.DNSQueryTimeoutSeconds {
+		t.Fatalf("applied DNS timeout=%d, want %d despite older mtime", got, cfg.DNSQueryTimeoutSeconds)
+	}
+}
+
+func TestReloadOnceAppliesValidSourcesWhenConfigJSONIsBroken(t *testing.T) {
+	runtime := newReloadTestRuntime(t)
+	if err := os.WriteFile(runtime.configPath, []byte("{broken"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(runtime.checksPath, []byte("example.net;A;1;;;0\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runtime.reloadOnce()
+	snapshot := runtime.currentSnapshot()
+	if len(snapshot.cfg.Groups) != 1 || len(snapshot.cfg.Groups[0].Checks) != 1 || snapshot.cfg.Groups[0].Checks[0].Domain != "example.net" {
+		t.Fatalf("valid source edit was blocked by broken config.json: %+v", snapshot.cfg.Groups)
+	}
+	if _, err := loadConfigNoCreate(runtime.configPath); err != nil {
+		t.Fatalf("regenerated config.json is still invalid: %v", err)
 	}
 }
