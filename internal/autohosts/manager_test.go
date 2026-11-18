@@ -465,3 +465,34 @@ func TestSetGeositeCategoriesRejectsInvalidName(t *testing.T) {
 		t.Fatal("invalid category update partially mutated state")
 	}
 }
+
+
+func TestEndpointForQueryMapsUnrecordedGeositeDomain(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	m, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	ep := Endpoint{ServerID: "edge", URL: "https://dns.example/dns-query", Hostname: "dns.example", IPv4: []string{"8.8.8.8"}, IPv6: []string{"2001:4860:4860::8888"}}
+	if err := m.ApplyCycle("edge", ep, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	s := m.Snapshot()
+	if !s.CanRecordQuery("new-geosite-domain.example") {
+		t.Fatal("unrecorded geosite QNAME should fit into Auto Hosts")
+	}
+	ips, ttl, ok := s.EndpointForQuery(1, now.Add(time.Second))
+	if !ok || len(ips) != 1 || ips[0] != "8.8.8.8" || ttl <= 0 {
+		t.Fatalf("unexpected endpoint mapping: ips=%v ttl=%v ok=%v", ips, ttl, ok)
+	}
+	if _, _, ok := s.EndpointForQuery(28, now.Add(time.Second)); !ok {
+		t.Fatal("AAAA query should be eligible for endpoint mapping")
+	}
+	if _, _, ok := s.EndpointForQuery(16, now.Add(time.Second)); ok {
+		t.Fatal("TXT query must not be endpoint-mapped")
+	}
+}

@@ -83,6 +83,7 @@ type Snapshot struct {
 	Domains        map[string]DomainRecord
 	TTL            time.Duration
 	EndpointMaxAge time.Duration
+	MaxDomains     int
 }
 type Manager struct {
 	path  string
@@ -281,13 +282,54 @@ func validateEndpoint(ep Endpoint) (Endpoint, error) {
 	return ep, nil
 }
 func (m *Manager) publish() {
-	s := &Snapshot{Enabled: m.state.Config.Enabled, EmergencyOff: m.state.Config.EmergencyOff, ActiveServer: m.state.ActiveServer, Endpoint: m.state.Endpoints[m.state.ActiveServer], Domains: make(map[string]DomainRecord, len(m.state.Domains)), TTL: m.state.Config.TTL, EndpointMaxAge: m.state.Config.EndpointMaxAge}
+	s := &Snapshot{Enabled: m.state.Config.Enabled, EmergencyOff: m.state.Config.EmergencyOff, ActiveServer: m.state.ActiveServer, Endpoint: m.state.Endpoints[m.state.ActiveServer], Domains: make(map[string]DomainRecord, len(m.state.Domains)), TTL: m.state.Config.TTL, EndpointMaxAge: m.state.Config.EndpointMaxAge, MaxDomains: m.state.Config.MaxDomains}
 	for d, r := range m.state.Domains {
 		s.Domains[d] = r
 	}
 	m.view.Store(s)
 }
 func (m *Manager) Snapshot() *Snapshot { return m.view.Load() }
+
+// CanRecordQuery reports whether a new user QNAME can be accepted without
+// writing state. It uses the same immutable snapshot read by DNS handlers.
+func (s *Snapshot) CanRecordQuery(qname string) bool {
+	if s == nil || !s.Enabled || s.EmergencyOff {
+		return false
+	}
+	name, err := NormalizeDomain(qname)
+	if err != nil {
+		return false
+	}
+	if _, exists := s.Domains[name]; exists {
+		return true
+	}
+	return len(s.Domains) < s.MaxDomains
+}
+
+// EndpointForQuery returns the active DoH endpoint mapping for a Geosite HIT.
+// Unlike Lookup, it does not require a persisted per-domain record.
+func (s *Snapshot) EndpointForQuery(qtype uint16, now time.Time) ([]string, time.Duration, bool) {
+	if s == nil || !s.Enabled || s.EmergencyOff {
+		return nil, 0, false
+	}
+	if s.Endpoint.UpdatedAt.IsZero() || now.Sub(s.Endpoint.UpdatedAt) > s.EndpointMaxAge {
+		return nil, 0, false
+	}
+	ttl := s.TTL
+	if ttl < time.Second {
+		ttl = time.Second
+	}
+	switch qtype {
+	case 1:
+		return append([]string(nil), s.Endpoint.IPv4...), ttl, true
+	case 28:
+		return append([]string(nil), s.Endpoint.IPv6...), ttl, true
+	case 64, 65:
+		return nil, ttl, true
+	default:
+		return nil, 0, false
+	}
+}
 
 // Lookup returns matched=true with no IPs for family-specific NODATA.
 func (s *Snapshot) Lookup(qname string, qtype uint16, now time.Time) ([]string, time.Duration, bool) {
