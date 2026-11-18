@@ -1844,7 +1844,7 @@ func localHostsResponseWithTTL(query []byte, host string, qtype uint16, hosts ma
 // target address from either Answer or Additional while preserving exact-name
 // Auto Hosts handling for direct queries.
 func cnameChainTargetsAutoHosts(response []byte, originalName string, qtype uint16, manager *autohosts.Manager, geositeIndexes ...*geositeIndex) bool {
-	if manager == nil || (qtype != 1 && qtype != 28 && qtype != 64 && qtype != 65) || len(response) < 12 {
+	if manager == nil || (qtype != 1 && qtype != 28 && qtype != 5 && qtype != 64 && qtype != 65 && qtype != 255) || len(response) < 12 {
 		return false
 	}
 	snapshot := manager.Snapshot()
@@ -1893,7 +1893,7 @@ func cnameChainTargetsAutoHosts(response []byte, originalName string, qtype uint
 			return false
 		}
 		seen[target] = struct{}{}
-		if _, _, matched := snapshot.Lookup(target, qtype, time.Now()); matched {
+		if _, _, matched := snapshot.Lookup(target, 1, time.Now()); matched {
 			return true
 		}
 		for _, index := range geositeIndexes {
@@ -1902,6 +1902,11 @@ func cnameChainTargetsAutoHosts(response []byte, originalName string, qtype uint
 			}
 		}
 		current = target
+	}
+	// If the chain continues beyond the traversal cap, fail closed rather than
+	// risk returning an address hidden behind an uninspected alias.
+	if _, continues := aliases[current]; continues {
+		return true
 	}
 	return false
 }

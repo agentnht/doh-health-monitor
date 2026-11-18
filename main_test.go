@@ -2088,8 +2088,10 @@ func TestCNAMEChainIntoAutoHostsFailsClosed(t *testing.T) {
 	response = append(response, target...)
 	response = append(response, appendDNSName(nil, "chatgpt.com")...)
 	response = append(response, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 7)
-	if !cnameChainTargetsAutoHosts(response, "alias.example", 1, manager) {
-		t.Fatal("CNAME into Auto Hosts must be detected and blocked")
+	for _, qtype := range []uint16{1, 5, 28, 64, 65, 255} {
+		if !cnameChainTargetsAutoHosts(response, "alias.example", qtype, manager) {
+			t.Fatalf("CNAME into Auto Hosts must be blocked for QTYPE %d", qtype)
+		}
 	}
 
 	// A Geosite-selected target is protected before it has been persisted.
@@ -2104,8 +2106,10 @@ func TestCNAMEChainIntoAutoHostsFailsClosed(t *testing.T) {
 	geoResponse = append(geoResponse, appendDNSName(nil, selectedTarget)...)
 	geoResponse = append(geoResponse, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 7)
 	geo := newTestGeositeIndex(t, selectedTarget)
-	if !cnameChainTargetsAutoHosts(geoResponse, "alias.example", 1, manager, geo) {
-		t.Fatal("CNAME into selected Geosite category must be blocked before target is persisted")
+	for _, qtype := range []uint16{1, 5, 28, 64, 65, 255} {
+		if !cnameChainTargetsAutoHosts(geoResponse, "alias.example", qtype, manager, geo) {
+			t.Fatalf("CNAME into selected Geosite category must be blocked for QTYPE %d", qtype)
+		}
 	}
 	// Exercise the real DNS cache-hit path: the response must be replaced by
 	// SERVFAIL rather than returning the protected target's real address.
