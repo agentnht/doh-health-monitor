@@ -23,7 +23,6 @@ import (
 	"time"
 )
 
-
 func testProtoVarint(value uint64) []byte {
 	var out []byte
 	for value >= 0x80 {
