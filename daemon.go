@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"net"
 	"net/http"
@@ -59,6 +60,9 @@ func runDaemon() {
 	}
 	if fi, e := os.Stat(configPath); e == nil {
 		snap.configMod = fi.ModTime()
+	}
+	if configData, e := os.ReadFile(configPath); e == nil {
+		snap.configHash = sha256.Sum256(configData)
 	}
 	autoHostsManager, err := autohosts.New(filepath.Join(dataDir, "auto-hosts.json"))
 	if err != nil {
