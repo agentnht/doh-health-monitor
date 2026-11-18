@@ -35,6 +35,39 @@ jobs:
           fi
       - run: go vet ./...
       - run: go test ./...
+      - name: Exercise parser against upstream production geosite.dat
+        run: |
+          curl -fsSL --retry 3 https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat -o "$RUNNER_TEMP/dlc.dat"
+          curl -fsSL --retry 3 https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat.sha256sum -o "$RUNNER_TEMP/dlc.dat.sha256sum"
+          (cd "$RUNNER_TEMP" && sha256sum -c dlc.dat.sha256sum)
+          LUCX_TEST_GEOSITE_DAT="$RUNNER_TEMP/dlc.dat" LUCX_TEST_GEOSITE_CATEGORIES=CN go test . -run '^TestGeositeIndexLoadsConfiguredRealAsset      - name: Run race detector
+        run: go test -race ./...
+      - name: Scan dependencies and call graph for known vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@ef4cb2f7cae47fe3e21fc596455f694951867b29 ./...
+      - name: Build Linux amd64 test package
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          id=$(jq -r .id manifest.json)
+          mkdir -p stage/bin stage/scripts
+          go build -trimpath -ldflags "-s -w" -o "stage/bin/$id" .
+          cp manifest.json stage/
+          install -m 0755 scripts/plugin-management.sh scripts/check-dns-integration.sh stage/scripts/
+          (cd stage && zip -r "../$id-pr-test.zip" .)
+          unzip -Z1 "$id-pr-test.zip" | grep -Fx "scripts/plugin-management.sh"
+          unzip -Z1 "$id-pr-test.zip" | grep -Fx "scripts/check-dns-integration.sh"
+          sha256sum "$id-pr-test.zip" > "$id-pr-test.zip.sha256"
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        with:
+          name: doh-health-monitor-pr-test
+          path: |
+            doh-health-monitor-pr-test.zip
+            doh-health-monitor-pr-test.zip.sha256
+          if-no-files-found: error
+          retention-days: 7
+ -count=1
       - name: Run race detector
         run: go test -race ./...
       - name: Scan dependencies and call graph for known vulnerabilities
