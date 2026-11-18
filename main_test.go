@@ -2180,7 +2180,7 @@ func TestReloadLoopUsesConfiguredInterval(t *testing.T) {
 	initial.cfg = cfg
 	initial.configHash = sha256.Sum256(configData)
 	runtime.snapshot.Store(&initial)
-	if err := os.WriteFile(runtime.checksPath, []byte("loop.example;A;1;;;0\\n"), 0600); err != nil {
+	if err := os.WriteFile(runtime.checksPath, []byte("loop.example;A;1;;;0\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
