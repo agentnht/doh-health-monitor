@@ -113,3 +113,29 @@ func TestLegacyConfigDefaultsDNSPortModeToFixed(t *testing.T) {
 		t.Fatalf("legacy config mode=%q, want fixed", cfg.DNSPortMode)
 	}
 }
+
+func TestEffectiveDNSListenerAddressesUsesPersistedAutoPort(t *testing.T) {
+	dataDir := t.TempDir()
+	state := dnsListenerState{Version: dnsListenerStateVersion, Host: "127.0.0.1", Port: 19453}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "dns-listener.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	udp, tcp, err := effectiveDNSListenerAddresses(dataDir, autoDNSConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "127.0.0.1:19453"
+	if udp != want || tcp != want {
+		t.Fatalf("effective listeners udp=%q tcp=%q, want %q", udp, tcp, want)
+	}
+}
+
+func TestEffectiveDNSListenerAddressesRejectsMissingAutoPortState(t *testing.T) {
+	if _, _, err := effectiveDNSListenerAddresses(t.TempDir(), autoDNSConfig()); err == nil {
+		t.Fatal("expected a missing persisted listener state to be reported")
+	}
+}

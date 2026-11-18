@@ -91,6 +91,7 @@ scripts/
 ```text
 $LUCX_PLUGIN_DATA/
 ├── config.json       # генерируемая рабочая конфигурация + прочие настройки
+├── dns-listener.json # выбранный UDP/TCP endpoint в режиме dns_port_mode=auto
 ├── doh-servers.txt   # ID провайдера и URL DoH, одна запись на строку
 └── tst-domen.txt     # DNS/HTTP health-check настройки, одна проверка на строку
 ```

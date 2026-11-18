@@ -836,7 +836,12 @@ func runWebUIAdminTests(dataDir string) webUITestSummary {
 	}
 	summary.Tests = append(summary.Tests, webUITest("Проверка файлов списков", true, fmt.Sprintf("DoH-серверов: %d, DNS-проверок: %d", len(sources.Providers), len(sources.Checks))))
 
-	digResults := runWebUIDigTests(config.DNSListenUDP, sources.Checks)
+	dnsUDPAddress, _, listenerErr := effectiveDNSListenerAddresses(dataDir, config)
+	if listenerErr != nil {
+		summary.Tests = append(summary.Tests, webUITest("DNS listener", false, listenerErr.Error()))
+		return finalizeWebUITests(summary)
+	}
+	digResults := runWebUIDigTests(dnsUDPAddress, sources.Checks)
 	summary.Tests = append(summary.Tests, digResults...)
 	udpOK := false
 	for _, result := range digResults {
@@ -846,8 +851,8 @@ func runWebUIAdminTests(dataDir string) webUITestSummary {
 		}
 	}
 	if udpOK {
-		summary.Tests = append(summary.Tests, webUITest("UDP DNS listener", true, config.DNSListenUDP+" отвечает на реальные dig-запросы"))
-	} else if address, err := localListenAddress(config.DNSListenUDP); err != nil {
+		summary.Tests = append(summary.Tests, webUITest("UDP DNS listener", true, dnsUDPAddress+" отвечает на реальные dig-запросы"))
+	} else if address, err := localListenAddress(dnsUDPAddress); err != nil {
 		summary.Tests = append(summary.Tests, webUITest("UDP DNS listener", false, err.Error()))
 	} else if listener, err := net.ListenPacket("udp", address); err == nil {
 		_ = listener.Close()
@@ -1037,7 +1042,11 @@ func runWebUIXrayIntegrationCheck(dataDir string) webUITestResult {
 	if err != nil {
 		return webUITest("Xray DNS integration", false, "Не удалось прочитать config.json: "+err.Error())
 	}
-	udpAddress, err := localListenAddress(config.DNSListenUDP)
+	dnsUDPAddress, _, err := effectiveDNSListenerAddresses(root, config)
+	if err != nil {
+		return webUITest("Xray DNS integration", false, err.Error())
+	}
+	udpAddress, err := localListenAddress(dnsUDPAddress)
 	if err != nil {
 		return webUITest("Xray DNS integration", false, err.Error())
 	}
@@ -1091,7 +1100,11 @@ func runWebUIIntegration(dataDir, action string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("config.json is invalid: %w", err)
 	}
-	udpAddress, err := localListenAddress(config.DNSListenUDP)
+	dnsUDPAddress, _, err := effectiveDNSListenerAddresses(root, config)
+	if err != nil {
+		return "", fmt.Errorf("configured DNS listener: %w", err)
+	}
+	udpAddress, err := localListenAddress(dnsUDPAddress)
 	if err != nil {
 		return "", fmt.Errorf("configured DNS listener: %w", err)
 	}

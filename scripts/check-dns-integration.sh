@@ -5,7 +5,15 @@ DOH_SERVICE="${DOH_SERVICE:-lucx-plugin-doh-health-monitor}"
 DOH_STATUS_URL="${DOH_STATUS_URL:-http://127.0.0.1:18765/status}"
 XRAY_CONFIG="${XRAY_CONFIG:-/usr/local/x-ui/bin/config.json}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PLUGIN_PORT="${DOH_PLUGIN_PORT:-5355}"
+plugin_data_dir="${LUCX_PLUGIN_DATA:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)/data}"
+if [[ -n "${DOH_PLUGIN_PORT:-}" ]]; then
+  PLUGIN_PORT="$DOH_PLUGIN_PORT"
+elif command -v jq >/dev/null 2>&1 && [[ -r "$plugin_data_dir/dns-listener.json" ]]; then
+  PLUGIN_PORT="$(jq -r '.port // empty' "$plugin_data_dir/dns-listener.json" 2>/dev/null || true)"
+  [[ -n "$PLUGIN_PORT" ]] || PLUGIN_PORT=5355
+else
+  PLUGIN_PORT=5355
+fi
 if [[ ! "$PLUGIN_PORT" =~ ^[0-9]{1,5}$ ]] || (( 10#$PLUGIN_PORT < 1 || 10#$PLUGIN_PORT > 65535 )); then
   printf '[FAIL] Некорректный DOH_PLUGIN_PORT: ожидается порт 1..65535.\n' >&2
   exit 2
@@ -41,7 +49,6 @@ else
   warning "Команда ss отсутствует; проверка сокетов пропущена"
 fi
 status_file="$(mktemp)"
-plugin_data_dir="${LUCX_PLUGIN_DATA:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)/data}"
 status_token_file="$plugin_data_dir/auto-hosts-api.token"
 status_token=""
 token_meta=""

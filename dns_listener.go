@@ -47,7 +47,7 @@ func bindDNSListeners(cfg Config, dataDir string) (*net.UDPConn, net.Listener, s
 		return nil, nil, "", "", err
 	}
 	ip := net.ParseIP(udpHost)
-	if udpHost == "" || udpHost != tcpHost || udpPort != "0" || tcpPort != "0" || ip == nil || !ip.IsLoopback() {
+	if udpHost == "" || udpHost != tcpHost || udpPort != "0" || tcpPort != "0" || ip == nil || !ip.Equal(net.ParseIP("127.0.0.1")) {
 		return nil, nil, "", "", errors.New("auto DNS mode requires matching loopback IP listeners on port 0")
 	}
 	if dataDir == "" {
@@ -120,7 +120,7 @@ func readDNSListenerState(path string) (dnsListenerState, bool, error) {
 		return dnsListenerState{}, false, errors.New("saved DNS listener state has an unsupported version or invalid endpoint")
 	}
 	ip := net.ParseIP(state.Host)
-	if ip == nil || !ip.IsLoopback() {
+	if ip == nil || !ip.Equal(net.ParseIP("127.0.0.1")) {
 		return dnsListenerState{}, false, errors.New("saved DNS listener state must contain a loopback IP")
 	}
 	return state, true, nil
@@ -142,4 +142,34 @@ func bindSavedDNSListeners(state dnsListenerState) (*net.UDPConn, net.Listener, 
 		return nil, nil, err
 	}
 	return udpConn, tcpListener, nil
+}
+
+func effectiveDNSListenerAddresses(dataDir string, cfg Config) (string, string, error) {
+	cfg = normalizeDNSPortMode(cfg)
+	if cfg.DNSPortMode != "auto" {
+		return cfg.DNSListenUDP, cfg.DNSListenTCP, nil
+	}
+	udpHost, udpPort, err := net.SplitHostPort(cfg.DNSListenUDP)
+	if err != nil {
+		return "", "", fmt.Errorf("configured UDP DNS listener: %w", err)
+	}
+	tcpHost, tcpPort, err := net.SplitHostPort(cfg.DNSListenTCP)
+	if err != nil {
+		return "", "", fmt.Errorf("configured TCP DNS listener: %w", err)
+	}
+	if udpHost != "127.0.0.1" || tcpHost != udpHost || udpPort != "0" || tcpPort != "0" {
+		return "", "", errors.New("auto DNS mode requires matching 127.0.0.1 listeners on port 0")
+	}
+	state, exists, err := readDNSListenerState(filepath.Join(dataDir, "dns-listener.json"))
+	if err != nil {
+		return "", "", err
+	}
+	if !exists {
+		return "", "", errors.New("auto DNS listener has not selected a port yet; restart the plugin before running DNS checks")
+	}
+	if state.Host != udpHost {
+		return "", "", fmt.Errorf("saved DNS listener host %q differs from configured host %q", state.Host, udpHost)
+	}
+	address := net.JoinHostPort(state.Host, strconv.Itoa(state.Port))
+	return address, address, nil
 }
