@@ -21,12 +21,22 @@ func TestCheckPluginHealthUsesReadOnlyLocalProbes(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	dataDir := t.TempDir()
+	const apiToken = "0123456789abcdefghijklmnopqrstuvwxyzABCDE"
+	if err := os.WriteFile(filepath.Join(dataDir, "auto-hosts-api.token"), []byte(apiToken+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LUCX_PLUGIN_DATA", dataDir)
 
 	requests := 0
 	status := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		if r.Method != http.MethodGet {
 			t.Errorf("status method=%s, want GET", r.Method)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer "+apiToken {
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte("{\"version\":\"test\"}"))
