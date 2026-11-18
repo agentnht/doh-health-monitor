@@ -2111,9 +2111,9 @@ func newReloadTestRuntime(t *testing.T) *Runtime {
 	}
 	runtime := &Runtime{
 		configPath: configPath, dohPath: dohPath, checksPath: checksPath,
-		sourceHashes: sources.Checksums,
+		sourceHashes:       sources.Checksums,
 		healthCheckTrigger: make(chan struct{}, 1),
-		health: map[string]map[string]HealthEntry{}, active: map[string]string{},
+		health:             map[string]map[string]HealthEntry{}, active: map[string]string{},
 		lastGemini: map[string]time.Time{}, cache: map[string]cacheItem{},
 	}
 	runtime.snapshot.Store(snapshot)
