@@ -35,6 +35,12 @@ jobs:
           fi
       - run: go vet ./...
       - run: go test ./...
+      - name: Exercise parser against upstream production geosite.dat
+        run: |
+          curl -fsSL --retry 3 https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat -o "$RUNNER_TEMP/dlc.dat"
+          curl -fsSL --retry 3 https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat.sha256sum -o "$RUNNER_TEMP/dlc.dat.sha256sum"
+          (cd "$RUNNER_TEMP" && sha256sum -c dlc.dat.sha256sum)
+          LUCX_TEST_GEOSITE_DAT="$RUNNER_TEMP/dlc.dat" LUCX_TEST_GEOSITE_CATEGORIES=CN go test . -run TestGeositeIndexLoadsConfiguredRealAsset
       - name: Run race detector
         run: go test -race ./...
       - name: Scan dependencies and call graph for known vulnerabilities
