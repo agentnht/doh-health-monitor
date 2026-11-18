@@ -47,6 +47,7 @@ const (
 
 type Config struct {
 	LocalHosts             map[string]LocalHost `json:"local_hosts"`
+	GeositePath            string               `json:"geosite_path,omitempty"`
 	DNSPortMode            string               `json:"dns_port_mode"`
 	DNSListenUDP           string               `json:"dns_listen_udp"`
 	DNSListenTCP           string               `json:"dns_listen_tcp"`
@@ -618,6 +619,11 @@ func normalizeCacheConfig(c Config) Config {
 }
 
 func validateConfig(c Config) error {
+	if configuredPath := strings.TrimSpace(c.GeositePath); configuredPath != "" {
+		if !filepath.IsAbs(configuredPath) || filepath.Clean(configuredPath) != configuredPath || strings.ContainsRune(configuredPath, '\\x00') {
+			return errors.New("geosite_path must be a clean absolute filesystem path")
+		}
+	}
 	if !validListen(c.DNSListenUDP) || !validListen(c.DNSListenTCP) || !validListen(c.HTTPListen) {
 		return errors.New("dns_listen_udp, dns_listen_tcp and http_listen must be host:port")
 	}

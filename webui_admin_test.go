@@ -75,6 +75,7 @@ func TestWebUIConfigAPIUpdatesValidatedSettingsAndDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	view.Health.TimeoutSeconds = 9
+	view.GeositePath = "/opt/xray-assets/geosite.dat"
 	view.DNSPortMode = "auto"
 	view.DNSListenUDP = "127.0.0.1:0"
 	view.DNSListenTCP = "127.0.0.1:0"
@@ -102,6 +103,9 @@ func TestWebUIConfigAPIUpdatesValidatedSettingsAndDefaults(t *testing.T) {
 	if config.Health.TimeoutSeconds != 9 {
 		t.Fatalf("saved health timeout=%d, want 9", config.Health.TimeoutSeconds)
 	}
+	if config.GeositePath != "/opt/xray-assets/geosite.dat" {
+		t.Fatalf("saved geosite path=%q, want configured override", config.GeositePath)
+}
 	if config.DNSPortMode != "auto" || config.DNSListenUDP != "127.0.0.1:0" || config.DNSListenTCP != "127.0.0.1:0" {
 		t.Fatalf("auto DNS listener settings were not persisted: mode=%q udp=%q tcp=%q", config.DNSPortMode, config.DNSListenUDP, config.DNSListenTCP)
 	}

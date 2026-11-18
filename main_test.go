@@ -142,6 +142,24 @@ func TestGeositeIndexRetainsLastKnownGoodMatcherOnReloadFailure(t *testing.T) {
 	}
 }
 
+func TestGeositeDataPathUsesDefaultAndConfiguredOverride(t *testing.T) {
+	dataDir := filepath.Join(string(filepath.Separator), "usr", "local", "x-ui", "bin", "plugins", "doh-health-monitor", "data")
+	if got, want := geositeDataPath(dataDir), filepath.Join(string(filepath.Separator), "usr", "local", "x-ui", "bin", "geosite.dat"); got != want {
+		t.Fatalf("default geosite path=%q, want %q", got, want)
+	}
+	if got, want := geositeDataPath(dataDir, "/opt/xray-assets/geosite.dat"), filepath.Join(string(filepath.Separator), "opt", "xray-assets", "geosite.dat"); got != want {
+		t.Fatalf("override geosite path=%q, want %q", got, want)
+	}
+}
+
+func TestValidateConfigRejectsRelativeGeositePath(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.GeositePath = "assets/geosite.dat"
+	if err := validateConfig(cfg); err == nil {
+		t.Fatal("relative geosite_path must be rejected")
+	}
+}
+
 func TestValidateDNSResponseMatchesFullQuestion(t *testing.T) {
 	query := makeDNSQuery("www.example.com", 1)
 	response := testAResponse(query, 60)

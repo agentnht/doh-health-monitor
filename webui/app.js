@@ -255,6 +255,7 @@
     $("config-gemini").replaceChildren();
 
     const general = $("config-general");
+    addConfigField(general, "Geosite file path (empty = panel default)", "geosite_path", config.geosite_path || "");
     addConfigField(general, "DNS port mode (fixed/auto)", "dns_port_mode", config.dns_port_mode);
     addConfigField(general, "DNS UDP listener", "dns_listen_udp", config.dns_listen_udp);
     addConfigField(general, "DNS TCP listener", "dns_listen_tcp", config.dns_listen_tcp);

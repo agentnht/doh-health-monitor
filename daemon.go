@@ -70,7 +70,7 @@ func runDaemon() {
 	if err != nil {
 		fatal("AUTO_HOSTS state initialization failed: %v", err)
 	}
-	geoIndex, geoErr := newGeositeIndex(geositeDataPath(dataDir), autoHostsManager.State().Config.GeositeCategories)
+	geoIndex, geoErr := newGeositeIndex(geositeDataPath(dataDir, cfg.GeositePath), autoHostsManager.State().Config.GeositeCategories)
 	if geoErr != nil {
 		logLine("WARN", "GEOSITE initial load failed: %v", geoErr)
 	}
@@ -219,7 +219,10 @@ func (g *geositeIndex) Status() geositeStatus {
 	}
 }
 
-func geositeDataPath(dataDir string) string {
+func geositeDataPath(dataDir string, override ...string) string {
+	if len(override) > 0 && strings.TrimSpace(override[0]) != "" {
+		return filepath.Clean(strings.TrimSpace(override[0]))
+	}
 	binDir := filepath.Dir(filepath.Dir(filepath.Dir(dataDir)))
 	return filepath.Join(binDir, "geosite.dat")
 }
