@@ -2022,7 +2022,6 @@ func TestLocalDNSReplyDoesNotReflectEDNSClientOptions(t *testing.T) {
 	}
 }
 
-
 func TestGeminiConfigValidationRejectsUnsafeValues(t *testing.T) {
 	base := defaultConfig()
 	base.GeminiAPI.Enabled = true
