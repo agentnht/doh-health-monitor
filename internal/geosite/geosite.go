@@ -276,7 +276,6 @@ func skipValue(data []byte, wire int) (int, error) {
 	}
 }
 
-
 // ListCategories returns the category codes present in a GeoSiteList.
 func ListCategories(path string) ([]string, error) {
 	info, err := os.Stat(path)

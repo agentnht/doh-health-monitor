@@ -180,7 +180,6 @@ func runDaemon() {
 	logLine("INFO", "STOP clean=true")
 }
 
-
 type geositeIndex struct {
 	path       string
 	mu         sync.RWMutex

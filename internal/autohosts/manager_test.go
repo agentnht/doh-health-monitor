@@ -429,7 +429,6 @@ func TestQueryDomainCapacityAndIndependentGarbageCollection(t *testing.T) {
 
 func boolPtr(v bool) *bool { return &v }
 
-
 func TestGeositeCategoriesPersistNormalized(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	m, err := New(path)

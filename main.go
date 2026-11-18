@@ -2910,9 +2910,9 @@ func (r *Runtime) handleAutoHostsConfig(w http.ResponseWriter, req *http.Request
 	}
 	req.Body = http.MaxBytesReader(w, req.Body, 16<<10)
 	var input struct {
-		Enabled           *bool    `json:"enabled"`
-		EmergencyOff      *bool    `json:"emergency_off"`
-		PinnedServerID    *string  `json:"pinned_server_id"`
+		Enabled           *bool     `json:"enabled"`
+		EmergencyOff      *bool     `json:"emergency_off"`
+		PinnedServerID    *string   `json:"pinned_server_id"`
 		GeositeCategories *[]string `json:"geosite_categories"`
 	}
 	decoder := json.NewDecoder(req.Body)
@@ -2946,7 +2946,6 @@ func (r *Runtime) handleAutoHostsConfig(w http.ResponseWriter, req *http.Request
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(r.autoHosts.State())
 }
-
 
 func (r *Runtime) handleGeositeCategories(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet {

@@ -24,16 +24,16 @@ const maxStoredProbeResults = 512
 var ErrPinnedServer = errors.New("active server is pinned to a different DoH server")
 
 type Config struct {
-	Enabled        bool          `json:"enabled"`
-	EmergencyOff   bool          `json:"emergency_off"`
-	Mode           string        `json:"mode"`
-	PinnedServerID string        `json:"pinned_server_id,omitempty"`
-	CheckInterval  time.Duration `json:"check_interval"`
-	GracePeriod    time.Duration `json:"grace_period"`
-	TTL            time.Duration `json:"ttl"`
-	EndpointMaxAge time.Duration `json:"endpoint_max_age"`
-	MaxDomains     int           `json:"max_domains"`
-	GeositeCategories []string  `json:"geosite_categories,omitempty"`
+	Enabled           bool          `json:"enabled"`
+	EmergencyOff      bool          `json:"emergency_off"`
+	Mode              string        `json:"mode"`
+	PinnedServerID    string        `json:"pinned_server_id,omitempty"`
+	CheckInterval     time.Duration `json:"check_interval"`
+	GracePeriod       time.Duration `json:"grace_period"`
+	TTL               time.Duration `json:"ttl"`
+	EndpointMaxAge    time.Duration `json:"endpoint_max_age"`
+	MaxDomains        int           `json:"max_domains"`
+	GeositeCategories []string      `json:"geosite_categories,omitempty"`
 }
 type Endpoint struct {
 	ServerID  string    `json:"server_id"`
