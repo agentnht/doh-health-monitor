@@ -2538,12 +2538,9 @@ func (r *Runtime) geminiProbe(ctx context.Context, u *UpstreamRuntime, c GeminiA
 			}
 		}
 		if len(textParts) == 0 {
-			if finishReason == "MAX_TOKENS" {
-				// The endpoint accepted the request; a small output budget may
-				// have been consumed by model thinking before visible text.
-				return "candidate accepted (MAX_TOKENS)", nil
-			}
-			return "", fmt.Errorf("Gemini API returned no text candidate (finishReason=%s)", finishReason)
+			// This probe checks API reachability and model acceptance, not
+			// whether a model emits visible text within a tiny token budget.
+			return fmt.Sprintf("candidate accepted without visible text (finishReason=%s)", finishReason), nil
 		}
 		return strings.Join(textParts, "\n"), nil
 	}
@@ -2563,7 +2560,7 @@ func geminiFailureIsShared(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "read gemini api key file") ||
 		strings.Contains(msg, "gemini api key is empty") ||
-		strings.Contains(msg, "no text candidate")
+		strings.Contains(msg, "no text candidate") || strings.Contains(msg, "no valid candidate")
 }
 
 func (r *Runtime) updateHealth(gid, uid string, ok bool, lat time.Duration, lastErr string, httpStatus int, gemState string, checks []ProbeStatus, h HealthConfig) {
