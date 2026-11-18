@@ -75,7 +75,6 @@ func TestParseCategoriesAndMatchAny(t *testing.T) {
 	}
 }
 
-
 func domainRule(kind uint64, value string) []byte {
 	rule := varintField(1, kind)
 	return append(rule, bytesField(2, []byte(value))...)
