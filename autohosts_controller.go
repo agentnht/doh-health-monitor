@@ -54,6 +54,7 @@ func newAutoHostsController(r *Runtime, manager *autohosts.Manager) *autoHostsCo
 }
 
 func (c *autoHostsController) run(ctx context.Context) {
+	go c.runGarbageCollector(ctx)
 	for {
 		state := c.manager.State()
 		interval := state.Config.CheckInterval
@@ -97,6 +98,23 @@ func (c *autoHostsController) run(ctx context.Context) {
 				}
 			}
 		case <-timer.C:
+		}
+	}
+}
+
+
+func (c *autoHostsController) runGarbageCollector(ctx context.Context) {
+	interval := time.Minute
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if err := c.manager.PruneExpired(time.Now().UTC()); err != nil && !errors.Is(err, context.Canceled) {
+			logLine("WARN", "AUTO_HOSTS garbage collection failed: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
 		}
 	}
 }

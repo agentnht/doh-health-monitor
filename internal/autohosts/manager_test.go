@@ -344,3 +344,88 @@ func TestPinnedAndEmergencyOffPersistAcrossRestart(t *testing.T) {
 		t.Fatalf("explicit restore was not persisted: %+v", again.State().Config)
 	}
 }
+
+
+func TestQueryDomainsSurviveProbeCyclesAndRefreshLastSeen(t *testing.T) {
+	now := time.Now().UTC()
+	path := filepath.Join(t.TempDir(), "state.json")
+	m, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep := Endpoint{ServerID: "edge", URL: "https://dns.example/dns-query", Hostname: "dns.example", IPv4: []string{"8.8.8.8"}, UpdatedAt: now}
+	if err := m.ApplyCycle("edge", ep, []ProbeResult{{Domain: "chatgpt.com", Success: true, CheckedAt: now}}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	firstSeen := now.Add(time.Minute)
+	if err := m.RecordQuery("service.example", firstSeen); err != nil {
+		t.Fatal(err)
+	}
+	secondSeen := firstSeen.Add(time.Minute)
+	if err := m.RecordQuery("service.example.", secondSeen); err != nil {
+		t.Fatal(err)
+	}
+	record := m.State().Domains["service.example"]
+	if record.Source != DomainSourceQuery || !record.LastSeen.Equal(secondSeen) || !record.ExpiresAt.Equal(secondSeen.Add(DefaultConfig().GracePeriod)) {
+		t.Fatalf("query record was not refreshed: %+v", record)
+	}
+	next := now.Add(3 * time.Minute)
+	ep.UpdatedAt = next
+	if err := m.ApplyCycle("edge", ep, []ProbeResult{{Domain: "chatgpt.com", Success: false, CheckedAt: next}}, next); err != nil {
+		t.Fatal(err)
+	}
+	state := m.State()
+	if _, ok := state.Domains["service.example"]; !ok {
+		t.Fatal("probe cycle removed a user-query domain")
+	}
+	if _, ok := state.Domains["chatgpt.com"]; !ok {
+		t.Fatal("probe failure prematurely removed a control domain inside grace")
+	}
+	reloaded, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.State().Domains["service.example"]; !got.LastSeen.Equal(secondSeen) {
+		t.Fatalf("LastSeen did not survive restart: %+v", got)
+	}
+}
+
+func TestQueryDomainCapacityAndIndependentGarbageCollection(t *testing.T) {
+	now := time.Now().UTC()
+	m, err := New(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Configure(boolPtr(true), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Reduce the cap through a valid persisted config update.
+	m.mu.Lock()
+	m.state.Config.MaxDomains = 2
+	if err := m.persist(m.state); err != nil {
+		m.mu.Unlock()
+		t.Fatal(err)
+	}
+	m.publish()
+	m.mu.Unlock()
+	if err := m.RecordQuery("one.example", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RecordQuery("two.example", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RecordQuery("three.example", now); err == nil {
+		t.Fatal("expected capacity error")
+	}
+	if err := m.PruneExpired(now.Add(DefaultConfig().GracePeriod + time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.State().Domains) != 0 {
+		t.Fatalf("expired domains remain after GC: %+v", m.State().Domains)
+	}
+}
+
+func boolPtr(v bool) *bool { return &v }

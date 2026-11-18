@@ -52,10 +52,17 @@ type ProbeResult struct {
 }
 type DomainRecord struct {
 	Domain      string    `json:"domain"`
-	ServerID    string    `json:"server_id"`
-	LastSuccess time.Time `json:"last_success"`
+	ServerID    string    `json:"server_id,omitempty"`
+	Source      string    `json:"source,omitempty"`
+	LastSuccess time.Time `json:"last_success,omitempty"`
+	LastSeen    time.Time `json:"last_seen,omitempty"`
 	ExpiresAt   time.Time `json:"expires_at"`
 }
+
+const (
+	DomainSourceProbe = "probe"
+	DomainSourceQuery = "query"
+)
 type State struct {
 	SchemaVersion int                     `json:"schema_version"`
 	Config        Config                  `json:"config"`
@@ -157,6 +164,12 @@ func normalizeState(s *State) error {
 			return fmt.Errorf("invalid persisted domain: %w", err)
 		}
 		rec.Domain = name
+		if rec.Source == "" {
+			rec.Source = DomainSourceProbe // schema-v1 records were probe-owned
+		}
+		if rec.Source != DomainSourceProbe && rec.Source != DomainSourceQuery {
+			return fmt.Errorf("invalid source for persisted domain %q", name)
+		}
 		normalized[name] = rec
 	}
 	s.Domains = normalized
@@ -278,7 +291,7 @@ func (s *Snapshot) Lookup(qname string, qtype uint16, now time.Time) ([]string, 
 		return nil, 0, false
 	}
 	rec, ok := s.Domains[d]
-	if !ok || rec.ServerID != s.ActiveServer || rec.ExpiresAt.IsZero() || !now.Before(rec.ExpiresAt) {
+	if !ok || rec.ExpiresAt.IsZero() || !now.Before(rec.ExpiresAt) {
 		return nil, 0, false
 	}
 	ttl := s.TTL
@@ -422,19 +435,19 @@ func (m *Manager) ApplyFullCycle(activeID string, endpoints []Endpoint, results 
 			s.ProbeResults[serverID+"\x00"+d] = r
 			if serverID == activeID && r.Success {
 				s.Domains[d] = DomainRecord{
-					Domain: d, ServerID: activeID,
+					Domain: d, ServerID: activeID, Source: DomainSourceProbe,
 					LastSuccess: r.CheckedAt.UTC(),
 					ExpiresAt:   r.CheckedAt.Add(s.Config.GracePeriod).UTC(),
 				}
 			}
 		}
-		published := make(map[string]DomainRecord)
+		// Probe cycles may refresh fixed control domains, but must never discard
+		// user-query records or records belonging to the previously active server.
 		for d, record := range s.Domains {
-			if record.ServerID == activeID && now.Before(record.ExpiresAt) {
-				published[d] = record
+			if record.ExpiresAt.IsZero() || !now.Before(record.ExpiresAt) {
+				delete(s.Domains, d)
 			}
 		}
-		s.Domains = published
 		s.ActiveServer = activeID
 		for key, result := range s.ProbeResults {
 			if now.Sub(result.CheckedAt) > 30*24*time.Hour {
@@ -453,6 +466,56 @@ func (m *Manager) ApplyFullCycle(activeID string, endpoints []Endpoint, results 
 				break
 			}
 			delete(s.ProbeResults, oldestKey)
+		}
+		return nil
+	})
+}
+
+
+// RecordQuery adds or refreshes a user QNAME after the caller has confirmed a
+// Geosite match. Probe-owned control domains remain governed by probe success.
+func (m *Manager) RecordQuery(rawDomain string, now time.Time) error {
+	domain, err := NormalizeDomain(rawDomain)
+	if err != nil {
+		return err
+	}
+	return m.update(func(s *State) error {
+		if !s.Config.Enabled || s.Config.EmergencyOff {
+			return errors.New("Auto Hosts is disabled")
+		}
+		if existing, ok := s.Domains[domain]; ok && existing.Source == DomainSourceProbe {
+			return nil
+		}
+		if _, exists := s.Domains[domain]; !exists && len(s.Domains) >= s.Config.MaxDomains {
+			return errors.New("Auto Hosts domain limit exceeded")
+		}
+		s.Domains[domain] = DomainRecord{
+			Domain: domain, Source: DomainSourceQuery,
+			LastSeen: now.UTC(), ExpiresAt: now.Add(s.Config.GracePeriod).UTC(),
+		}
+		return nil
+	})
+}
+
+// PruneExpired performs garbage collection independently of probe success.
+func (m *Manager) PruneExpired(now time.Time) error {
+	m.mu.Lock()
+	hasExpired := false
+	for _, record := range m.state.Domains {
+		if record.ExpiresAt.IsZero() || !now.Before(record.ExpiresAt) {
+			hasExpired = true
+			break
+		}
+	}
+	m.mu.Unlock()
+	if !hasExpired {
+		return nil
+	}
+	return m.update(func(s *State) error {
+		for domain, record := range s.Domains {
+			if record.ExpiresAt.IsZero() || !now.Before(record.ExpiresAt) {
+				delete(s.Domains, domain)
+			}
 		}
 		return nil
 	})
