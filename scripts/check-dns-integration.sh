@@ -41,13 +41,29 @@ else
   warning "Команда ss отсутствует; проверка сокетов пропущена"
 fi
 status_file="$(mktemp)"
-if curl --fail --silent --show-error --max-time 3 "$DOH_STATUS_URL" -o "$status_file" 2>/dev/null &&
+plugin_data_dir="${LUCX_PLUGIN_DATA:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)/data}"
+status_token_file="$plugin_data_dir/auto-hosts-api.token"
+status_token=""
+token_meta=""
+if [[ -f "$status_token_file" && ! -L "$status_token_file" ]]; then
+  token_meta="$(stat -c '%a:%u' -- "$status_token_file" 2>/dev/null || true)"
+  token_mode="${token_meta%%:*}"
+  token_uid="${token_meta##*:}"
+  if [[ "$token_uid" == "$EUID" && "$token_mode" =~ ^[0-7]{3,4}$ ]] &&
+     (( (8#$token_mode & 077) == 0 )); then
+    IFS= read -r status_token < "$status_token_file" || status_token=""
+  fi
+fi
+if [[ "$status_token" =~ ^[A-Za-z0-9_-]{40,128}$ ]] &&
+   printf 'header = "Authorization: Bearer %s"\n' "$status_token" |
+     curl --config - --fail --silent --show-error --max-time 3 "$DOH_STATUS_URL" -o "$status_file" 2>/dev/null &&
    jq -e . "$status_file" >/dev/null 2>&1; then
   active="$(jq -r '.groups.google.active_upstream // .active_upstream // "не указан"' "$status_file")"
   pass "Status API отвечает корректным JSON (active_upstream: $active)"
 else
-  error "Status API недоступен или вернул некорректный JSON: $DOH_STATUS_URL"
+  error "Status API недоступен, токен отсутствует/некорректен или JSON некорректен: $DOH_STATUS_URL"
 fi
+status_token=""
 rm -f "$status_file"
 
 fi
