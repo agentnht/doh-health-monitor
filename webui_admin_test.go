@@ -260,6 +260,9 @@ func TestWebUIIntegrationOperationLogPersistsAndRedactsCredentials(t *testing.T)
 	logger := &webUIOperationLogger{dataDir: dir}
 	logger.Printf("INTEGRATION action=INTEGRATE started")
 	logger.Printf("Authorization: Bearer secret-token-value")
+	logger.Printf("x-goog-api-key: AIza0123456789abcdefghijABCDEFGHIJ123456")
+	logger.Printf("GET /callback?access_token=oauth-secret-value")
+	logger.Printf("apiToken: panel-secret-value")
 
 	lines, err := readWebUIIntegrationLog(dir, 50)
 	if err != nil {
@@ -269,8 +272,19 @@ func TestWebUIIntegrationOperationLogPersistsAndRedactsCredentials(t *testing.T)
 	if !strings.Contains(joined, "INTEGRATION action=INTEGRATE started") {
 		t.Fatalf("integration log is missing operation record: %s", joined)
 	}
-	if strings.Contains(joined, "secret-token-value") || !strings.Contains(joined, "[REDACTED]") {
-		t.Fatalf("integration log did not redact credential: %s", joined)
+	for _, secret := range []string{
+		"secret-token-value", "AIza0123456789abcdefghijABCDEFGHIJ123456",
+		"oauth-secret-value", "panel-secret-value",
+	} {
+		if strings.Contains(joined, secret) {
+			t.Fatalf("integration log leaked %q: %s", secret, joined)
+		}
+	}
+	if !strings.Contains(joined, "Bearer [REDACTED]") ||
+		!strings.Contains(joined, "x-goog-api-key: [REDACTED]") ||
+		!strings.Contains(joined, "access_token=[REDACTED]") ||
+		!strings.Contains(joined, "apiToken: [REDACTED]") {
+		t.Fatalf("integration log did not preserve labels while redacting values: %s", joined)
 	}
 }
 
