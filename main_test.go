@@ -73,6 +73,18 @@ func startTestAutoHostsRecorder(t *testing.T, runtime *Runtime, domains ...strin
 	t.Cleanup(cancel)
 }
 
+func newTestVPSResolveUpstream(t *testing.T, handler http.HandlerFunc) *UpstreamRuntime {
+	t.Helper()
+	server := httptest.NewUnstartedServer(handler)
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	return &UpstreamRuntime{
+		cfg:    Upstream{ID: "vps-resolve", URL: server.URL},
+		client: server.Client(),
+	}
+}
+
 func testAResponse(q []byte, ttl uint32) []byte {
 	_, _, end, err := parseQuestion(q)
 	if err != nil {
@@ -419,7 +431,7 @@ func TestPinnedHTTPClientKeepsTLSVerificationAndBoundsIdleConnections(t *testing
 }
 
 func TestUDPWorkerPoolBoundsQueueUnderLoad(t *testing.T) {
-	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	upstreamServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		q, err := io.ReadAll(req.Body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -429,23 +441,26 @@ func TestUDPWorkerPoolBoundsQueueUnderLoad(t *testing.T) {
 		w.Header().Set("Content-Type", "application/dns-message")
 		_, _ = w.Write(testAResponse(q, 60))
 	}))
+	upstreamServer.EnableHTTP2 = true
+	upstreamServer.StartTLS()
 	defer upstreamServer.Close()
 
-	upstream := &UpstreamRuntime{
-		cfg:    Upstream{ID: "slow", URL: upstreamServer.URL},
+	vpsResolve := &UpstreamRuntime{
+		cfg:    Upstream{ID: "vps-resolve", URL: upstreamServer.URL},
 		client: upstreamServer.Client(),
 	}
 	s := &Snapshot{
-		cfg:       Config{DNSMaxConcurrent: 1, DNSQueryTimeoutSeconds: 3, Cache: CacheConfig{Enabled: false}},
-		groups:    map[string]Group{"google": {ID: "google", Upstreams: []string{"slow"}}},
-		upstreams: map[string]*UpstreamRuntime{"slow": upstream},
+		cfg: Config{
+			DNSMaxConcurrent:       1,
+			DNSQueryTimeoutSeconds: 3,
+			DoHTimeoutSeconds:      3,
+			Cache:                  CacheConfig{Enabled: false},
+		},
 	}
 	r := &Runtime{
 		dnsSem:     make(chan struct{}, 1),
-		health:     map[string]map[string]HealthEntry{},
-		active:     map[string]string{"google": "slow"},
 		cache:      map[string]cacheItem{},
-		vpsResolve: upstream,
+		vpsResolve: vpsResolve,
 	}
 	r.snapshot.Store(s)
 
@@ -484,8 +499,6 @@ func TestUDPWorkerPoolBoundsQueueUnderLoad(t *testing.T) {
 	if active := r.activeUDP.Load(); active > 1 {
 		t.Fatalf("active UDP workers=%d, want at most 1 from config", active)
 	}
-	// The counter includes the single packet handed to the only configured
-	// worker until that worker begins processing it.
 	const maxObservedQueueDepth = udpQueueCapacity + 1
 	if queued := r.udpQueueDepth.Load(); queued > maxObservedQueueDepth {
 		t.Fatalf("UDP pending+dispatch depth=%d, maximum=%d (queue=%d, workers=1)", queued, maxObservedQueueDepth, udpQueueCapacity)
@@ -499,7 +512,6 @@ func TestUDPWorkerPoolBoundsQueueUnderLoad(t *testing.T) {
 		t.Fatal("UDP server did not stop after cancellation")
 	}
 }
-
 func TestTCPConnectionLimitUnderLoad(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -898,9 +910,10 @@ func TestNormalizeConfigKeepsOnlyGoogleProfile(t *testing.T) {
 	}
 }
 
-func TestDNSGatewaySendsArbitraryQNAMEThroughGoogleProfile(t *testing.T) {
+func TestGeositeMissUsesDedicatedQuad9OverHTTP2(t *testing.T) {
 	var gotName string
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	var protocolMajor int
+	upstream := newTestVPSResolveUpstream(t, func(w http.ResponseWriter, req *http.Request) {
 		body, err := io.ReadAll(req.Body)
 		if err != nil {
 			t.Error(err)
@@ -911,42 +924,32 @@ func TestDNSGatewaySendsArbitraryQNAMEThroughGoogleProfile(t *testing.T) {
 			t.Error(err)
 			return
 		}
+		protocolMajor = req.ProtoMajor
 		w.Header().Set("Content-Type", "application/dns-message")
 		_, _ = w.Write(testAResponse(body, 45))
-	}))
-	defer srv.Close()
-
-	query := makeDNSQuery("completely-unrelated.example", 1)
-	upstream := &UpstreamRuntime{
-		cfg:    Upstream{ID: "selected-google-doh", URL: srv.URL},
-		client: srv.Client(),
-	}
-	snapshot := &Snapshot{
-		cfg: Config{DNSQueryTimeoutSeconds: 3, Cache: CacheConfig{Enabled: false}},
-		groups: map[string]Group{
-			"google": {ID: "google", Upstreams: []string{"selected-google-doh"}},
-		},
-		upstreams: map[string]*UpstreamRuntime{"selected-google-doh": upstream},
-	}
+	})
 	rt := &Runtime{
-		active:     map[string]string{"google": "selected-google-doh"},
 		vpsResolve: upstream,
+		dnsSem:     make(chan struct{}, 1),
+		geo:        newTestGeositeIndex(t, "chatgpt.com"),
 	}
-	rt.snapshot.Store(snapshot)
-
-	rt.dnsSem = make(chan struct{}, 1)
+	rt.snapshot.Store(&Snapshot{cfg: Config{
+		DNSQueryTimeoutSeconds: 3,
+		DoHTimeoutSeconds:      3,
+		Cache:                  CacheConfig{Enabled: false},
+	}})
+	query := makeDNSQuery("completely-unrelated.example", 1)
 	response := rt.handleDNS(query)
-	if dnsRCode(response) != 0 {
-		t.Fatalf("dedicated VPS resolver returned rcode=%d", dnsRCode(response))
+	if dnsRCode(response) != 0 || dnsAnswerCount(response) != 1 {
+		t.Fatalf("Geosite MISS Quad9 response rcode=%d answers=%d", dnsRCode(response), dnsAnswerCount(response))
 	}
 	if gotName != "completely-unrelated.example" {
-		t.Fatalf("DoH received QNAME %q; want arbitrary QNAME unchanged", gotName)
+		t.Fatalf("vps-resolve received QNAME %q; want original QNAME", gotName)
 	}
-	if dnsRCode(response) != 0 || dnsAnswerCount(response) != 1 {
-		t.Fatalf("unexpected DNS response rcode=%d answers=%d", dnsRCode(response), dnsAnswerCount(response))
+	if protocolMajor != 2 {
+		t.Fatalf("vps-resolve negotiated HTTP/%d; want HTTP/2", protocolMajor)
 	}
 }
-
 func intsToStrings(values []int) []string {
 	out := make([]string, len(values))
 	for i, value := range values {
@@ -1684,13 +1687,38 @@ func TestHandleDNSAutoHostsEndToEndAndEmergencyBypass(t *testing.T) {
 	if ips, _, matched := manager.Snapshot().Lookup("chatgpt.com", 1, time.Now()); !matched || len(ips) != 1 {
 		t.Fatalf("test setup did not publish Auto Hosts record: enabled=%v emergency=%v active=%s domains=%+v endpoint=%+v lookup=%v", manager.State().Config.Enabled, manager.State().Config.EmergencyOff, manager.State().ActiveServer, manager.State().Domains, manager.State().Endpoints, ips)
 	}
-	runtime := &Runtime{autoHosts: manager, dnsSem: make(chan struct{}, 1)}
+	var fallbackCalls atomic.Int32
+	var fallbackName string
+	fallback := newTestVPSResolveUpstream(t, func(w http.ResponseWriter, req *http.Request) {
+		fallbackCalls.Add(1)
+		body, readErr := io.ReadAll(req.Body)
+		if readErr != nil {
+			t.Error(readErr)
+			return
+		}
+		fallbackName, _, _, err = parseQuestion(body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/dns-message")
+		_, _ = w.Write(testAResponse(body, 30))
+	})
+	runtime := &Runtime{autoHosts: manager, vpsResolve: fallback, dnsSem: make(chan struct{}, 1)}
+	runtime.snapshot.Store(&Snapshot{cfg: Config{
+		Cache:                  CacheConfig{Enabled: false},
+		DNSQueryTimeoutSeconds: 3,
+		DoHTimeoutSeconds:      3,
+	}, localHosts: map[string]LocalHost{}, upstreams: map[string]*UpstreamRuntime{}, groups: map[string]Group{}})
 	startTestAutoHostsRecorder(t, runtime, "chatgpt.com")
-	runtime.snapshot.Store(&Snapshot{cfg: Config{Cache: CacheConfig{Enabled: false}}, localHosts: map[string]LocalHost{}, upstreams: map[string]*UpstreamRuntime{}, groups: map[string]Group{}})
+
 	a := runtime.handleDNS(makeDNSQuery("CHATGPT.COM", 1))
 	ips, err := parseARecords(a)
 	if err != nil || len(ips) != 1 || ips[0] != "8.8.4.4" {
-		t.Fatalf("A answer = %v, err=%v", ips, err)
+		t.Fatalf("Auto Hosts A answer = %v, err=%v", ips, err)
+	}
+	if fallbackCalls.Load() != 0 {
+		t.Fatal("Geosite HIT with a fresh Auto Hosts endpoint unexpectedly queried Quad9")
 	}
 	aaaa := runtime.handleDNS(makeDNSQuery("chatgpt.com", 28))
 	if dnsRCode(aaaa) != 0 || binary.BigEndian.Uint16(aaaa[6:8]) != 0 {
@@ -1701,11 +1729,14 @@ func TestHandleDNSAutoHostsEndToEndAndEmergencyBypass(t *testing.T) {
 		t.Fatal(err)
 	}
 	bypassed := runtime.handleDNS(makeDNSQuery("chatgpt.com", 1))
-	if dnsRCode(bypassed) != 2 {
-		t.Fatalf("Emergency OFF should bypass Auto Hosts and use the dedicated Quad9 path; with no Quad9 test upstream expected SERVFAIL, got rcode=%d", dnsRCode(bypassed))
+	fallbackIPs, fallbackErr := parseARecords(bypassed)
+	if fallbackErr != nil || len(fallbackIPs) != 1 || fallbackIPs[0] != "203.0.113.10" {
+		t.Fatalf("Emergency OFF must bypass Auto Hosts and use Quad9: answer=%v err=%v rcode=%d", fallbackIPs, fallbackErr, dnsRCode(bypassed))
+	}
+	if fallbackCalls.Load() != 1 || fallbackName != "chatgpt.com" {
+		t.Fatalf("Emergency OFF Quad9 calls=%d qname=%q", fallbackCalls.Load(), fallbackName)
 	}
 }
-
 func TestHandleDNSManualLocalHostsOverrideAutoHosts(t *testing.T) {
 	now := time.Now().UTC()
 	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
