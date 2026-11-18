@@ -136,12 +136,12 @@ func (l *webUIOperationLogger) String() string {
 }
 
 var webUILogSecretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)(\\bBearer\\s+)[^\\s\"'<>;,]+`),
-	regexp.MustCompile(`(?i)(x-goog-api-key\\s*[:=]\\s*)[^\\s\"'<>;,]+`),
-	regexp.MustCompile(`(?i)(access_token\\s*[:=]\\s*)[^\\s\"'<>;,]+`),
-	regexp.MustCompile(`(?i)(apiToken\\s*:\\s*)[^\\s\"'<>;,]+`),
-	regexp.MustCompile(`(?i)(XUI_API_TOKEN\\s*=\\s*)[^\\s\"'<>;,]+`),
-	regexp.MustCompile(`\\bAIza[0-9A-Za-z_-]{30,}\\b`),
+	regexp.MustCompile(`(?i)(\bBearer\s+)[^\s\"'<>;,]+`),
+	regexp.MustCompile(`(?i)(x-goog-api-key\s*[:=]\s*)[^\s\"'<>;,]+`),
+	regexp.MustCompile(`(?i)(access_token\s*[:=]\s*)[^\s\"'<>;,]+`),
+	regexp.MustCompile(`(?i)(apiToken\s*:\s*)[^\s\"'<>;,]+`),
+	regexp.MustCompile(`(?i)(XUI_API_TOKEN\s*=\s*)[^\s\"'<>;,]+`),
+	regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{30,}\b`),
 }
 
 func redactWebUILogLine(line string) string {
