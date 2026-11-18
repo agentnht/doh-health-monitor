@@ -214,7 +214,7 @@ func (g *geositeIndex) Status() geositeStatus {
 	return geositeStatus{
 		Path: g.path, Selected: append([]string(nil), g.categories...),
 		LoadedCategories: append([]string(nil), g.loadedCategories...),
-		Loaded: g.matcher.Load() != nil, LoadedAt: g.loadedAt,
+		Loaded:           g.matcher.Load() != nil, LoadedAt: g.loadedAt,
 		FileModTime: g.modTime, FileSize: g.size, LastError: g.lastError,
 	}
 }
