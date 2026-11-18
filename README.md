@@ -203,7 +203,7 @@ Web UI содержит:
 
 | Параметр | Назначение | Ограничения/значение по умолчанию |
 |---|---|---|
-| `dns_port_mode` | `fixed` (default) or `auto` (both DNS addresses must be the same loopback `host:0`) | `fixed` |
+| `dns_port_mode` | `fixed` (default) or `auto` (both DNS addresses must be `127.0.0.1:0`) | `fixed` |
 | `dns_listen_udp` | UDP DNS listener | `127.0.0.1:5355` |
 | `dns_listen_tcp` | TCP DNS listener | `127.0.0.1:5355` |
 | `http_listen` | HTTP status listener | `127.0.0.1:18765` |
@@ -420,7 +420,7 @@ DNS listener привязывается к loopback-интерфейсу. Зна
 
 При рестарте auto-режим использует только сохранённый порт. Если он занят или не может быть восстановлен, запуск завершается с ошибкой и **не выбирает молча новый номер**: Xray DNS outbound может ссылаться на старый endpoint. Фактические адреса выдаются в `/status` (`dns_udp`, `dns_tcp`, `dns_port_mode`) и в строке `DNS_LISTENERS_BOUND` / `READY` лога. Администратор должен вручную перенести их в Xray DNS outbound. Плагин не меняет Xray routing и его конфигурацию. Чтобы выбрать новый порт, сначала обновите внешний Xray endpoint, остановите плагин и только затем удалите `dns-listener.json`.
 
-Режим `fixed` остаётся значением по умолчанию и сохраняет совместимость существующих установок. `auto` принимает только loopback IP (`127.0.0.1` или `::1`); DNS listener не должен публиковаться во внешнюю сеть.
+Режим `fixed` остаётся значением по умолчанию и сохраняет совместимость существующих установок. `auto` принимает только IPv4 loopback `127.0.0.1`; DNS listener не должен публиковаться во внешнюю сеть.
 
 ## 7. Проверка работы
 

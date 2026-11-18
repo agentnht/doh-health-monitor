@@ -105,6 +105,12 @@ func TestAutoDNSListenerRequiresMatchingLoopbackPortZero(t *testing.T) {
 	if err := validateConfig(cfg); err == nil {
 		t.Fatal("expected non-loopback auto-mode host to be rejected")
 	}
+	cfg = autoDNSConfig()
+	cfg.DNSListenUDP = "[::1]:0"
+	cfg.DNSListenTCP = "[::1]:0"
+	if err := validateConfig(cfg); err == nil {
+		t.Fatal("expected IPv6 loopback auto mode to be rejected until the Xray verifier supports it")
+	}
 }
 
 func TestLegacyConfigDefaultsDNSPortModeToFixed(t *testing.T) {

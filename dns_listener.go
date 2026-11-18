@@ -121,7 +121,7 @@ func readDNSListenerState(path string) (dnsListenerState, bool, error) {
 	}
 	ip := net.ParseIP(state.Host)
 	if ip == nil || !ip.Equal(net.ParseIP("127.0.0.1")) {
-		return dnsListenerState{}, false, errors.New("saved DNS listener state must contain a loopback IP")
+		return dnsListenerState{}, false, errors.New("saved DNS listener state must contain 127.0.0.1")
 	}
 	return state, true, nil
 }

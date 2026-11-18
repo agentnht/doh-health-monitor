@@ -632,7 +632,7 @@ func validateConfig(c Config) error {
 		udpHost, udpPort, _ := net.SplitHostPort(c.DNSListenUDP)
 		tcpHost, tcpPort, _ := net.SplitHostPort(c.DNSListenTCP)
 		ip := net.ParseIP(udpHost)
-		if udpHost == "" || udpHost != tcpHost || udpPort != "0" || tcpPort != "0" || ip == nil || !ip.IsLoopback() {
+		if udpHost == "" || udpHost != tcpHost || udpPort != "0" || tcpPort != "0" || ip == nil || !ip.Equal(net.ParseIP("127.0.0.1")) {
 			return errors.New("auto DNS mode requires matching loopback listeners with port 0 (for example 127.0.0.1:0)")
 		}
 	}
