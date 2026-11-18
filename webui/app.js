@@ -6,6 +6,7 @@
   let configState = null;
   const sourceState = { doh: [], checks: [] };
   let autoHostsState = null;
+  let geositeCategoriesAvailable = false;
 
   async function api(path, options = {}) {
     const headers = new Headers(options.headers || {});
@@ -118,11 +119,38 @@
     text("autohosts-active", s.active_server); const activeEndpoint = (s.endpoints || {})[s.active_server] || {}; text("autohosts-ipv4", (activeEndpoint.ipv4 || []).join(", ")); text("autohosts-ipv6", (activeEndpoint.ipv6 || []).join(", ")); text("autohosts-state-mode", cfg.mode === "pinned" ? "Pinned · " + cfg.pinned_server_id : "Auto"); text("autohosts-state-emergency", cfg.emergency_off ? "ВКЛЮЧЁН" : "выключен");
     $("autohosts-domains").textContent = Object.keys(s.domains || {}).join(", ") || "Нет доменов";
     $("autohosts-results").textContent = Object.values(s.probe_results || {}).map(x => x.server_id + " × " + x.domain + " · " + (x.success ? "OK" : "FAIL")).join("\n") || "Нет проверок";
+
+    const categorySelect = $("autohosts-geosite-categories");
+    const selectedCategories = new Set(cfg.geosite_categories || []);
+    categorySelect.replaceChildren();
+    try {
+      const catalog = await api("/api/v1/autohosts/geosite-categories");
+      geositeCategoriesAvailable = Boolean(catalog.available);
+      for (const category of catalog.categories || []) {
+        const option = document.createElement("option");
+        option.value = category;
+        option.textContent = category;
+        option.selected = selectedCategories.has(category);
+        categorySelect.append(option);
+      }
+      categorySelect.disabled = !geositeCategoriesAvailable;
+      text("autohosts-geosite-status", geositeCategoriesAvailable
+        ? "Найдено категорий: " + number((catalog.categories || []).length) + ". Выберите категории и сохраните."
+        : "geosite.dat недоступен: " + (catalog.error || "категории пока нельзя выбрать"));
+    } catch (error) {
+      geositeCategoriesAvailable = false;
+      categorySelect.disabled = true;
+      text("autohosts-geosite-status", "Не удалось получить категории: " + error.message);
+    }
   }
   async function saveAutoHosts() {
     const mode = $("autohosts-mode").value; const pinned = mode === "pinned" ? $("autohosts-pinned").value : "";
     if (mode === "pinned" && !pinned) throw new Error("Сначала выполните первый цикл проверок, чтобы зарегистрировать DoH-серверы.");
-    await api("/api/v1/autohosts/config", {method:"POST", body:JSON.stringify({enabled:$("autohosts-enabled").checked, pinned_server_id:pinned})}); await loadAutoHosts();
+    const input = {enabled:$("autohosts-enabled").checked, pinned_server_id:pinned};
+    if (geositeCategoriesAvailable) {
+      input.geosite_categories = Array.from($("autohosts-geosite-categories").selectedOptions).map(option => option.value);
+    }
+    await api("/api/v1/autohosts/config", {method:"POST", body:JSON.stringify(input)}); await loadAutoHosts();
   }
   async function toggleAutoHostsEmergency() {
     const off = Boolean(autoHostsState && autoHostsState.config && autoHostsState.config.emergency_off);

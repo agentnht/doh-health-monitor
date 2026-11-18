@@ -428,3 +428,41 @@ func TestQueryDomainCapacityAndIndependentGarbageCollection(t *testing.T) {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+
+func TestGeositeCategoriesPersistNormalized(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	m, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetGeositeCategories([]string{" category-ads-all ", "TEST", "test"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"CATEGORY-ADS-ALL", "TEST"}
+	got := m.State().Config.GeositeCategories
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("categories not normalized: %#v", got)
+	}
+	reloaded, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = reloaded.State().Config.GeositeCategories
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("categories did not persist: %#v", got)
+	}
+}
+
+func TestSetGeositeCategoriesRejectsInvalidName(t *testing.T) {
+	m, err := New(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetGeositeCategories([]string{"bad category"}); err == nil {
+		t.Fatal("expected invalid category error")
+	}
+	if len(m.State().Config.GeositeCategories) != 0 {
+		t.Fatal("invalid category update partially mutated state")
+	}
+}

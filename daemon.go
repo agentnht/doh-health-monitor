@@ -12,10 +12,12 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"lucx-doh-health-monitor/internal/autohosts"
+	"lucx-doh-health-monitor/internal/geosite"
 )
 
 func runDaemon() {
@@ -68,8 +70,12 @@ func runDaemon() {
 	if err != nil {
 		fatal("AUTO_HOSTS state initialization failed: %v", err)
 	}
+	geoIndex, geoErr := newGeositeIndex(geositeDataPath(dataDir), autoHostsManager.State().Config.GeositeCategories)
+	if geoErr != nil {
+		logLine("WARN", "GEOSITE initial load failed: %v", geoErr)
+	}
 	rt := &Runtime{
-		dataDir: dataDir, autoHosts: autoHostsManager, configPath: configPath, dohPath: dohPath, checksPath: checksPath,
+		dataDir: dataDir, autoHosts: autoHostsManager, geo: geoIndex, configPath: configPath, dohPath: dohPath, checksPath: checksPath,
 		sourceHashes:       sources.Checksums,
 		healthCheckTrigger: make(chan struct{}, 1),
 		health:             map[string]map[string]HealthEntry{}, active: map[string]string{},
@@ -103,6 +109,7 @@ func runDaemon() {
 	httpMux.HandleFunc("/autohosts/status", requireAutoHostsAPIToken(autoHostsAPIToken, rt.handleAutoHostsStatus))
 	httpMux.HandleFunc("/autohosts/config", requireAutoHostsAPIToken(autoHostsAPIToken, rt.handleAutoHostsConfig))
 	httpMux.HandleFunc("/autohosts/dry-run", requireAutoHostsAPIToken(autoHostsAPIToken, rt.handleAutoHostsDryRun))
+	httpMux.HandleFunc("/geosite/categories", requireAutoHostsAPIToken(autoHostsAPIToken, rt.handleGeositeCategories))
 	httpSrv := &http.Server{Addr: cfg.HTTPListen, Handler: httpMux, ReadHeaderTimeout: 3 * time.Second}
 	httpLn, err := net.Listen("tcp", cfg.HTTPListen)
 	if err != nil {
@@ -134,7 +141,7 @@ func runDaemon() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
-	wg.Add(6)
+	wg.Add(7)
 	go func() { defer wg.Done(); rt.serveUDP(ctx, udpConn) }()
 	go func() { defer wg.Done(); rt.serveTCP(ctx, tcpLn) }()
 	go func() {
@@ -147,6 +154,7 @@ func runDaemon() {
 	go func() { defer wg.Done(); rt.monitorLoop(ctx) }()
 	go func() { defer wg.Done(); rt.reloadLoop(ctx) }()
 	go func() { defer wg.Done(); rt.autoController.run(ctx) }()
+	go func() { defer wg.Done(); rt.geo.run(ctx) }()
 	logLine("INFO", "READY DNS=%s/%s HTTP=%s", cfg.DNSListenUDP, cfg.DNSListenTCP, cfg.HTTPListen)
 
 	sigc := make(chan os.Signal, 2)
@@ -170,4 +178,138 @@ func runDaemon() {
 	}
 	wg.Wait()
 	logLine("INFO", "STOP clean=true")
+}
+
+
+type geositeIndex struct {
+	path       string
+	mu         sync.RWMutex
+	reloadMu   sync.Mutex
+	categories []string
+	modTime    time.Time
+	size       int64
+	matcher    atomic.Pointer[geosite.Matcher]
+}
+
+func geositeDataPath(dataDir string) string {
+	binDir := filepath.Dir(filepath.Dir(filepath.Dir(dataDir)))
+	return filepath.Join(binDir, "geosite.dat")
+}
+
+func newGeositeIndex(path string, selected []string) (*geositeIndex, error) {
+	index := &geositeIndex{path: path}
+	if len(selected) == 0 {
+		return index, nil
+	}
+	return index, index.Reload(selected)
+}
+
+func (g *geositeIndex) ValidateCategories(selected []string) error {
+	if len(selected) == 0 {
+		return nil
+	}
+	if g == nil {
+		return errors.New("Geosite index is unavailable")
+	}
+	_, err := geosite.Load(g.path, selected)
+	return err
+}
+
+func (g *geositeIndex) Reload(selected []string) error {
+	if g == nil {
+		return errors.New("Geosite index is unavailable")
+	}
+	g.reloadMu.Lock()
+	defer g.reloadMu.Unlock()
+
+	selected = append([]string(nil), selected...)
+	g.mu.Lock()
+	g.categories = selected
+	g.mu.Unlock()
+	if len(selected) == 0 {
+		g.matcher.Store(nil)
+		g.mu.Lock()
+		g.modTime = time.Time{}
+		g.size = 0
+		g.mu.Unlock()
+		return nil
+	}
+
+	before, err := os.Stat(g.path)
+	if err != nil {
+		return err
+	}
+	matcher, err := geosite.Load(g.path, selected)
+	if err != nil {
+		return err
+	}
+	after, err := os.Stat(g.path)
+	if err != nil {
+		return err
+	}
+	if !before.ModTime().Equal(after.ModTime()) || before.Size() != after.Size() {
+		return errors.New("geosite.dat changed while it was being loaded")
+	}
+
+	g.matcher.Store(matcher)
+	g.mu.Lock()
+	g.modTime = after.ModTime()
+	g.size = after.Size()
+	g.mu.Unlock()
+	return nil
+}
+
+func (g *geositeIndex) Categories() ([]string, error) {
+	if g == nil {
+		return nil, errors.New("Geosite index is unavailable")
+	}
+	return geosite.ListCategories(g.path)
+}
+
+func (g *geositeIndex) MatchAny(qname string) bool {
+	if g == nil {
+		return false
+	}
+	matcher := g.matcher.Load()
+	return matcher != nil && matcher.MatchAny(qname)
+}
+
+func (g *geositeIndex) reloadIfChanged() error {
+	g.mu.RLock()
+	selected := append([]string(nil), g.categories...)
+	modTime, size := g.modTime, g.size
+	g.mu.RUnlock()
+	if len(selected) == 0 {
+		return nil
+	}
+	info, err := os.Stat(g.path)
+	if err != nil {
+		return err
+	}
+	if info.ModTime().Equal(modTime) && info.Size() == size {
+		return nil
+	}
+	return g.Reload(selected)
+}
+
+func (g *geositeIndex) run(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	lastError := ""
+	for {
+		if err := g.reloadIfChanged(); err != nil {
+			message := err.Error()
+			if message != lastError {
+				logLine("WARN", "GEOSITE reload failed: %v", err)
+				lastError = message
+			}
+		} else {
+			lastError = ""
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }

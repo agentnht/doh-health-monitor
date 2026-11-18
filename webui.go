@@ -277,7 +277,7 @@ func newWebUIHandlerWithDataDir(statusURL, launchToken, dataDir string) http.Han
 				return
 			}
 			webUIAdminAPI(w, r, r.URL.Path, dataDir)
-		case "/api/v1/autohosts/status", "/api/v1/autohosts/config", "/api/v1/autohosts/dry-run":
+		case "/api/v1/autohosts/status", "/api/v1/autohosts/config", "/api/v1/autohosts/dry-run", "/api/v1/autohosts/geosite-categories":
 			if !webUIRequestAuthorized(r, cookieToken) {
 				http.Error(w, "authentication required", http.StatusUnauthorized)
 				return
@@ -324,6 +324,13 @@ func proxyWebUIAutoHostsAPI(w http.ResponseWriter, r *http.Request, statusURL, d
 			return
 		}
 		endpoint = "/autohosts/dry-run"
+	case "/api/v1/autohosts/geosite-categories":
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		endpoint = "/geosite/categories"
 	default:
 		http.NotFound(w, r)
 		return

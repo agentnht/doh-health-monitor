@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -273,4 +274,104 @@ func skipValue(data []byte, wire int) (int, error) {
 	default:
 		return 0, fmt.Errorf("unsupported protobuf wire type %d", wire)
 	}
+}
+
+
+// ListCategories returns the category codes present in a GeoSiteList.
+func ListCategories(path string) ([]string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat geosite.dat: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxGeoSiteFileSize {
+		return nil, errors.New("geosite.dat is not a regular file or exceeds size limit")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read geosite.dat: %w", err)
+	}
+	return ParseCategories(data)
+}
+
+func ParseCategories(data []byte) ([]string, error) {
+	if len(data) == 0 || len(data) > maxGeoSiteFileSize {
+		return nil, errors.New("invalid geosite.dat size")
+	}
+	seen := make(map[string]struct{})
+	for len(data) > 0 {
+		field, wire, n, err := consumeTag(data)
+		if err != nil {
+			return nil, err
+		}
+		data = data[n:]
+		if field == 1 && wire == 2 {
+			payload, used, err := consumeBytes(data)
+			if err != nil {
+				return nil, err
+			}
+			data = data[used:]
+			code, err := parseCategoryCode(payload)
+			if err != nil {
+				return nil, err
+			}
+			seen[code] = struct{}{}
+			continue
+		}
+		used, err := skipValue(data, wire)
+		if err != nil {
+			return nil, err
+		}
+		data = data[used:]
+	}
+	if len(seen) == 0 {
+		return nil, errors.New("geosite.dat contains no categories")
+	}
+	categories := make([]string, 0, len(seen))
+	for code := range seen {
+		categories = append(categories, code)
+	}
+	sort.Strings(categories)
+	return categories, nil
+}
+
+func parseCategoryCode(data []byte) (string, error) {
+	var code string
+	for len(data) > 0 {
+		field, wire, n, err := consumeTag(data)
+		if err != nil {
+			return "", err
+		}
+		data = data[n:]
+		if field == 1 && wire == 2 {
+			value, used, err := consumeBytes(data)
+			if err != nil {
+				return "", err
+			}
+			code = strings.ToUpper(strings.TrimSpace(string(value)))
+			data = data[used:]
+			continue
+		}
+		used, err := skipValue(data, wire)
+		if err != nil {
+			return "", err
+		}
+		data = data[used:]
+	}
+	if code == "" {
+		return "", errors.New("geosite category has an empty code")
+	}
+	return code, nil
+}
+
+// MatchAny reports whether a QNAME matches at least one selected category.
+func (m *Matcher) MatchAny(qname string) bool {
+	if m == nil {
+		return false
+	}
+	for category := range m.categories {
+		if m.Match(category, qname) {
+			return true
+		}
+	}
+	return false
 }

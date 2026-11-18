@@ -280,6 +280,7 @@ type Runtime struct {
 	dnsSem                 chan struct{}
 	dataDir                string
 	autoHosts              *autohosts.Manager
+	geo                    *geositeIndex
 	autoController         *autoHostsController
 	configPath             string
 	dohPath                string
@@ -2909,9 +2910,10 @@ func (r *Runtime) handleAutoHostsConfig(w http.ResponseWriter, req *http.Request
 	}
 	req.Body = http.MaxBytesReader(w, req.Body, 16<<10)
 	var input struct {
-		Enabled        *bool   `json:"enabled"`
-		EmergencyOff   *bool   `json:"emergency_off"`
-		PinnedServerID *string `json:"pinned_server_id"`
+		Enabled           *bool    `json:"enabled"`
+		EmergencyOff      *bool    `json:"emergency_off"`
+		PinnedServerID    *string  `json:"pinned_server_id"`
+		GeositeCategories *[]string `json:"geosite_categories"`
 	}
 	decoder := json.NewDecoder(req.Body)
 	decoder.DisallowUnknownFields()
@@ -2919,9 +2921,23 @@ func (r *Runtime) handleAutoHostsConfig(w http.ResponseWriter, req *http.Request
 		http.Error(w, "invalid Auto Hosts settings", http.StatusBadRequest)
 		return
 	}
-	if err := r.autoHosts.Configure(input.Enabled, input.EmergencyOff, input.PinnedServerID); err != nil {
+	if input.GeositeCategories != nil && r.geo != nil {
+		if err := r.geo.ValidateCategories(*input.GeositeCategories); err != nil {
+			http.Error(w, "selected Geosite categories are unavailable or invalid", http.StatusBadRequest)
+			return
+		}
+	} else if input.GeositeCategories != nil {
+		http.Error(w, "Geosite index is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if err := r.autoHosts.ConfigureWithGeosite(input.Enabled, input.EmergencyOff, input.PinnedServerID, input.GeositeCategories); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if input.GeositeCategories != nil && r.geo != nil {
+		if err := r.geo.Reload(r.autoHosts.State().Config.GeositeCategories); err != nil {
+			logLine("WARN", "GEOSITE categories saved but matcher reload failed: %v", err)
+		}
 	}
 	if state := r.autoHosts.State(); state.Config.Enabled && !state.Config.EmergencyOff && r.autoController != nil {
 		r.autoController.Trigger()
@@ -2929,6 +2945,34 @@ func (r *Runtime) handleAutoHostsConfig(w http.ResponseWriter, req *http.Request
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(r.autoHosts.State())
+}
+
+
+func (r *Runtime) handleGeositeCategories(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	result := struct {
+		Available  bool     `json:"available"`
+		Categories []string `json:"categories"`
+		Error      string   `json:"error,omitempty"`
+	}{Categories: []string{}}
+	if r.geo == nil {
+		result.Error = "Geosite index is unavailable"
+	} else {
+		categories, err := r.geo.Categories()
+		if err != nil {
+			result.Error = err.Error()
+		} else {
+			result.Available = true
+			result.Categories = categories
+		}
+	}
+	_ = json.NewEncoder(w).Encode(result)
 }
 
 func (r *Runtime) handleAutoHostsDryRun(w http.ResponseWriter, req *http.Request) {

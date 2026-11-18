@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,7 @@ type Config struct {
 	TTL            time.Duration `json:"ttl"`
 	EndpointMaxAge time.Duration `json:"endpoint_max_age"`
 	MaxDomains     int           `json:"max_domains"`
+	GeositeCategories []string  `json:"geosite_categories,omitempty"`
 }
 type Endpoint struct {
 	ServerID  string    `json:"server_id"`
@@ -174,6 +176,11 @@ func normalizeState(s *State) error {
 		normalized[name] = rec
 	}
 	s.Domains = normalized
+	categories, err := normalizeGeositeCategories(s.Config.GeositeCategories)
+	if err != nil {
+		return err
+	}
+	s.Config.GeositeCategories = categories
 	return nil
 }
 func (m *Manager) validate(s State) error {
@@ -186,6 +193,9 @@ func (m *Manager) validate(s State) error {
 	}
 	if c.CheckInterval < 10*time.Second || c.CheckInterval > 24*time.Hour || c.GracePeriod < c.CheckInterval || c.GracePeriod > 30*24*time.Hour || c.TTL < 5*time.Second || c.TTL > 10*time.Minute || c.EndpointMaxAge < time.Minute || c.EndpointMaxAge > 7*24*time.Hour || c.MaxDomains < 1 || c.MaxDomains > 4096 {
 		return errors.New("invalid Auto Hosts interval, TTL, grace period or domain limit")
+	}
+	if len(c.GeositeCategories) > 128 {
+		return errors.New("too many selected Geosite categories")
 	}
 	if len(s.Domains) > c.MaxDomains {
 		return errors.New("Auto Hosts domain limit exceeded")
@@ -312,7 +322,76 @@ func (s *Snapshot) Lookup(qname string, qtype uint16, now time.Time) ([]string, 
 	}
 	return nil, 0, false
 }
+func normalizeGeositeCategories(values []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, raw := range values {
+		name := strings.ToUpper(strings.TrimSpace(raw))
+		if name == "" || len(name) > 64 {
+			return nil, errors.New("invalid Geosite category")
+		}
+		for _, char := range name {
+			if !(char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '_' || char == '-' || char == '!') {
+				return nil, fmt.Errorf("invalid Geosite category %q", raw)
+			}
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		result = append(result, name)
+	}
+	sort.Strings(result)
+	if len(result) > 128 {
+		return nil, errors.New("too many selected Geosite categories")
+	}
+	return result, nil
+}
+
 func (m *Manager) Configure(enabled, emergencyOff *bool, pinnedServerID *string) error {
+	return m.ConfigureWithGeosite(enabled, emergencyOff, pinnedServerID, nil)
+}
+
+func (m *Manager) ConfigureWithGeosite(enabled, emergencyOff *bool, pinnedServerID *string, geositeCategories *[]string) error {
+	var categories []string
+	var err error
+	if geositeCategories != nil {
+		categories, err = normalizeGeositeCategories(*geositeCategories)
+		if err != nil {
+			return err
+		}
+	}
+	return m.update(func(s *State) error {
+		if geositeCategories != nil {
+			s.Config.GeositeCategories = append([]string(nil), categories...)
+		}
+		if enabled != nil {
+			s.Config.Enabled = *enabled
+		}
+		if emergencyOff != nil {
+			s.Config.EmergencyOff = *emergencyOff
+		}
+		if pinnedServerID != nil {
+			id := strings.TrimSpace(*pinnedServerID)
+			if id == "" {
+				s.Config.Mode = "auto"
+				s.Config.PinnedServerID = ""
+			} else {
+				if _, ok := s.Endpoints[id]; !ok {
+					return fmt.Errorf("unknown DoH server %q", id)
+				}
+				s.Config.Mode = "pinned"
+				s.Config.PinnedServerID = id
+			}
+		}
+		return nil
+	})
+}
+
+func (m *Manager) SetGeositeCategories(values []string) error {
+	return m.ConfigureWithGeosite(nil, nil, nil, &values)
+}
+
 	return m.update(func(s *State) error {
 		if enabled != nil {
 			s.Config.Enabled = *enabled
