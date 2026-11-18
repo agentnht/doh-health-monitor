@@ -1798,15 +1798,22 @@ class ShellStatusClientTests(unittest.TestCase):
             bin_dir.mkdir()
             data_dir.mkdir()
             token = "0123456789abcdefghijklmnopqrstuvwxyzABCDE"
-            (data_dir / "auto-hosts-api.token").write_text(token + "\\n", encoding="utf-8")
+            (data_dir / "auto-hosts-api.token").write_text(token + "\n", encoding="utf-8")
             (data_dir / "auto-hosts-api.token").chmod(0o600)
             xray_config = root / "xray.json"
             xray_config.write_text("{}", encoding="utf-8")
 
             commands = {
-                "systemctl": "#!/bin/sh\\nexit 0\\n",
-                "ss": "#!/bin/sh\\nprintf 'LISTEN 0 128 127.0.0.1:5355 *:*\\\\n'\\n",
-                "jq": "#!/bin/sh\\nif [ \"$1\" = \"-r\" ]; then echo test-upstream; fi\\nexit 0\\n",
+                "systemctl": """#!/bin/sh
+exit 0
+""",
+                "ss": """#!/bin/sh
+printf 'LISTEN 0 128 127.0.0.1:5355 *:*\\n'
+""",
+                "jq": """#!/bin/sh
+if [ "$1" = "-r" ]; then echo test-upstream; fi
+exit 0
+""",
                 "curl": """#!/bin/sh
 config="$(cat)"
 case "$config" in
