@@ -943,6 +943,21 @@ func DetectAndAuthorize(opts Options, logger Logger) (Endpoint, *PanelAPI, error
 	return endpoint, api, err
 }
 
+func readPluginStatusToken() (string, error) {
+	dataDir, err := PluginDataDir()
+	if err != nil {
+		return "", err
+	}
+	data, err := secureRead(filepath.Join(dataDir, "auto-hosts-api.token"), 128)
+	if err != nil {
+		return "", err
+	}
+	if data == nil {
+		return "", problem("DoH Health Monitor API token file is missing")
+	}
+	return validToken(string(data))
+}
+
 func checkPluginHealth(opts Options, logger Logger) error {
 	if !regexp.MustCompile("^[A-Za-z0-9_.@-]+$").MatchString(opts.Service) {
 		return problem("Invalid DoH Health Monitor systemd service name")
@@ -988,9 +1003,17 @@ func checkPluginHealth(opts Options, logger Logger) error {
 			logger.Printf("PASS: DoH Health Monitor loopback listener %d/%s is active", opts.Port, item.name)
 		}
 	}
+	statusToken, err := readPluginStatusToken()
+	if err != nil {
+		return problem("DoH Health Monitor status API authentication is unavailable; no panel API operation was attempted")
+	}
 	client := &http.Client{Timeout: 3 * time.Second}
-	req, _ := http.NewRequest(http.MethodGet, opts.StatusURL, nil)
+	req, err := http.NewRequest(http.MethodGet, opts.StatusURL, nil)
+	if err != nil {
+		return problem("Could not create DoH Health Monitor status request")
+	}
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+statusToken)
 	resp, err := client.Do(req)
 	if err != nil {
 		return problem("DoH Health Monitor status API is unavailable; no panel API operation was attempted")
