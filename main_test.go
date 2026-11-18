@@ -2164,7 +2164,6 @@ func TestReloadOnceAppliesValidSourcesWhenConfigJSONIsBroken(t *testing.T) {
 	}
 }
 
-
 func TestReloadLoopUsesConfiguredInterval(t *testing.T) {
 	runtime := newReloadTestRuntime(t)
 	cfg := runtime.currentSnapshot().cfg
