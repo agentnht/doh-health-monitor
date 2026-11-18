@@ -362,6 +362,7 @@ func (g *geositeIndex) publishSnapshot(selected []string, data []byte, info os.F
 func (g *geositeIndex) reloadIfChanged() error {
 	g.mu.RLock()
 	selected := append([]string(nil), g.categories...)
+	loadedCategories := append([]string(nil), g.loadedCategories...)
 	loadedHash := g.fileHash
 	loaded := g.matcher.Load() != nil
 	g.mu.RUnlock()
@@ -372,7 +373,16 @@ func (g *geositeIndex) reloadIfChanged() error {
 	if err != nil {
 		return g.recordReloadError(err)
 	}
-	if loaded && digest == loadedHash {
+	sameCategories := len(selected) == len(loadedCategories)
+	if sameCategories {
+		for i := range selected {
+			if selected[i] != loadedCategories[i] {
+				sameCategories = false
+				break
+			}
+		}
+	}
+	if loaded && sameCategories && digest == loadedHash {
 		g.mu.Lock()
 		g.lastError = ""
 		g.mu.Unlock()
