@@ -293,7 +293,7 @@ func webUIAdminAPI(w http.ResponseWriter, r *http.Request, path, dataDir string)
 				return
 			}
 			sources, _ := readWebUISources(dataDir)
-			writeWebUIJSON(w, http.StatusOK, map[string]any{"ok": true, "sources": sources, "reload_note": "Демон проверит изменения автоматически в течение 30 секунд."})
+			writeWebUIJSON(w, http.StatusOK, map[string]any{"ok": true, "sources": sources, "reload_note": "Демон проверит изменения автоматически в пределах настроенного интервала reload_interval_seconds."})
 		default:
 			methodNotAllowed(w, "GET, POST")
 		}
