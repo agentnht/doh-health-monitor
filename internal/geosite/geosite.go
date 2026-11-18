@@ -137,8 +137,9 @@ func parseDomain(data []byte) (domainRule, error) {
 	if rule.value == "" { return rule, errors.New("empty domain rule") }
 	if rule.kind < 0 || rule.kind > 3 { return rule, fmt.Errorf("unsupported domain rule type %d", rule.kind) }
 	if rule.kind == 1 {
-		rule.re, _ = regexp.Compile(rule.value)
-		if rule.re == nil { return rule, errors.New("invalid regex rule") }
+		compiled, err := regexp.Compile(rule.value)
+		if err != nil { return rule, fmt.Errorf("invalid regex rule: %w", err) }
+		rule.re = compiled
 	}
 	return rule, nil
 }
