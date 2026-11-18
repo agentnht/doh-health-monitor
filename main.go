@@ -2515,7 +2515,7 @@ func (r *Runtime) geminiProbe(ctx context.Context, u *UpstreamRuntime, c GeminiA
 		var out struct {
 			Candidates []struct {
 				FinishReason string `json:"finishReason"`
-				Content struct {
+				Content      struct {
 					Parts []struct {
 						Text string `json:"text"`
 					} `json:"parts"`
