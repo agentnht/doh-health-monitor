@@ -93,19 +93,13 @@ func runDaemon() {
 	rt.initHealth(snap)
 	logLine("INFO", "CONFIG loaded path=%s doh_list=%s checks_list=%s groups=%d upstreams=%d checks=%d dns_udp=%s dns_tcp=%s gemini_api=%t", configPath, dohPath, checksPath, len(cfg.Groups), len(cfg.Upstreams), len(sources.Checks), cfg.DNSListenUDP, cfg.DNSListenTCP, cfg.GeminiAPI.Enabled)
 
-	udpAddr, err := net.ResolveUDPAddr("udp", cfg.DNSListenUDP)
+	udpConn, tcpLn, dnsUDPAddress, dnsTCPAddress, err := bindDNSListeners(cfg, dataDir)
 	if err != nil {
-		fatal("DNS UDP address: %v", err)
+		fatal("DNS listeners: %v", err)
 	}
-	udpConn, err := net.ListenUDP("udp", udpAddr)
-	if err != nil {
-		fatal("DNS UDP listen %s: %v", cfg.DNSListenUDP, err)
-	}
-	tcpLn, err := net.Listen("tcp", cfg.DNSListenTCP)
-	if err != nil {
-		_ = udpConn.Close()
-		fatal("DNS TCP listen %s: %v", cfg.DNSListenTCP, err)
-	}
+	rt.dnsUDPAddress = dnsUDPAddress
+	rt.dnsTCPAddress = dnsTCPAddress
+	logLine("INFO", "DNS_LISTENERS_BOUND mode=%s udp=%s tcp=%s", cfg.DNSPortMode, dnsUDPAddress, dnsTCPAddress)
 	httpMux := http.NewServeMux()
 	httpMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -162,7 +156,7 @@ func runDaemon() {
 	go func() { defer wg.Done(); rt.autoController.run(ctx) }()
 	go func() { defer wg.Done(); rt.geo.run(ctx) }()
 	go func() { defer wg.Done(); rt.runAutoHostsQueryRecorder(ctx) }()
-	logLine("INFO", "READY DNS=%s/%s HTTP=%s", cfg.DNSListenUDP, cfg.DNSListenTCP, cfg.HTTPListen)
+	logLine("INFO", "READY DNS=%s/%s HTTP=%s", dnsUDPAddress, dnsTCPAddress, cfg.HTTPListen)
 
 	sigc := make(chan os.Signal, 2)
 	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
