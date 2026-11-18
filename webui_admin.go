@@ -135,10 +135,24 @@ func (l *webUIOperationLogger) String() string {
 	return strings.Join(l.lines, "\n")
 }
 
-var webUILogSecretPattern = regexp.MustCompile("(?i)(Bearer\\s+|apiToken:\\s*|XUI_API_TOKEN=)([^\\s\\\"'<>]+)")
+var webUILogSecretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(\\bBearer\\s+)[^\\s\"'<>;,]+`),
+	regexp.MustCompile(`(?i)(x-goog-api-key\\s*[:=]\\s*)[^\\s\"'<>;,]+`),
+	regexp.MustCompile(`(?i)(access_token\\s*[:=]\\s*)[^\\s\"'<>;,]+`),
+	regexp.MustCompile(`(?i)(apiToken\\s*:\\s*)[^\\s\"'<>;,]+`),
+	regexp.MustCompile(`(?i)(XUI_API_TOKEN\\s*=\\s*)[^\\s\"'<>;,]+`),
+	regexp.MustCompile(`\\bAIza[0-9A-Za-z_-]{30,}\\b`),
+}
 
 func redactWebUILogLine(line string) string {
-	return webUILogSecretPattern.ReplaceAllString(line, "1[REDACTED]")
+	for index, pattern := range webUILogSecretPatterns {
+		if index == len(webUILogSecretPatterns)-1 {
+			line = pattern.ReplaceAllString(line, "[REDACTED]")
+			continue
+		}
+		line = pattern.ReplaceAllString(line, "${1}[REDACTED]")
+	}
+	return line
 }
 
 func webUIDataRoot(dataDir string) (string, error) {
