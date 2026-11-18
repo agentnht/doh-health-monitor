@@ -657,7 +657,23 @@ def validate_plugin_status(body: bytes) -> dict:
     return payload
 
 
-def check_plugin_health(service: str, status_url: str, port: int) -> None:
+def load_plugin_status_token(data_dir: Path | None = None) -> str:
+    """Read the daemon's private status API token from the plugin data directory."""
+    if data_dir is None:
+        configured = os.environ.get("LUCX_PLUGIN_DATA", "").strip()
+        data_dir = Path(configured) if configured else SCRIPT_DIR.parent / "data"
+    content = _read_secure_text_file(
+        data_dir / "auto-hosts-api.token", expected_uid=os.geteuid(), max_bytes=256
+    )
+    if content is None:
+        raise IntegrationError("DoH Health Monitor API token file is missing")
+    token = content.strip()
+    if len(token) < 40 or len(token) > 128 or any(char.isspace() for char in token):
+        raise IntegrationError("DoH Health Monitor API token file has an invalid format")
+    return token
+
+
+def check_plugin_health(service: str, status_url: str, port: int, api_token: str | None = None) -> None:
     """Fail closed unless the installed plugin service, status API and both listeners work."""
     if not service or not re.fullmatch(r"[A-Za-z0-9_.@-]+", service):
         raise IntegrationError("Invalid systemd service name for DoH Health Monitor")
@@ -716,7 +732,11 @@ def check_plugin_health(service: str, status_url: str, port: int) -> None:
             )
         print(f"PASS: DoH Health Monitor loopback listener {port}/{proto} is active")
 
-    request = Request(status_url, headers={"Accept": "application/json"})
+    token = api_token or load_plugin_status_token()
+    request = Request(status_url, headers={
+        "Accept": "application/json",
+        "Authorization": "Bearer " + token,
+    })
     try:
         with urlopen(request, timeout=3) as response:
             body = response.read(1024 * 1024 + 1)
@@ -1975,10 +1995,14 @@ def query_dns_a(
     return _parse_dns_a_response(response, query_id)
 
 
-def read_plugin_counters(status_url: str) -> tuple[int, int]:
+def read_plugin_counters(status_url: str, api_token: str | None = None) -> tuple[int, int]:
     if not panel_api_is_local(status_url):
         raise IntegrationError("DoH Health Monitor status URL must use localhost/loopback")
-    request = Request(status_url, headers={"Accept": "application/json"})
+    token = api_token or load_plugin_status_token()
+    request = Request(status_url, headers={
+        "Accept": "application/json",
+        "Authorization": "Bearer " + token,
+    })
     try:
         with urlopen(request, timeout=3) as response:
             body = response.read(1024 * 1024 + 1)
