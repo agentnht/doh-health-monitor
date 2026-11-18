@@ -2107,21 +2107,6 @@ func TestCNAMEChainIntoAutoHostsFailsClosed(t *testing.T) {
 	if !cnameChainTargetsAutoHosts(geoResponse, "alias.example", 1, manager, geo) {
 		t.Fatal("CNAME into selected Geosite category must be blocked before target is persisted")
 	}
-	// A Geosite-selected target is protected before it has been persisted.
-	selectedTarget := "protected.example"
-	geoResponse := append([]byte(nil), query...)
-	binary.BigEndian.PutUint16(geoResponse[2:4], 0x8180)
-	binary.BigEndian.PutUint16(geoResponse[6:8], 1)
-	binary.BigEndian.PutUint16(geoResponse[10:12], 1)
-	targetName := appendDNSName(nil, selectedTarget)
-	geoResponse = append(geoResponse, 0xc0, 0x0c, 0, 5, 0, 1, 0, 0, 0, 60, byte(len(targetName)>>8), byte(len(targetName)))
-	geoResponse = append(geoResponse, targetName...)
-	geoResponse = append(geoResponse, appendDNSName(nil, selectedTarget)...)
-	geoResponse = append(geoResponse, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 7)
-	geo := newTestGeositeIndex(t, selectedTarget)
-	if !cnameChainTargetsAutoHosts(geoResponse, "alias.example", 1, manager, geo) {
-		t.Fatal("CNAME into a selected Geosite category must be blocked before target is persisted")
-	}
 	// Exercise the real DNS cache-hit path: the response must be replaced by
 	// SERVFAIL rather than returning the protected target's real address.
 	runtime := &Runtime{
