@@ -392,30 +392,6 @@ func (m *Manager) SetGeositeCategories(values []string) error {
 	return m.ConfigureWithGeosite(nil, nil, nil, &values)
 }
 
-	return m.update(func(s *State) error {
-		if enabled != nil {
-			s.Config.Enabled = *enabled
-		}
-		if emergencyOff != nil {
-			s.Config.EmergencyOff = *emergencyOff
-		}
-		if pinnedServerID != nil {
-			id := strings.TrimSpace(*pinnedServerID)
-			if id == "" {
-				s.Config.Mode = "auto"
-				s.Config.PinnedServerID = ""
-			} else {
-				if _, ok := s.Endpoints[id]; !ok {
-					return fmt.Errorf("unknown DoH server %q", id)
-				}
-				s.Config.Mode = "pinned"
-				s.Config.PinnedServerID = id
-			}
-		}
-		return nil
-	})
-}
-
 func (m *Manager) SetEnabled(v bool) error {
 	return m.update(func(s *State) error { s.Config.Enabled = v; return nil })
 }
