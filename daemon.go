@@ -373,6 +373,9 @@ func (g *geositeIndex) reloadIfChanged() error {
 		return g.recordReloadError(err)
 	}
 	if loaded && digest == loadedHash {
+		g.mu.Lock()
+		g.lastError = ""
+		g.mu.Unlock()
 		return nil
 	}
 	return g.publishSnapshot(selected, data, info, digest)
