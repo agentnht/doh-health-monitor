@@ -1789,6 +1789,66 @@ class PluginPreflightTests(unittest.TestCase):
             urlopen.assert_not_called()
 
 
+class ShellStatusClientTests(unittest.TestCase):
+    def test_dns_integration_checker_sends_private_bearer_token(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = __import__("pathlib").Path(directory)
+            bin_dir = root / "bin"
+            data_dir = root / "data"
+            bin_dir.mkdir()
+            data_dir.mkdir()
+            token = "0123456789abcdefghijklmnopqrstuvwxyzABCDE"
+            (data_dir / "auto-hosts-api.token").write_text(token + "\\n", encoding="utf-8")
+            (data_dir / "auto-hosts-api.token").chmod(0o600)
+            xray_config = root / "xray.json"
+            xray_config.write_text("{}", encoding="utf-8")
+
+            commands = {
+                "systemctl": "#!/bin/sh\\nexit 0\\n",
+                "ss": "#!/bin/sh\\nprintf 'LISTEN 0 128 127.0.0.1:5355 *:*\\\\n'\\n",
+                "jq": "#!/bin/sh\\nif [ \"$1\" = \"-r\" ]; then echo test-upstream; fi\\nexit 0\\n",
+                "curl": """#!/bin/sh
+config="$(cat)"
+case "$config" in
+  *"Authorization: Bearer ${EXPECTED_TOKEN}"*) ;;
+  *) exit 22 ;;
+esac
+output=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then output="$2"; shift 2; else shift; fi
+done
+[ -n "$output" ] || exit 23
+printf '{"groups":{"google":{"active_upstream":"test-upstream"}}}' > "$output"
+""",
+            }
+            for name, body in commands.items():
+                executable = bin_dir / name
+                executable.write_text(body, encoding="utf-8")
+                executable.chmod(0o755)
+
+            env = dict(os.environ)
+            env.update({
+                "PATH": str(bin_dir) + os.pathsep + env.get("PATH", ""),
+                "LUCX_PLUGIN_DATA": str(data_dir),
+                "XRAY_CONFIG": str(xray_config),
+                "EXPECTED_TOKEN": token,
+                "DOH_SKIP_PLUGIN_HEALTH_CHECK": "0",
+                "DOH_STATUS_URL": "http://127.0.0.1:18765/status",
+                "DOH_PLUGIN_PORT": "5355",
+            })
+            result = subprocess.run(
+                ["bash", str(ROOT / "scripts" / "check-dns-integration.sh")],
+                env=env, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, timeout=10, check=False,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                f"checker failed to authenticate status API: stdout={result.stdout} stderr={result.stderr}",
+            )
+            self.assertIn("Status API отвечает корректным JSON", result.stdout)
+
+
 class PanelAPITests(unittest.TestCase):
     def test_ip_san_verification_requires_exact_ip_san_not_cn(self):
         api_tool.verify_certificate_ip_san(
