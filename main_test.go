@@ -149,47 +149,91 @@ func TestGeositeIndexRetainsLastKnownGoodMatcherOnReloadFailure(t *testing.T) {
 func TestGeositeAtomicReplacementDetectedByContentHash(t *testing.T) {
 	index := newTestGeositeIndex(t, "old.example")
 	oldInfo, err := os.Stat(index.path)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	replacement := filepath.Join(filepath.Dir(index.path), "geosite.next")
 	data := testGeositeData("new.example") // Same byte length as old.example.
-	if err := os.WriteFile(replacement, data, 0600); err != nil { t.Fatal(err) }
-	if int64(len(data)) != oldInfo.Size() { t.Fatalf("fixture sizes differ: old=%d new=%d", oldInfo.Size(), len(data)) }
-	if err := os.Chtimes(replacement, oldInfo.ModTime(), oldInfo.ModTime()); err != nil { t.Fatal(err) }
-	if err := os.Rename(replacement, index.path); err != nil { t.Fatal(err) }
-	if err := index.reloadIfChanged(); err != nil { t.Fatalf("reload after atomic rename: %v", err) }
+	if err := os.WriteFile(replacement, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(data)) != oldInfo.Size() {
+		t.Fatalf("fixture sizes differ: old=%d new=%d", oldInfo.Size(), len(data))
+	}
+	if err := os.Chtimes(replacement, oldInfo.ModTime(), oldInfo.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, index.path); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.reloadIfChanged(); err != nil {
+		t.Fatalf("reload after atomic rename: %v", err)
+	}
 	if index.MatchAny("www.old.example") || !index.MatchAny("www.new.example") {
 		t.Fatal("content-hash reload did not atomically switch to the replacement matcher")
 	}
-	if got := index.Status().FileSHA256; got == "" { t.Fatal("status does not expose loaded content digest") }
+	if got := index.Status().FileSHA256; got == "" {
+		t.Fatal("status does not expose loaded content digest")
+	}
 }
 
 func TestGeositeTemporaryUnavailableRetainsMatcherAndRecovers(t *testing.T) {
 	index := newTestGeositeIndex(t, "old.example")
 	parked := index.path + ".parked"
-	if err := os.Rename(index.path, parked); err != nil { t.Fatal(err) }
-	if err := index.reloadIfChanged(); err == nil { t.Fatal("expected missing geosite.dat to report an error") }
-	if !index.MatchAny("old.example") { t.Fatal("temporary file unavailability discarded the last known-good matcher") }
-	if err := os.Rename(parked, index.path); err != nil { t.Fatal(err) }
-	if err := os.WriteFile(parked, testGeositeData("new.example"), 0600); err != nil { t.Fatal(err) }
-	if err := os.Rename(parked, index.path); err != nil { t.Fatal(err) }
-	if err := index.reloadIfChanged(); err != nil { t.Fatalf("recovery reload failed: %v", err) }
-	if index.MatchAny("old.example") || !index.MatchAny("new.example") { t.Fatal("recovered matcher was not applied") }
-	if status := index.Status(); status.LastError != "" { t.Fatalf("successful recovery left error: %s", status.LastError) }
+	if err := os.Rename(index.path, parked); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.reloadIfChanged(); err == nil {
+		t.Fatal("expected missing geosite.dat to report an error")
+	}
+	if !index.MatchAny("old.example") {
+		t.Fatal("temporary file unavailability discarded the last known-good matcher")
+	}
+	if err := os.Rename(parked, index.path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(parked, testGeositeData("new.example"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(parked, index.path); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.reloadIfChanged(); err != nil {
+		t.Fatalf("recovery reload failed: %v", err)
+	}
+	if index.MatchAny("old.example") || !index.MatchAny("new.example") {
+		t.Fatal("recovered matcher was not applied")
+	}
+	if status := index.Status(); status.LastError != "" {
+		t.Fatalf("successful recovery left error: %s", status.LastError)
+	}
 }
 
 func TestGeositePeriodicReloadAppliesReplacementWithoutListenerRestart(t *testing.T) {
 	index := newTestGeositeIndex(t, "old.example")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { index.runWithInterval(ctx, 5*time.Millisecond); close(done) }()
-	defer func() { cancel(); <-done }()
+	go func() {
+		index.runWithInterval(ctx, 5*time.Millisecond)
+		close(done)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
 	replacement := index.path + ".next"
-	if err := os.WriteFile(replacement, testGeositeData("new.example"), 0600); err != nil { t.Fatal(err) }
-	if err := os.Rename(replacement, index.path); err != nil { t.Fatal(err) }
-	deadline := time.Now().Add(2*time.Second)
+	if err := os.WriteFile(replacement, testGeositeData("new.example"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, index.path); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if index.MatchAny("new.example") && !index.MatchAny("old.example") { return }
-		time.Sleep(5*time.Millisecond)
+		if index.MatchAny("new.example") && !index.MatchAny("old.example") {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("periodic Geosite reload did not apply the replacement")
 }
@@ -203,22 +247,40 @@ func TestGeositeConcurrentReadersObserveCompleteMatchers(t *testing.T) {
 		go func() {
 			defer readers.Done()
 			for {
-				select { case <-stop: return; default: }
+				select {
+				case <-stop:
+					return
+				default:
+				}
 				matcher := index.matcher.Load()
-					if matcher == nil { t.Error("reader observed nil matcher"); return }
-					oldMatch := matcher.MatchAny("old.example")
-					newMatch := matcher.MatchAny("new.example")
-				if oldMatch == newMatch { t.Errorf("reader observed incomplete matcher state: old=%t new=%t", oldMatch, newMatch); return }
+				if matcher == nil {
+					t.Error("reader observed nil matcher")
+					return
+				}
+				oldMatch := matcher.MatchAny("old.example")
+				newMatch := matcher.MatchAny("new.example")
+				if oldMatch == newMatch {
+					t.Errorf("reader observed incomplete matcher state: old=%t new=%t", oldMatch, newMatch)
+					return
+				}
 			}
 		}()
 	}
 	for i := 0; i < 20; i++ {
 		domain := "new.example"
-		if i%2 == 1 { domain = "old.example" }
+		if i%2 == 1 {
+			domain = "old.example"
+		}
 		tmp := index.path + ".next"
-		if err := os.WriteFile(tmp, testGeositeData(domain), 0600); err != nil { t.Fatal(err) }
-		if err := os.Rename(tmp, index.path); err != nil { t.Fatal(err) }
-		if err := index.reloadIfChanged(); err != nil { t.Fatal(err) }
+		if err := os.WriteFile(tmp, testGeositeData(domain), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(tmp, index.path); err != nil {
+			t.Fatal(err)
+		}
+		if err := index.reloadIfChanged(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	close(stop)
 	readers.Wait()
@@ -226,12 +288,20 @@ func TestGeositeConcurrentReadersObserveCompleteMatchers(t *testing.T) {
 
 func TestGeositeIndexLoadsConfiguredRealAsset(t *testing.T) {
 	path := strings.TrimSpace(os.Getenv("LUCX_TEST_GEOSITE_DAT"))
-	if path == "" { t.Skip("set LUCX_TEST_GEOSITE_DAT to exercise a production geosite.dat asset") }
+	if path == "" {
+		t.Skip("set LUCX_TEST_GEOSITE_DAT to exercise a production geosite.dat asset")
+	}
 	categories := strings.Split(os.Getenv("LUCX_TEST_GEOSITE_CATEGORIES"), ",")
-	if strings.TrimSpace(os.Getenv("LUCX_TEST_GEOSITE_CATEGORIES")) == "" { categories = []string{"CN"} }
+	if strings.TrimSpace(os.Getenv("LUCX_TEST_GEOSITE_CATEGORIES")) == "" {
+		categories = []string{"CN"}
+	}
 	index, err := newGeositeIndex(path, categories)
-	if err != nil { t.Fatalf("load real geosite.dat: %v", err) }
-	if !index.Status().Loaded || index.Status().FileSHA256 == "" { t.Fatalf("real geosite.dat was not recorded as loaded: %+v", index.Status()) }
+	if err != nil {
+		t.Fatalf("load real geosite.dat: %v", err)
+	}
+	if !index.Status().Loaded || index.Status().FileSHA256 == "" {
+		t.Fatalf("real geosite.dat was not recorded as loaded: %+v", index.Status())
+	}
 }
 
 func TestGeositeDataPathUsesDefaultAndConfiguredOverride(t *testing.T) {
