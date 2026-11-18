@@ -23,6 +23,57 @@ import (
 	"time"
 )
 
+
+func testProtoVarint(value uint64) []byte {
+	var out []byte
+	for value >= 0x80 {
+		out = append(out, byte(value)|0x80)
+		value >>= 7
+	}
+	return append(out, byte(value))
+}
+
+func testProtoBytesField(field int, value []byte) []byte {
+	out := testProtoVarint(uint64(field<<3 | 2))
+	out = append(out, testProtoVarint(uint64(len(value)))...)
+	return append(out, value...)
+}
+
+func testProtoVarintField(field int, value uint64) []byte {
+	out := testProtoVarint(uint64(field << 3))
+	return append(out, testProtoVarint(value)...)
+}
+
+func newTestGeositeIndex(t *testing.T, domains ...string) *geositeIndex {
+	t.Helper()
+	category := testProtoBytesField(1, []byte("TEST"))
+	for _, name := range domains {
+		domain := testProtoVarintField(1, 2) // Domain suffix rule.
+		domain = append(domain, testProtoBytesField(2, []byte(name))...)
+		category = append(category, testProtoBytesField(2, domain)...)
+	}
+	data := testProtoBytesField(1, category)
+	path := filepath.Join(t.TempDir(), "geosite.dat")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	index, err := newGeositeIndex(path, []string{"TEST"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return index
+}
+
+func startTestAutoHostsRecorder(t *testing.T, runtime *Runtime, domains ...string) {
+	t.Helper()
+	runtime.geo = newTestGeositeIndex(t, domains...)
+	runtime.autoHostsQueryQueue = make(chan *autoHostsQueryJob, 32)
+	runtime.autoHostsQueued = make(map[string]*autoHostsQueryJob)
+	ctx, cancel := context.WithCancel(context.Background())
+	go runtime.runAutoHostsQueryRecorder(ctx)
+	t.Cleanup(cancel)
+}
+
 func testAResponse(q []byte, ttl uint32) []byte {
 	_, _, end, err := parseQuestion(q)
 	if err != nil {
@@ -1552,6 +1603,7 @@ func TestManualLocalHostsTakePriorityOverAutoHosts(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := &Runtime{autoHosts: manager, dnsSem: make(chan struct{}, 1)}
+	startTestAutoHostsRecorder(t, runtime, "chatgpt.com")
 	runtime.snapshot.Store(&Snapshot{localHosts: map[string]LocalHost{"chatgpt.com": {IPv4: []string{"1.2.3.4"}}}})
 	response := runtime.handleDNS(makeDNSQuery("chatgpt.com", 1))
 	ips, err := parseARecords(response)
@@ -1648,7 +1700,7 @@ func TestHandleDNSAutoHostsEndToEndAndEmergencyBypass(t *testing.T) {
 	}
 	bypassed := runtime.handleDNS(makeDNSQuery("chatgpt.com", 1))
 	if dnsRCode(bypassed) != 2 {
-		t.Fatalf("Emergency OFF should bypass Auto Hosts and use ordinary gateway path; with no upstream expected SERVFAIL, got rcode=%d", dnsRCode(bypassed))
+		t.Fatalf("Emergency OFF should bypass Auto Hosts and use the dedicated Quad9 path; with no Quad9 test upstream expected SERVFAIL, got rcode=%d", dnsRCode(bypassed))
 	}
 }
 
@@ -1691,6 +1743,7 @@ func newAutoHostsDNSRuntimeForTransportTest(t *testing.T) *Runtime {
 		t.Fatal(err)
 	}
 	r := &Runtime{autoHosts: manager, dnsSem: make(chan struct{}, 2)}
+	startTestAutoHostsRecorder(t, r, "chatgpt.com")
 	r.snapshot.Store(&Snapshot{cfg: Config{DNSMaxConcurrent: 2}, localHosts: map[string]LocalHost{}, upstreams: map[string]*UpstreamRuntime{}, groups: map[string]Group{}})
 	return r
 }

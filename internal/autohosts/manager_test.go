@@ -473,7 +473,7 @@ func TestEndpointForQueryMapsUnrecordedGeositeDomain(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	ep := Endpoint{ServerID: "edge", URL: "https://dns.example/dns-query", Hostname: "dns.example", IPv4: []string{"8.8.8.8"}, IPv6: []string{"2001:4860:4860::8888"}}
+	ep := Endpoint{ServerID: "edge", URL: "https://dns.example/dns-query", Hostname: "dns.example", IPv4: []string{"8.8.8.8"}, IPv6: []string{"2001:4860:4860::8888"}, UpdatedAt: now}
 	if err := m.ApplyCycle("edge", ep, nil, now); err != nil {
 		t.Fatal(err)
 	}
