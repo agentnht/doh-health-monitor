@@ -113,6 +113,15 @@ func TestAutoDNSListenerRequiresMatchingLoopbackPortZero(t *testing.T) {
 	}
 }
 
+func TestFixedDNSPortModeRejectsEphemeralPort(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.DNSListenUDP = "127.0.0.1:0"
+	cfg.DNSListenTCP = "127.0.0.1:0"
+	if err := validateConfig(cfg); err == nil || !strings.Contains(err.Error(), "port 0 requires dns_port_mode auto") {
+		t.Fatalf("fixed mode accepted ephemeral DNS ports: %v", err)
+	}
+}
+
 func TestLegacyConfigDefaultsDNSPortModeToFixed(t *testing.T) {
 	cfg := normalizeDNSPortMode(Config{})
 	if cfg.DNSPortMode != "fixed" {

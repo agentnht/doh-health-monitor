@@ -628,6 +628,13 @@ func validateConfig(c Config) error {
 	if mode != "fixed" && mode != "auto" {
 		return errors.New("dns_port_mode must be fixed or auto")
 	}
+	if mode == "fixed" {
+		_, udpPort, _ := net.SplitHostPort(c.DNSListenUDP)
+		_, tcpPort, _ := net.SplitHostPort(c.DNSListenTCP)
+		if udpPort == "0" || tcpPort == "0" {
+			return errors.New("port 0 requires dns_port_mode auto")
+		}
+	}
 	if mode == "auto" {
 		udpHost, udpPort, _ := net.SplitHostPort(c.DNSListenUDP)
 		tcpHost, tcpPort, _ := net.SplitHostPort(c.DNSListenTCP)
