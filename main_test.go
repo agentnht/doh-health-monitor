@@ -441,10 +441,11 @@ func TestUDPWorkerPoolBoundsQueueUnderLoad(t *testing.T) {
 		upstreams: map[string]*UpstreamRuntime{"slow": upstream},
 	}
 	r := &Runtime{
-		dnsSem: make(chan struct{}, 1),
-		health: map[string]map[string]HealthEntry{},
-		active: map[string]string{"google": "slow"},
-		cache:  map[string]cacheItem{},
+		dnsSem:     make(chan struct{}, 1),
+		health:     map[string]map[string]HealthEntry{},
+		active:     map[string]string{"google": "slow"},
+		cache:      map[string]cacheItem{},
+		vpsResolve: upstream,
 	}
 	r.snapshot.Store(s)
 
@@ -928,14 +929,15 @@ func TestDNSGatewaySendsArbitraryQNAMEThroughGoogleProfile(t *testing.T) {
 		upstreams: map[string]*UpstreamRuntime{"selected-google-doh": upstream},
 	}
 	rt := &Runtime{
-		active: map[string]string{"google": "selected-google-doh"},
+		active:     map[string]string{"google": "selected-google-doh"},
+		vpsResolve: upstream,
 	}
 	rt.snapshot.Store(snapshot)
 
 	rt.dnsSem = make(chan struct{}, 1)
 	response := rt.handleDNS(query)
 	if dnsRCode(response) != 0 {
-		t.Fatalf("ordinary DNS Gateway returned rcode=%d", dnsRCode(response))
+		t.Fatalf("dedicated VPS resolver returned rcode=%d", dnsRCode(response))
 	}
 	if gotName != "completely-unrelated.example" {
 		t.Fatalf("DoH received QNAME %q; want arbitrary QNAME unchanged", gotName)
@@ -1683,6 +1685,7 @@ func TestHandleDNSAutoHostsEndToEndAndEmergencyBypass(t *testing.T) {
 		t.Fatalf("test setup did not publish Auto Hosts record: enabled=%v emergency=%v active=%s domains=%+v endpoint=%+v lookup=%v", manager.State().Config.Enabled, manager.State().Config.EmergencyOff, manager.State().ActiveServer, manager.State().Domains, manager.State().Endpoints, ips)
 	}
 	runtime := &Runtime{autoHosts: manager, dnsSem: make(chan struct{}, 1)}
+	startTestAutoHostsRecorder(t, runtime, "chatgpt.com")
 	runtime.snapshot.Store(&Snapshot{cfg: Config{Cache: CacheConfig{Enabled: false}}, localHosts: map[string]LocalHost{}, upstreams: map[string]*UpstreamRuntime{}, groups: map[string]Group{}})
 	a := runtime.handleDNS(makeDNSQuery("CHATGPT.COM", 1))
 	ips, err := parseARecords(a)
@@ -2017,6 +2020,21 @@ func TestCNAMEChainIntoAutoHostsFailsClosed(t *testing.T) {
 	response = append(response, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 7)
 	if !cnameChainTargetsAutoHosts(response, "alias.example", 1, manager) {
 		t.Fatal("CNAME into Auto Hosts must be detected and blocked")
+	}
+	// A Geosite-selected target is protected before it has been persisted.
+	selectedTarget := "protected.example"
+	geoResponse := append([]byte(nil), query...)
+	binary.BigEndian.PutUint16(geoResponse[2:4], 0x8180)
+	binary.BigEndian.PutUint16(geoResponse[6:8], 1)
+	binary.BigEndian.PutUint16(geoResponse[10:12], 1)
+	targetName := appendDNSName(nil, selectedTarget)
+	geoResponse = append(geoResponse, 0xc0, 0x0c, 0, 5, 0, 1, 0, 0, 0, 60, byte(len(targetName)>>8), byte(len(targetName)))
+	geoResponse = append(geoResponse, targetName...)
+	geoResponse = append(geoResponse, appendDNSName(nil, selectedTarget)...)
+	geoResponse = append(geoResponse, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 7)
+	geo := newTestGeositeIndex(t, selectedTarget)
+	if !cnameChainTargetsAutoHosts(geoResponse, "alias.example", 1, manager, geo) {
+		t.Fatal("CNAME into a selected Geosite category must be blocked before target is persisted")
 	}
 	// Exercise the real DNS cache-hit path: the response must be replaced by
 	// SERVFAIL rather than returning the protected target's real address.

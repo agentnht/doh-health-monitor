@@ -1750,7 +1750,7 @@ func (r *Runtime) handleDNS(packet []byte) (response []byte) {
 	if s.cfg.Cache.Enabled {
 		if v, ok := r.cacheGet(cacheKey, packetID(packet)); ok {
 			r.cacheHits.Add(1)
-			if cnameChainTargetsAutoHosts(v, normalizeDomain(name), qtype, r.autoHosts) {
+			if cnameChainTargetsAutoHosts(v, normalizeDomain(name), qtype, r.autoHosts, r.geo) {
 				return servfailResponse(packet)
 			}
 			return v
@@ -1758,7 +1758,7 @@ func (r *Runtime) handleDNS(packet []byte) (response []byte) {
 	}
 	resolve := func() ([]byte, error) {
 		response, queryErr := r.queryVPSResolve(context.Background(), packet)
-		if queryErr == nil && cnameChainTargetsAutoHosts(response, normalizeDomain(name), qtype, r.autoHosts) {
+		if queryErr == nil && cnameChainTargetsAutoHosts(response, normalizeDomain(name), qtype, r.autoHosts, r.geo) {
 			return nil, errors.New("upstream CNAME targets an Auto Hosts protected domain")
 		}
 		// An in-flight request from the previous snapshot must not repopulate
@@ -1843,7 +1843,7 @@ func localHostsResponseWithTTL(query []byte, host string, qtype uint16, hosts ma
 // at a name managed by Auto Hosts. Returning SERVFAIL avoids leaking the real
 // target address from either Answer or Additional while preserving exact-name
 // Auto Hosts handling for direct queries.
-func cnameChainTargetsAutoHosts(response []byte, originalName string, qtype uint16, manager *autohosts.Manager) bool {
+func cnameChainTargetsAutoHosts(response []byte, originalName string, qtype uint16, manager *autohosts.Manager, geositeIndexes ...*geositeIndex) bool {
 	if manager == nil || (qtype != 1 && qtype != 28 && qtype != 64 && qtype != 65) || len(response) < 12 {
 		return false
 	}
@@ -1895,6 +1895,11 @@ func cnameChainTargetsAutoHosts(response []byte, originalName string, qtype uint
 		seen[target] = struct{}{}
 		if _, _, matched := snapshot.Lookup(target, qtype, time.Now()); matched {
 			return true
+		}
+		for _, index := range geositeIndexes {
+			if index != nil && index.MatchAny(target) {
+				return true
+			}
 		}
 		current = target
 	}
