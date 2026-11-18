@@ -16,7 +16,7 @@ func TestVPSResolveRequiresHTTP2(t *testing.T) {
 	defer server.Close()
 
 	upstream := &UpstreamRuntime{
-		cfg: Upstream{ID: "vps-resolve", URL: server.URL},
+		cfg:    Upstream{ID: "vps-resolve", URL: server.URL},
 		client: server.Client(),
 	}
 	_, err := sendDoH(context.Background(), upstream, []byte("dns-query"))

@@ -466,7 +466,6 @@ func TestSetGeositeCategoriesRejectsInvalidName(t *testing.T) {
 	}
 }
 
-
 func TestEndpointForQueryMapsUnrecordedGeositeDomain(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	m, err := New(path)

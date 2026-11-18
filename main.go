@@ -1368,7 +1368,6 @@ func (r *Runtime) markUpstreamSuccess(uid string) {
 	r.mu.Unlock()
 }
 
-
 func (r *Runtime) queryVPSResolve(ctx context.Context, packet []byte) ([]byte, error) {
 	if r.vpsResolve == nil {
 		return nil, errors.New("vps-resolve Quad9 upstream is unavailable")
@@ -1901,7 +1900,6 @@ func cnameChainTargetsAutoHosts(response []byte, originalName string, qtype uint
 	}
 	return false
 }
-
 
 func autoHostsEndpointResponse(query []byte, host string, qtype uint16, snapshot *autohosts.Snapshot, now time.Time) ([]byte, bool) {
 	ips, ttlDuration, matched := snapshot.EndpointForQuery(qtype, now)
