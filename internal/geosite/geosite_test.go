@@ -75,7 +75,7 @@ func TestParseCategoriesAndMatchAny(t *testing.T) {
 	}
 }
 
-func domainRule(kind uint64, value string) []byte {
+func makeDomainRuleFixture(kind uint64, value string) []byte {
 	rule := varintField(1, kind)
 	return append(rule, bytesField(2, []byte(value))...)
 }
@@ -90,10 +90,10 @@ func categoryFixture(rules ...[]byte) []byte {
 
 func TestParseSupportsAllXrayDomainRuleKinds(t *testing.T) {
 	data := categoryFixture(
-		domainRule(0, "exact.example"),
-		domainRule(1, `^service-[0-9]+\.example\.net$`),
-		domainRule(2, "example.org"),
-		domainRule(3, "needle"),
+		makeDomainRuleFixture(0, "exact.example"),
+		makeDomainRuleFixture(1, `^service-[0-9]+\.example\.net$`),
+		makeDomainRuleFixture(2, "example.org"),
+		makeDomainRuleFixture(3, "needle"),
 	)
 	matcher, err := Parse(data, []string{"TEST"})
 	if err != nil {
@@ -121,10 +121,10 @@ func TestParseSupportsAllXrayDomainRuleKinds(t *testing.T) {
 }
 
 func TestParseRejectsInvalidRegexAndUnknownRuleKind(t *testing.T) {
-	if _, err := Parse(categoryFixture(domainRule(1, "[")), []string{"TEST"}); err == nil {
+	if _, err := Parse(categoryFixture(makeDomainRuleFixture(1, "[")), []string{"TEST"}); err == nil {
 		t.Fatal("expected invalid regular expression to be rejected")
 	}
-	if _, err := Parse(categoryFixture(domainRule(4, "example.com")), []string{"TEST"}); err == nil {
+	if _, err := Parse(categoryFixture(makeDomainRuleFixture(4, "example.com")), []string{"TEST"}); err == nil {
 		t.Fatal("expected unsupported Xray domain rule type to be rejected")
 	}
 }
