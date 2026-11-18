@@ -30,6 +30,7 @@ jobs:
           unformatted="$(gofmt -l $(git ls-files '*.go'))"
           if [[ -n "$unformatted" ]]; then
             printf '%s\n' "$unformatted"
+            gofmt -d $unformatted
             exit 1
           fi
       - run: go vet ./...
