@@ -2163,3 +2163,54 @@ func TestReloadOnceAppliesValidSourcesWhenConfigJSONIsBroken(t *testing.T) {
 		t.Fatalf("successful reload left LastError=%q", lastError)
 	}
 }
+
+
+func TestReloadLoopUsesConfiguredInterval(t *testing.T) {
+	runtime := newReloadTestRuntime(t)
+	cfg := runtime.currentSnapshot().cfg
+	cfg.ReloadSecs = 1
+	if err := writeConfigAtomic(runtime.configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	configData, err := os.ReadFile(runtime.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := *runtime.currentSnapshot()
+	initial.cfg = cfg
+	initial.configHash = sha256.Sum256(configData)
+	runtime.snapshot.Store(&initial)
+	if err := os.WriteFile(runtime.checksPath, []byte("loop.example;A;1;;;0\\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		runtime.reloadLoop(ctx)
+		close(done)
+	}()
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot := runtime.currentSnapshot()
+		if len(snapshot.cfg.Groups) == 1 && len(snapshot.cfg.Groups[0].Checks) == 1 &&
+			snapshot.cfg.Groups[0].Checks[0].Domain == "loop.example" {
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("reloadLoop did not stop after context cancellation")
+			}
+			return
+		}
+		select {
+		case <-done:
+			t.Fatal("reloadLoop exited before applying the source change")
+		default:
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	t.Fatal("reloadLoop did not apply source changes within its configured one-second interval")
+}
