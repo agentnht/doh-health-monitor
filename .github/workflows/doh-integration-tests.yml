@@ -47,7 +47,8 @@ jobs:
           curl -fsSL --retry 3 https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat -o "$RUNNER_TEMP/dlc.dat"
           curl -fsSL --retry 3 https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat.sha256sum -o "$RUNNER_TEMP/dlc.dat.sha256sum"
           (cd "$RUNNER_TEMP" && sha256sum -c dlc.dat.sha256sum)
-          LUCX_TEST_GEOSITE_DAT="$RUNNER_TEMP/dlc.dat" LUCX_TEST_GEOSITE_CATEGORIES=CN go test . -run '^TestGeositeIndexLoadsConfiguredRealAsset      - name: Run race detector for integration package
+          LUCX_TEST_GEOSITE_DAT="$RUNNER_TEMP/dlc.dat" LUCX_TEST_GEOSITE_CATEGORIES=CN go test . -run TestGeositeIndexLoadsConfiguredRealAsset
+      - name: Run race detector for integration package
         run: go test -race ./internal/dohintegration/...
       - name: Set up Python
         uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c
