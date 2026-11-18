@@ -1100,9 +1100,12 @@ func runWebUIIntegration(dataDir, action string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("config.json is invalid: %w", err)
 	}
-	dnsUDPAddress, _, err := effectiveDNSListenerAddresses(root, config)
-	if err != nil {
-		return "", fmt.Errorf("configured DNS listener: %w", err)
+	dnsUDPAddress := config.DNSListenUDP
+	if action == "check" {
+		dnsUDPAddress, _, err = effectiveDNSListenerAddresses(root, config)
+		if err != nil {
+			return "", fmt.Errorf("configured DNS listener: %w", err)
+		}
 	}
 	udpAddress, err := localListenAddress(dnsUDPAddress)
 	if err != nil {

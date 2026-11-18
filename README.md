@@ -212,7 +212,7 @@ Web UI содержит:
 | `doh_timeout_seconds` | Таймаут одного DoH запроса | 10 секунд, диапазон 1–60 |
 | `dns_max_concurrent` | Лимит одновременных DNS запросов | 256, диапазон 1–4096 |
 
-**Перезапуск самого плагина требуется**, если меняются `dns_listen_udp`, `dns_listen_tcp`, `http_listen` или `dns_max_concurrent`. Остальные параметры `config.json` и оба текстовых источника применяются автоматической перезагрузкой с интервалом `reload_interval_seconds`. При изменении `http_listen` также измените `health.target` в manifest и переустановите плагин, иначе probe панели продолжит обращаться к прежнему адресу.
+**Перезапуск самого плагина требуется**, если меняются `dns_port_mode`, `dns_listen_udp`, `dns_listen_tcp`, `http_listen` или `dns_max_concurrent`. Остальные параметры `config.json` и оба текстовых источника применяются автоматической перезагрузкой с интервалом `reload_interval_seconds`. При изменении `http_listen` также измените `health.target` в manifest и переустановите плагин, иначе probe панели продолжит обращаться к прежнему адресу.
 
 ### 5.2 Health-check и пороги failover
 

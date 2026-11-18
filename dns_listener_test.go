@@ -43,6 +43,14 @@ func TestAutoDNSListenerBindsAndPersistsMatchingPort(t *testing.T) {
 	if err != nil || selectedPort < 1 {
 		t.Fatalf("invalid selected port %q: %v", udpPort, err)
 	}
+	if probe, probeErr := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: selectedPort}); probeErr == nil {
+		_ = probe.Close()
+		t.Fatal("selected UDP port was not held by the active listener")
+	}
+	if probe, probeErr := net.Listen("tcp", tcpAddress); probeErr == nil {
+		_ = probe.Close()
+		t.Fatal("selected TCP port was not held by the active listener")
+	}
 	_ = udpConn.Close()
 	_ = tcpListener.Close()
 
