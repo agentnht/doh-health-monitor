@@ -3,9 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
