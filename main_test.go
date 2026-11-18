@@ -204,8 +204,10 @@ func TestGeositeConcurrentReadersObserveCompleteMatchers(t *testing.T) {
 			defer readers.Done()
 			for {
 				select { case <-stop: return; default: }
-				oldMatch := index.MatchAny("old.example")
-				newMatch := index.MatchAny("new.example")
+				matcher := index.matcher.Load()
+					if matcher == nil { t.Error("reader observed nil matcher"); return }
+					oldMatch := matcher.MatchAny("old.example")
+					newMatch := matcher.MatchAny("new.example")
 				if oldMatch == newMatch { t.Errorf("reader observed incomplete matcher state: old=%t new=%t", oldMatch, newMatch); return }
 			}
 		}()
