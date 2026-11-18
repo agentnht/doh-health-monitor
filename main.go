@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
@@ -120,6 +121,7 @@ type Snapshot struct {
 	groups     map[string]Group
 	loadedAt   time.Time
 	configMod  time.Time
+	configHash [32]byte
 }
 type UpstreamRuntime struct {
 	cfg       Upstream
@@ -724,12 +726,37 @@ func validateConfig(c Config) error {
 		if !groups[c.GeminiAPI.GroupID] {
 			return errors.New("gemini_api.group_id must reference a configured group")
 		}
-		if c.GeminiAPI.Model == "" || c.GeminiAPI.KeyFile == "" || c.GeminiAPI.IntervalSeconds < 60 {
-			return errors.New("gemini_api requires model, key_file and interval_seconds >= 60")
+		if !validGeminiModel(c.GeminiAPI.Model) {
+			return errors.New("gemini_api.model must be a model identifier containing only ASCII letters, digits, '.', '_' or '-' (maximum 128 characters)")
+		}
+		if c.GeminiAPI.KeyFile == "" || c.GeminiAPI.IntervalSeconds < 60 || c.GeminiAPI.IntervalSeconds > 86400 {
+			return errors.New("gemini_api requires key_file and interval_seconds in 60..86400")
+		}
+		if strings.TrimSpace(c.GeminiAPI.Prompt) == "" || len(c.GeminiAPI.Prompt) > 4096 {
+			return errors.New("gemini_api.prompt must contain 1..4096 bytes of non-whitespace text")
+		}
+		if c.GeminiAPI.MaxOutputTokens < 1 || c.GeminiAPI.MaxOutputTokens > 8192 {
+			return errors.New("gemini_api.max_output_tokens must be in 1..8192")
 		}
 	}
 	return nil
 }
+func validGeminiModel(model string) bool {
+	if len(model) == 0 || len(model) > 128 {
+		return false
+	}
+	for i, r := range model {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-') {
+			return false
+		}
+		if i == 0 && !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
+}
+
 func validDNSHostname(host string) bool {
 	if host == "" || len(host) > 253 || net.ParseIP(host) != nil {
 		return false
@@ -1620,7 +1647,9 @@ func (r *Runtime) handleDNS(packet []byte) (response []byte) {
 		if queryErr == nil && cnameChainTargetsAutoHosts(response, normalizeDomain(name), qtype, r.autoHosts) {
 			return nil, errors.New("upstream CNAME targets an Auto Hosts protected domain")
 		}
-		if queryErr == nil && s.cfg.Cache.Enabled {
+		// An in-flight request from the previous snapshot must not repopulate
+		// the cache after a reload has invalidated it.
+		if queryErr == nil && s.cfg.Cache.Enabled && r.currentSnapshot() == s {
 			r.cachePut(cacheKey, response, s.cfg.Cache)
 		}
 		return response, queryErr
@@ -1970,7 +1999,7 @@ func (r *Runtime) runChecks(ctx context.Context) {
 						if ge != nil {
 							gemState = "failed"
 							logLine("WARN", "Gemini API probe failed group=%s upstream=%s error=%s", gid, uid, ge.Error())
-							if s.cfg.GeminiAPI.RequiredForGroup && !geminiAuthOrQuotaError(ge) {
+							if s.cfg.GeminiAPI.RequiredForGroup && !geminiFailureIsShared(ge) {
 								ok = false
 								lastErr = "Gemini API: " + ge.Error()
 							}
@@ -2417,10 +2446,6 @@ func readGeminiAPIKey(dataDir, relativePath string) ([]byte, error) {
 }
 
 func (r *Runtime) geminiProbe(ctx context.Context, u *UpstreamRuntime, c GeminiAPIConfig) (string, error) {
-	keyPath := c.KeyFile
-	if !filepath.IsAbs(keyPath) {
-		keyPath = filepath.Join(r.dataDir, keyPath)
-	}
 	b, e := readGeminiAPIKey(r.dataDir, c.KeyFile)
 	if e != nil {
 		return "", fmt.Errorf("read Gemini API key file: %w", e)
@@ -2431,53 +2456,104 @@ func (r *Runtime) geminiProbe(ctx context.Context, u *UpstreamRuntime, c GeminiA
 	}
 	host := "generativelanguage.googleapis.com"
 	ips, e := r.resolveA(ctx, u, host)
-	if e != nil || len(ips) == 0 {
-		return "", fmt.Errorf("resolve Gemini API: %v", e)
+	if e != nil {
+		return "", fmt.Errorf("resolve Gemini API: %w", e)
+	}
+	if len(ips) == 0 {
+		return "", errors.New("resolve Gemini API: DNS returned no A records")
 	}
 	endpoint := "https://" + host + "/v1beta/models/" + url.PathEscape(c.Model) + ":generateContent"
 	payload := map[string]any{"contents": []any{map[string]any{"parts": []any{map[string]string{"text": c.Prompt}}}}, "generationConfig": map[string]any{"maxOutputTokens": c.MaxOutputTokens, "temperature": 0}}
-	body, _ := json.Marshal(payload)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-goog-api-key", key)
-	client := newPinnedHTTPClient(ips[0], host, time.Duration(r.currentSnapshot().cfg.DoHTimeoutSeconds)*time.Second)
-	defer client.CloseIdleConnections()
-	resp, e := client.Do(req)
-	if e != nil {
-		return "", e
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("encode Gemini API request: %w", err)
 	}
-	defer resp.Body.Close()
-	rb, readErr := io.ReadAll(io.LimitReader(resp.Body, maxHTTPBody+1))
-	if readErr != nil {
-		return "", fmt.Errorf("read Gemini API response: %w", readErr)
+	timeout := 10 * time.Second
+	if snapshot := r.currentSnapshot(); snapshot != nil {
+		timeout = time.Duration(snapshot.cfg.DoHTimeoutSeconds) * time.Second
 	}
-	if len(rb) > maxHTTPBody {
-		return "", fmt.Errorf("Gemini API response exceeds %d bytes", maxHTTPBody)
+	var lastErr error
+	for index, ip := range ips {
+		if index >= 4 {
+			break
+		}
+		client := newPinnedHTTPClient(ip, host, timeout)
+		req, requestErr := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		if requestErr != nil {
+			client.CloseIdleConnections()
+			return "", requestErr
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-goog-api-key", key)
+		resp, requestErr := client.Do(req)
+		if requestErr != nil {
+			client.CloseIdleConnections()
+			lastErr = requestErr
+			continue
+		}
+		rb, readErr := io.ReadAll(io.LimitReader(resp.Body, maxHTTPBody+1))
+		_ = resp.Body.Close()
+		client.CloseIdleConnections()
+		if readErr != nil {
+			lastErr = fmt.Errorf("read Gemini API response: %w", readErr)
+			continue
+		}
+		if len(rb) > maxHTTPBody {
+			return "", fmt.Errorf("Gemini API response exceeds %d bytes", maxHTTPBody)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return "", GeminiHTTPError{Status: resp.StatusCode}
+		}
+		var out struct {
+			Candidates []struct {
+				FinishReason string `json:"finishReason"`
+				Content struct {
+					Parts []struct { Text string `json:"text"` } `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+		}
+		if err := json.Unmarshal(rb, &out); err != nil || len(out.Candidates) == 0 {
+			return "", errors.New("Gemini API returned no valid candidate")
+		}
+		var textParts []string
+		finishReason := ""
+		for _, candidate := range out.Candidates {
+			if finishReason == "" {
+				finishReason = candidate.FinishReason
+			}
+			for _, part := range candidate.Content.Parts {
+				if text := strings.TrimSpace(part.Text); text != "" {
+					textParts = append(textParts, text)
+				}
+			}
+		}
+		if len(textParts) == 0 {
+			if finishReason == "MAX_TOKENS" {
+				// The endpoint accepted the request; a small output budget may
+				// have been consumed by model thinking before visible text.
+				return "candidate accepted (MAX_TOKENS)", nil
+			}
+			return "", fmt.Errorf("Gemini API returned no text candidate (finishReason=%s)", finishReason)
+		}
+		return strings.Join(textParts, "\n"), nil
 	}
-	if resp.StatusCode != http.StatusOK {
-		return "", GeminiHTTPError{Status: resp.StatusCode}
+	if lastErr != nil {
+		return "", lastErr
 	}
-	var out struct {
-		Candidates []struct {
-			Content struct {
-				Parts []struct {
-					Text string `json:"text"`
-				} `json:"parts"`
-			} `json:"content"`
-		} `json:"candidates"`
-	}
-	if e = json.Unmarshal(rb, &out); e != nil || len(out.Candidates) == 0 || len(out.Candidates[0].Content.Parts) == 0 || strings.TrimSpace(out.Candidates[0].Content.Parts[0].Text) == "" {
-		return "", errors.New("Gemini API returned no text candidate")
-	}
-	return strings.TrimSpace(out.Candidates[0].Content.Parts[0].Text), nil
+	return "", errors.New("Gemini API has no usable resolved address")
 }
-func geminiAuthOrQuotaError(err error) bool {
+func geminiFailureIsShared(err error) bool {
 	var he GeminiHTTPError
 	if errors.As(err, &he) {
-		return he.Status == 400 || he.Status == 401 || he.Status == 403 || he.Status == 429
+		// An HTTP response proves the selected upstream reached the shared Gemini
+		// API. Authentication, quota, model and service errors are common to all
+		// upstreams and must never mark every DNS route unhealthy.
+		return true
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "read gemini api key file") || strings.Contains(msg, "gemini api key is empty")
+	return strings.Contains(msg, "read gemini api key file") ||
+		strings.Contains(msg, "gemini api key is empty") ||
+		strings.Contains(msg, "no text candidate")
 }
 
 func (r *Runtime) updateHealth(gid, uid string, ok bool, lat time.Duration, lastErr string, httpStatus int, gemState string, checks []ProbeStatus, h HealthConfig) {
@@ -2566,8 +2642,15 @@ func (r *Runtime) publishHealthState() {
 		}
 	}
 }
+func configSourceReloadInterval(snapshot *Snapshot) time.Duration {
+	if snapshot == nil || snapshot.cfg.ReloadSecs < 1 || snapshot.cfg.ReloadSecs > 300 {
+		return configSourcePollInterval
+	}
+	return time.Duration(snapshot.cfg.ReloadSecs) * time.Second
+}
+
 func (r *Runtime) reloadLoop(ctx context.Context) {
-	ticker := time.NewTicker(configSourcePollInterval)
+	ticker := time.NewTicker(configSourceReloadInterval(r.currentSnapshot()))
 	defer ticker.Stop()
 	for {
 		select {
@@ -2575,80 +2658,116 @@ func (r *Runtime) reloadLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
-		old := r.currentSnapshot()
-		cfi, err := os.Stat(r.configPath)
-		if err != nil {
-			r.rejectConfigReload("config-stat:"+err.Error(), "CONFIG reload rejected: cannot stat config.json: %v", err)
-			continue
+		r.reloadOnce()
+		if snapshot := r.currentSnapshot(); snapshot != nil {
+			ticker.Reset(configSourceReloadInterval(snapshot))
 		}
-		sources, sourceErr := readConfigSources(r.dohPath, r.checksPath)
-		if sourceErr != nil {
-			rejectedHash := sources.Checksums.Combined
-			if rejectedHash == "" {
-				rejectedHash = "source-read-error:" + sourceErr.Error()
-			}
-			r.rejectConfigReload(rejectedHash, "CONFIG source reload rejected: %v", sourceErr)
-			continue
+	}
+}
+
+func (r *Runtime) reloadOnce() {
+	old := r.currentSnapshot()
+	if old == nil {
+		return
+	}
+	cfi, err := os.Stat(r.configPath)
+	if err != nil {
+		r.rejectConfigReload("config-stat:"+err.Error(), "CONFIG reload rejected: cannot stat config.json: %v", err)
+		return
+	}
+	configData, err := os.ReadFile(r.configPath)
+	if err != nil {
+		r.rejectConfigReload("config-read:"+err.Error(), "CONFIG reload rejected: cannot read config.json: %v", err)
+		return
+	}
+	observedConfigHash := sha256.Sum256(configData)
+	sources, sourceErr := readConfigSources(r.dohPath, r.checksPath)
+	if sourceErr != nil {
+		rejectedHash := sources.Checksums.Combined
+		if rejectedHash == "" {
+			rejectedHash = "source-read-error:" + sourceErr.Error()
 		}
-		sourcesChanged := sources.Checksums != r.sourceHashes
-		configChanged := cfi.ModTime().After(old.configMod)
-		if !sourcesChanged && !configChanged {
-			// A source file may have been reverted byte-for-byte to the last
-			// accepted version after a rejected edit. Clear the stale warning.
-			if r.lastRejectedSourceHash != "" {
-				r.lastRejectedSourceHash = ""
-				r.setError("")
-			}
-			continue
+		r.rejectConfigReload(rejectedHash, "CONFIG source reload rejected: %v", sourceErr)
+		return
+	}
+	sourcesChanged := sources.Checksums != r.sourceHashes
+	configChanged := observedConfigHash != old.configHash
+	if !sourcesChanged && !configChanged {
+		if r.lastRejectedSourceHash != "" {
+			r.lastRejectedSourceHash = ""
+			r.setError("")
 		}
-		cfg, err := loadConfigNoCreate(r.configPath)
-		if err != nil {
-			r.rejectConfigReload("config-error:"+cfi.ModTime().UTC().Format(time.RFC3339Nano)+":"+err.Error(), "CONFIG reload rejected: %v", err)
-			continue
+		return
+	}
+
+	cfg, configErr := loadConfigNoCreate(r.configPath)
+	if configErr != nil {
+		if !sourcesChanged {
+			r.rejectConfigReload("config-error:"+fmt.Sprintf("%x", observedConfigHash)+":"+configErr.Error(), "CONFIG reload rejected: %v", configErr)
+			return
 		}
-		if cfg.DNSListenUDP != old.cfg.DNSListenUDP || cfg.DNSListenTCP != old.cfg.DNSListenTCP || cfg.HTTPListen != old.cfg.HTTPListen || cfg.DNSMaxConcurrent != old.cfg.DNSMaxConcurrent {
-			r.rejectConfigReload("listener-change:"+cfi.ModTime().UTC().Format(time.RFC3339Nano), "CONFIG listener/dns_max_concurrent change requires plugin restart")
-			continue
+		// A broken config edit must not prevent independently valid source
+		// updates. Keep the last accepted non-source settings and regenerate
+		// config.json from that known-good base plus the validated source files.
+		cfg = old.cfg
+		logLine("WARN", "CONFIG file is invalid; applying validated source changes using the last valid config: %v", configErr)
+	}
+	if cfg.DNSListenUDP != old.cfg.DNSListenUDP || cfg.DNSListenTCP != old.cfg.DNSListenTCP || cfg.HTTPListen != old.cfg.HTTPListen || cfg.DNSMaxConcurrent != old.cfg.DNSMaxConcurrent {
+		r.rejectConfigReload("listener-change:"+fmt.Sprintf("%x", observedConfigHash), "CONFIG listener/dns_max_concurrent change requires plugin restart")
+		return
+	}
+	cfg, err = applyConfigSources(cfg, sources)
+	if err != nil {
+		r.rejectConfigReload(sources.Checksums.Combined+":generated:"+err.Error(), "CONFIG generation rejected: %v", err)
+		return
+	}
+	ns, err := buildSnapshot(cfg, sources.DoHURLs)
+	if err != nil {
+		r.rejectConfigReload(sources.Checksums.Combined+":snapshot:"+err.Error(), "CONFIG snapshot rejected: %v", err)
+		return
+	}
+	writeErr := writeConfigAtomic(r.configPath, cfg)
+	if writeErr == nil {
+		if data, readErr := os.ReadFile(r.configPath); readErr == nil {
+			ns.configHash = sha256.Sum256(data)
 		}
-		cfg, err = applyConfigSources(cfg, sources)
-		if err != nil {
-			r.rejectConfigReload(sources.Checksums.Combined+":generated:"+err.Error(), "CONFIG generation rejected: %v", err)
-			continue
-		}
-		ns, err := buildSnapshot(cfg, sources.DoHURLs)
-		if err != nil {
-			r.rejectConfigReload(sources.Checksums.Combined+":snapshot:"+err.Error(), "CONFIG snapshot rejected: %v", err)
-			continue
-		}
-		if err := writeConfigAtomic(r.configPath, cfg); err != nil {
-			r.rejectConfigReload(sources.Checksums.Combined+":write:"+err.Error(), "CONFIG generated file write failed: %v", err)
-			continue
-		}
-		if fi, err := os.Stat(r.configPath); err == nil {
+		if fi, statErr := os.Stat(r.configPath); statErr == nil {
 			ns.configMod = fi.ModTime()
 		}
-		r.snapshot.Store(ns)
-		r.initHealth(ns)
-		r.cacheMu.Lock()
-		r.cache = map[string]cacheItem{}
-		r.cacheOrder = nil
-		r.cacheOrderHead = 0
-		r.cacheBytes = 0
-		r.cacheMu.Unlock()
-		r.sourceHashes = sources.Checksums
-		r.lastRejectedSourceHash = ""
-		r.mu.Lock()
-		r.lastReload = time.Now().UTC()
-		r.mu.Unlock()
-		r.setError("")
-		// Run health checks immediately against the newly applied source files.
-		select {
-		case r.healthCheckTrigger <- struct{}{}:
-		default:
-		}
-		logLine("INFO", "CONFIG reloaded upstreams=%d groups=%d checks=%d sources_sha256=%s", len(cfg.Upstreams), len(cfg.Groups), len(sources.Checks), sources.Checksums.Combined)
-		r.triggerAutoHostsConfigReload()
+	} else {
+		// Runtime application is independent from persistence of the generated
+		// convenience config. Remember the observed file hash to avoid retrying
+		// the same bad write on every poll.
+		ns.configHash = observedConfigHash
+		ns.configMod = cfi.ModTime()
+		logLine("ERROR", "CONFIG generated file write failed; valid snapshot is still being applied: %v", writeErr)
 	}
+	r.snapshot.Store(ns)
+	r.initHealth(ns)
+	r.cacheMu.Lock()
+	r.cache = map[string]cacheItem{}
+	r.cacheOrder = nil
+	r.cacheOrderHead = 0
+	r.cacheBytes = 0
+	r.cacheMu.Unlock()
+	r.sourceHashes = sources.Checksums
+	r.lastRejectedSourceHash = ""
+	r.mu.Lock()
+	r.lastReload = time.Now().UTC()
+	r.mu.Unlock()
+	if writeErr != nil {
+		r.setError(fmt.Sprintf("CONFIG generated file write failed: %v", writeErr))
+	} else if configErr != nil {
+		r.setError(fmt.Sprintf("Invalid config.json was replaced using the last valid config and updated sources: %v", configErr))
+	} else {
+		r.setError("")
+	}
+	select {
+	case r.healthCheckTrigger <- struct{}{}:
+	default:
+	}
+	logLine("INFO", "CONFIG reloaded upstreams=%d groups=%d checks=%d sources_sha256=%s", len(cfg.Upstreams), len(cfg.Groups), len(sources.Checks), sources.Checksums.Combined)
+	r.triggerAutoHostsConfigReload()
 }
 
 func (r *Runtime) triggerAutoHostsConfigReload() {
