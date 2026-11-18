@@ -2156,4 +2156,10 @@ func TestReloadOnceAppliesValidSourcesWhenConfigJSONIsBroken(t *testing.T) {
 	if _, err := loadConfigNoCreate(runtime.configPath); err != nil {
 		t.Fatalf("regenerated config.json is still invalid: %v", err)
 	}
+	runtime.statusMu.RLock()
+	lastError := runtime.lastError
+	runtime.statusMu.RUnlock()
+	if lastError != "" {
+		t.Fatalf("successful reload left LastError=%q", lastError)
+	}
 }
