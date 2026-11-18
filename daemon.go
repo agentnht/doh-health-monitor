@@ -182,13 +182,41 @@ func runDaemon() {
 }
 
 type geositeIndex struct {
-	path       string
-	mu         sync.RWMutex
-	reloadMu   sync.Mutex
-	categories []string
-	modTime    time.Time
-	size       int64
-	matcher    atomic.Pointer[geosite.Matcher]
+	path             string
+	mu               sync.RWMutex
+	reloadMu         sync.Mutex
+	categories       []string
+	loadedCategories []string
+	modTime          time.Time
+	loadedAt         time.Time
+	size             int64
+	lastError        string
+	matcher          atomic.Pointer[geosite.Matcher]
+}
+
+type geositeStatus struct {
+	Path             string    `json:"path"`
+	Selected         []string  `json:"selected_categories"`
+	LoadedCategories []string  `json:"loaded_categories"`
+	Loaded           bool      `json:"loaded"`
+	LoadedAt         time.Time `json:"loaded_at,omitempty"`
+	FileModTime      time.Time `json:"file_mod_time,omitempty"`
+	FileSize         int64     `json:"file_size,omitempty"`
+	LastError        string    `json:"last_error,omitempty"`
+}
+
+func (g *geositeIndex) Status() geositeStatus {
+	if g == nil {
+		return geositeStatus{LastError: "Geosite index is unavailable"}
+	}
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return geositeStatus{
+		Path: g.path, Selected: append([]string(nil), g.categories...),
+		LoadedCategories: append([]string(nil), g.loadedCategories...),
+		Loaded: g.matcher.Load() != nil, LoadedAt: g.loadedAt,
+		FileModTime: g.modTime, FileSize: g.size, LastError: g.lastError,
+	}
 }
 
 func geositeDataPath(dataDir string) string {
@@ -229,34 +257,49 @@ func (g *geositeIndex) Reload(selected []string) error {
 	if len(selected) == 0 {
 		g.matcher.Store(nil)
 		g.mu.Lock()
+		g.loadedCategories = nil
 		g.modTime = time.Time{}
+		g.loadedAt = time.Time{}
 		g.size = 0
+		g.lastError = ""
 		g.mu.Unlock()
 		return nil
 	}
 
 	before, err := os.Stat(g.path)
 	if err != nil {
-		return err
+		return g.recordReloadError(err)
 	}
 	matcher, err := geosite.Load(g.path, selected)
 	if err != nil {
-		return err
+		return g.recordReloadError(err)
 	}
 	after, err := os.Stat(g.path)
 	if err != nil {
-		return err
+		return g.recordReloadError(err)
 	}
 	if !before.ModTime().Equal(after.ModTime()) || before.Size() != after.Size() {
-		return errors.New("geosite.dat changed while it was being loaded")
+		return g.recordReloadError(errors.New("geosite.dat changed while it was being loaded"))
 	}
 
 	g.matcher.Store(matcher)
 	g.mu.Lock()
+	g.loadedCategories = append([]string(nil), selected...)
 	g.modTime = after.ModTime()
+	g.loadedAt = time.Now().UTC()
 	g.size = after.Size()
+	g.lastError = ""
 	g.mu.Unlock()
 	return nil
+}
+
+func (g *geositeIndex) recordReloadError(err error) error {
+	if g != nil && err != nil {
+		g.mu.Lock()
+		g.lastError = err.Error()
+		g.mu.Unlock()
+	}
+	return err
 }
 
 func (g *geositeIndex) Categories() ([]string, error) {
@@ -298,6 +341,7 @@ func (g *geositeIndex) run(ctx context.Context) {
 	lastError := ""
 	for {
 		if err := g.reloadIfChanged(); err != nil {
+			g.recordReloadError(err)
 			message := err.Error()
 			if message != lastError {
 				logLine("WARN", "GEOSITE reload failed: %v", err)

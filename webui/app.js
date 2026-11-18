@@ -134,9 +134,15 @@
         categorySelect.append(option);
       }
       categorySelect.disabled = !geositeCategoriesAvailable;
-      text("autohosts-geosite-status", geositeCategoriesAvailable
-        ? "Найдено категорий: " + number((catalog.categories || []).length) + ". Выберите категории и сохраните."
-        : "geosite.dat недоступен: " + (catalog.error || "категории пока нельзя выбрать"));
+      const geoStatus = catalog.status || {};
+      const loadedText = geoStatus.loaded
+        ? "Matcher загружен: " + (geoStatus.loaded_categories || []).join(", ") + "."
+        : "Matcher ещё не загружен.";
+      const reloadError = geoStatus.last_error ? " Ошибка загрузки/обновления: " + geoStatus.last_error : "";
+      const catalogText = geositeCategoriesAvailable
+        ? "Категорий в файле: " + number((catalog.categories || []).length) + "."
+        : "Список категорий сейчас недоступен: " + (catalog.error || "неизвестная ошибка") + ".";
+      text("autohosts-geosite-status", catalogText + " " + loadedText + reloadError);
     } catch (error) {
       geositeCategoriesAvailable = false;
       categorySelect.disabled = true;

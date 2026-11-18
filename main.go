@@ -3141,13 +3141,13 @@ func (r *Runtime) handleGeositeCategories(w http.ResponseWriter, req *http.Reque
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	result := struct {
-		Available  bool     `json:"available"`
-		Categories []string `json:"categories"`
-		Error      string   `json:"error,omitempty"`
-	}{Categories: []string{}}
-	if r.geo == nil {
-		result.Error = "Geosite index is unavailable"
-	} else {
+		Available  bool          `json:"available"`
+		Categories []string      `json:"categories"`
+		Status     geositeStatus `json:"status"`
+		Error      string        `json:"error,omitempty"`
+	}{Categories: []string{}, Status: geositeStatus{LastError: "Geosite index is unavailable"}}
+	if r.geo != nil {
+		result.Status = r.geo.Status()
 		categories, err := r.geo.Categories()
 		if err != nil {
 			result.Error = err.Error()
@@ -3155,6 +3155,8 @@ func (r *Runtime) handleGeositeCategories(w http.ResponseWriter, req *http.Reque
 			result.Available = true
 			result.Categories = categories
 		}
+	} else {
+		result.Error = "Geosite index is unavailable"
 	}
 	_ = json.NewEncoder(w).Encode(result)
 }

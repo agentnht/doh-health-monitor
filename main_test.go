@@ -105,6 +105,43 @@ func testAResponse(q []byte, ttl uint32) []byte {
 	return p
 }
 
+func TestGeositeIndexRetainsLastKnownGoodMatcherOnReloadFailure(t *testing.T) {
+	index := newTestGeositeIndex(t, "example.com")
+	if !index.MatchAny("www.example.com") {
+		t.Fatal("initial matcher did not match expected domain")
+	}
+	original, err := os.ReadFile(index.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(index.path, []byte{0xff, 0x00}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Reload([]string{"TEST"}); err == nil {
+		t.Fatal("expected invalid geosite.dat reload to fail")
+	}
+	if !index.MatchAny("www.example.com") {
+		t.Fatal("failed reload replaced the last known-good matcher")
+	}
+	status := index.Status()
+	if !status.Loaded || status.LastError == "" {
+		t.Fatalf("failed reload status is incomplete: %+v", status)
+	}
+	if len(status.LoadedCategories) != 1 || status.LoadedCategories[0] != "TEST" {
+		t.Fatalf("loaded categories changed after failed reload: %+v", status.LoadedCategories)
+	}
+	if err := os.WriteFile(index.path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Reload([]string{"TEST"}); err != nil {
+		t.Fatalf("valid geosite.dat reload failed: %v", err)
+	}
+	status = index.Status()
+	if status.LastError != "" || !status.Loaded {
+		t.Fatalf("successful reload did not clear error: %+v", status)
+	}
+}
+
 func TestValidateDNSResponseMatchesFullQuestion(t *testing.T) {
 	query := makeDNSQuery("www.example.com", 1)
 	response := testAResponse(query, 60)
