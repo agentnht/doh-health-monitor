@@ -620,7 +620,7 @@ func normalizeCacheConfig(c Config) Config {
 
 func validateConfig(c Config) error {
 	if configuredPath := strings.TrimSpace(c.GeositePath); configuredPath != "" {
-		if !filepath.IsAbs(configuredPath) || filepath.Clean(configuredPath) != configuredPath || strings.ContainsRune(configuredPath, '\\x00') {
+		if !filepath.IsAbs(configuredPath) || filepath.Clean(configuredPath) != configuredPath || strings.ContainsRune(configuredPath, '\x00') {
 			return errors.New("geosite_path must be a clean absolute filesystem path")
 		}
 	}
