@@ -35,7 +35,7 @@ type activeDoHProbeJob struct {
 
 type ActiveDoHStatus struct {
 	ServerID   string    `json:"server_id"`
-	URL        string    `json:"url"`
+	URL        string    `json:"-"` // DoH URLs may contain credentials or query-string secrets.
 	Hostname   string    `json:"hostname"`
 	IPv4       []string  `json:"ipv4,omitempty"`
 	IPv6       []string  `json:"ipv6,omitempty"`
@@ -86,7 +86,11 @@ func (r *Runtime) runActiveDoHSelection(parent context.Context) {
 	// have refreshed ResolvedAt during candidate collection, so it must not appear future-dated.
 	now := time.Now().UTC()
 	if len(candidates) == 0 {
+		previousGeneration := r.activeDoHSelector.Generation()
 		_, _ = r.activeDoHSelector.Select(nil, nil, now)
+		if r.activeDoHSelector.Generation() != previousGeneration {
+			r.clearActiveDoHCache()
+		}
 		logLine("WARN", "ACTIVE_DOH no fresh bootstrap endpoints are eligible")
 		return
 	}
@@ -144,7 +148,11 @@ sendJobs:
 			successes++
 		}
 	}
+	previousGeneration := r.activeDoHSelector.Generation()
 	selected, ok := r.activeDoHSelector.Select(candidates, results, now)
+	if r.activeDoHSelector.Generation() != previousGeneration {
+		r.clearActiveDoHCache()
+	}
 	if !ok {
 		logLine("WARN", "ACTIVE_DOH no healthy endpoint selected candidates=%d successful_checks=%d", len(candidates), successes)
 		return
