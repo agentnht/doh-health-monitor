@@ -220,7 +220,7 @@ V3 — источник готовых реализаций и тестов, н�
 4. Определить способ разделения потоков: Geosite-попадания и все остальные DNS-запросы.
 5. Выделить из v3 отдельный алгоритм выбора одного активного DoH на основе восьми проверок.
 6. Определить формат состояния активного DoH endpoint и его freshness.
-7. Создать новую рабочую ветку непосредственно от main и отдельный Draft PR.
+7. Выполнено: создать рабочую ветку `feature/geosite-dns-routing` непосредственно от `main`. Ветка создана; отдельный PR пока не создавался.
 8. Сначала реализовать и проверить DNS-поведение с ручной конфигурацией панели.
 9. Добавить регрессионные, интеграционные и нагрузочные тесты, включая UDP/TCP, A/AAAA, DNS-ошибки, fallback, переключение DoH, cache и аварии listener.
 10. В самом конце рассмотреть автоматизацию конфигурации LucX-UI/Xray, если она действительно необходима и может быть выполнена безопасно.
@@ -256,3 +256,155 @@ V3 — источник готовых реализаций и тестов, н�
 ---
 
 **Итог текущего обсуждения:** новая архитектура должна использовать правила Geosite на стороне панели/Xray, независимый алгоритм выбора одного активного DoH по восьми проверкам и два взаимоисключающих DNS-режима с сохранением fallback. Режим возврата IP активного DoH endpoint предлагается сделать режимом по умолчанию. Реализация и автоматизация панели пока не начаты.
+
+
+## 12. План выборочного переноса plugin-management.sh и Web UI из PR #10
+
+**Назначение:** сохранить полезные результаты аудита 17–18 ноября 2026 года, не перенося в новую архитектуру Auto Hosts, внутренний Geosite matcher и связанные с ними API/UI. Источник изменений — история [feature/auto-hosts-v3 / PR #10](https://github.com/agentnht/doh-health-monitor/pull/10). Ссылки ниже указывают на конкретные коммиты PR #10; это ориентиры для переноса отдельных изменений, а не указание cherry-pick-ить их без адаптации.
+
+### 12.1. Что уже есть в main и повторно не реализовывать
+
+В текущем main уже присутствуют:
+
+- SSH-меню с запуском Web UI отдельным дочерним процессом;
+- выделенный loopback listener Web UI на динамическом порту и readiness-сообщение;
+- control pipe, через который закрытие SSH-сессии приводит к остановке Web UI;
+- остановка и ожидание именно дочернего Web UI процесса;
+- проверки Host и Origin в HTTP-обработчике;
+- сессионная cookie HttpOnly / SameSite=Strict для защищённых Web UI маршрутов;
+- ensure_dhm_symlink и определение адреса SSH-сервера для команды туннеля.
+
+Следовательно, из v3 нужно переносить не новый механизм запуска Web UI, а недостающие проверки и усиления безопасности. В частности, в main корневой GET пока сам выдаёт сессию; одноразового launch-token exchange ещё нет. Внутренний daemon /status также ещё не переведён на обязательный Bearer token.
+
+### 12.2. Приоритет P1 — SSH-меню и plugin-management.sh
+
+**P1.1. Ограничить обнаружение процесса панели текущим UID.**
+
+- Коммит: [1888a9c](https://github.com/agentnht/doh-health-monitor/commit/1888a9c67374a1fb5901d80b43fe9d68ae3027bf).
+- Изменение: при сканировании /proc читать UID процесса из /proc/<pid>/status и не использовать процесс x-ui, принадлежащий другому UID.
+- Целевой файл: scripts/plugin-management.sh, функция detect_panel_cwd().
+- Переносить только UID-фильтр, сохранив уже имеющиеся в main выбор предпочтительного пути /usr/local/x-ui/x-ui и защиту от неоднозначного обнаружения нескольких панелей.
+- Проверки: отдельные shell-сценарии для процесса с подходящим UID, чужого UID, отсутствующего процесса и неоднозначного результата. Не должно быть выбора чужого процесса.
+
+**P1.2. Запретить скачивание изменяемого checker-скрипта с последующим запуском от root.**
+
+- Основной коммит: [1888a9c](https://github.com/agentnht/doh-health-monitor/commit/1888a9c67374a1fb5901d80b43fe9d68ae3027bf).
+- Удаление оставшихся неиспользуемых URL-констант: [3719457](https://github.com/agentnht/doh-health-monitor/commit/3719457ea841a436aea51f74e41e01c5b47ad0de).
+- Изменение: run_check() запускает только check-dns-integration.sh, поставляемый в том же ZIP/пакете плагина. Если файла рядом с установленным management script нет, команда завершает работу с понятной ошибкой; curl/wget больше не загружает изменяемую версию скрипта для запуска от root.
+- Условие поставки: проверить, что check-dns-integration.sh гарантированно включён в release ZIP в ожидаемом каталоге. Не возвращать сетевой fallback как обход отсутствующего файла.
+- Проверки: bash -n scripts/plugin-management.sh scripts/check-dns-integration.sh; тест наличия checker в пакете; тест отказа при его отсутствии; подтвердить, что ни одна ветка run_check() не выполняет скачанный код.
+
+**P1.3. Убрать launch secret из stdout и query string.**
+
+- Серверная часть и защищённый файл: [7ca6cd7](https://github.com/agentnht/doh-health-monitor/commit/7ca6cd77f0f525b4d0f5fb95234939881a8321f2).
+- Чтение файла shell-меню, удаление после чтения и URL fragment: [e57e8ad](https://github.com/agentnht/doh-health-monitor/commit/e57e8ad3ff607142e66ec3434180a8e42362c853).
+- Клиентский обмен fragment → POST: [fad979b](https://github.com/agentnht/doh-health-monitor/commit/fad979bcf5162adff58c96366b66390db08e2c47).
+- Дополнительная очистка использованного токена на сервере: [aa77fc7](https://github.com/agentnht/doh-health-monitor/commit/aa77fc73e76ab09cae485c7d136a1d6f1c76a40c).
+- Полная выдача защищённой cookie для всех приватных API: [60c2797](https://github.com/agentnht/doh-health-monitor/commit/60c279768f9bac3af54223ad3a52aac714e3c05d).
+
+Целевой поток:
+
+1. Go генерирует случайный launch token и записывает его в web-ui-launch.token внутри plugin data directory. Файл должен быть обычным файлом без symlink, с правами 0600; запись — через временный файл и атомарную замену.
+2. Go сообщает в stdout только WEB_UI_READY port=<port>. Токен не включается ни в readiness output, ни в аргументы процесса.
+3. SSH-скрипт читает token из защищённого файла, проверяет формат и удаляет файл. Проверка должна отказать для отсутствующего файла, symlink и некорректного токена.
+4. В браузер token передаётся только в URL fragment (#access_token=...), не в query string.
+5. webui/app.js считывает fragment и немедленно удаляет его из адресной строки через history.replaceState, до первого запроса к приватным API.
+6. JavaScript отправляет token на POST /session/exchange. Сервер принимает его только один раз, защищает проверку от конкурентного повторного использования и после успешного обмена очищает сохранённое значение launch token.
+7. Сервер выдаёт отдельную случайную сессионную cookie с HttpOnly, SameSite=Strict, Path=/ и ограниченным сроком действия. Все приватные Web UI API используют именно эту cookie, а не launch token.
+
+Это один согласованный security change через scripts/plugin-management.sh, webui.go, webui/app.js и тесты. Не переносить только часть обмена: иначе можно получить либо неработающий вход, либо незакрытый доступ к приватным API.
+
+### 12.3. Приоритет P1 — аутентификация внутреннего daemon API
+
+Эта задача связана с Web UI security, но отличается от браузерной сессии. Нужны две независимые границы доверия:
+
+- **Web UI session cookie** — авторизует браузер в локальном интерфейсе;
+- **daemon API Bearer token** — авторизует локальные клиенты, которые обращаются к HTTP API работающего DNS-демона.
+
+Ориентиры по коммитам:
+
+- Защита daemon status и строгая проверка формата Bearer: [e164cbf](https://github.com/agentnht/doh-health-monitor/commit/e164cbf6e7b684d2db759292cc96705433e0e7a4), [e763973](https://github.com/agentnht/doh-health-monitor/commit/e7639733c6bc0dfde1b66b788f28e306b484d5fb).
+- Проверка loopback peer address, не только Host/Origin: [98f669c](https://github.com/agentnht/doh-health-monitor/commit/98f669c7d0fd146c6bdfd28dcd0f1c93b5ebd49b).
+- Go preflight: [ca5438b](https://github.com/agentnht/doh-health-monitor/commit/ca5438b13f3d3af0b36f0d3bcde4c6aa1197185b).
+- Python API client: [2c08ec5](https://github.com/agentnht/doh-health-monitor/commit/2c08ec58d80fcdef1224879ce08871819841a7f8).
+- Shell checker: [f97102a](https://github.com/agentnht/doh-health-monitor/commit/f97102a9e859f07224c1d889eb102dbcceeb1e54).
+
+Целевой объём:
+
+1. Создавать отдельный случайный API token в plugin data directory с правами 0600; при чтении проверять тип файла, отсутствие symlink, владельца и права доступа.
+2. Закрыть им внутренний /status и другие действительно необходимые daemon management endpoints.
+3. Проверять Authorization: Bearer <token> строгим парсером, сравнивать секреты constant-time и отклонять отсутствующий, пустой, некорректно оформленный или неверный токен.
+4. Сохранять проверки loopback Host, Origin и фактического RemoteAddr. Проверка только заголовка Host не доказывает, что TCP peer является loopback-клиентом.
+5. Обновить всех клиентов одновременно: Web UI status preflight в webui.go, Go integration check в internal/dohintegration/api.go, Python helper scripts/lucx-ui-doh-api.py и scripts/check-dns-integration.sh.
+6. Не оставлять анонимный status-путь как «временную совместимость», иначе защита endpoint будет неполной.
+
+**Обязательная адаптация под новую архитектуру:** в v3 токен называется auto-hosts-api.token, а middleware/маршруты имеют имена requireAutoHostsAPIToken и /autohosts/.... Не переносить эти имена и Auto Hosts routes буквально. Для нового решения использовать нейтральное имя, например daemon-api.token, и общий middleware для тех endpoint, которые действительно остаются. Сам код защиты и проверку peer address можно переиспользовать; Auto Hosts handlers переносить не нужно.
+
+Проверки: нет токена → 401; неверный формат/значение → 401; непетлевой Host, Origin или RemoteAddr → отказ; корректный loopback Bearer → запрос проходит. Проверить каждый Go/Python/shell клиент и тестами доказать, что все они посылают токен. Cookie Web UI не должна давать доступ к daemon API, а daemon Bearer token не должен выдаваться браузеру.
+
+### 12.4. Приоритет P2 — независимые усиления Web UI
+
+**P2.1. Маскирование секретов в логах.**
+
+- Первоначальная реализация: [c438084](https://github.com/agentnht/doh-health-monitor/commit/c4380849ee945401f4fee2db2e10a04493ecd15e).
+- Тесты форматов: [ccab1ad](https://github.com/agentnht/doh-health-monitor/commit/ccab1ad656c8ccddce3b6a78a12aa7fb19a0ce27).
+- Исправленная регулярная обработка: [0c1dabf](https://github.com/agentnht/doh-health-monitor/commit/0c1dabf29c7804ef22fd8fb1fb8d1cff8e5ca6c4).
+
+Применить к webui_admin.go и webui_admin_test.go. Покрыть Bearer, X-Goog-Api-Key, access_token, apiToken, XUI_API_TOKEN и узнаваемые ключи Gemini. Перед переносом сверить список реально используемых секретов новой реализации; не добавлять специальные правила для отключённых или удалённых подсистем вместо общей redaction-политики.
+
+**P2.2. Валидация DNS-имени перед вызовом dig.**
+
+- Коммит: [4aad79a](https://github.com/agentnht/doh-health-monitor/commit/4aad79a7a8f1c7d167f6856fc5a56f33ce90a614).
+- В webui_admin.go проверять DNS hostname до запуска внешней команды, нормализовать QNAME и передавать его как явный operand через dig -q, а не как произвольную строку рядом с флагами.
+- Перенести вместе с тестами: пустое, некорректное имя, имя с ведущим дефисом, валидные ASCII/IDNA-имена и ожидаемое формирование аргументов. Не менять общую архитектуру диагностики только ради этого исправления.
+
+**P2.3. Ограничить поиск исполняемого CLI панели по UID.**
+
+- Коммит: [db90644](https://github.com/agentnht/doh-health-monitor/commit/db90644d52d11cf03c1aa983adaf94c12f05142c).
+- Это изменение относится к internal/dohintegration/api.go, а не к shell-меню. Оно полезно, если новая реализация сохраняет автоматическое обнаружение/вызов x-ui для получения API credential: проверять UID процесса и владельца самого executable, а также fallback-кандидатов.
+- Переносить только при сохранении такого способа provisioning; добавить тесты на чужого владельца и допустимый executable. Если новый Geosite DNS routing не вызывает panel CLI автоматически, этот пункт не является блокером новой DNS-схемы.
+
+### 12.5. Условные улучшения — переносить после проверки потребности
+
+- **Reload/config consistency:** коммиты [6d14563](https://github.com/agentnht/doh-health-monitor/commit/6d14563218bb984c9849b65f8902935996ad0b8f), [3dc8234](https://github.com/agentnht/doh-health-monitor/commit/3dc82344a1896d9cdd9794abf7f541e17fb5fa40) и [848d5c2](https://github.com/agentnht/doh-health-monitor/commit/848d5c2f613ab70604ac529c87b9f85475919bd0). Отдельно оценить: не дать запросу от старого runtime snapshot повторно заполнить уже инвалидированный cache; сбрасывать reload error после успешного восстановления; тестировать настраиваемый интервал reload. Gemini-валидацию и Gemini-specific логику из этих изменений не переносить автоматически.
+- **Диагностика фактического DNS endpoint:** коммит [59ae555](https://github.com/agentnht/doh-health-monitor/commit/59ae5558c4d939a58f52464006bd796794138680) исправляет диагностику для динамической пары listener-портов и файла dns-listener.json. Сам механизм auto port mode новой архитектуре не нужен. Полезный принцип — диагностика должна читать фактический адрес/порт активного listener, а не предполагать 5355; реализовать это на основе конфигурации и runtime-состояния новой версии.
+- **Обработка ошибок и загрузки UI:** просмотреть отдельные изменения в webui/app.js и webui/index.html, перенося только общие loading/error states и корректное отображение статуса источников. Изменения, которые управляют Auto Hosts/Geosite настройками, исключить.
+
+### 12.6. Что не переносить из v3 как есть
+
+Не переносить cherry-pick-ом или заменой целых файлов:
+
+- Auto Hosts tab, настройки, Dry Run, pinned/automatic/emergency-off state;
+- динамические QNAME records, LastSeen, ExpiresAt, GC и связанные cache/state модели;
+- Geosite matcher/parser, выбор категорий внутри плагина и управление runtime Geosite index из UI;
+- /autohosts/* API, Auto Hosts daemon token naming и соответствующие JS handlers;
+- автоматический выбор/сохранение пары DNS listener ports и dns-listener.json;
+- Quad9 routing implementation, если ответственность за fallback будет закреплена за Xray/panel;
+- весь daemon.go, webui.go, webui_admin.go, webui/app.js или webui/index.html из v3 без разборки.
+
+Особенно важно: v3 Web UI файлы смешивают общую функциональность управления плагином с Auto Hosts/Geosite. Переносить отдельные согласованные изменения и тесты в текущие файлы main, сохраняя их существующие страницы и API.
+
+### 12.7. Рекомендуемый порядок переноса и зависимости
+
+1. **Shell hardening:** UID-фильтр и запуск только packaged checker. Проверить состав ZIP и shell-сценарии. Это наименее связанный с остальной работой этап.
+2. **Одноразовый Web UI login:** согласованно перенести Go file/token flow, shell handoff, JS bootstrap и session exchange. Включить тесты сервера и браузерной bootstrap-логики в тот же change set.
+3. **Daemon Bearer auth:** сначала определить имя и формат token file, затем защитить /status, после чего одним этапом обновить Go, Python и shell clients. Не выпускать промежуточное состояние, в котором сервер уже требует токен, а клиенты его ещё не посылают.
+4. **Log redaction и DNS test validation:** отдельные небольшие изменения со своими unit tests.
+5. **Reload/cache и фактический listener diagnostics:** только после того, как новая конфигурация DNS режимов и listener lifecycle определены.
+
+Минимальный набор проверок после переноса:
+
+- bash -n scripts/plugin-management.sh scripts/check-dns-integration.sh;
+- node --check webui/app.js;
+- gofmt для изменённых Go-файлов, go test ./... и go vet ./...;
+- тесты одноразового launch token: успешный обмен, повторный обмен отклонён, token очищен из URL до первого API fetch, секрет отсутствует в stdout и query string;
+- тесты cookie: cookie отдельная от launch token, HttpOnly, SameSite=Strict, все приватные routes требуют корректную сессию;
+- тесты daemon API: отсутствующий/неверный Bearer, некорректная схема, не-loopback Host/Origin/RemoteAddr и корректный запрос;
+- тесты Go/Python/shell клиентов, подтверждающие чтение защищённого token file и передачу Bearer;
+- тесты redaction и безопасной передачи QNAME в dig;
+- проверка, что management script и checker присутствуют в реальном release ZIP;
+- затем отдельная проверка на VPS: SSH tunnel, открытие/закрытие Web UI, доступность UDP и TCP DNS listener и фактический статус после перезапуска.
+
+CI и unit tests не заменяют VPS-проверку.
+
+**Статус этого плана:** это список для последующего выборочного переноса, а не выполненный перенос кода. Cherry-pick всего PR #10 или замена файлов из v3 не рекомендуются. Сначала переносить P1-блоки небольшими согласованными наборами с тестами; изменения конфигурации панели и автоматизацию Xray по-прежнему оставить на последний этап.
