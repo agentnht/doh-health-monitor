@@ -86,3 +86,42 @@ func TestStreamingParserRejectsTruncatedMessage(t *testing.T) {
 		t.Fatal("expected truncated protobuf message to fail")
 	}
 }
+
+func TestStreamingLoadSupportsAllXrayDomainRuleKinds(t *testing.T) {
+	data := categoryFixture(
+		makeDomainRuleFixture(0, "needle"),
+		makeDomainRuleFixture(1, `^service-[0-9]+\.example\.net$`),
+		makeDomainRuleFixture(2, "example.org"),
+		makeDomainRuleFixture(3, "exact.example"),
+	)
+	path := filepath.Join(t.TempDir(), "geosite.dat")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	matcher, err := Load(path, []string{"TEST"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		qname string
+		want bool
+	}{
+		{name: "Substr", qname: "prefix-needle-suffix.invalid", want: true},
+		{name: "Substr miss", qname: "unrelated.invalid", want: false},
+		{name: "Regex", qname: "service-42.example.net", want: true},
+		{name: "Regex miss", qname: "service-x.example.net", want: false},
+		{name: "Domain root", qname: "example.org", want: true},
+		{name: "Domain subdomain", qname: "www.example.org", want: true},
+		{name: "Domain label boundary", qname: "notexample.org", want: false},
+		{name: "Full exact", qname: "exact.example", want: true},
+		{name: "Full subdomain", qname: "www.exact.example", want: false},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			if got := matcher.MatchAny(test.qname); got != test.want {
+				t.Fatalf("MatchAny(%q)=%t, want %t", test.qname, got, test.want)
+			}
+		})
+	}
+}
