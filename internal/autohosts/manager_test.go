@@ -466,6 +466,19 @@ func TestSetGeositeCategoriesRejectsInvalidName(t *testing.T) {
 	}
 }
 
+func TestSetGeositeCategoriesRejectsEmptySelection(t *testing.T) {
+	m, err := New(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetGeositeCategories([]string{}); err == nil {
+		t.Fatal("expected empty category selection to be rejected")
+	}
+	if len(m.State().Config.GeositeCategories) != 0 {
+		t.Fatal("rejected empty category selection mutated state")
+	}
+}
+
 func TestEndpointForQueryMapsUnrecordedGeositeDomain(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	m, err := New(path)
