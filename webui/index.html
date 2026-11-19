@@ -202,6 +202,7 @@
           <div class="metric"><span>Активный сервер:</span><strong id="autohosts-active">—</strong></div>
           <div class="metric"><span>Endpoint IPv4:</span><strong id="autohosts-ipv4">—</strong></div>
           <div class="metric"><span>Endpoint IPv6:</span><strong id="autohosts-ipv6">—</strong></div>
+          <div class="metric"><span>Разрешён endpoint:</span><strong id="autohosts-endpoint-status">—</strong></div>
           <div class="metric"><span>Режим:</span><strong id="autohosts-state-mode">—</strong></div>
           <div class="metric"><span>Emergency OFF:</span><strong id="autohosts-state-emergency">—</strong></div>
         </div>
@@ -209,6 +210,10 @@
       <div class="config-block">
         <h3>Домены Auto Hosts</h3>
         <div id="autohosts-domains" class="results">Нет опубликованных доменов.</div>
+      </div>
+      <div class="config-block">
+        <h3>Периодическая очистка</h3>
+        <div id="autohosts-cleanup" class="results">Очистка ещё не выполнялась.</div>
       </div>
       <div class="config-block">
         <h3>Результаты проверок «сервер × домен»</h3>
@@ -222,7 +227,7 @@
 
     <section class="panel tab-page" data-page-panel="config" hidden>
       <h2>Конфигурация config.json</h2>
-      <p class="muted">Изменения проверяются перед сохранением. DNS port mode, параметры listener и dns_max_concurrent требуют перезапуска плагина.</p>
+      <p class="muted">Изменения параметров DNS listener и dns_max_concurrent требуют перезапуска плагина.</p>
       <div class="config-block">
         <h3>Слушатели и общие параметры</h3>
         <div class="field-grid" id="config-general"></div>

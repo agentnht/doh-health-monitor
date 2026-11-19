@@ -1880,6 +1880,13 @@ func TestAutoHostsHTTPSettingsAndStatusHandlers(t *testing.T) {
 	if !state.Config.Enabled || !state.Config.EmergencyOff {
 		t.Fatal("status response omitted persisted settings")
 	}
+	var status map[string]any
+	if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := status["cleanup"]; !ok {
+		t.Fatal("status response omitted independent cleanup diagnostics")
+	}
 }
 
 func TestAutoHostsDryRunHandlerDoesNotMutateStateOnUnavailableEndpoints(t *testing.T) {

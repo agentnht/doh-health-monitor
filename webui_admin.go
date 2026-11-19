@@ -1041,7 +1041,12 @@ func runWebUIXrayIntegrationCheck(dataDir string) webUITestResult {
 	if err != nil {
 		return webUITest("Xray DNS integration", false, err.Error())
 	}
+	tcpAddress, err := localListenAddress(config.DNSListenTCP)
+	if err != nil {
+		return webUITest("Xray DNS integration", false, err.Error())
+	}
 	_, pluginPort, _ := net.SplitHostPort(udpAddress)
+	_, pluginTCPPort, _ := net.SplitHostPort(tcpAddress)
 	httpAddress, err := localListenAddress(config.HTTPListen)
 	if err != nil {
 		return webUITest("Xray DNS integration", false, err.Error())
@@ -1053,6 +1058,7 @@ func runWebUIXrayIntegrationCheck(dataDir string) webUITestResult {
 		"LUCX_PLUGIN_DATA="+root,
 		"DOH_SKIP_PLUGIN_HEALTH_CHECK=1",
 		"DOH_PLUGIN_PORT="+pluginPort,
+		"DOH_PLUGIN_TCP_PORT="+pluginTCPPort,
 		"DOH_STATUS_URL=http://"+httpAddress+"/status",
 	)
 	output, commandErr := command.CombinedOutput()

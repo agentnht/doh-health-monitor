@@ -116,8 +116,22 @@
     for (const [id, ep] of Object.entries(s.endpoints || {})) { const option = document.createElement("option"); option.value = id; option.textContent = id + " · " + ep.hostname; pinSelect.append(option); }
     if (!pinSelect.options.length) { const option = document.createElement("option"); option.value = ""; option.textContent = "Сначала выполните первый цикл"; pinSelect.append(option); }
     pinSelect.value = cfg.pinned_server_id || ""; pinSelect.disabled = cfg.mode !== "pinned" || !Object.keys(s.endpoints || {}).length;
-    text("autohosts-active", s.active_server); const activeEndpoint = (s.endpoints || {})[s.active_server] || {}; text("autohosts-ipv4", (activeEndpoint.ipv4 || []).join(", ")); text("autohosts-ipv6", (activeEndpoint.ipv6 || []).join(", ")); text("autohosts-state-mode", cfg.mode === "pinned" ? "Pinned · " + cfg.pinned_server_id : "Auto"); text("autohosts-state-emergency", cfg.emergency_off ? "ВКЛЮЧЁН" : "выключен");
-    $("autohosts-domains").textContent = Object.keys(s.domains || {}).join(", ") || "Нет доменов";
+    text("autohosts-active", s.active_server); const activeEndpoint = (s.endpoints || {})[s.active_server] || {}; text("autohosts-ipv4", (activeEndpoint.ipv4 || []).join(", ")); text("autohosts-ipv6", (activeEndpoint.ipv6 || []).join(", "));
+    text("autohosts-endpoint-status", activeEndpoint.updated_at ? "DNS: " + when(activeEndpoint.updated_at) : "Нет успешного DNS-разрешения");
+    text("autohosts-state-mode", cfg.mode === "pinned" ? "Pinned · " + cfg.pinned_server_id : "Auto"); text("autohosts-state-emergency", cfg.emergency_off ? "ВКЛЮЧЁН" : "выключен");
+    const domainRecords = Object.values(s.domains || {}).sort((a, b) => String(a.domain).localeCompare(String(b.domain)));
+    $("autohosts-domains").textContent = domainRecords.map(record => {
+      const source = record.source === "query" ? "QNAME" : "контрольный probe";
+      const activity = record.source === "query"
+        ? "LastSeen: " + when(record.last_seen)
+        : "LastSuccess: " + when(record.last_success);
+      const remaining = record.expires_at ? Math.max(0, new Date(record.expires_at).getTime() - Date.now()) : 0;
+      return record.domain + " · " + source + " · " + activity + " · ExpiresAt: " + when(record.expires_at) + " (осталось " + Math.ceil(remaining / 1000) + " с)";
+    }).join("\n") || "Нет доменов";
+    const cleanup = s.cleanup || {};
+    text("autohosts-cleanup", "Последний запуск: " + when(cleanup.last_run) +
+      " · удалено записей: " + number(cleanup.last_deleted) +
+      (cleanup.last_error ? " · ошибка: " + cleanup.last_error : " · ошибок нет"));
     $("autohosts-results").textContent = Object.values(s.probe_results || {}).map(x => x.server_id + " × " + x.domain + " · " + (x.success ? "OK" : "FAIL")).join("\n") || "Нет проверок";
 
     const categorySelect = $("autohosts-geosite-categories");
@@ -138,11 +152,14 @@
       const loadedText = geoStatus.loaded
         ? "Matcher загружен: " + (geoStatus.loaded_categories || []).join(", ") + "."
         : "Matcher ещё не загружен.";
+      const fileText = "Файл: " + (geoStatus.path || "—") +
+        " · размер: " + number(geoStatus.file_size || 0) + " Б · изменение: " + when(geoStatus.file_mod_time) +
+        " · загружен: " + when(geoStatus.loaded_at) + ".";
       const reloadError = geoStatus.last_error ? " Ошибка загрузки/обновления: " + geoStatus.last_error : "";
       const catalogText = geositeCategoriesAvailable
         ? "Категорий в файле: " + number((catalog.categories || []).length) + "."
         : "Список категорий сейчас недоступен: " + (catalog.error || "неизвестная ошибка") + ".";
-      text("autohosts-geosite-status", catalogText + " " + loadedText + reloadError);
+      text("autohosts-geosite-status", catalogText + " " + loadedText + " " + fileText + reloadError);
     } catch (error) {
       geositeCategoriesAvailable = false;
       categorySelect.disabled = true;
@@ -332,7 +349,7 @@
       const result = await api("/api/v1/config", { method: "POST", body: JSON.stringify(collectConfig()) });
       renderConfig(result.config);
       const message = result.restart_required
-        ? "Сохранено. Изменение DNS port mode/listener/dns_max_concurrent вступит в силу после перезапуска плагина."
+        ? "Сохранено. Изменение DNS listener/dns_max_concurrent вступит в силу после перезапуска плагина."
         : "Конфигурация сохранена. Новые значения будут применены механизмом reload.";
       notice("config-note", message, true);
     } catch (error) {

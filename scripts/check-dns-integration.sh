@@ -6,19 +6,32 @@ DOH_STATUS_URL="${DOH_STATUS_URL:-http://127.0.0.1:18765/status}"
 XRAY_CONFIG="${XRAY_CONFIG:-/usr/local/x-ui/bin/config.json}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 plugin_data_dir="${LUCX_PLUGIN_DATA:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)/data}"
+plugin_config="$plugin_data_dir/config.json"
 if [[ -n "${DOH_PLUGIN_PORT:-}" ]]; then
-  PLUGIN_PORT="$DOH_PLUGIN_PORT"
-elif command -v jq >/dev/null 2>&1 && [[ -r "$plugin_data_dir/dns-listener.json" ]]; then
-  PLUGIN_PORT="$(jq -r '.port // empty' "$plugin_data_dir/dns-listener.json" 2>/dev/null || true)"
-  [[ -n "$PLUGIN_PORT" ]] || PLUGIN_PORT=5355
+  PLUGIN_UDP_PORT="$DOH_PLUGIN_PORT"
+  PLUGIN_TCP_PORT="${DOH_PLUGIN_TCP_PORT:-$DOH_PLUGIN_PORT}"
 else
-  PLUGIN_PORT=5355
+  if ! command -v jq >/dev/null 2>&1 || [[ ! -r "$plugin_config" ]]; then
+    printf '[FAIL] Не удалось прочитать статические DNS listener-ы из %s.\n' "$plugin_config" >&2
+    exit 2
+  fi
+  udp_listen="$(jq -r '.dns_listen_udp // empty' "$plugin_config")"
+  tcp_listen="$(jq -r '.dns_listen_tcp // empty' "$plugin_config")"
+  if [[ "$udp_listen" != 127.0.0.1:* || "$tcp_listen" != 127.0.0.1:* ]]; then
+    printf '[FAIL] DNS listener-ы должны быть loopback IPv4 адресами из config.json.\n' >&2
+    exit 2
+  fi
+  PLUGIN_UDP_PORT="${udp_listen##*:}"
+  PLUGIN_TCP_PORT="${tcp_listen##*:}"
 fi
-if [[ ! "$PLUGIN_PORT" =~ ^[0-9]{1,5}$ ]] || (( 10#$PLUGIN_PORT < 1 || 10#$PLUGIN_PORT > 65535 )); then
-  printf '[FAIL] Некорректный DOH_PLUGIN_PORT: ожидается порт 1..65535.\n' >&2
-  exit 2
-fi
-PLUGIN_PORT=$((10#$PLUGIN_PORT))
+for value in "$PLUGIN_UDP_PORT" "$PLUGIN_TCP_PORT"; do
+  if [[ ! "$value" =~ ^[0-9]{1,5}$ ]] || (( 10#$value < 1 || 10#$value > 65535 )); then
+    printf '[FAIL] Некорректный статический DNS listener port.\n' >&2
+    exit 2
+  fi
+done
+PLUGIN_UDP_PORT=$((10#$PLUGIN_UDP_PORT))
+PLUGIN_TCP_PORT=$((10#$PLUGIN_TCP_PORT))
 ok=0; warn=0; fail=0
 pass() { printf '[OK]   %s\n' "$*"; ok=$((ok + 1)); }
 warning() { printf '[WARN] %s\n' "$*"; warn=$((warn + 1)); }
@@ -38,11 +51,12 @@ fi
 if command -v ss >/dev/null 2>&1; then
   for proto in tcp udp; do
     flag="-t"
-    [[ "$proto" == "udp" ]] && flag="-u"
-    if ss -H -l "$flag" 2>/dev/null | grep -Eq "127\\.0\\.0\\.1:${PLUGIN_PORT}([[:space:]]|$)"; then
-      pass "Порт ${PLUGIN_PORT}/${proto} слушается"
+    port="$PLUGIN_TCP_PORT"
+    [[ "$proto" == "udp" ]] && flag="-u" && port="$PLUGIN_UDP_PORT"
+    if ss -H -l "$flag" 2>/dev/null | grep -Eq "127\\.0\\.0\\.1:${port}([[:space:]]|$)"; then
+      pass "Порт ${port}/${proto} слушается"
     else
-      error "Порт ${PLUGIN_PORT}/${proto} не слушается"
+      error "Порт ${port}/${proto} не слушается"
     fi
   done
 else
@@ -79,19 +93,19 @@ if [[ ! -r "$XRAY_CONFIG" ]]; then
   error "Не найден доступный для чтения Xray config: $XRAY_CONFIG"
 else
   pass "Xray config доступен: $XRAY_CONFIG"
-  if jq -e --arg plugin_port "$PLUGIN_PORT" '
+  if jq -e --arg plugin_port "$PLUGIN_UDP_PORT" '
     any(.outbounds[]?;
       .protocol == "dns" and
       .settings.rewriteAddress == "127.0.0.1" and
       ((.settings.rewritePort | tostring) == $plugin_port)
     )
   ' "$XRAY_CONFIG" >/dev/null; then
-    pass "DNS outbound указывает на 127.0.0.1:${PLUGIN_PORT}"
+    pass "DNS outbound указывает на 127.0.0.1:${PLUGIN_UDP_PORT}"
   else
-    error "DNS outbound на 127.0.0.1:${PLUGIN_PORT} отсутствует или несовместим"
+    error "DNS outbound на 127.0.0.1:${PLUGIN_UDP_PORT} отсутствует или несовместим"
   fi
 
-  if jq -e --arg plugin_port "$PLUGIN_PORT" '
+  if jq -e --arg plugin_port "$PLUGIN_UDP_PORT" '
     . as $root |
     any($root.routing.rules[]?;
       .type == "field" and
@@ -106,7 +120,7 @@ else
   ' "$XRAY_CONFIG" >/dev/null; then
     pass "Routing rule направляет TCP/UDP port 53 в локальный DNS outbound"
   else
-    error "Полный DNS route на 127.0.0.1:${PLUGIN_PORT} не найден"
+    error "Полный DNS route на 127.0.0.1:${PLUGIN_UDP_PORT} не найден"
   fi
 
   if jq -e '
