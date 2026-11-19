@@ -112,7 +112,6 @@ func TestParseSupportsAllXrayDomainRuleKinds(t *testing.T) {
 		{name: "Domain root", want: matcher.Match("TEST", "example.org")},
 		{name: "Domain suffix", want: matcher.Match("TEST", "www.example.org")},
 		{name: "Domain label boundary", want: !matcher.Match("TEST", "notexample.org")},
-
 	}
 	for _, test := range cases {
 		if !test.want {

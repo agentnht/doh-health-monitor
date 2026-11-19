@@ -496,7 +496,6 @@ func TestEndpointForQueryMapsUnrecordedGeositeDomain(t *testing.T) {
 	}
 }
 
-
 func TestPruneExpiredPublishesCleanupDiagnostics(t *testing.T) {
 	now := time.Now().UTC()
 	m, err := New(filepath.Join(t.TempDir(), "auto-hosts.json"))

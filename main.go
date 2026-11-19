@@ -47,25 +47,25 @@ const (
 )
 
 type Config struct {
-	LocalHosts             map[string]LocalHost `json:"local_hosts"`
-	GeositePath            string               `json:"geosite_path,omitempty"`
+	LocalHosts  map[string]LocalHost `json:"local_hosts"`
+	GeositePath string               `json:"geosite_path,omitempty"`
 	// Deprecated compatibility field for configs written by the removed
 	// dynamic-port experiment. It is cleared on load and never affects binding.
-	DeprecatedDNSPortMode string `json:"dns_port_mode,omitempty"`
-	DNSListenUDP           string               `json:"dns_listen_udp"`
-	DNSListenTCP           string               `json:"dns_listen_tcp"`
-	HTTPListen             string               `json:"http_listen"`
-	ReloadSecs             int                  `json:"reload_interval_seconds"`
-	DNSQueryTimeoutSeconds int                  `json:"dns_query_timeout_seconds"`
-	DoHTimeoutSeconds      int                  `json:"doh_timeout_seconds"`
-	DNSMaxConcurrent       int                  `json:"dns_max_concurrent"`
-	Health                 HealthConfig         `json:"health"`
-	Cache                  CacheConfig          `json:"cache"`
-	Upstreams              []Upstream           `json:"upstreams"`
-	BootstrapResolvers     []string             `json:"bootstrap_resolvers,omitempty"`
-	Groups                 []Group              `json:"groups"`
-	GeminiAPI              GeminiAPIConfig      `json:"gemini_api"`
-	Integration            bool                 `json:"integration"`
+	DeprecatedDNSPortMode  string          `json:"dns_port_mode,omitempty"`
+	DNSListenUDP           string          `json:"dns_listen_udp"`
+	DNSListenTCP           string          `json:"dns_listen_tcp"`
+	HTTPListen             string          `json:"http_listen"`
+	ReloadSecs             int             `json:"reload_interval_seconds"`
+	DNSQueryTimeoutSeconds int             `json:"dns_query_timeout_seconds"`
+	DoHTimeoutSeconds      int             `json:"doh_timeout_seconds"`
+	DNSMaxConcurrent       int             `json:"dns_max_concurrent"`
+	Health                 HealthConfig    `json:"health"`
+	Cache                  CacheConfig     `json:"cache"`
+	Upstreams              []Upstream      `json:"upstreams"`
+	BootstrapResolvers     []string        `json:"bootstrap_resolvers,omitempty"`
+	Groups                 []Group         `json:"groups"`
+	GeminiAPI              GeminiAPIConfig `json:"gemini_api"`
+	Integration            bool            `json:"integration"`
 }
 type LocalHost struct {
 	IPv4 []string `json:"ipv4"`

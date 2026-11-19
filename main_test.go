@@ -2608,7 +2608,6 @@ func TestReloadLoopUsesConfiguredInterval(t *testing.T) {
 	t.Fatal("reloadLoop did not apply source changes within its configured one-second interval")
 }
 
-
 func TestValidateConfigRequiresStaticNonZeroDNSPorts(t *testing.T) {
 	cfg := defaultConfig()
 	if err := validateConfig(cfg); err != nil {
