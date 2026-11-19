@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -279,11 +278,11 @@ func (g *geositeIndex) Reload(selected []string) error {
 		g.mu.Unlock()
 		return nil
 	}
-	data, info, digest, err := readGeositeSnapshot(g.path)
+	matcher, info, digest, err := geosite.LoadWithMetadata(g.path, selected)
 	if err != nil {
 		return g.recordReloadError(err)
 	}
-	return g.publishSnapshot(selected, data, info, digest)
+	return g.publishSnapshot(selected, matcher, info, digest)
 }
 
 func (g *geositeIndex) recordReloadError(err error) error {
@@ -310,47 +309,9 @@ func (g *geositeIndex) MatchAny(qname string) bool {
 	return matcher != nil && matcher.MatchAny(qname)
 }
 
-// readGeositeSnapshot reads one stable inode and rejects a path replacement or
-// in-place mutation observed during the read. The digest detects replacements
-// even when size and mtime are deliberately preserved.
-func readGeositeSnapshot(path string) ([]byte, os.FileInfo, [32]byte, error) {
-	var zero [32]byte
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, nil, zero, fmt.Errorf("open geosite.dat: %w", err)
-	}
-	defer file.Close()
-	before, err := file.Stat()
-	if err != nil {
-		return nil, nil, zero, fmt.Errorf("stat open geosite.dat: %w", err)
-	}
-	const maxSize = 128 << 20
-	if !before.Mode().IsRegular() || before.Size() <= 0 || before.Size() > maxSize {
-		return nil, nil, zero, errors.New("geosite.dat is not a regular file or exceeds size limit")
-	}
-	data, err := io.ReadAll(io.LimitReader(file, maxSize+1))
-	if err != nil {
-		return nil, nil, zero, fmt.Errorf("read geosite.dat: %w", err)
-	}
-	after, err := file.Stat()
-	if err != nil {
-		return nil, nil, zero, fmt.Errorf("restat open geosite.dat: %w", err)
-	}
-	current, err := os.Stat(path)
-	if err != nil {
-		return nil, nil, zero, fmt.Errorf("restat geosite.dat path: %w", err)
-	}
-	if !os.SameFile(before, current) || before.Size() != after.Size() ||
-		!before.ModTime().Equal(after.ModTime()) || int64(len(data)) != after.Size() {
-		return nil, nil, zero, errors.New("geosite.dat changed while it was being read")
-	}
-	return data, after, sha256.Sum256(data), nil
-}
-
-func (g *geositeIndex) publishSnapshot(selected []string, data []byte, info os.FileInfo, digest [32]byte) error {
-	matcher, err := geosite.Parse(data, selected)
-	if err != nil {
-		return g.recordReloadError(err)
+func (g *geositeIndex) publishSnapshot(selected []string, matcher *geosite.Matcher, info os.FileInfo, digest [32]byte) error {
+	if matcher == nil {
+		return g.recordReloadError(errors.New("Geosite parser returned an empty matcher"))
 	}
 	// Publish the fully parsed immutable matcher in one atomic operation.
 	g.matcher.Store(matcher)
@@ -364,7 +325,6 @@ func (g *geositeIndex) publishSnapshot(selected []string, data []byte, info os.F
 	g.mu.Unlock()
 	return nil
 }
-
 func (g *geositeIndex) reloadIfChanged() error {
 	g.mu.RLock()
 	selected := append([]string(nil), g.categories...)
@@ -375,7 +335,10 @@ func (g *geositeIndex) reloadIfChanged() error {
 	if len(selected) == 0 {
 		return nil
 	}
-	data, info, digest, err := readGeositeSnapshot(g.path)
+
+	// Stream the digest to detect same-size, same-mtime replacements without
+	// constructing a full in-memory copy of geosite.dat.
+	info, digest, err := geosite.Fingerprint(g.path)
 	if err != nil {
 		return g.recordReloadError(err)
 	}
@@ -390,13 +353,19 @@ func (g *geositeIndex) reloadIfChanged() error {
 	}
 	if loaded && sameCategories && digest == loadedHash {
 		g.mu.Lock()
+		g.modTime = info.ModTime()
+		g.size = info.Size()
 		g.lastError = ""
 		g.mu.Unlock()
 		return nil
 	}
-	return g.publishSnapshot(selected, data, info, digest)
-}
 
+	matcher, loadedInfo, loadedDigest, err := geosite.LoadWithMetadata(g.path, selected)
+	if err != nil {
+		return g.recordReloadError(err)
+	}
+	return g.publishSnapshot(selected, matcher, loadedInfo, loadedDigest)
+}
 func (g *geositeIndex) run(ctx context.Context) {
 	g.runWithInterval(ctx, 30*time.Second)
 }
