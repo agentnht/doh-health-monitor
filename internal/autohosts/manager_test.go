@@ -519,3 +519,30 @@ func TestPruneExpiredPublishesCleanupDiagnostics(t *testing.T) {
 		t.Fatalf("unexpected cleanup diagnostics: %+v", status)
 	}
 }
+
+
+func TestDryRunIncludesLiveQueryDomainsAcrossActiveServerSwitch(t *testing.T) {
+	now := time.Now().UTC()
+	m, err := New(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpointA := Endpoint{ServerID: "a", URL: "https://a.example/dns-query", Hostname: "a.example", IPv4: []string{"8.8.8.8"}, UpdatedAt: now}
+	if err := m.ApplyCycle("a", endpointA, []ProbeResult{{Domain: "chatgpt.com", Success: true, CheckedAt: now}}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RecordQuery("user.example", now); err != nil {
+		t.Fatal(err)
+	}
+	endpointB := Endpoint{ServerID: "b", URL: "https://b.example/dns-query", Hostname: "b.example", IPv4: []string{"1.1.1.1"}, UpdatedAt: now}
+	proposed, err := m.DryRun("b", endpointB, []ProbeResult{{ServerID: "b", Domain: "claude.ai", Success: true, CheckedAt: now}}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := proposed["user.example"]; !ok {
+		t.Fatal("Dry Run omitted live user-query domain shared across server switches")
+	}
+}
