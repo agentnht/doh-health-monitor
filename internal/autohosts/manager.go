@@ -391,6 +391,9 @@ func normalizeGeositeCategories(values []string) ([]string, error) {
 		result = append(result, name)
 	}
 	sort.Strings(result)
+	if len(result) == 0 {
+		return nil, errors.New("at least one Geosite category must remain selected")
+	}
 	if len(result) > 128 {
 		return nil, errors.New("too many selected Geosite categories")
 	}
