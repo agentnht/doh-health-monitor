@@ -1509,6 +1509,12 @@ func sendDoH(ctx context.Context, u *UpstreamRuntime, packet []byte) ([]byte, er
 	return b, nil
 }
 func (r *Runtime) serveUDP(ctx context.Context, c *net.UDPConn) {
+	r.serveUDPWithHandler(ctx, c, r.handleDNS)
+}
+
+// serveUDPWithHandler separates queue/worker scheduling from DNS resolution so
+// the bounded-queue behavior can be tested deterministically.
+func (r *Runtime) serveUDPWithHandler(ctx context.Context, c *net.UDPConn, handle func([]byte) []byte) {
 	type udpJob struct {
 		addr   *net.UDPAddr
 		packet []byte
@@ -1536,7 +1542,7 @@ func (r *Runtime) serveUDP(ctx context.Context, c *net.UDPConn) {
 					}
 					r.udpQueueDepth.Add(-1)
 					r.activeUDP.Add(1)
-					resp := r.handleDNS(job.packet)
+					resp := handle(job.packet)
 					r.activeUDP.Add(-1)
 					if len(resp) > 4096 {
 						resp = resp[:4096]
