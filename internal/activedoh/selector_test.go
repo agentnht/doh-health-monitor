@@ -1,0 +1,246 @@
+package activedoh
+
+import (
+	"fmt"
+	"testing"
+	"time"
+)
+
+func candidate(id, ip string, resolvedAt time.Time) Candidate {
+	return Candidate{
+		ServerID: id,
+		URL: "https://" + id + ".example/dns-query",
+		Hostname: id + ".example",
+		IPv4: []string{ip},
+		ResolvedAt: resolvedAt,
+	}
+}
+
+func results(id string, successes int, now time.Time) []ProbeResult {
+	domains := ControlDomains()
+	out := make([]ProbeResult, 0, len(domains))
+	for i, domain := range domains {
+		out = append(out, ProbeResult{
+			ServerID: id,
+			Domain: domain,
+			Success: i < successes,
+			CheckedAt: now,
+		})
+	}
+	return out
+}
+
+func TestControlDomainsAreStableAndCopied(t *testing.T) {
+	first := ControlDomains()
+	if len(first) != 8 {
+		t.Fatalf("got %d control domains, want 8", len(first))
+	}
+	first[0] = "mutated.example"
+	if ControlDomains()[0] != "chatgpt.com" {
+		t.Fatal("caller mutated package control-domain set")
+	}
+}
+
+func TestInitialSelectionChoosesBestHealthyCandidate(t *testing.T) {
+	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	s := NewSelector(DefaultPolicy())
+	candidates := []Candidate{
+		candidate("second", "192.0.2.2", now),
+		candidate("first", "192.0.2.1", now),
+	}
+	probes := append(results("second", 3, now), results("first", 6, now)...)
+
+	selected, ok := s.Select(candidates, probes, now)
+	if !ok {
+		t.Fatal("expected a selected endpoint")
+	}
+	if selected.Candidate.ServerID != "first" || selected.Score != 6 || selected.CheckCount != 8 {
+		t.Fatalf("unexpected selection: %+v", selected)
+	}
+	if selected.Generation != 1 {
+		t.Fatalf("generation = %d, want 1", selected.Generation)
+	}
+}
+
+func TestNoHealthyCandidateDoesNotSelectConfiguredFirst(t *testing.T) {
+	now := time.Now().UTC()
+	s := NewSelector(DefaultPolicy())
+	candidates := []Candidate{
+		candidate("first", "192.0.2.1", now),
+		candidate("second", "192.0.2.2", now),
+	}
+	probes := append(results("first", 0, now), results("second", 0, now)...)
+	if selected, ok := s.Select(candidates, probes, now); ok {
+		t.Fatalf("unexpected selection with all checks failed: %+v", selected)
+	}
+	if _, ok := s.Current(now); ok {
+		t.Fatal("selector retained an endpoint after an empty initial cycle")
+	}
+}
+
+func TestSelectorPrefersCurrentOnEqualScore(t *testing.T) {
+	now := time.Now().UTC()
+	s := NewSelector(DefaultPolicy())
+	a := candidate("a", "192.0.2.1", now)
+	b := candidate("b", "192.0.2.2", now)
+	if _, ok := s.Select([]Candidate{a}, results("a", 4, now), now); !ok {
+		t.Fatal("failed to select initial candidate")
+	}
+
+	next := now.Add(11 * time.Minute)
+	probes := append(results("a", 5, next), results("b", 5, next)...)
+	selected, ok := s.Select([]Candidate{a, b}, probes, next)
+	if !ok || selected.Candidate.ServerID != "a" {
+		t.Fatalf("tie must retain current server, got %+v ok=%t", selected, ok)
+	}
+}
+
+func TestSelectorSwitchesAfterRepeatedImprovementAndHold(t *testing.T) {
+	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	s := NewSelector(DefaultPolicy())
+	a := candidate("a", "192.0.2.1", now)
+	b := candidate("b", "192.0.2.2", now)
+	if _, ok := s.Select([]Candidate{a, b}, results("a", 5, now), now); !ok {
+		t.Fatal("failed to select initial candidate")
+	}
+
+	first := now.Add(11 * time.Minute)
+	probes := append(results("a", 5, first), results("b", 6, first)...)
+	selected, ok := s.Select([]Candidate{a, b}, probes, first)
+	if !ok || selected.Candidate.ServerID != "a" {
+		t.Fatalf("first improvement cycle should not switch, got %+v", selected)
+	}
+
+	second := first.Add(time.Minute)
+	probes = append(results("a", 5, second), results("b", 6, second)...)
+	selected, ok = s.Select([]Candidate{a, b}, probes, second)
+	if !ok || selected.Candidate.ServerID != "b" {
+		t.Fatalf("second improvement cycle should switch, got %+v", selected)
+	}
+	if selected.Generation != 2 {
+		t.Fatalf("generation = %d, want 2", selected.Generation)
+	}
+}
+
+func TestEndpointAddressChangeIncrementsGeneration(t *testing.T) {
+	now := time.Now().UTC()
+	s := NewSelector(DefaultPolicy())
+	a := candidate("a", "192.0.2.1", now)
+	selected, ok := s.Select([]Candidate{a}, results("a", 5, now), now)
+	if !ok || selected.Generation != 1 {
+		t.Fatalf("unexpected initial selection: %+v", selected)
+	}
+
+	updated := candidate("a", "192.0.2.3", now.Add(time.Minute))
+	selected, ok = s.Select([]Candidate{updated}, results("a", 5, now.Add(time.Minute)), now.Add(time.Minute))
+	if !ok || selected.Generation != 2 || selected.Candidate.IPv4[0] != "192.0.2.3" {
+		t.Fatalf("address change was not published: %+v", selected)
+	}
+}
+
+func TestStaleBootstrapEndpointIsRejected(t *testing.T) {
+	now := time.Now().UTC()
+	s := NewSelector(DefaultPolicy())
+	stale := candidate("old", "192.0.2.1", now.Add(-DefaultEndpointMaxAge-time.Second))
+	if selected, ok := s.Select([]Candidate{stale}, results("old", 8, now), now); ok {
+		t.Fatalf("stale endpoint selected: %+v", selected)
+	}
+}
+
+func TestFailureGraceThenWithdrawsCurrentEndpoint(t *testing.T) {
+	now := time.Now().UTC()
+	policy := DefaultPolicy()
+	policy.MinimumHold = time.Minute
+	policy.SwitchCooldown = time.Minute
+	s := NewSelector(policy)
+	a := candidate("a", "192.0.2.1", now)
+	if _, ok := s.Select([]Candidate{a}, results("a", 4, now), now); !ok {
+		t.Fatal("failed initial select")
+	}
+
+	first := now.Add(2 * time.Minute)
+	if selected, ok := s.Select([]Candidate{a}, results("a", 0, first), first); !ok || selected.Candidate.ServerID != "a" {
+		t.Fatalf("first failed cycle should use failure grace: %+v", selected)
+	}
+	second := first.Add(time.Minute)
+	if selected, ok := s.Select([]Candidate{a}, results("a", 0, second), second); ok {
+		t.Fatalf("second failed cycle should withdraw endpoint: %+v", selected)
+	}
+	if s.Generation() != 2 {
+		t.Fatalf("generation after withdrawal = %d, want 2", s.Generation())
+	}
+}
+
+func TestDuplicateAndUnknownProbeResultsDoNotInflateScore(t *testing.T) {
+	now := time.Now().UTC()
+	s := NewSelector(DefaultPolicy())
+	a := candidate("a", "192.0.2.1", now)
+	probes := []ProbeResult{
+		{ServerID: "a", Domain: "CHATGPT.COM.", Success: true, CheckedAt: now},
+		{ServerID: "a", Domain: "chatgpt.com", Success: true, CheckedAt: now.Add(time.Second)},
+		{ServerID: "a", Domain: "not-in-control-set.example", Success: true, CheckedAt: now},
+	}
+	selected, ok := s.Select([]Candidate{a}, probes, now)
+	if !ok {
+		t.Fatal("expected one successful control-domain probe to be sufficient")
+	}
+	if selected.Score != 1 {
+		t.Fatalf("score = %d, want 1", selected.Score)
+	}
+}
+
+func TestCandidateRejectsInvalidURLHostnameAndIP(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name string
+		candidate Candidate
+	}{
+		{"url host mismatch", Candidate{ServerID:"a", URL:"https://other.example/dns-query", Hostname:"a.example", IPv4:[]string{"192.0.2.1"}, ResolvedAt:now}},
+		{"non https", Candidate{ServerID:"a", URL:"http://a.example/dns-query", Hostname:"a.example", IPv4:[]string{"192.0.2.1"}, ResolvedAt:now}},
+		{"invalid IP", Candidate{ServerID:"a", URL:"https://a.example/dns-query", Hostname:"a.example", IPv4:[]string{"not-an-ip"}, ResolvedAt:now}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewSelector(DefaultPolicy())
+			if selected, ok := s.Select([]Candidate{tc.candidate}, results("a", 8, now), now); ok {
+				t.Fatalf("invalid candidate selected: %+v", selected)
+			}
+		})
+	}
+}
+
+func TestSelectionCopiesCandidateAddresses(t *testing.T) {
+	now := time.Now().UTC()
+	s := NewSelector(DefaultPolicy())
+	a := candidate("a", "192.0.2.1", now)
+	selected, ok := s.Select([]Candidate{a}, results("a", 8, now), now)
+	if !ok {
+		t.Fatal("selection failed")
+	}
+	selected.Candidate.IPv4[0] = "203.0.113.9"
+	current, ok := s.Current(now)
+	if !ok {
+		t.Fatal("current selection unavailable")
+	}
+	if current.Candidate.IPv4[0] != "192.0.2.1" {
+		t.Fatal("caller mutated selector's internal address list")
+	}
+}
+
+func TestControlDomainScoreDoesNotExceedEight(t *testing.T) {
+	now := time.Now().UTC()
+	probes := results("a", 8, now)
+	for i := 0; i < 20; i++ {
+		probes = append(probes, ProbeResult{
+			ServerID: "a",
+			Domain: fmt.Sprintf("extra-%d.example", i),
+			Success: true,
+			CheckedAt: now,
+		})
+	}
+	s := NewSelector(DefaultPolicy())
+	selected, ok := s.Select([]Candidate{candidate("a", "192.0.2.1", now)}, probes, now)
+	if !ok || selected.Score != 8 {
+		t.Fatalf("score = %+v, want eight control checks", selected)
+	}
+}
