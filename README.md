@@ -459,12 +459,13 @@ sudo apt-get update
 sudo apt-get install -y dnsutils
 ```
 
-Затем (5355 — текущий порт по умолчанию из конфигурации релиза 2.2.1, не архитектурный контракт; при изменённом `dns_listen_udp` подставьте его порт):
+Затем получите фактический порт из текущего `config.json` и выполните проверки:
 
 ```bash
-dig @127.0.0.1 -p 5355 example.com A +time=5 +tries=1
-dig @127.0.0.1 -p 5355 example.com AAAA +time=5 +tries=1
-dig @127.0.0.1 -p 5355 google.com TXT +time=5 +tries=1
+DNS_UDP_PORT="$(jq -r '.dns_listen_udp | split(\":\")[-1]' "$LUCX_PLUGIN_DATA/config.json")"
+dig @127.0.0.1 -p "$DNS_UDP_PORT" example.com A +time=5 +tries=1
+dig @127.0.0.1 -p "$DNS_UDP_PORT" example.com AAAA +time=5 +tries=1
+dig @127.0.0.1 -p "$DNS_UDP_PORT" google.com TXT +time=5 +tries=1
 ```
 
 Для проверки маршрутизации используйте один домен из выбранной Geosite-категории и один домен вне выбранных категорий. Первый при активном Auto Hosts должен получить IP текущего DoH endpoint; второй разрешается через Quad9 Secure DoH.
@@ -472,7 +473,8 @@ dig @127.0.0.1 -p 5355 google.com TXT +time=5 +tries=1
 ### 7.4 Проверка TCP DNS
 
 ```bash
-dig +tcp @127.0.0.1 -p 5355 example.com A +time=5 +tries=1
+DNS_TCP_PORT="$(jq -r '.dns_listen_tcp | split(\":\")[-1]' "$LUCX_PLUGIN_DATA/config.json")"
+dig +tcp @127.0.0.1 -p "$DNS_TCP_PORT" example.com A +time=5 +tries=1
 ```
 
 ### 7.5 Проверка failover
@@ -643,7 +645,7 @@ dig +short panel.example.com AAAA
 
 Для локальных A/AAAA TTL равен 60 секундам. Для отрицательных ответов NODATA добавляется SOA с TTL 60 секунд. Флаг DNS AD в локально сформированных ответах не устанавливается. HTTPS/SVCB-записи не передаются, поэтому DNS-подсказки IP (address hints) и ECH-конфигурация из этих записей не выдаются. Это **не отключает HTTPS или TLS** на самом сайте.
 
-Переопределение применяется только к точному имени из `local_hosts`. Все остальные домены продолжают использовать единый выбранный upstream профиля `google`.
+Переопределение применяется только к точному имени из `local_hosts`. Остальные домены проходят общую DNS-логику: Geosite/Auto Hosts при совпадении и Quad9 Secure DoH для остальных веток.
 
 ### Как добавить или изменить запись
 
@@ -661,10 +663,11 @@ dig +short panel.example.com AAAA
 После добавления примера выше выполните на VPS:
 
 ```bash
-dig @127.0.0.1 -p 5355 panel.example.com A
-dig @127.0.0.1 -p 5355 panel.example.com AAAA
-dig @127.0.0.1 -p 5355 panel.example.com HTTPS
-dig @127.0.0.1 -p 5355 panel.example.com SVCB
+DNS_UDP_PORT="$(jq -r '.dns_listen_udp | split(\":\")[-1]' "$LUCX_PLUGIN_DATA/config.json")"
+dig @127.0.0.1 -p "$DNS_UDP_PORT" panel.example.com A
+dig @127.0.0.1 -p "$DNS_UDP_PORT" panel.example.com AAAA
+dig @127.0.0.1 -p "$DNS_UDP_PORT" panel.example.com HTTPS
+dig @127.0.0.1 -p "$DNS_UDP_PORT" panel.example.com SVCB
 ```
 
 В ответе A должен присутствовать заданный IPv4, в AAAA — заданный IPv6. Для `api.example.com AAAA`, поскольку массив `ipv6` пустой, ожидается `status: NOERROR` и отсутствие Answer-записей. HTTPS и SVCB для перечисленных имён также должны возвращать пустой Answer. Проверку можно повторить по TCP, добавив к команде `dig` параметр `+tcp`.
