@@ -1680,32 +1680,22 @@ func (r *Runtime) handleDNS(packet []byte) []byte {
 		return servfailResponse(packet)
 	}
 	r.queries.Add(1)
-	name, qtype, _, e := parseQuestion(packet)
-	if e != nil {
+	name, qtype, _, err := parseQuestion(packet)
+	if err != nil {
 		return formerrResponse(packet)
 	}
 	s := r.currentSnapshot()
-	if response, matched := localHostsResponse(packet, normalizeDomain(name), qtype, s.localHosts); matched {
-		return response
-	}
-	cacheKey := cacheKey(packet)
-	if s.cfg.Cache.Enabled {
-		if v, ok := r.cacheGet(cacheKey, packetID(packet)); ok {
-			r.cacheHits.Add(1)
-			return v
-		}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(s.cfg.DNSQueryTimeoutSeconds)*time.Second)
-	defer cancel()
-	resp, uid, e := r.query(ctx, packet)
-	if e != nil {
+	if s == nil {
 		return servfailResponse(packet)
 	}
-	if s.cfg.Cache.Enabled {
-		r.cachePut(cacheKey, resp, s.cfg.Cache)
+	// Local overrides remain available for A/AAAA. The new Geosite DNS path
+	// deliberately does not serve HTTPS/SVCB or other non-address QTYPEs.
+	if qtype == 1 || qtype == 28 {
+		if response, matched := localHostsResponse(packet, normalizeDomain(name), qtype, s.localHosts); matched {
+			return response
+		}
 	}
-	_ = uid // avoid a log entry for every successful DNS query
-	return resp
+	return r.activeDoHDNSResponse(packet, s)
 }
 
 const localHostsTTL uint32 = 60
