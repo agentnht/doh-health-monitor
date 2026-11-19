@@ -103,9 +103,9 @@ func TestStreamingLoadSupportsAllXrayDomainRuleKinds(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := []struct {
-		name string
+		name  string
 		qname string
-		want bool
+		want  bool
 	}{
 		{name: "Substr", qname: "prefix-needle-suffix.invalid", want: true},
 		{name: "Substr miss", qname: "unrelated.invalid", want: false},
