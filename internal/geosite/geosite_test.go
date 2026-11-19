@@ -129,16 +129,16 @@ func TestParseRejectsInvalidRegexAndUnknownRuleKind(t *testing.T) {
 	}
 }
 func TestRegexRulePreservesOriginalPattern(t *testing.T) {
-\tpattern := `^API-[0-9]+\\.EXAMPLE$`
-\tmatcher, err := Parse(categoryFixture(makeDomainRuleFixture(1, pattern)), []string{"TEST"})
-\tif err != nil {
-\t\tt.Fatal(err)
-\t}
-\trules := matcher.categories["TEST"]
-\tif len(rules) != 1 || rules[0].value != pattern {
-\t\tt.Fatalf("Regex pattern was normalized: got %#v, want %q", rules, pattern)
-\t}
-\tif matcher.Match("TEST", "api-42.example") {
-\t\tt.Fatal("case-sensitive Regex pattern must not match a lowercased QNAME when pattern case differs")
-\t}
+	pattern := `^API-[0-9]+\.EXAMPLE$`
+	matcher, err := Parse(categoryFixture(makeDomainRuleFixture(1, pattern)), []string{"TEST"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := matcher.categories["TEST"]
+	if len(rules) != 1 || rules[0].value != pattern {
+		t.Fatalf("Regex pattern was normalized: got %#v, want %q", rules, pattern)
+	}
+	if matcher.Match("TEST", "api-42.example") {
+		t.Fatal("case-sensitive Regex pattern must not match a lowercased QNAME when pattern case differs")
+	}
 }
