@@ -155,7 +155,7 @@ func parseDomain(data []byte) (domainRule, error) {
 			if err != nil {
 				return rule, err
 			}
-			rule.value = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(string(value)), "."))
+			rule.value = string(value)
 			data = data[used:]
 		default:
 			used, err := skipValue(data, wire)
@@ -165,11 +165,14 @@ func parseDomain(data []byte) (domainRule, error) {
 			data = data[used:]
 		}
 	}
-	if rule.value == "" {
-		return rule, errors.New("empty domain rule")
-	}
 	if rule.kind < 0 || rule.kind > 3 {
 		return rule, fmt.Errorf("unsupported domain rule type %d", rule.kind)
+	}
+	if rule.kind != 1 {
+		rule.value = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(rule.value), "."))
+	}
+	if rule.value == "" {
+		return rule, errors.New("empty domain rule")
 	}
 	if rule.kind == 1 {
 		compiled, err := regexp.Compile(rule.value)

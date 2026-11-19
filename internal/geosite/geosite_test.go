@@ -128,3 +128,18 @@ func TestParseRejectsInvalidRegexAndUnknownRuleKind(t *testing.T) {
 		t.Fatal("expected unsupported Xray domain rule type to be rejected")
 	}
 }
+
+func TestRegexRulePreservesOriginalPattern(t *testing.T) {
+	pattern := `^API-[0-9]+\\.EXAMPLE$`
+	matcher, err := Parse(categoryFixture(makeDomainRuleFixture(1, pattern)), []string{"TEST"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := matcher.categories["TEST"]
+	if len(rules) != 1 || rules[0].value != pattern {
+		t.Fatalf("Regex pattern was normalized: got %#v, want %q", rules, pattern)
+	}
+	if matcher.Match("TEST", "api-42.example") {
+		t.Fatal("case-sensitive Regex pattern must not match a lowercased QNAME when pattern case differs")
+	}
+}
