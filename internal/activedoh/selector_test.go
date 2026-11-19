@@ -138,6 +138,16 @@ func TestEndpointAddressChangeIncrementsGeneration(t *testing.T) {
 	}
 }
 
+
+func TestEndpointFreshnessAtExactLimitIsExpired(t *testing.T) {
+	now := time.Now().UTC()
+	s := NewSelector(DefaultPolicy())
+	exactlyExpired := candidate("expired", "192.0.2.1", now.Add(-DefaultEndpointMaxAge))
+	if selected, ok := s.Select([]Candidate{exactlyExpired}, results("expired", 8, now), now); ok {
+		t.Fatalf("endpoint at exact max age must be expired: %+v", selected)
+	}
+}
+
 func TestStaleBootstrapEndpointIsRejected(t *testing.T) {
 	now := time.Now().UTC()
 	s := NewSelector(DefaultPolicy())

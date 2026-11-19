@@ -297,7 +297,7 @@ func normalizeCandidate(raw Candidate, now time.Time, maxAge time.Duration) (Can
 	c.URL = strings.TrimSpace(c.URL)
 	c.Hostname = normalizeHostname(c.Hostname)
 	if c.ServerID == "" || len(c.ServerID) > 128 || c.URL == "" || c.Hostname == "" ||
-		c.ResolvedAt.IsZero() || c.ResolvedAt.After(now) || now.Sub(c.ResolvedAt) > maxAge {
+		c.ResolvedAt.IsZero() || c.ResolvedAt.After(now) || !now.Before(c.ResolvedAt.Add(maxAge)) {
 		return Candidate{}, false
 	}
 	u, err := url.Parse(c.URL)

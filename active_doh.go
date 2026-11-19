@@ -78,11 +78,13 @@ func (r *Runtime) runActiveDoHSelection(parent context.Context) {
 	if s == nil {
 		return
 	}
-	now := time.Now().UTC()
 	candidates := r.activeDoHCandidates(ctx, s)
 	if ctx.Err() != nil {
 		return
 	}
+	// Capture the selection timestamp after bootstrap lookups: a successful lookup may
+	// have refreshed ResolvedAt during candidate collection, so it must not appear future-dated.
+	now := time.Now().UTC()
 	if len(candidates) == 0 {
 		_, _ = r.activeDoHSelector.Select(nil, nil, now)
 		logLine("WARN", "ACTIVE_DOH no fresh bootstrap endpoints are eligible")
