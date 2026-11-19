@@ -401,7 +401,10 @@ func TestUDPWorkerPoolBoundsQueueUnderLoad(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		r.serveUDP(ctx, serverConn)
+		r.serveUDPWithHandler(ctx, serverConn, func(query []byte) []byte {
+			time.Sleep(20 * time.Millisecond)
+			return servfailResponse(query)
+		})
 		close(done)
 	}()
 	clientConn, err := net.DialUDP("udp", nil, serverConn.LocalAddr().(*net.UDPAddr))
