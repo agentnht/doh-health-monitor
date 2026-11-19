@@ -73,8 +73,15 @@ func startTestAutoHostsRecorder(t *testing.T, runtime *Runtime, domains ...strin
 	runtime.autoHostsQueryQueue = make(chan *autoHostsQueryJob, 32)
 	runtime.autoHostsQueued = make(map[string]*autoHostsQueryJob)
 	ctx, cancel := context.WithCancel(context.Background())
-	go runtime.runAutoHostsQueryRecorder(ctx)
-	t.Cleanup(cancel)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runtime.runAutoHostsQueryRecorder(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 }
 
 func newTestVPSResolveUpstream(t *testing.T, handler http.HandlerFunc) *UpstreamRuntime {
