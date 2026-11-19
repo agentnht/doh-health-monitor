@@ -391,9 +391,6 @@ func normalizeGeositeCategories(values []string) ([]string, error) {
 		result = append(result, name)
 	}
 	sort.Strings(result)
-	if len(result) == 0 {
-		return nil, errors.New("at least one Geosite category must remain selected")
-	}
 	if len(result) > 128 {
 		return nil, errors.New("too many selected Geosite categories")
 	}
@@ -411,6 +408,9 @@ func (m *Manager) ConfigureWithGeosite(enabled, emergencyOff *bool, pinnedServer
 		categories, err = normalizeGeositeCategories(*geositeCategories)
 		if err != nil {
 			return err
+		}
+		if len(categories) == 0 {
+			return errors.New("at least one Geosite category must remain selected")
 		}
 	}
 	return m.update(func(s *State) error {
