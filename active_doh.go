@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"net/http"
@@ -316,20 +317,11 @@ func (r *Runtime) probeActiveDoHDomain(ctx context.Context, job activeDoHProbeJo
 			}
 		}
 		if strings.EqualFold(job.domain, "gemini.google.com") {
-			accepted = status >= 200 && status < 300
-			if status >= 300 && status < 400 {
-				accepted = geminiRedirectAllowed(&http.Response{
-					StatusCode: status,
-					Header: http.Header{"Location": []string{""}},
-				})
-			}
+			// probeActiveDoHIP already rejected redirects outside Google's allowed hosts.
+			accepted = status >= 200 && status < 400
 			if geminiRegionBlocked(body) {
 				lastErr = fmt.Errorf("Gemini regional restriction detected")
 				continue
-			}
-			// Redirects are validated using the actual response in probeActiveDoHIP.
-			if status >= 300 && status < 400 {
-				accepted = true
 			}
 		}
 		if !accepted {
