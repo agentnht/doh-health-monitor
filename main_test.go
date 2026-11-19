@@ -2665,3 +2665,77 @@ func TestLoadConfigIgnoresAndRemovesLegacyDNSPortMode(t *testing.T) {
 		t.Fatalf("legacy dns_port_mode was written back: %s", normalized)
 	}
 }
+
+func TestEnqueueAutoHostsQueryReservesDomainCapacity(t *testing.T) {
+	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for i := 0; i < 63; i++ {
+		if err := manager.RecordQuery(fmt.Sprintf("existing-%02d.example", i), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtime := &Runtime{
+		autoHosts:           manager,
+		autoHostsQueryQueue: make(chan *autoHostsQueryJob, 4),
+		autoHostsQueued:     make(map[string]*autoHostsQueryJob),
+	}
+	start := make(chan struct{})
+	results := make(chan bool, 2)
+	var workers sync.WaitGroup
+	for _, domain := range []string{"new-a.example", "new-b.example"} {
+		workers.Add(1)
+		go func(qname string) {
+			defer workers.Done()
+			<-start
+			_, accepted := runtime.enqueueAutoHostsQuery(qname)
+			results <- accepted
+		}(domain)
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+
+	accepted := 0
+	for result := range results {
+		if result {
+			accepted++
+		}
+	}
+	if accepted != 1 {
+		t.Fatalf("expected exactly one QNAME reservation with one slot remaining, got %d", accepted)
+	}
+}
+
+func TestEnqueueAutoHostsQueryRefreshesCoalescedLastSeen(t *testing.T) {
+	manager, err := autohosts.New(filepath.Join(t.TempDir(), "auto-hosts.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &Runtime{
+		autoHosts:           manager,
+		autoHostsQueryQueue: make(chan *autoHostsQueryJob, 4),
+		autoHostsQueued:     make(map[string]*autoHostsQueryJob),
+	}
+	first, accepted := runtime.enqueueAutoHostsQuery("repeat.example")
+	if !accepted || first == nil {
+		t.Fatal("first QNAME was not queued")
+	}
+	firstSeen := first.lastSeen
+	time.Sleep(time.Millisecond)
+	second, accepted := runtime.enqueueAutoHostsQuery("REPEAT.example.")
+	if !accepted || second != first {
+		t.Fatal("duplicate QNAME should reuse the pending job")
+	}
+	if !first.lastSeen.After(firstSeen) {
+		t.Fatalf("coalesced QNAME did not refresh LastSeen: first=%s current=%s", firstSeen, first.lastSeen)
+	}
+}
