@@ -495,3 +495,28 @@ func TestEndpointForQueryMapsUnrecordedGeositeDomain(t *testing.T) {
 		t.Fatal("TXT query must not be endpoint-mapped")
 	}
 }
+
+
+func TestPruneExpiredPublishesCleanupDiagnostics(t *testing.T) {
+	now := time.Now().UTC()
+	m, err := New(filepath.Join(t.TempDir(), "auto-hosts.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RecordQuery("stale.example", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.PruneExpired(now.Add(31 * time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.State().Domains["stale.example"]; ok {
+		t.Fatal("expired query domain was not pruned")
+	}
+	status := m.CleanupStatus()
+	if status.LastRun.IsZero() || status.LastDeleted != 1 || status.LastError != "" {
+		t.Fatalf("unexpected cleanup diagnostics: %+v", status)
+	}
+}

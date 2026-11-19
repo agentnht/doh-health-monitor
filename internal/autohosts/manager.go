@@ -85,11 +85,18 @@ type Snapshot struct {
 	EndpointMaxAge time.Duration
 	MaxDomains     int
 }
+type CleanupStatus struct {
+	LastRun     time.Time `json:"last_run,omitempty"`
+	LastDeleted int       `json:"last_deleted"`
+	LastError   string    `json:"last_error,omitempty"`
+}
+
 type Manager struct {
-	path  string
-	mu    sync.Mutex
-	state State
-	view  atomic.Pointer[Snapshot]
+	path          string
+	mu            sync.Mutex
+	state         State
+	view          atomic.Pointer[Snapshot]
+	cleanupStatus CleanupStatus
 }
 
 func DefaultConfig() Config {
@@ -595,6 +602,7 @@ func (m *Manager) RecordQuery(rawDomain string, now time.Time) error {
 }
 
 // PruneExpired performs garbage collection independently of probe success.
+// Diagnostics remain in memory: an empty one-minute pass does not rewrite state.
 func (m *Manager) PruneExpired(now time.Time) error {
 	m.mu.Lock()
 	hasExpired := false
@@ -605,17 +613,37 @@ func (m *Manager) PruneExpired(now time.Time) error {
 		}
 	}
 	m.mu.Unlock()
-	if !hasExpired {
-		return nil
-	}
-	return m.update(func(s *State) error {
-		for domain, record := range s.Domains {
-			if record.ExpiresAt.IsZero() || !now.Before(record.ExpiresAt) {
-				delete(s.Domains, domain)
+
+	deleted := 0
+	var err error
+	if hasExpired {
+		err = m.update(func(s *State) error {
+			for domain, record := range s.Domains {
+				if record.ExpiresAt.IsZero() || !now.Before(record.ExpiresAt) {
+					delete(s.Domains, domain)
+					deleted++
+				}
 			}
-		}
-		return nil
-	})
+			return nil
+		})
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err != nil {
+		deleted = 0
+	}
+	status := CleanupStatus{LastRun: now.UTC(), LastDeleted: deleted}
+	if err != nil {
+		status.LastError = err.Error()
+	}
+	m.cleanupStatus = status
+	return err
+}
+
+func (m *Manager) CleanupStatus() CleanupStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cleanupStatus
 }
 
 func (m *Manager) RecordProbeFailures(serverID string, domains []string, message string, now time.Time) error {

@@ -191,8 +191,8 @@ func (m *Matcher) Match(category, qname string) bool {
 	}
 	for _, rule := range m.categories[strings.ToUpper(strings.TrimSpace(category))] {
 		switch rule.kind {
-		case 0: // Full
-			if name == rule.value {
+		case 0: // Substr
+			if strings.Contains(name, rule.value) {
 				return true
 			}
 		case 1: // Regex
@@ -203,8 +203,8 @@ func (m *Matcher) Match(category, qname string) bool {
 			if name == rule.value || strings.HasSuffix(name, "."+rule.value) {
 				return true
 			}
-		case 3: // Plain substring
-			if strings.Contains(name, rule.value) {
+		case 3: // Full
+			if name == rule.value {
 				return true
 			}
 		}

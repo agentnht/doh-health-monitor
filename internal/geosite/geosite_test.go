@@ -90,10 +90,10 @@ func categoryFixture(rules ...[]byte) []byte {
 
 func TestParseSupportsAllXrayDomainRuleKinds(t *testing.T) {
 	data := categoryFixture(
-		makeDomainRuleFixture(0, "exact.example"),
+		makeDomainRuleFixture(0, "needle"),
 		makeDomainRuleFixture(1, `^service-[0-9]+\.example\.net$`),
 		makeDomainRuleFixture(2, "example.org"),
-		makeDomainRuleFixture(3, "needle"),
+		makeDomainRuleFixture(3, "exact.example"),
 	)
 	matcher, err := Parse(data, []string{"TEST"})
 	if err != nil {
@@ -103,6 +103,8 @@ func TestParseSupportsAllXrayDomainRuleKinds(t *testing.T) {
 		name string
 		want bool
 	}{
+		{name: "Substr", want: matcher.Match("TEST", "prefix-needle-suffix.invalid")},
+		{name: "Substr rejects unrelated", want: !matcher.Match("TEST", "unrelated.invalid")},
 		{name: "Full exact", want: matcher.Match("TEST", "exact.example")},
 		{name: "Full rejects subdomain", want: !matcher.Match("TEST", "www.exact.example")},
 		{name: "Regex", want: matcher.Match("TEST", "service-42.example.net")},
@@ -110,8 +112,7 @@ func TestParseSupportsAllXrayDomainRuleKinds(t *testing.T) {
 		{name: "Domain root", want: matcher.Match("TEST", "example.org")},
 		{name: "Domain suffix", want: matcher.Match("TEST", "www.example.org")},
 		{name: "Domain label boundary", want: !matcher.Match("TEST", "notexample.org")},
-		{name: "Plain substring", want: matcher.Match("TEST", "prefix-needle-suffix.invalid")},
-		{name: "Plain rejects unrelated", want: !matcher.Match("TEST", "unrelated.invalid")},
+
 	}
 	for _, test := range cases {
 		if !test.want {

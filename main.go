@@ -1753,18 +1753,12 @@ func (r *Runtime) handleDNS(packet []byte) (response []byte) {
 	if r.geo != nil && r.geo.MatchAny(normalizeDomain(name)) && r.autoHosts != nil {
 		autoSnapshot := r.autoHosts.Snapshot()
 		if autoSnapshot != nil && autoSnapshot.CanRecordQuery(name) {
-			job, queued := r.enqueueAutoHostsQuery(name)
+			_, queued := r.enqueueAutoHostsQuery(name)
 			if queued {
-				select {
-				case <-job.done:
-					if job.err == nil {
-						if response, matched := autoHostsEndpointResponse(packet, normalizeDomain(name), qtype, r.autoHosts.Snapshot(), time.Now()); matched {
-							return response
-						}
-					}
-				case <-time.After(150 * time.Millisecond):
-					// Persistence remains off the DNS handler. A slow or failed
-					// write falls through to the dedicated Quad9 resolver.
+				// QNAME persistence runs in the background. The DNS critical path
+				// never waits for disk I/O and reads only the immutable endpoint snapshot.
+				if response, matched := autoHostsEndpointResponse(packet, normalizeDomain(name), qtype, r.autoHosts.Snapshot(), time.Now()); matched {
+					return response
 				}
 			}
 		}
@@ -3060,7 +3054,13 @@ func (r *Runtime) handleAutoHostsStatus(w http.ResponseWriter, req *http.Request
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(r.autoHosts.State())
+	response := struct {
+		autohosts.State
+		Cleanup autohosts.CleanupStatus `json:"cleanup"`
+	}{
+		State: r.autoHosts.State(), Cleanup: r.autoHosts.CleanupStatus(),
+	}
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 func (r *Runtime) handleAutoHostsConfig(w http.ResponseWriter, req *http.Request) {

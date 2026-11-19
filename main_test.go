@@ -2003,9 +2003,18 @@ func TestDNSGeositeHitRecordsUserDomainAndMapsActiveEndpoint(t *testing.T) {
 	if err != nil || len(ips) != 1 || ips[0] != "8.8.4.4" {
 		t.Fatalf("Geosite endpoint A response=%v err=%v", ips, err)
 	}
-	record, ok := manager.State().Domains["protected.example"]
+	var record autohosts.DomainRecord
+	var ok bool
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		record, ok = manager.State().Domains["protected.example"]
+		if ok {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 	if !ok || record.Source != "query" || record.LastSeen.IsZero() {
-		t.Fatalf("user QNAME was not persisted with query lifecycle metadata: %+v", record)
+		t.Fatalf("background recorder did not persist user QNAME lifecycle metadata: %+v", record)
 	}
 }
 
