@@ -5,7 +5,6 @@ package geosite
 import (
 	"errors"
 	"fmt"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -24,20 +23,9 @@ type Matcher struct {
 }
 
 func Load(path string, selected []string) (*Matcher, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("stat geosite.dat: %w", err)
-	}
-	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxGeoSiteFileSize {
-		return nil, errors.New("geosite.dat is not a regular file or exceeds size limit")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read geosite.dat: %w", err)
-	}
-	return Parse(data, selected)
+	matcher, _, _, err := LoadWithMetadata(path, selected)
+	return matcher, err
 }
-
 // Parse decodes only selected categories. An empty selection is rejected to
 // prevent accidentally turning an unconfigured matcher into a match-all rule.
 func Parse(data []byte, selected []string) (*Matcher, error) {
@@ -281,20 +269,8 @@ func skipValue(data []byte, wire int) (int, error) {
 
 // ListCategories returns the category codes present in a GeoSiteList.
 func ListCategories(path string) ([]string, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("stat geosite.dat: %w", err)
-	}
-	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxGeoSiteFileSize {
-		return nil, errors.New("geosite.dat is not a regular file or exceeds size limit")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read geosite.dat: %w", err)
-	}
-	return ParseCategories(data)
+	return listCategories(path)
 }
-
 func ParseCategories(data []byte) ([]string, error) {
 	if len(data) == 0 || len(data) > maxGeoSiteFileSize {
 		return nil, errors.New("invalid geosite.dat size")
