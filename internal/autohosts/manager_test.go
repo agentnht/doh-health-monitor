@@ -520,7 +520,6 @@ func TestPruneExpiredPublishesCleanupDiagnostics(t *testing.T) {
 	}
 }
 
-
 func TestDryRunIncludesLiveQueryDomainsAcrossActiveServerSwitch(t *testing.T) {
 	now := time.Now().UTC()
 	m, err := New(filepath.Join(t.TempDir(), "state.json"))
@@ -544,5 +543,8 @@ func TestDryRunIncludesLiveQueryDomainsAcrossActiveServerSwitch(t *testing.T) {
 	}
 	if _, ok := proposed["user.example"]; !ok {
 		t.Fatal("Dry Run omitted live user-query domain shared across server switches")
+	}
+	if _, ok := proposed["chatgpt.com"]; !ok {
+		t.Fatal("Dry Run omitted live probe domain from the previously active server")
 	}
 }

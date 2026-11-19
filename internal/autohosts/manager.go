@@ -721,9 +721,9 @@ func (m *Manager) DryRun(activeID string, ep Endpoint, results []ProbeResult, no
 		}
 	}
 	for d, r := range state.Domains {
-		// Query-owned domains are shared across active-server switches; Dry Run
-		// must include them just like ApplyFullCycle does.
-		if (r.Source == DomainSourceQuery || r.ServerID == activeID) && now.Before(r.ExpiresAt) {
+		// All live records are shared across active-server switches; Dry Run
+		// must include the same retained set as ApplyFullCycle.
+		if now.Before(r.ExpiresAt) {
 			if _, ok := proposed[d]; !ok {
 				proposed[d] = r
 			}
