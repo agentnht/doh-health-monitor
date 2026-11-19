@@ -128,7 +128,7 @@ else
       ((.ip // []) | index("geoip:private")) != null
     )
   ' "$XRAY_CONFIG" >/dev/null; then
-    if jq -e --arg port "$PLUGIN_PORT" '
+    if jq -e --arg port "$PLUGIN_UDP_PORT" '
       (.routing.rules // []) as $rules |
       [$rules | to_entries[] | select(
         .value.ruleTag == "xui-dns-allow" and
