@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"lucx-doh-health-monitor/internal/activedoh"
 	"lucx-doh-health-monitor/internal/dohintegration"
 )
 
@@ -237,6 +238,7 @@ type Status struct {
 	Cache        CacheStatus                     `json:"cache"`
 	Groups       map[string]GroupStatus          `json:"groups"`
 	DoHBootstrap       map[string]DoHBootstrapStatus `json:"doh_bootstrap,omitempty"`
+	ActiveDoH          *ActiveDoHStatus                 `json:"active_doh,omitempty"`
 	SystemDNSServers    []string                      `json:"system_dns_servers,omitempty"`
 	SystemDNSError      string                        `json:"system_dns_error,omitempty"`
 	GeminiAPI           string                        `json:"gemini_api"`
@@ -295,6 +297,8 @@ type Runtime struct {
 	sourceHashes ConfigSourceChecksums
 	lastRejectedSourceHash string
 	healthCheckTrigger chan struct{}
+	activeDoHTrigger chan struct{}
+	activeDoHSelector *activedoh.Selector
 	snapshot     atomic.Pointer[Snapshot]
 	mu           sync.RWMutex
 	health           map[string]map[string]HealthEntry
@@ -434,6 +438,8 @@ func main() {
 		dataDir: dataDir, configPath: configPath, dohPath: dohPath, checksPath: checksPath,
 		sourceHashes: sources.Checksums,
 		healthCheckTrigger: make(chan struct{}, 1),
+		activeDoHTrigger: make(chan struct{}, 1),
+		activeDoHSelector: activedoh.NewSelector(activedoh.DefaultPolicy()),
 		health: map[string]map[string]HealthEntry{}, active: map[string]string{},
 		cache: map[string]cacheItem{}, lastGemini: map[string]time.Time{},
 		dnsSem: make(chan struct{}, cfg.DNSMaxConcurrent),
@@ -492,7 +498,7 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
-	wg.Add(5)
+	wg.Add(6)
 	go func() { defer wg.Done(); rt.serveUDP(ctx, udpConn) }()
 	go func() { defer wg.Done(); rt.serveTCP(ctx, tcpLn) }()
 	go func() {
@@ -503,6 +509,7 @@ func main() {
 		}
 	}()
 	go func() { defer wg.Done(); rt.monitorLoop(ctx) }()
+	go func() { defer wg.Done(); rt.activeDoHLoop(ctx) }()
 	go func() { defer wg.Done(); rt.reloadLoop(ctx) }()
 	logLine("INFO", "READY DNS=%s/%s HTTP=%s", cfg.DNSListenUDP, cfg.DNSListenTCP, cfg.HTTPListen)
 
@@ -2736,6 +2743,10 @@ func (r *Runtime) reloadLoop(ctx context.Context) {
 		case r.healthCheckTrigger <- struct{}{}:
 		default:
 		}
+		select {
+		case r.activeDoHTrigger <- struct{}{}:
+		default:
+		}
 		logLine("INFO", "CONFIG reloaded upstreams=%d groups=%d checks=%d sources_sha256=%s", len(cfg.Upstreams), len(cfg.Groups), len(sources.Checks), sources.Checksums.Combined)
 	}
 }
@@ -2783,6 +2794,7 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 		DNSTCP: s.cfg.DNSListenTCP, HTTP: s.cfg.HTTPListen, Config: r.configPath,
 		Cache: CacheStatus{Enabled: s.cfg.Cache.Enabled, Entries: cacheEntries, MaxEntries: s.cfg.Cache.MaxEntries, Bytes: cacheBytes, MaxBytes: s.cfg.Cache.MaxBytes},
 		Groups: map[string]GroupStatus{}, DoHBootstrap: map[string]DoHBootstrapStatus{},
+		ActiveDoH: r.activeDoHStatus(),
 		Queries: r.queries.Load(), CacheHits: r.cacheHits.Load(), Failures: r.failures.Load(),
 		ActiveUDP: r.activeUDP.Load(), UDPQueueDepth: r.udpQueueDepth.Load(), UDPDropped: r.udpDropped.Load(),
 		ActiveTCP: r.activeTCP.Load(), TCPRejected: r.tcpRejected.Load(), Goroutines: runtime.NumGoroutine(),
