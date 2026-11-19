@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -153,7 +154,8 @@ type UpstreamRuntime struct {
 }
 
 type systemDNSResolver struct {
-	resolvConfPath string
+	resolvConfPath   string
+	listenerAddresses []string
 }
 
 type bootstrapResolver struct {
@@ -1020,7 +1022,10 @@ func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
 		runtimeResolver := &ResolverRuntime{cfg: configured}
 		switch configured.Type {
 		case "system":
-			runtimeResolver.systemDNS = &systemDNSResolver{resolvConfPath: systemResolvConfPath}
+			runtimeResolver.systemDNS = &systemDNSResolver{
+				resolvConfPath: systemResolvConfPath,
+				listenerAddresses: []string{c.DNSListenUDP, c.DNSListenTCP},
+			}
 		case "udp", "tcp":
 			address, err := normalizeResolverAddress(configured.Address)
 			if err != nil {
@@ -2293,6 +2298,10 @@ func (r *systemDNSResolver) query(ctx context.Context, packet []byte) ([]byte, e
 	}
 	var failures []string
 	for _, server := range servers {
+		if r.pointsBackToPluginListener(server) {
+			failures = append(failures, server+": resolver target matches the plugin DNS listener; refusing a DNS loop")
+			continue
+		}
 		perServer := systemDNSPerServerTimeout
 		if deadline, ok := ctx.Deadline(); ok {
 			remaining := time.Until(deadline)
