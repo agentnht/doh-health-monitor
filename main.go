@@ -49,6 +49,8 @@ const (
 
 type Config struct {
 	LocalHosts             map[string]LocalHost `json:"local_hosts"`
+	DNSMode                string               `json:"dns_mode"`
+	ResolverUpstreams       []ResolverUpstream   `json:"resolver_upstreams"`
 	DNSListenUDP           string          `json:"dns_listen_udp"`
 	DNSListenTCP           string          `json:"dns_listen_tcp"`
 	HTTPListen             string          `json:"http_listen"`
@@ -89,6 +91,22 @@ type Upstream struct {
 	URL          string   `json:"-"`
 	BootstrapIPs []string `json:"bootstrap_ips"`
 }
+
+type ResolverUpstream struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name,omitempty"`
+	Type         string   `json:"type"`
+	Address      string   `json:"address,omitempty"`
+	URL          string   `json:"url,omitempty"`
+	BootstrapIPs []string `json:"bootstrap_ips,omitempty"`
+}
+
+type ResolverRuntime struct {
+	cfg       ResolverUpstream
+	address   string
+	systemDNS *systemDNSResolver
+	upstream  *UpstreamRuntime
+}
 type Group struct {
 	ID        string   `json:"id"`
 	// Deprecated legacy fields are accepted for config compatibility and ignored.
@@ -117,12 +135,15 @@ type GeminiAPIConfig struct {
 }
 
 type Snapshot struct {
-	cfg        Config
-	localHosts map[string]LocalHost
-	upstreams  map[string]*UpstreamRuntime
-	groups     map[string]Group
-	loadedAt   time.Time
-	configMod  time.Time
+	cfg                    Config
+	localHosts             map[string]LocalHost
+	upstreams              map[string]*UpstreamRuntime
+	groups                 map[string]Group
+	resolverUpstreams      []*ResolverRuntime
+	resolverGeneration     uint64
+	activeDoHGeneration    uint64
+	loadedAt               time.Time
+	configMod              time.Time
 }
 type UpstreamRuntime struct {
 	cfg       Upstream
@@ -603,6 +624,7 @@ func loadConfig(path string) (Config, error) {
 	}
 	c, e = normalizeConfigGroups(c)
 	if e != nil { return Config{}, e }
+	c = normalizeDNSConfig(c)
 	c = normalizeCacheConfig(c)
 	if e = validateConfig(c); e != nil {
 		return Config{}, e
@@ -615,6 +637,8 @@ func defaultConfig() Config {
 		DNSQueryTimeoutSeconds: 15, DoHTimeoutSeconds: 10, DNSMaxConcurrent: 256,
 		Health: HealthConfig{IntervalSeconds: 25 * 60, TimeoutSeconds: 5, FailureThreshold: 1, SuccessThreshold: 1},
 		Cache:  CacheConfig{Enabled: true, MinTTL: 5, MaxTTL: 300, NegativeTTL: 15, MaxEntries: 8192, MaxBytes: defaultCacheMaxBytes},
+		DNSMode: "endpoint_ip",
+		ResolverUpstreams: []ResolverUpstream{{ID: "system", Name: "System resolver (OS)", Type: "system"}},
 		LocalHosts: map[string]LocalHost{},
 		BootstrapResolvers: []string{"1.1.1.1", "8.8.8.8"},
 		Upstreams: []Upstream{
@@ -694,6 +718,93 @@ func ensureSystemDNSFirst(c Config) (Config, error) {
 	return c, nil
 }
 
+func normalizeDNSConfig(c Config) Config {
+	if strings.TrimSpace(c.DNSMode) == "" {
+		c.DNSMode = "endpoint_ip"
+	}
+	if c.ResolverUpstreams == nil {
+		// Configurations created before resolver_upstreams existed inherit the
+		// documented default. An explicit empty JSON array remains empty and
+		// therefore means that mode 2 has no configured upstream.
+		c.ResolverUpstreams = []ResolverUpstream{{ID: "system", Name: "System resolver (OS)", Type: "system"}}
+	}
+	return c
+}
+
+func normalizeResolverAddress(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if ip := net.ParseIP(raw); ip != nil {
+		return net.JoinHostPort(ip.String(), "53"), nil
+	}
+	host, port, err := net.SplitHostPort(raw)
+	if err != nil {
+		return "", fmt.Errorf("resolver address must be an IP literal with optional port: %w", err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return "", errors.New("plain DNS resolver address must use an IP literal; use a DoH URL for hostname-based upstreams")
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return "", errors.New("resolver address port must be in 1..65535")
+	}
+	return net.JoinHostPort(ip.String(), strconv.Itoa(portNumber)), nil
+}
+
+func validateResolverUpstreams(upstreams []ResolverUpstream) error {
+	ids := make(map[string]bool, len(upstreams))
+	systemCount := 0
+	for i, resolver := range upstreams {
+		id := strings.TrimSpace(resolver.ID)
+		if id == "" || len(id) > 128 || strings.ContainsAny(id, "/:@ \t") || ids[id] {
+			return fmt.Errorf("resolver_upstreams[%d] has an empty, invalid or duplicate id %q", i, resolver.ID)
+		}
+		ids[id] = true
+		switch resolver.Type {
+		case "system":
+			systemCount++
+			if systemCount > 1 {
+				return errors.New("resolver_upstreams may contain at most one system resolver")
+			}
+			if resolver.Address != "" || resolver.URL != "" || len(resolver.BootstrapIPs) != 0 {
+				return fmt.Errorf("system resolver %q must not define address, url or bootstrap_ips", id)
+			}
+		case "udp", "tcp":
+			if resolver.URL != "" || len(resolver.BootstrapIPs) != 0 {
+				return fmt.Errorf("plain DNS resolver %q must not define url or bootstrap_ips", id)
+			}
+			if _, err := normalizeResolverAddress(resolver.Address); err != nil {
+				return fmt.Errorf("resolver %q: %w", id, err)
+			}
+		case "doh":
+			if resolver.Address != "" {
+				return fmt.Errorf("DoH resolver %q must use url, not address", id)
+			}
+			parsed, err := url.Parse(strings.TrimSpace(resolver.URL))
+			if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.Fragment != "" {
+				return fmt.Errorf("DoH resolver %q must have an HTTPS URL without userinfo or fragment", id)
+			}
+			for _, rawIP := range resolver.BootstrapIPs {
+				if net.ParseIP(strings.TrimSpace(rawIP)) == nil {
+					return fmt.Errorf("DoH resolver %q has invalid bootstrap IP %q", id, rawIP)
+				}
+			}
+		default:
+			return fmt.Errorf("resolver %q has unsupported type %q", id, resolver.Type)
+		}
+	}
+	return nil
+}
+
+func configGeneration(value any) uint64 {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return 0
+	}
+	sum := sha256.Sum256(encoded)
+	return binary.BigEndian.Uint64(sum[:8])
+}
+
 func normalizeCacheConfig(c Config) Config {
 	// Older config files predate max_bytes; give them a bounded default.
 	if c.Cache.MaxBytes == 0 {
@@ -703,6 +814,12 @@ func normalizeCacheConfig(c Config) Config {
 }
 
 func validateConfig(c Config) error {
+	if c.DNSMode != "endpoint_ip" && c.DNSMode != "resolver" {
+		return fmt.Errorf("dns_mode must be endpoint_ip or resolver, got %q", c.DNSMode)
+	}
+	if err := validateResolverUpstreams(c.ResolverUpstreams); err != nil {
+		return err
+	}
 	if !validListen(c.DNSListenUDP) || !validListen(c.DNSListenTCP) || !validListen(c.HTTPListen) {
 		return errors.New("dns_listen_udp, dns_listen_tcp and http_listen must be host:port")
 	}
@@ -895,6 +1012,46 @@ func loadDoHList(path string, create bool) (map[string]string, error) {
 
 func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
 	s := &Snapshot{cfg: c, upstreams: map[string]*UpstreamRuntime{}, groups: map[string]Group{}, localHosts: map[string]LocalHost{}, loadedAt: time.Now().UTC()}
+	resolverBootstrap := c.BootstrapResolvers
+	if len(resolverBootstrap) == 0 {
+		resolverBootstrap = defaultBootstrapResolvers()
+	}
+	for _, configured := range c.ResolverUpstreams {
+		runtimeResolver := &ResolverRuntime{cfg: configured}
+		switch configured.Type {
+		case "system":
+			runtimeResolver.systemDNS = &systemDNSResolver{resolvConfPath: systemResolvConfPath}
+		case "udp", "tcp":
+			address, err := normalizeResolverAddress(configured.Address)
+			if err != nil {
+				return nil, fmt.Errorf("resolver %s: %w", configured.ID, err)
+			}
+			runtimeResolver.address = address
+		case "doh":
+			upstream := Upstream{
+				ID: configured.ID, Name: configured.Name, Type: "doh",
+				URL: strings.TrimSpace(configured.URL),
+				BootstrapIPs: append([]string(nil), configured.BootstrapIPs...),
+			}
+			client, bootstrap, err := newDoHClient(upstream, resolverBootstrap, time.Duration(c.DoHTimeoutSeconds)*time.Second)
+			if err != nil {
+				return nil, fmt.Errorf("build mode-2 DoH resolver %s: %w", configured.ID, err)
+			}
+			runtimeResolver.upstream = &UpstreamRuntime{cfg: upstream, client: client, bootstrap: bootstrap}
+		}
+		s.resolverUpstreams = append(s.resolverUpstreams, runtimeResolver)
+	}
+	s.resolverGeneration = configGeneration(struct {
+		Mode string
+		Resolvers []ResolverUpstream
+		Bootstrap []string
+		Cache CacheConfig
+	}{c.DNSMode, c.ResolverUpstreams, c.BootstrapResolvers, c.Cache})
+	s.activeDoHGeneration = configGeneration(struct {
+		Upstreams []Upstream
+		DoHURLs map[string]string
+		Bootstrap []string
+	}{c.Upstreams, dohURLs, c.BootstrapResolvers})
 	for host, entry := range c.LocalHosts {
 		s.localHosts[normalizeDomain(host)] = entry
 	}
@@ -2768,6 +2925,7 @@ func loadConfigNoCreate(path string) (Config, error) {
 	}
 	c, e = normalizeConfigGroups(c)
 	if e != nil { return Config{}, e }
+	c = normalizeDNSConfig(c)
 	c = normalizeCacheConfig(c)
 	if e = validateConfig(c); e != nil {
 		return Config{}, e
