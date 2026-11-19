@@ -149,10 +149,10 @@ func TestBuildActiveDoHResponseReturnsNoErrorNodataAfterFreshnessExpires(t *test
 
 func TestActiveDoHResponsePreservesEDNSDOWithoutReflectingOptions(t *testing.T) {
 	now := time.Now().UTC()
-	query := activeDoHTestQuery(1, true)
-	// Add a COOKIE option to the request OPT.
-	query = query[:len(query)-2]
-	query = append(query, 0, 8, 0, 4, 1, 2, 3, 4)
+	query := makeDNSQuery("geosite.example", 1)
+	binary.BigEndian.PutUint16(query[10:12], 1)
+	// COOKIE option (code 10, length 4) must not be copied to the response.
+	query = append(query, 0, 0, 41, 0x04, 0xd0, 0, 0, 0x80, 0, 8, 0, 10, 0, 4, 1, 2, 3, 4)
 	_, qtype, questionEnd, err := parseQuestion(query)
 	if err != nil {
 		t.Fatal(err)
