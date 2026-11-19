@@ -398,7 +398,8 @@ Local Hosts → Geosite → Auto Hosts endpoint / Quad9 Secure DoH
 
 - `local_hosts` имеет первый приоритет и отвечает локально.
 - При Geosite HIT и включённом Auto Hosts (Emergency OFF выключен) QNAME сохраняется в Auto Hosts, после чего A/AAAA получают IP-адрес текущего активного DoH endpoint. Отсутствующая IPv4/IPv6 семья отвечает NODATA; HTTPS/SVCB не подменяются адресом endpoint.
-- Geosite MISS, выключенный Auto Hosts, Emergency OFF, устаревший endpoint или ошибка/переполнение записи ведут к отдельному `vps-resolve` — Quad9 Secure DoH (`https://dns.quad9.net/dns-query`). Этот resolver не входит в общий список DoH-серверов, не участвует в Auto Hosts и требует HTTP/2.
+- Geosite MISS, выключенный Auto Hosts, Emergency OFF, устаревший endpoint, отказ постановки QNAME в ограниченную очередь или достижение лимита списка ведут к отдельному `vps-resolve` — Quad9 Secure DoH (`https://dns.quad9.net/dns-query`). Этот resolver не входит в общий список DoH-серверов, не участвует в Auto Hosts и требует HTTP/2.
+- Запись QNAME в persistence выполняется фоновым worker. Ошибка дисковой записи журналируется; уже отправленный DNS-ответ не может быть заменён после завершения запроса.
 - Если QNAME является CNAME-целью выбранной Geosite-категории, ответ с реальным адресом цели блокируется, пока Auto Hosts активен.
 
 Категории выбираются в разделе Auto Hosts Web UI и сохраняются в `auto-hosts.json`. Бинарный список загружается из `/usr/local/x-ui/bin/geosite.dat`; новый matcher публикуется атомарно после успешного разбора.
