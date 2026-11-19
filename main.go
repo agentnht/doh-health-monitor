@@ -282,9 +282,10 @@ type Event struct {
 	Data   json.RawMessage `json:"data"`
 }
 type autoHostsQueryJob struct {
-	domain string
-	done   chan struct{}
-	err    error
+	domain   string
+	lastSeen time.Time
+	done     chan struct{}
+	err      error
 }
 
 type Runtime struct {
@@ -1421,12 +1422,35 @@ func (r *Runtime) enqueueAutoHostsQuery(rawDomain string) (*autoHostsQueryJob, b
 	if err != nil {
 		return nil, false
 	}
+	now := time.Now().UTC()
 	r.autoHostsQueueMu.Lock()
 	defer r.autoHostsQueueMu.Unlock()
+
+	// Coalesce duplicate writes while preserving the most recent client activity.
 	if existing := r.autoHostsQueued[domain]; existing != nil {
+		existing.lastSeen = now
 		return existing, true
 	}
-	job := &autoHostsQueryJob{domain: domain, done: make(chan struct{})}
+
+	// Reserve capacity for queued-but-not-yet-persisted domains. This keeps
+	// concurrent QNAMEs from overbooking the shared Auto Hosts limit.
+	snapshot := r.autoHosts.Snapshot()
+	if snapshot == nil || !snapshot.Enabled || snapshot.EmergencyOff {
+		return nil, false
+	}
+	if _, alreadyPublished := snapshot.Domains[domain]; !alreadyPublished {
+		pendingNew := 0
+		for pendingDomain := range r.autoHostsQueued {
+			if _, published := snapshot.Domains[pendingDomain]; !published {
+				pendingNew++
+			}
+		}
+		if len(snapshot.Domains)+pendingNew >= snapshot.MaxDomains {
+			return nil, false
+		}
+	}
+
+	job := &autoHostsQueryJob{domain: domain, lastSeen: now, done: make(chan struct{})}
 	select {
 	case r.autoHostsQueryQueue <- job:
 		r.autoHostsQueued[domain] = job
@@ -1445,17 +1469,31 @@ func (r *Runtime) runAutoHostsQueryRecorder(ctx context.Context) {
 			if job == nil {
 				continue
 			}
-			if r.autoHosts == nil {
-				job.err = errors.New("Auto Hosts manager is unavailable")
-			} else {
-				job.err = r.autoHosts.RecordQuery(job.domain, time.Now().UTC())
+			for {
+				r.autoHostsQueueMu.Lock()
+				lastSeen := job.lastSeen
+				r.autoHostsQueueMu.Unlock()
+
+				if r.autoHosts == nil {
+					job.err = errors.New("Auto Hosts manager is unavailable")
+				} else {
+					job.err = r.autoHosts.RecordQuery(job.domain, lastSeen)
+				}
+
+				r.autoHostsQueueMu.Lock()
+				// A repeated QNAME may arrive while persistence is in progress.
+				// Commit its later timestamp before releasing the reservation.
+				if job.err == nil && r.autoHostsQueued[job.domain] == job && job.lastSeen.After(lastSeen) {
+					r.autoHostsQueueMu.Unlock()
+					continue
+				}
+				if r.autoHostsQueued[job.domain] == job {
+					delete(r.autoHostsQueued, job.domain)
+				}
+				r.autoHostsQueueMu.Unlock()
+				break
 			}
 			close(job.done)
-			r.autoHostsQueueMu.Lock()
-			if r.autoHostsQueued[job.domain] == job {
-				delete(r.autoHostsQueued, job.domain)
-			}
-			r.autoHostsQueueMu.Unlock()
 			if job.err != nil {
 				logLine("WARN", "AUTO_HOSTS query record failed domain=%s: %v", job.domain, job.err)
 			}
@@ -1751,15 +1789,12 @@ func (r *Runtime) handleDNS(packet []byte) (response []byte) {
 		return response
 	}
 	if r.geo != nil && r.geo.MatchAny(normalizeDomain(name)) && r.autoHosts != nil {
-		autoSnapshot := r.autoHosts.Snapshot()
-		if autoSnapshot != nil && autoSnapshot.CanRecordQuery(name) {
-			_, queued := r.enqueueAutoHostsQuery(name)
-			if queued {
-				// QNAME persistence runs in the background. The DNS critical path
-				// never waits for disk I/O and reads only the immutable endpoint snapshot.
-				if response, matched := autoHostsEndpointResponse(packet, normalizeDomain(name), qtype, r.autoHosts.Snapshot(), time.Now()); matched {
-					return response
-				}
+		_, queued := r.enqueueAutoHostsQuery(name)
+		if queued {
+			// QNAME persistence runs in the background. The DNS critical path
+			// never waits for disk I/O and reads only the immutable endpoint snapshot.
+			if response, matched := autoHostsEndpointResponse(packet, normalizeDomain(name), qtype, r.autoHosts.Snapshot(), time.Now()); matched {
+				return response
 			}
 		}
 	}
