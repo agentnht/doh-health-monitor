@@ -26,6 +26,7 @@ func Load(path string, selected []string) (*Matcher, error) {
 	matcher, _, _, err := LoadWithMetadata(path, selected)
 	return matcher, err
 }
+
 // Parse decodes only selected categories. An empty selection is rejected to
 // prevent accidentally turning an unconfigured matcher into a match-all rule.
 func Parse(data []byte, selected []string) (*Matcher, error) {
