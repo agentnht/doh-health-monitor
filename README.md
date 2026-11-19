@@ -462,7 +462,7 @@ sudo apt-get install -y dnsutils
 Затем получите фактический порт из текущего `config.json` и выполните проверки:
 
 ```bash
-DNS_UDP_PORT="$(jq -r '.dns_listen_udp | split(\":\")[-1]' "$LUCX_PLUGIN_DATA/config.json")"
+DNS_UDP_PORT="$(jq -r '.dns_listen_udp | split(":")[-1]' "$LUCX_PLUGIN_DATA/config.json")"
 dig @127.0.0.1 -p "$DNS_UDP_PORT" example.com A +time=5 +tries=1
 dig @127.0.0.1 -p "$DNS_UDP_PORT" example.com AAAA +time=5 +tries=1
 dig @127.0.0.1 -p "$DNS_UDP_PORT" google.com TXT +time=5 +tries=1
@@ -473,7 +473,7 @@ dig @127.0.0.1 -p "$DNS_UDP_PORT" google.com TXT +time=5 +tries=1
 ### 7.4 Проверка TCP DNS
 
 ```bash
-DNS_TCP_PORT="$(jq -r '.dns_listen_tcp | split(\":\")[-1]' "$LUCX_PLUGIN_DATA/config.json")"
+DNS_TCP_PORT="$(jq -r '.dns_listen_tcp | split(":")[-1]' "$LUCX_PLUGIN_DATA/config.json")"
 dig +tcp @127.0.0.1 -p "$DNS_TCP_PORT" example.com A +time=5 +tries=1
 ```
 
@@ -663,7 +663,7 @@ dig +short panel.example.com AAAA
 После добавления примера выше выполните на VPS:
 
 ```bash
-DNS_UDP_PORT="$(jq -r '.dns_listen_udp | split(\":\")[-1]' "$LUCX_PLUGIN_DATA/config.json")"
+DNS_UDP_PORT="$(jq -r '.dns_listen_udp | split(":")[-1]' "$LUCX_PLUGIN_DATA/config.json")"
 dig @127.0.0.1 -p "$DNS_UDP_PORT" panel.example.com A
 dig @127.0.0.1 -p "$DNS_UDP_PORT" panel.example.com AAAA
 dig @127.0.0.1 -p "$DNS_UDP_PORT" panel.example.com HTTPS
