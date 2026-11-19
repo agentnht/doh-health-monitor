@@ -1051,12 +1051,15 @@ func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
 		Resolvers []ResolverUpstream
 		Bootstrap []string
 		Cache CacheConfig
-	}{c.DNSMode, c.ResolverUpstreams, c.BootstrapResolvers, c.Cache})
+		LocalHosts map[string]LocalHost
+	}{c.DNSMode, c.ResolverUpstreams, c.BootstrapResolvers, c.Cache, c.LocalHosts})
 	s.activeDoHGeneration = configGeneration(struct {
+		Mode string
 		Upstreams []Upstream
 		DoHURLs map[string]string
 		Bootstrap []string
-	}{c.Upstreams, dohURLs, c.BootstrapResolvers})
+		LocalHosts map[string]LocalHost
+	}{c.DNSMode, c.Upstreams, dohURLs, c.BootstrapResolvers, c.LocalHosts})
 	for host, entry := range c.LocalHosts {
 		s.localHosts[normalizeDomain(host)] = entry
 	}
@@ -1862,6 +1865,9 @@ func (r *Runtime) handleDNS(packet []byte) []byte {
 		if response, matched := localHostsResponse(packet, normalizeDomain(name), qtype, s.localHosts); matched {
 			return response
 		}
+	}
+	if s.cfg.DNSMode == "resolver" {
+		return r.resolverDNSResponse(packet, s)
 	}
 	return r.activeDoHDNSResponse(packet, s)
 }
@@ -2888,12 +2894,12 @@ func (r *Runtime) reloadLoop(ctx context.Context) {
 		}
 		r.snapshot.Store(ns)
 		r.initHealth(ns)
-		r.cacheMu.Lock()
-		r.cache = map[string]cacheItem{}
-		r.cacheOrder = nil
-		r.cacheOrderHead = 0
-		r.cacheBytes = 0
-		r.cacheMu.Unlock()
+		if old.activeDoHGeneration != ns.activeDoHGeneration {
+			r.clearActiveDoHCache()
+		}
+		if old.resolverGeneration != ns.resolverGeneration {
+			r.clearResolverCache()
+		}
 		r.sourceHashes = sources.Checksums
 		r.lastRejectedSourceHash = ""
 		r.mu.Lock()
@@ -3321,7 +3327,9 @@ func rrTTLPositions(p []byte) ([]int, error) {
 			if off+10 > len(p) {
 				return nil, errors.New("truncated RR")
 			}
-			pos = append(pos, off+4)
+			if binary.BigEndian.Uint16(p[off:off+2]) != 41 {
+				pos = append(pos, off+4)
+			}
 			rd := int(binary.BigEndian.Uint16(p[off+8 : off+10]))
 			off += 10 + rd
 			if off > len(p) {
