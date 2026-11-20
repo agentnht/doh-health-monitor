@@ -179,6 +179,51 @@ Web UI содержит:
 
 Образец `examples/config.example.json` доступен в GitHub-репозитории, но не входит в ZIP. При первом старте плагин создаёт реальный `config.json` из встроенного шаблона. Обычно достаточно редактировать созданный файл.
 
+### 5.1.1 Geosite DNS modes (только feature branch / Draft PR #11)
+
+> **Важно:** эта конфигурационная модель реализована в ветке `feature/geosite-dns-routing` и обсуждается в [PR #11](https://github.com/agentnht/doh-health-monitor/pull/11). Она ещё не входит в опубликованную версию `main` 2.2.1. Остальные разделы README исторически описывают стабильную модель 2.2.1; не переносите поля из этого раздела в production до установки сборки с PR #11.
+
+В новой модели `dns_mode` выбирает ровно один способ обработки запросов, пришедших на DNS listener плагина:
+
+| Значение | Поведение |
+|---|---|
+| `endpoint_ip` (default) | ActiveDoHSelector выбирает один DoH endpoint по восьми контрольным доменам. На A/AAAA запрос плагин отвечает IP самого выбранного DoH endpoint-а, а не IP запрошенного сайта. |
+| `resolver` | Плагин разрешает исходное QNAME через список `resolver_upstreams` в заданном порядке. Это обычный DNS resolve запрошенного имени. |
+
+Пример настройки режима 2:
+
+```json
+{
+  "dns_mode": "resolver",
+  "resolver_upstreams": [
+    { "id": "system", "name": "System resolver (OS)", "type": "system" },
+    { "id": "quad9-udp", "name": "Quad9 UDP", "type": "udp", "address": "9.9.9.9" },
+    { "id": "cloudflare-tcp", "name": "Cloudflare TCP", "type": "tcp", "address": "1.1.1.1:53" },
+    {
+      "id": "quad9-doh",
+      "name": "Quad9 DoH",
+      "type": "doh",
+      "url": "https://dns.quad9.net/dns-query",
+      "bootstrap_ips": ["9.9.9.9"]
+    }
+  ]
+}
+```
+
+Типы upstream-а:
+
+- `system` — системный resolver ОС сервера; nameserver-ы читаются из `/etc/resolv.conf`.
+- `udp` / `tcp` — обычный DNS upstream. `address` должен быть IP literal; порт необязателен и по умолчанию равен 53. Hostname здесь не принимается.
+- `doh` — HTTPS DoH endpoint. Задаётся через `url`; `bootstrap_ips` необязателен и содержит IP literal для подключения без предварительного разрешения hostname.
+
+Порядок объектов в `resolver_upstreams` задаёт fallback-порядок. Следующий upstream пробуется при транспортной ошибке/таймауте, SERVFAIL, REFUSED или непригодном усечённом ответе. Валидный NXDOMAIN или NOERROR/NODATA считается окончательным DNS-ответом и не маскируется следующим upstream-ом. Если все upstream-ы исчерпаны, плагин возвращает синтетический NOERROR/NODATA без SOA и не кэширует его.
+
+Если `resolver_upstreams` отсутствует или имеет значение `null`, применяется default — один system resolver. Явный пустой массив `[]` означает, что upstream-ов нет; в режиме `resolver` запросы завершатся синтетическим NOERROR/NODATA. Чтобы отключить system resolver, укажите непустой список других upstream-ов или явно задайте нужный порядок.
+
+`bootstrap_resolvers` — отдельная настройка для bootstrap hostname-ов DoH endpoint-ов. Она не является списком пользовательских DNS upstream-ов режима 2 и не подменяет `resolver_upstreams`.
+
+**QTYPE и TTL:** listener плагина обслуживает A и AAAA. Другие типы DNS-запросов получают NOERROR/NODATA без SOA и без кэширования. CNAME RR, пришедшие в составе ответа на A/AAAA от upstream-а, сохраняются. В режиме `endpoint_ip` TTL ответа не превышает 60 секунд и дополнительно ограничивается остатком freshness выбранного endpoint-а. В режиме `resolver` положительный cache TTL ограничен 300 секундами; NXDOMAIN/NODATA кэшируется только при наличии SOA и с TTL по RFC 2308, ограниченным сверху 300 секундами. Первый ответ клиенту сохраняет upstream TTL, а cap применяется к отдельной копии для кэша.
+
 #### Listener-ы и общие параметры
 
 ```json
