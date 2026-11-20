@@ -1,7 +1,7 @@
 # Концепция: Geosite DNS routing и режимы работы DoH
 
 **Дата последнего обновления:** 2026-11-20  
-**Статус:** Draft PR #11; базовая реализация двух DNS-режимов, ActiveDoHSelector, DNS cache generation и resolver pipeline уже находится в `feature/geosite-dns-routing`. CI (`go vet ./...`, `go test ./...`, Linux amd64 build и отдельный DoH integration workflow) прошёл для текущего code head `b31ba20bfb78e4a30576170bbd032a5dc9900b45`. Проверка на реальном VPS и интеграция с конкретной сборкой LucX-UI/Xray ещё не выполнены.  
+**Статус:** Draft PR #11; базовая реализация двух DNS-режимов, ActiveDoHSelector, DNS cache generation и resolver pipeline уже находится в `feature/geosite-dns-routing`. CI (`go vet ./...`, `go test ./...`, Linux amd64 build и отдельный DoH integration workflow) прошёл для текущего code head `58870be81651228ebb61a0eb0b09791c8122a0aa`. Проверка на реальном VPS и интеграция с конкретной сборкой LucX-UI/Xray ещё не выполнены.  
 **Базовая точка реализации:** ветка `main`, версия 2.2.1 (`b32d4263dbb43c5162860c0def0e990aac6e6541`).
 
 ## 1. Цель обсуждения
@@ -355,7 +355,7 @@ V3 — источник готовых реализаций и тестов, н�
 4. Режим `resolver` реализует последовательный fallback для system, UDP, TCP и DoH upstream-ов; транспортные ошибки, SERVFAIL/REFUSED и unusable truncated responses переключают upstream, валидные NXDOMAIN/NODATA — нет.
 5. Кэш режима 2 отделён от режима 1. Положительный cache TTL ограничен 300 секундами; negative cache опирается на SOA TTL и SOA.MINIMUM и не применяется к ответам без SOA. Первый ответ клиенту сохраняет исходный TTL upstream-а, а ограничение 300 секунд применяется к отдельной копии для кэша.
 6. Реализована прямая защита system resolver от совпадения его nameserver с локальным plugin listener на стандартном порту 53. Ограничения для локальных stub-resolver и внешнего TProxy/NAT-перенаправления остаются предметом интеграционной проверки.
-7. Для code head `b31ba20bfb78e4a30576170bbd032a5dc9900b45` GitHub Actions подтвердил успешные `go vet ./...`, `go test ./...`, Linux amd64 build, проверку shell/JS syntax и отдельный DoH integration workflow.
+7. Для code head `58870be81651228ebb61a0eb0b09791c8122a0aa` GitHub Actions подтвердил успешные `go vet ./...`, `go test ./...`, Linux amd64 build, проверку shell/JS syntax и отдельный DoH integration workflow.
 
 ### Следующий порядок работы
 
