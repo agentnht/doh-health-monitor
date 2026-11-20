@@ -211,7 +211,7 @@ run_check() {
   fi
 
   printf 'Проверка Xray DNS path выполняется в режиме read-only; конфигурация не изменяется.\n'
-  printf '[INFO] Эта проверка не генерирует и не валидирует Geosite policy внутри dns-out.settings.rules.\n'
+  printf '[INFO] Проверяется структура Geosite direct -> catch-all hijack; наличие категории в asset и клиентский end-to-end путь требуют отдельной проверки.\n'
   if DOH_SKIP_PLUGIN_HEALTH_CHECK=1 bash "$checker_file"; then
     rc=0
   else
@@ -320,12 +320,12 @@ run_web_ui() {
 
 show_menu() {
   printf '\nDoH Health Monitor 2.3.0 — управление\n'
-  printf '%s\n' '  1) Добавить недостающие DNS-объекты LucX-UI (integrate)'
-  printf '%s\n' '  2) Удалить DNS-объекты плагина (remove)'
-  printf '%s\n' '  3) Проверить plugin и базовый Xray DNS path (read-only)'
+  printf '%s\n' '  1) Legacy panel integration (не для утверждённой Geosite-схемы)'
+  printf '%s\n' '  2) Legacy panel removal (не для утверждённой Geosite-схемы)'
+  printf '%s\n' '  3) Проверить plugin и утверждённый Xray Geosite DNS path (read-only)'
   printf '%s\n' '  4) Запустить Web UI через SSH-туннель'
   printf '%s\n' '  0) Выход'
-  printf '%s\n' '  Примечание: Geosite policy в dns-out настраивается отдельно; пункты 1–3 её не создают.'
+  printf '%s\n' '  Примечание: Geosite policy задаётся вручную по doc/GEOSITE-DNS-ROUTING-DESIGN.md; пункты 1–2 не устанавливают её.'
   printf 'Выберите действие: '
 }
 
