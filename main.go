@@ -525,30 +525,6 @@ func (l lucxIntegrationLogger) Printf(format string, args ...any) {
 	}
 }
 
-func setIntegrationFlag(path string, enabled bool) error {
-	data, err := os.ReadFile(path)
-	if err != nil { return fmt.Errorf("read config: %w", err) }
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	var config map[string]any
-	if err := decoder.Decode(&config); err != nil || config == nil { return errors.New("config.json is not a JSON object") }
-	config["integration"] = enabled
-	encoded, err := json.MarshalIndent(config, "", "  ")
-	if err != nil { return fmt.Errorf("encode config: %w", err) }
-	encoded = append(encoded, '\n')
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".config.json-*")
-	if err != nil { return fmt.Errorf("create temporary config: %w", err) }
-	name := tmp.Name()
-	defer os.Remove(name)
-	if err := tmp.Chmod(0600); err != nil { tmp.Close(); return err }
-	if _, err := tmp.Write(encoded); err != nil { tmp.Close(); return err }
-	if err := tmp.Sync(); err != nil { tmp.Close(); return err }
-	if err := tmp.Close(); err != nil { return err }
-	if err := os.Rename(name, path); err != nil { return fmt.Errorf("replace config atomically: %w", err) }
-	if d, err := os.Open(dir); err == nil { _ = d.Sync(); _ = d.Close() }
-	return nil
-}
 
 func fatal(f string, a ...any) { logLine("ERROR", f, a...); os.Exit(1) }
 func envOr(k, d string) string {
