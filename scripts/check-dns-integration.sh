@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Read-only structural check for the approved Xray Geosite DNS routing design.
+# Read-only structural check for the approved Xray Geosite DNS design.
 set -uo pipefail
 
 DOH_SERVICE="${DOH_SERVICE:-lucx-plugin-doh-health-monitor}"
@@ -63,69 +63,85 @@ if [[ ! -r "$XRAY_CONFIG" ]]; then
 else
   pass "Xray config доступен: $XRAY_CONFIG"
 
-  # Discover the outbound referenced by the global TCP/UDP port-53 route.
-  dns_tag="$(jq -r '
-    first(
+  route_count="$(jq -r '
+    [
       .routing.rules[]? |
       select(
         .type == "field" and
         .enabled != false and
-        ((.port | tostring) == "53") and
-        ((.network // "tcp,udp") | tostring | contains("tcp")) and
-        ((.network // "tcp,udp") | tostring | contains("udp")) and
-        ((.outboundTag // "") != "")
-      ) |
-      .outboundTag
-    ) // empty
-  ' "$XRAY_CONFIG" 2>/dev/null)"
+        .port == "53" and
+        .network == "tcp,udp" and
+        ((.outboundTag | type) == "string") and
+        (.outboundTag | length) > 0
+      )
+    ] | length
+  ' "$XRAY_CONFIG" 2>/dev/null || printf '0')"
 
-  if [[ -z "$dns_tag" ]]; then
-    error "Не найдено глобальное routing-правило TCP/UDP port 53 с outboundTag"
-  elif jq -e --arg tag "$dns_tag" --arg port "$PLUGIN_PORT" '
-    any(.outbounds[]?;
-      .tag == $tag and
-      .protocol == "dns" and
-      .settings.rewriteAddress == "127.0.0.1" and
-      ((.settings.rewritePort | tostring) == $port) and
-      .settings.rewriteNetwork == "udp"
-    )
-  ' "$XRAY_CONFIG" >/dev/null; then
-    pass "Port-53 route использует DNS outbound $dns_tag с rewrite UDP 127.0.0.1:$PLUGIN_PORT"
+  if [[ "$route_count" != "1" ]]; then
+    error "Ожидается ровно одно глобальное routing-правило type=field, network=tcp,udp, port=53; найдено: $route_count"
+    dns_tag=""
   else
-    error "Outbound $dns_tag не соответствует rewrite UDP 127.0.0.1:$PLUGIN_PORT"
+    dns_tag="$(jq -r '
+      first(
+        .routing.rules[]? |
+        select(
+          .type == "field" and
+          .enabled != false and
+          .port == "53" and
+          .network == "tcp,udp" and
+          ((.outboundTag | type) == "string") and
+          (.outboundTag | length) > 0
+        ) |
+        .outboundTag
+      ) // empty
+    ' "$XRAY_CONFIG" 2>/dev/null)"
+    if jq -e --arg tag "$dns_tag" '
+      [.routing.rules[]? |
+        select(
+          .type == "field" and
+          .enabled != false and
+          .port == "53" and
+          .network == "tcp,udp" and
+          .outboundTag == $tag
+        )] as $routes |
+      ($routes | length) == 1 and
+      (($routes[0] | keys) - ["type", "enabled", "port", "network", "outboundTag", "ruleTag", "remarks", "comment"] | length) == 0
+    ' "$XRAY_CONFIG" >/dev/null; then
+      pass "Найдено одно глобальное правило TCP/UDP port 53 → $dns_tag"
+    else
+      error "Port-53 routing rule содержит дополнительные selectors или некорректные параметры"
+    fi
   fi
 
   if [[ -n "$dns_tag" ]]; then
+    if jq -e --arg tag "$dns_tag" --arg port "$PLUGIN_PORT" '
+      [.outbounds[]? | select(.tag == $tag and .protocol == "dns")] as $outbounds |
+      ($outbounds | length) == 1 and
+      $outbounds[0].settings.rewriteAddress == "127.0.0.1" and
+      (($outbounds[0].settings.rewritePort | tostring) == $port) and
+      $outbounds[0].settings.rewriteNetwork == "udp"
+    ' "$XRAY_CONFIG" >/dev/null; then
+      pass "DNS outbound $dns_tag использует UDP rewrite на 127.0.0.1:$PLUGIN_PORT"
+    else
+      error "DNS outbound $dns_tag должен быть уникальным и использовать UDP rewrite на 127.0.0.1:$PLUGIN_PORT"
+    fi
+
     if jq -e --arg tag "$dns_tag" '
       [.outbounds[]? | select(.tag == $tag and .protocol == "dns")] as $outbounds |
-      if ($outbounds | length) != 1 then
-        false
-      elif ($outbounds[0].settings.rules | type) != "array" then
+      if ($outbounds | length) != 1 or ($outbounds[0].settings.rules | type) != "array" then
         false
       else
         ($outbounds[0].settings.rules) as $rules |
-        ([$rules | to_entries[] |
-          select(
-            .value.action == "direct" and
-            any(.value.domain[]?; type == "string" and startswith("geosite:"))
-          ) | .key]) as $geosite_direct |
-        ([$rules | to_entries[] |
-          select(
-            (.value | type) == "object" and
-            .value.action == "hijack" and
-            (((.value | keys) - ["action", "rCode"]) | length) == 0
-          ) | .key]) as $catchall_hijack |
-        if ($geosite_direct | length) > 0 and ($catchall_hijack | length) == 1 then
-          all($geosite_direct[]; . < $catchall_hijack[0]) and
-          $catchall_hijack[0] == (($rules | length) - 1)
-        else
-          false
-        end
+        ($rules | length) == 2 and
+        $rules[0].action == "direct" and
+        $rules[0].domain == ["geosite:habr"] and
+        (($rules[0] | keys) - ["action", "domain"] | length) == 0 and
+        $rules[1] == {"action": "hijack"}
       end
     ' "$XRAY_CONFIG" >/dev/null; then
-      pass "DNS outbound содержит Geosite direct перед последним catch-all hijack"
+      pass "DNS policy точно соответствует geosite:habr direct → catch-all hijack"
     else
-      error "DNS outbound должен содержать Geosite direct и последний безусловный catch-all hijack"
+      error "dns-out.settings.rules должен содержать ровно geosite:habr direct, затем последний безусловный hijack"
     fi
 
     if jq -e --arg tag "$dns_tag" '
@@ -135,28 +151,43 @@ else
           .value.type == "field" and
           .value.enabled != false and
           .value.outboundTag == $tag and
-          ((.value.port | tostring) == "53") and
-          ((.value.network // "tcp,udp") | tostring | contains("tcp")) and
-          ((.value.network // "tcp,udp") | tostring | contains("udp"))
+          .value.port == "53" and
+          .value.network == "tcp,udp"
         ) | .key] as $dns_routes |
       [$rules | to_entries[] |
         select(
           ((.value.ip // []) | index("geoip:private")) != null
         ) | .key] as $private_blocks |
-      ($dns_routes | length) > 0 and
+      ($dns_routes | length) == 1 and
       (($private_blocks | length) == 0 or
-       ($dns_routes | min) < ($private_blocks | min))
+       ($dns_routes[0] < ($private_blocks | min)))
     ' "$XRAY_CONFIG" >/dev/null; then
-      pass "TCP/UDP port-53 route расположен до geoip:private block (если он есть)"
+      pass "Port-53 route расположен до geoip:private block (если он есть)"
     else
       error "Port-53 route отсутствует или расположен после geoip:private block"
     fi
   fi
 
   if jq -e '(.dns.servers | type) == "array" and (.dns.servers | length) > 0' "$XRAY_CONFIG" >/dev/null; then
-    pass "Для встроенного DNS Xray задан хотя бы один upstream dns.servers"
+    pass "Для встроенного DNS Xray задан upstream в dns.servers"
   else
     error "Для catch-all hijack не задан upstream в dns.servers"
+  fi
+
+  if jq -e --arg port "$PLUGIN_PORT" '
+    any(.dns.servers[]?;
+      if type == "string" then
+        . == ("127.0.0.1:" + $port)
+      elif type == "object" then
+        .address == "127.0.0.1" and ((.port // 53 | tostring) == $port)
+      else
+        false
+      end
+    )
+  ' "$XRAY_CONFIG" >/dev/null; then
+    error "Plugin listener не должен добавляться в dns.servers: он вызывается через dns-out rewrite target"
+  else
+    pass "Plugin listener не прописан в dns.servers (DNS path использует rewrite target)"
   fi
 fi
 
