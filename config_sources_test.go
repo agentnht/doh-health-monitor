@@ -36,33 +36,42 @@ func TestInitializeConfigSourceFilesCreatesEmbeddedDefaults(t *testing.T) {
 	if !sources.SystemDNSEnabled {
 		t.Fatal("embedded default source must enable system-dns")
 	}
-	if len(sources.Checks) != 25 {
-		t.Fatalf("default checks = %d, want 25", len(sources.Checks))
+	if len(sources.Checks) != 9 {
+		t.Fatalf("default checks = %d, want 9", len(sources.Checks))
 	}
 	if sources.DoHURLs["dagami"] != "https://dns.dagami.ru/dns-query" {
 		t.Fatalf("default Dagami endpoint = %q", sources.DoHURLs["dagami"])
 	}
-	var gemini, accounts, ssl, googleAPIs *Check
+	wantDomains := []string{
+		"chatgpt.com",
+		"claude.ai",
+		"gemini.google.com",
+		"elevenlabs.io",
+		"grok.com",
+		"www.perplexity.ai",
+		"notebooklm.google.com",
+		"aistudio.google.com",
+		"accounts.google.com",
+	}
+	gotDomains := make([]string, 0, len(sources.Checks))
+	var gemini, accounts *Check
 	for i := range sources.Checks {
+		gotDomains = append(gotDomains, sources.Checks[i].Domain)
 		switch sources.Checks[i].Domain {
 		case "gemini.google.com":
 			gemini = &sources.Checks[i]
 		case "accounts.google.com":
 			accounts = &sources.Checks[i]
-		case "ssl.gstatic.com":
-			ssl = &sources.Checks[i]
-		case "www.googleapis.com":
-			googleAPIs = &sources.Checks[i]
 		}
+	}
+	if !reflect.DeepEqual(gotDomains, wantDomains) {
+		t.Errorf("default check domains = %v, want %v", gotDomains, wantDomains)
 	}
 	if gemini == nil || !gemini.Required || gemini.HTTPURL != "https://gemini.google.com/" || !reflect.DeepEqual(gemini.ExpectedStatus, []int{200}) {
 		t.Errorf("Gemini default check = %+v", gemini)
 	}
 	if accounts == nil || !accounts.Required || !accounts.VerifyOIDC || accounts.HTTPURL != "https://accounts.google.com/.well-known/openid-configuration" {
 		t.Errorf("Accounts default check = %+v", accounts)
-	}
-	if ssl == nil || ssl.HTTPURL != "" || googleAPIs == nil || googleAPIs.HTTPURL != "" {
-		t.Errorf("optional static checks must be DNS-only: ssl=%+v googleapis=%+v", ssl, googleAPIs)
 	}
 }
 
