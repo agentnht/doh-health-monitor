@@ -1,12 +1,12 @@
-# Концепция: Geosite DNS routing и режимы работы DoH
+# Утверждённый проект: Geosite DNS routing и режимы DoH
 
-**Дата последнего обновления:** 2026-11-20  
-**Статус:** Draft PR #11; базовая реализация двух DNS-режимов, ActiveDoHSelector, DNS cache generation и resolver pipeline уже находится в `feature/geosite-dns-routing`. CI (`go vet ./...`, `go test ./...`, Linux amd64 build и отдельный DoH integration workflow) прошёл для текущего code head `58870be81651228ebb61a0eb0b09791c8122a0aa`. Проверка на реальном VPS и интеграция с конкретной сборкой LucX-UI/Xray ещё не выполнены.  
-**Базовая точка реализации:** ветка `main`, версия 2.2.1 (`b32d4263dbb43c5162860c0def0e990aac6e6541`).
+**Дата последнего обновления:** 2026-11-21  
+**Статус:** Draft PR #11. Этот документ — единственный нормативный источник требований для реализации и проверки PR. Конфигурация Xray в §4.4 утверждена как целевая ручная схема. Базовая реализация двух DNS-режимов, ActiveDoHSelector, cache generation и resolver pipeline уже находится в `feature/geosite-dns-routing`. На VPS 2026-11-20 подтверждены локальные проверки listener и Xray config; полный клиентский путь через пользовательский inbound пока не проверен, поскольку такого inbound ещё нет в тестовой конфигурации.  
+**База ветки:** `main`, commit `b32d4263dbb43c5162860c0def0e990aac6e6541`.
 
 ## 1. Цель обсуждения
 
-Рассматривается отказ от Auto Hosts как отдельного динамического списка доменов и перенос определения Geosite-попаданий на сторону LucX-UI/Xray — туда, где уже находятся правила маршрутизации.
+Утверждённое решение разделяет DNS-обработку между Xray и плагином: Xray сопоставляет QNAME с Geosite внутри DNS outbound, а плагин обслуживает только DNS-пакеты, которые Xray направляет на его локальный listener.
 
 Предполагаемое разделение ответственности:
 
@@ -14,22 +14,18 @@
 - **Плагин** проверяет доступность настроенных DoH-серверов, выбирает активный DoH и обслуживает направленный к нему DNS-поток согласно выбранному режиму.
 - **Quad9 или другой настроенный fallback** используется для обычного разрешения имён в тех случаях, которые определит выбранный режим и его конфигурация.
 
-Основная цель — не дублировать внутри плагина список Geosite, если панель/Xray уже умеет определять соответствующие домены.
+Плагин не содержит Geosite matcher и не выбирает DNS-ветку по QNAME. Единственная точка сопоставления Geosite — правила `dns-out.settings.rules` на стороне Xray.
 
-## 2. Как пришли к этой идее
+## 2. Утверждённое разделение ответственности
 
-В ходе обсуждения PR #10 возник вопрос: зачем нужен Auto Hosts, если Geosite уже содержит классификацию доменов?
+Решение состоит из двух независимых этапов:
 
-Рассматривался вариант:
+1. Xray получает DNS-пакет от клиентского inbound и routing-правилом по TCP/UDP destination port 53 направляет его в DNS outbound.
+2. DNS outbound сопоставляет QNAME с Geosite. Совпавшие запросы пересылаются на локальный DNS listener плагина действием `direct` и rewrite target; все остальные запросы обрабатываются встроенным DNS Xray действием `hijack`.
 
-1. Панель/Xray сопоставляет домен с Geosite-правилами.
-2. DNS-запрос, который попал под нужное правило, направляется на DNS listener плагина.
-3. Плагин возвращает IP активного DoH endpoint.
-4. Запрос, который не попал под правило, направляется в Quad9 либо иной явно настроенный fallback.
+Плагин не получает метку сработавшего Geosite-правила и не должен пытаться восстановить её по DNS-пакету. Он обслуживает свой локальный listener одинаково для любого пришедшего QNAME, применяя только настроенный `dns_mode`.
 
-При таком подходе плагину не требуется динамически добавлять QNAME в Auto Hosts, хранить пользовательские домены, обновлять LastSeen/ExpiresAt и удалять устаревшие записи. Само правило попадания в нужную DNS-ветку определяется панелью/Xray.
-
-Важное техническое условие: один общий DNS listener не получает от Xray отдельный признак «какое правило совпало». Поэтому панель/Xray должны действительно разделить потоки до передачи запроса плагину — например, направлять их в разные DNS upstream/listener или обеспечить иным проверенным способом. Нельзя считать, что сам DNS-пакет содержит информацию о сработавшем routing rule.
+Это не схема «добавить локальный DNS сервер плагина в `dns.servers`». Geosite-запросы направляются в listener через `dns-out.settings.rewriteAddress/rewritePort`; встроенный DNS Xray используется для non-Geosite catch-all и имеет собственный upstream, например Quad9.
 
 ## 3. Два взаимоисключающих режима плагина
 
@@ -97,7 +93,6 @@ Fallback в двух режимах имеет разную семантику. 
 В этой спецификации термин `blackhole` означает отсутствие fallback-разрешения и отсутствие подмены ответа адресом другого DNS-механизма. Утверждённое wire-level поведение — DNS-ответ с RCODE `NOERROR` и пустой секцией Answer (NODATA), а не молчаливый UDP DROP и не SERVFAIL. Для синтетического NODATA не добавлять выдуманную SOA в Authority; такие ответы не кэшировать в плагине. По RFC 2308 отрицательные ответы без SOA не должны кэшироваться, поскольку у них нет корректно передаваемого negative TTL.
 
 #### Режим 2 — `resolver`
-
 В режиме 2 используется независимый упорядоченный список upstream-ов:
 
 1. По умолчанию первым является системный resolver ОС сервера, на котором работает плагин.
@@ -126,7 +121,7 @@ Fallback в двух режимах имеет разную семантику. 
 
 #### Режим 1
 
-- Рекомендуемый TTL для синтетического положительного A/AAAA-ответа — **60 секунд максимум**. Это короткое значение ограничивает срок, в течение которого клиент может продолжать использовать старый DoH endpoint после переключения, и соответствует консервативному TTL из Auto Hosts v3.
+- Рекомендуемый TTL для синтетического положительного A/AAAA-ответа — **60 секунд максимум**. Это короткое значение ограничивает срок, в течение которого клиент может продолжать использовать старый DoH endpoint после переключения, и ограничивает время использования клиентом устаревшего endpoint после переключения.
 - Фактический TTL ответа и внутреннего cache entry равен меньшему из `60 секунд` и оставшегося freshness выбранного endpoint IP. TTL никогда не продлевает freshness.
 - Если до истечения freshness осталось меньше секунды, прежний IP не выдаётся: вернуть согласованный `NOERROR`/NODATA.
 - При смене активного DoH или его выбранного IP-набора увеличивать generation и немедленно инвалидировать кэш режима 1. Уже выданные клиентам DNS-ответы нельзя отозвать, поэтому TTL 60 секунд ограничивает внешнее окно устаревшего endpoint-а.
@@ -152,7 +147,7 @@ Fallback в двух режимах имеет разную семантику. 
 - изменение resolver-конфигурации режима 2 инвалидирует только его записи;
 - запрос, начатый на старом snapshot/generation, не должен повторно наполнить уже инвалидированный кэш после переключения.
 
-В `feature/auto-hosts-v3` уже есть пригодная основа: ограниченный cache, singleflight для одинаковых запросов, учёт TTL и RFC 2308 SOA TTL, а также защита от повторного заполнения кэша запросом со старого snapshot после reload. Это основа для повторного использования, но не готовая реализация двух новых режимов: разделение namespace и generation необходимо спроектировать и покрыть отдельными тестами.
+В PR #11 эти требования реализованы в новом cache pipeline: namespace режимов разделены, записи привязаны к generation соответствующей конфигурации, а запрос со старого snapshot не должен повторно заполнить уже инвалидированный кэш после переключения или reload.
 
 ### 4.3. CNAME, HTTPS/SVCB, DNSSEC и EDNS
 
@@ -165,385 +160,368 @@ Fallback в двух режимах имеет разную семантику. 
 
 Для QTYPE вне A/AAAA плагин возвращает согласованный `NOERROR`/NODATA (пустой Answer, без синтетической SOA) и не кэширует ответ. Это осознанное ограничение функциональности: плагин нужен здесь для возврата IP адресов или разрешения IP, поэтому отдельные запросы HTTPS/SVCB, MX, TXT и прочих типов не обслуживаются. CNAME при этом не является самостоятельной целевой записью: CNAME RR, встретившиеся в цепочке ответа на A/AAAA, сохраняются и передаются клиенту вместе с ответом upstream.
 
-Для выбора и проверки DoH endpoint-а дополнительные DNS QTYPE тоже не нужны: selector разрешает контрольные домены через A/AAAA, затем проверяет HTTPS непосредственно по полученному IP с исходными hostname, TLS SNI, HTTP Host и проверкой сертификата. Таким образом, HTTP/TLS probe — отдельная проверка доступности сервера, а не DNS QTYPE HTTPS. Это сохраняет предусмотренную v3 проверку сервера при ограничении пользовательского DNS listener-а A/AAAA.
+Для выбора и проверки DoH endpoint-а дополнительные DNS QTYPE не нужны: selector разрешает контрольные домены через A/AAAA, затем проверяет HTTPS непосредственно по полученному IP с исходными hostname, TLS SNI, HTTP Host и проверкой сертификата. HTTP/TLS probe — отдельная проверка доступности сервера, а не DNS QTYPE HTTPS.
 
-В v3 есть полезные примеры: разбор TTL исключает OPT pseudo-RR, отрицательный TTL извлекается из SOA, а helper локального ответа сохраняет ограниченный набор EDNS полей и не отражает клиентские options. Также есть тесты CNAME-chain и EDNS. Это не полноценная реализация DNSSEC validation или прозрачная поддержка всех QTYPE; протокольные флаги и A/AAAA ответы нужно покрыть отдельными тестами до релиза.
+Требования к wire-ответам, CNAME, EDNS и negative cache относятся к реализации плагина и должны проверяться собственными регрессионными тестами. Это не полноценная DNSSEC validation и не обещание прозрачной поддержки всех QTYPE.
 
-### 4.4. Разделение Geosite DNS-потоков на стороне Xray (согласованная ручная схема)
+### 4.4. Утверждённая конфигурация Xray и точная DNS-схема
 
-Для первого рабочего прототипа согласована следующая схема. Geosite сопоставляется не обычными `routing.rules`, которые видят сетевое назначение, а правилами внутри DNS outbound: там Xray разбирает DNS-пакет и сопоставляет его QNAME с Geosite.
+Ниже зафиксирована **утверждённая целевая конфигурация**, предоставленная оператором 2026-11-21. Она является нормативным примером для PR #11. Не заменять её старой моделью с локальным DNS server в `dns.servers`, дополнительным `xui-dns-allow` или отдельным routing-правилом `direct` для порта 5355.
 
-1. DNS-трафик от клиентов, поступающий через WireGuard/TProxy inbound, попадает в Xray.
-2. Обычное routing-правило по назначению `port: "53"` и `network: "tcp,udp"` направляет DNS-трафик в outbound с `protocol: "dns"` (например, `dns-out`). На этом уровне не нужно пытаться определить Geosite по адресу DNS-сервера.
-3. В `dns-out.settings.rules` правила проверяются сверху вниз. Первое правило направляет Geosite-запрос в плагин через `direct`; второе правило `hijack` передаёт остальные запросы встроенному DNS Xray:
+#### Эталонный JSON
 
 ```json
 {
-  "protocol": "dns",
-  "tag": "dns-out",
-  "settings": {
-    "rewriteNetwork": "udp",
-    "rewriteAddress": "127.0.0.1",
-    "rewritePort": 5355,
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 62789,
+      "protocol": "tunnel",
+      "settings": {
+        "rewriteAddress": "127.0.0.1"
+      },
+      "tag": "api"
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "settings": {
+        "finalRules": [
+          {
+            "action": "block",
+            "ip": [
+              "geoip:private"
+            ]
+          },
+          {
+            "action": "allow"
+          }
+        ]
+      }
+    },
+    {
+      "tag": "blocked",
+      "protocol": "blackhole",
+      "settings": {}
+    },
+    {
+      "tag": "dns-out",
+      "protocol": "dns",
+      "settings": {
+        "rewriteNetwork": "udp",
+        "rewriteAddress": "127.0.0.1",
+        "rewritePort": 5355,
+        "rules": [
+          {
+            "action": "direct",
+            "domain": [
+              "geosite:habr"
+            ]
+          },
+          {
+            "action": "hijack"
+          }
+        ]
+      }
+    }
+  ],
+  "routing": {
     "rules": [
       {
-        "action": "direct",
-        "domain": ["geosite:<category>"]
+        "type": "field",
+        "inboundTag": [
+          "api"
+        ],
+        "outboundTag": "api"
       },
       {
-        "action": "hijack"
+        "type": "field",
+        "enabled": true,
+        "port": "53",
+        "network": "tcp,udp",
+        "outboundTag": "dns-out",
+        "ruleTag": "doh-health-monitor-dns-port53"
+      },
+      {
+        "type": "field",
+        "ip": [
+          "geoip:private"
+        ],
+        "outboundTag": "blocked"
       }
-    ]
-  }
+    ],
+    "domainStrategy": "AsIs"
+  },
+  "dns": {
+    "servers": [
+      {
+        "address": "https://9.9.9.9/dns-query",
+        "domains": [],
+        "expectedIPs": [],
+        "unexpectedIPs": [],
+        "skipFallback": false,
+        "finalQuery": true,
+        "tag": "quad",
+        "queryStrategy": "UseIP",
+        "disableCache": false,
+        "timeoutMs": 4000,
+        "serveStale": false,
+        "serveExpiredTTL": 0
+      }
+    ],
+    "queryStrategy": "UseIP",
+    "disableCache": false,
+    "disableFallback": false,
+    "disableFallbackIfMatch": false,
+    "enableParallelQuery": false,
+    "useSystemHosts": false,
+    "serveStale": false,
+    "serveExpiredTTL": 0
+  },
+  "log": {
+    "access": "none",
+    "dnsLog": false,
+    "error": "",
+    "loglevel": "warning",
+    "maskAddress": ""
+  },
+  "policy": {
+    "system": {
+      "statsInboundDownlink": true,
+      "statsInboundUplink": true,
+      "statsOutboundDownlink": false,
+      "statsOutboundUplink": false
+    },
+    "levels": {
+      "0": {
+        "statsUserDownlink": true,
+        "statsUserUplink": true
+      }
+    }
+  },
+  "api": {
+    "services": [
+      "HandlerService",
+      "LoggerService",
+      "StatsService",
+      "RoutingService"
+    ],
+    "tag": "api"
+  },
+  "geodata": {
+    "assets": [
+      {
+        "file": "geoip.dat",
+        "url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
+      },
+      {
+        "file": "geosite.dat",
+        "url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
+      },
+      {
+        "file": "geoip_IR.dat",
+        "url": "https://github.com/chocolate4u/Iran-v2ray-rules/releases/latest/download/geoip.dat"
+      },
+      {
+        "file": "geosite_IR.dat",
+        "url": "https://github.com/chocolate4u/Iran-v2ray-rules/releases/latest/download/geosite.dat"
+      },
+      {
+        "file": "geoip_RU.dat",
+        "url": "https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geoip.dat"
+      },
+      {
+        "file": "geosite_RU.dat",
+        "url": "https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geosite.dat"
+      },
+      {
+        "file": "geoip_ROSCOM.dat",
+        "url": "https://github.com/hydraponique/roscomvpn-geoip/releases/latest/download/geoip.dat"
+      },
+      {
+        "file": "geosite_ROSCOM.dat",
+        "url": "https://github.com/hydraponique/roscomvpn-geosite/releases/latest/download/geosite.dat"
+      },
+      {
+        "file": "geoip_GA.dat",
+        "url": "https://raw.githubusercontent.com/Ground-Zerro/Geo-Aggregator/main/geodat/geoip_GA.dat"
+      },
+      {
+        "file": "geosite_GA.dat",
+        "url": "https://raw.githubusercontent.com/Ground-Zerro/Geo-Aggregator/main/geodat/geosite_GA.dat"
+      }
+    ],
+    "cron": "0 4 * * *"
+  },
+  "metrics": {
+    "listen": "127.0.0.1:11111",
+    "tag": "metrics_out"
+  },
+  "stats": {}
 }
 ```
 
-Здесь `<category>` — фактически используемая категория из установленного Geosite asset; перед тестированием необходимо подтвердить, что она присутствует в загруженном наборе данных.
+#### Разбор конфигурации по блокам
 
-4. Для совпавшего Geosite-запроса действие DNS outbound `direct` передаёт исходный DNS-пакет на переписанное назначение `127.0.0.1:5355/UDP`. Плагин должен слушать этот адрес и порт в том же network namespace, что и Xray. Ответ возвращается через DNS outbound исходному клиенту.
-5. Для запроса, не совпавшего с Geosite, `hijack` передаёт запрос встроенному DNS Xray. Его upstream задаётся в секции `dns.servers`, например Quad9.
-6. Режим 1 или 2 выбирает сам плагин для запросов, пришедших на его listener. Xray отвечает только за Geosite-сопоставление и направление потока.
+**1. Inbound и API.** Показанный inbound `api` на `127.0.0.1:62789` — существующий loopback Tunnel для Xray API, а не пользовательский WireGuard/TProxy ingress. Клиентский inbound, через который пользовательский DNS-трафик попадает в Xray, в этом снимке ещё отсутствует; целевая схема предполагает, что такой inbound будет добавлен/существует в рабочем окружении. Его отсутствие в текущем JSON не меняет утверждённые DNS outbound и routing rules. Первое routing-правило `api → api` сохраняет доступ панели к Xray API.
 
-**Важно различать два значения `direct`:** `action: "direct"` внутри DNS outbound не выбирает outbound с тегом `direct` и не запускает протокол `freedom`. В реализации DNS outbound Xray сначала переписывает Network/Address/Port назначения, а затем открывает соединение собственным dialer-ом. Поэтому правила `freedom.settings.finalRules` не участвуют в доставке этого DNS-пакета на listener плагина. Специальное разрешение `127.0.0.1:5355` в `freedom.finalRules` для данного пути не требуется.
+**2. Outbound `direct` и private-IP policy.** `direct` — обычный `freedom` outbound с `finalRules`: сначала блокируются `geoip:private`, затем разрешается остальное. Это отдельная политика обычного freedom-трафика. Она не является частью доставки DNS-пакета из DNS outbound в plugin listener.
 
-Из этого следуют ещё два уточнения конфигурации:
+**3. Outbound `blocked`.** `blackhole` сохраняет блокировку трафика, совпавшего с отдельным routing-правилом `geoip:private`. Он не участвует в выборе Geosite DNS-ветки.
 
-- Если routing-правило для TCP/UDP порта 53 уже направляет весь такой трафик в `dns-out`, следующее такое же правило на порт 53 с outbound `direct` недостижимо при обычном порядке Xray rules (первое совпавшее правило применяется раньше). Его следует убрать, если нет дополнительного условия, отсутствующего в примере.
-- `rewriteNetwork: "udp"` задаёт транспорт именно на участке `dns-out → listener плагина`. Это не настройка внешнего транспорта WireGuard. Для текущего UDP DNS-пути оставляется `udp`. Если впоследствии потребуется передавать DNS по TCP до listener-а, нужно отдельно согласовать TCP listener и транспорт этого локального участка; принудительный `udp` не сохраняет исходный TCP transport.
+**4. DNS outbound `dns-out`.** Это центральная часть схемы:
+- `rewriteAddress: 127.0.0.1` и `rewritePort: 5355` задают локальную цель для DNS-пакетов, которые DNS outbound отправляет действием `direct`.
+- `rewriteNetwork: udp` принудительно задаёт UDP для локального участка Xray DNS outbound → plugin listener. Это не настройка внешнего транспорта WireGuard/TProxy. Входящий от клиента DNS over TCP всё равно будет направлен routing-правилом в `dns-out`, но участок до плагина в этой конфигурации использует UDP.
+- Первое правило `action: direct, domain: [geosite:habr]` сопоставляет QNAME с Geosite. Совпавший запрос направляется на rewrite target `127.0.0.1:5355/UDP`.
+- Второе правило `action: hijack` — catch-all для всех остальных QNAME. Оно передаёт запрос встроенному DNS Xray.
+- Порядок значим: Geosite `direct` должен стоять раньше catch-all `hijack`. Не переставлять их местами.
 
-**Ограничение catch-all `hijack`:** в проверенном upstream `XTLS/Xray-core` на ветке `main` действие `hijack` обслуживает только A/AAAA. Для другого QTYPE ветка вызывает `rejectNonIPQuery`; при безусловном правиле `hijack` без явно заданного RCODE используется нулевой RCODE, то есть `NOERROR` с пустым Answer, а не прозрачная пересылка в Quad9. Geosite-запросы с `action: "direct"` передаются plugin listener-у как DNS-пакеты. Это вывод по проверенному upstream source, а не гарантия поведения любого форка: конкретную встроенную сборку Xray нужно перепроверить отдельно.
+Внутри DNS outbound `action: direct` — действие самого DNS-протокола Xray, а не ссылка на outbound с тегом `direct` и не запуск `freedom.settings.finalRules`. DNS outbound использует rewrite target и свой механизм отправки DNS-пакета. Поэтому для этого пути **не требуется**:
+- добавлять `xui-dns-allow` в `routing.rules`;
+- добавлять allow-правило в `direct.settings.finalRules` для `127.0.0.1:5355`;
+- добавлять отдельный routing rule `port 5355 → direct`;
+- разрешать plugin listener через `freedom` outbound.
 
-Кэширование также разделено по этому пути: запросы `direct` проксируются как DNS-пакеты к listener-у, поэтому кэш Xray built-in DNS не заменяет кэш плагина. Настройки `dns.disableCache` и кэш конкретного Xray DNS server относятся к встроенному DNS-пути `hijack`; для Geosite-пути кэш и инвалидирование остаются ответственностью плагина.
+**5. Routing rules.** Порядок целевой конфигурации:
+1. `inboundTag: ["api"] → outboundTag: "api"` — сохранить панельный API.
+2. `network: "tcp,udp", port: "53" → outboundTag: "dns-out"` — направить DNS-трафик обоих транспортов в DNS outbound. Это правило должно находиться до общего private-IP block и до любых других правил, которые могут перехватить DNS destination port 53.
+3. `ip: ["geoip:private"] → blocked` — обычная блокировка частных адресов.
 
-Это согласованная схема для ручной настройки панели и первого прототипа, но не утверждение, что фактическая конфигурация любой сборки панели уже проверена. Перед внедрением необходимо подтвердить, что inbound WireGuard/TProxy действительно передаёт DNS-пакеты в routing Xray, что нужное Geosite-правило загружается и что listener доступен из network namespace Xray.
+Именно второе правило приводит пакет в DNS outbound. Geosite сопоставляется уже после этого, внутри `dns-out.settings.rules`; доменное Geosite-правило в обычном `routing.rules` для данной схемы не требуется.
 
-Источники для повторной сверки семантики и реализации (не привязка проекта к конкретной версии панели): [Xray DNS outbound docs](https://xtls.github.io/en/config/outbounds/dns.html), [Xray routing docs](https://xtls.github.io/en/config/routing.html), [DNS outbound Process/rewriteServer](https://github.com/XTLS/Xray-core/blob/main/proxy/dns/dns.go#L154-L215), [DNS outbound rule handling](https://github.com/XTLS/Xray-core/blob/main/proxy/dns/dns.go#L249-L280), [non-IP QTYPE response](https://github.com/XTLS/Xray-core/blob/main/proxy/dns/dns.go#L400-L425), [outbound dialer](https://github.com/XTLS/Xray-core/blob/main/app/proxyman/outbound/handler.go#L270-L280). Ссылки на `main` upstream подвижны: перед привязкой к реальной конфигурации их нужно сопоставить с commit/version встроенного Xray.
+**6. Встроенный DNS Xray и upstream Quad9.** В `dns.servers` настроен только upstream `https://9.9.9.9/dns-query` с tag `quad`. Он обслуживает catch-all ветку `hijack`. Он не является plugin listener и не является `resolver_upstreams` режима `resolver` самого плагина. Loopback DNS server `127.0.0.1:5355` в `dns.servers` для утверждённой схемы не нужен: Geosite DNS-запросы поступают в плагин через DNS outbound rewrite target.
 
-## 5. Выбор одного активного DoH по восьми проверкам
+**7. DNS cache и QTYPE.** Путь Geosite `direct` передаёт пакет listener-у плагина, поэтому для него применяется кэш самого плагина. Параметры `dns.disableCache` и кэш встроенного DNS относятся к ветке `hijack`. Плагин обслуживает A/AAAA; другие QTYPE, попавшие в Geosite direct, получают от плагина `NOERROR`/NODATA без SOA. Встроенный Xray DNS hijack также не является универсальным relay для всех типов: проверенная документация Xray указывает поддержку A/AAAA, а прочие QTYPE могут завершаться пустым ответом с RCODE 0. Поведение фактически встроенной сборки следует подтвердить тестом.
 
-Пользователь выбрал направление: **выделить из feature/auto-hosts-v3 самостоятельный алгоритм выбора одного активного DoH-сервера по восьми проверкам**.
+**8. Geodata и assets.** Секция `geodata.assets` задаёт источники geoip/geosite наборов и ежедневное обновление по cron `0 4 * * *`. Для утверждённого правила требуется, чтобы категория `habr` реально присутствовала в загруженном Geosite asset, который использует работающий Xray. Наличие строки/категории в другом репозитории или в другом asset не доказывает, что активная сборка загрузила нужный набор.
 
-В качестве отправной точки рассмотреть код:
+**9. Прочие секции.** `log`, `policy`, `api.services`, `metrics.listen` и `stats` сохраняются как настройки панели/Xray и не меняют Geosite DNS policy. Metrics listener `127.0.0.1:11111` не относится к DNS listener плагина.
 
-- [autohosts_controller.go в feature/auto-hosts-v3](https://github.com/agentnht/doh-health-monitor/blob/feature/auto-hosts-v3/autohosts_controller.go);
-- [bootstrap resolver в main.go](https://github.com/agentnht/doh-health-monitor/blob/main/main.go).
+#### Контракт маршрутизации и проверки
 
-В контроллере v3 уже есть существенная часть необходимой логики:
+| Запрос | Xray DNS outbound | Итоговая обработка |
+|---|---|---|
+| QNAME попадает в `geosite:habr`, QTYPE A/AAAA | `direct` → rewrite UDP `127.0.0.1:5355` | Плагин применяет текущий `dns_mode` |
+| QNAME не попадает в `geosite:habr`, QTYPE A/AAAA | `hijack` | Встроенный DNS Xray, upstream `quad` / Quad9 |
+| QNAME попадает в Geosite, QTYPE не A/AAAA | `direct` → plugin listener | Плагин возвращает `NOERROR`/NODATA |
+| QNAME не попадает в Geosite, QTYPE не A/AAAA | `hijack` | Не считать catch-all универсальным proxy; проверить фактическую сборку Xray |
 
-1. Перебор настроенных DoH upstream (с исключением системного DNS из кандидатов на роль DoH).
-2. Независимая проверка каждой пары «DoH-сервер × контрольный домен».
-3. DNS A/AAAA запрос непосредственно через проверяемый DoH.
-4. Получение IP сайта как временной цели проверки.
-5. HTTPS-проверка непосредственно по полученному IP с исходным hostname, TLS SNI, HTTP Host и проверкой сертификата.
-6. Ограничение параллелизма, таймауты и фильтрация недопустимых IP.
-7. Оценка результатов и выбор одного активного кандидата.
-8. Anti-flap: пороги повторных результатов, minimum hold и switch cooldown.
-9. Ручной Pinned/Auto режим в существующей реализации.
+В режиме плагина `endpoint_ip` A/AAAA-ответ для Geosite-запроса содержит bootstrap IP выбранного DoH endpoint-а, а не IP запрошенного сайта. В режиме `resolver` тот же Geosite-поток разрешает исходный QNAME через отдельный `resolver_upstreams` плагина. Non-Geosite запросы не проходят через плагин и обслуживаются встроенным DNS Xray.
 
-Восемь контрольных доменов, используемые в v3:
+**Не добавлять в эту схему** локальный Xray DNS server `127.0.0.1:5355`, `xui-dns-allow`, дополнительное правило routing для порта 5355 или исключение в `freedom.finalRules`. Эти элементы не являются частью утверждённого DNS path.
 
-- chatgpt.com
-- claude.ai
-- gemini.google.com
-- elevenlabs.io
-- grok.com
-- www.perplexity.ai
-- notebooklm.google.com
-- aistudio.google.com
+#### Границы доказанного
 
-Планируется извлечь из v3 именно самостоятельный компонент выбора активного DoH — условно \`ActiveDoHSelector\`. Он должен выдавать согласованное состояние активного сервера и его endpoint, не управляя пользовательским списком доменов.
+- Документ описывает утверждённую конфигурацию и семантику DNS outbound; он не привязывает проект к определённому номеру версии LucX-UI/Xray.
+- Статическая проверка JSON подтверждает структуру правил, но не доказывает, что Geosite category загружена и реально совпадает с QNAME.
+- Проверка DNS listener напрямую подтверждает работу плагина, но не доказывает, что пользовательский inbound направляет пакеты в нужный routing rule.
+- Полный путь WireGuard/TProxy inbound → routing port 53 → DNS outbound → plugin listener → client response проверяется только с реальным пользовательским inbound и клиентским трафиком.
+- Для listener `127.0.0.1:5355` необходимо то же network namespace, что у Xray, либо отдельно подтверждённая сетевая достижимость.
+- Конкретная сборка Xray должна быть проверена на `direct` rewrite, `hijack`, non-A/AAAA и порядок DNS outbound rules.
 
-Предполагаемые данные результата:
+Официальные описания синтаксиса и действий DNS outbound: [Xray DNS outbound (RU)](https://xtls.github.io/ru/config/outbounds/dns.html), [Xray DNS outbound (EN)](https://xtls.github.io/en/config/outbounds/dns.html). Эти документы описывают контракт конфигурации; для конкретного форка/сборки результат подтверждается runtime-проверкой.
 
-- ID активного DoH-сервера;
-- исходный URL/hostname;
-- endpoint IPv4 и IPv6;
-- время последнего успешного разрешения/обновления endpoint;
-- состояние/возраст endpoint и причина выбора.
+## 5. Выбор активного DoH endpoint по восьми контрольным доменам
 
-Это целевой контракт данных. В PR #11 он реализован в `internal/activedoh/selector.go` (`Candidate`, `ProbeResult`, `Selection`, `Policy`); запуск bootstrap/probe цикла и связь с runtime находятся в `active_doh.go`. Компонент отделён от Auto Hosts manager и не ведёт динамический список QNAME.
+Для режима `endpoint_ip` плагин самостоятельно выбирает один активный DoH endpoint из настроенного списка. Выбор основан на восьми фиксированных контрольных доменах; список не является Geosite policy и не влияет на то, какие пользовательские QNAME направляются в плагин.
 
-### Важное отличие от текущего main
+Контрольные домены:
+- `chatgpt.com`
+- `claude.ai`
+- `gemini.google.com`
+- `elevenlabs.io`
+- `grok.com`
+- `www.perplexity.ai`
+- `notebooklm.google.com`
+- `aistudio.google.com`
 
-В main уже существуют health monitor, выбор активного upstream по группам и bootstrap resolver, который разрешает hostname DoH-сервера в IP и тестирует IP-кандидаты.
+Для каждого кандидата выполняются DNS A/AAAA probes через сам проверяемый DoH, затем HTTPS/TLS probes к полученным IP с исходными hostname, SNI, HTTP Host и проверкой сертификата. Результат выбора содержит идентификатор и hostname endpoint-а, IPv4/IPv6 адреса, freshness, generation и score.
 
-Однако обычный активный upstream группы и **единственный активный DoH endpoint** — не обязательно одно и то же. В стандартной конфигурации группы может присутствовать системный DNS. Поэтому новую логику следует выделить отдельно и не считать текущий \`active[group]\` готовой заменой активного DoH-сервера.
+В PR #11 самостоятельный selector реализован в `internal/activedoh/selector.go`; runtime bootstrap/probe цикл находится в `active_doh.go`. Используется порог выбора 6 успешных проверок из 8 с anti-flap политикой, минимальным временем удержания и cooldown переключения.
 
-## 6. Что можно повторно использовать из feature/auto-hosts-v3
+Список health-check файла `tst-domen.txt` не является списком Geosite и не управляет маршрутом DNS-пакета. Встроенный default содержит девять проверок: восемь selector control domains и отдельную обязательную OIDC-проверку `accounts.google.com`. Результаты health monitor и ActiveDoHSelector имеют разные назначения и не должны смешиваться.
 
-### Внешний скрипт `ipregion.sh`: что полезно и что не заимствуем
+## 6. Состав реализации PR #11 и границы ответственности
 
-Проверен [XaksFlaX/ipregion-fixed/ipregion.sh](https://raw.githubusercontent.com/XaksFlaX/ipregion-fixed/refs/heads/main/ipregion.sh). Это крупный интерактивный IP/сервисный диагностический скрипт, а не библиотека Geosite или готовая реализация DNS routing.
+PR #11 должен реализовывать только компоненты, требуемые этим документом:
 
-- `check_doh()` последовательно пробует несколько жёстко заданных публичных DoH URL через `curl --doh-url`, после чего делает HTTPS-запрос к `www.google.com`. Это smoke-test доступности конкретного resolver-а, но не selector: он не перебирает наш пользовательский список по восьми контрольным доменам, не считает score и не реализует anti-flap.
-- Общая обёртка `make_request()` полезна как пример явных timeout/retry, выбора IP family, привязки к интерфейсу и SOCKS5h. В Go runtime уже есть собственные ограниченные таймауты, retry/fallback и прямое закрепление HTTPS probe за IP. `--interface` может стать отдельной опцией диагностики при подтверждённом multi-NIC сценарии; в текущую реализацию без требования не добавлялась.
-- `lookup_dns_resolver()` обращается к `edns.ip-api.com`, чтобы показать рекурсивный DNS resolver. Это можно запускать вручную при диагностике системного resolver-а, но не стоит включать в production health-check: дополнительная внешняя зависимость и раскрытие факта проверки третьей стороне не оправданы.
-- Скрипт целиком, его ключи/сервисные API, геолокационные проверки и прочая продуктовая логика в репозиторий не переносятся.
+1. DNS режимы `endpoint_ip` и `resolver` с независимыми наборами upstream и bootstrap-настроек.
+2. ActiveDoHSelector по восьми контрольным доменам для выбора endpoint режима `endpoint_ip`.
+3. DNS listener с A/AAAA wire handling, предусмотренной CNAME/EDNS обработкой и согласованной NODATA семантикой для неподдерживаемых QTYPE.
+4. Раздельные cache namespace/generation и TTL/negative-cache поведение режимов.
+5. Read-only проверку установленной конфигурации на соответствие ручной схеме §4.4.
 
-### Кандидаты на перенос после отдельного аудита
+Границы ответственности:
+- Xray выполняет Geosite matching и разделяет DNS поток на `direct` и `hijack`.
+- Плагин не загружает Geosite asset, не содержит свой matcher и не управляет Geosite category.
+- Встроенный DNS Xray обслуживает catch-all `hijack`; его upstream задаётся в `dns.servers`.
+- Плагин обслуживает только пакеты, поступившие на его локальный listener, и не меняет routing/Xray config при обычном старте.
+- Ручное редактирование Xray config выполняется оператором через штатный редактор панели.
 
-- Алгоритм проб и выбора активного DoH из \`autohosts_controller.go\` — извлечь независимую часть, отвязав её от Auto Hosts manager.
-- DNS wire исправления из \`dns_wire.go\` — выбирать необходимые изменения и переносить с их тестами.
-- Ограниченный DNS cache и singleflight из \`cache.go\` — только если кэш останется в новой схеме и будет проверена совместимость с переключением endpoint/режима.
-- Panic recovery DNS request boundary и соответствующие тесты.
-- Ужесточения безопасности Web UI и status API, если они не завязаны на Auto Hosts.
-- Усиления API-интеграции LucX-UI из \`internal/dohintegration/api.go\` — после проверки совместимости с задачами нового PR.
-- Отдельные тестовые сценарии и подходы к race detector, проверке DNS, SNI/Host, TLS и отказам.
+Не переносить в эту архитектуру механизмы, которые создают динамический QNAME list, выбирают Geosite category внутри плагина, подменяют DNS server entries или автоматически генерируют Xray policy. Такие механизмы противоречат утверждённому разделению ответственности.
 
-### Что не переносить как архитектурную основу
+## 7. Где находится Geosite и как настраивается панель
 
-- \`internal/autohosts/manager.go\` и его доменный список.
-- Очередь добавления пользовательских QNAME.
-- LastSeen/ExpiresAt и GC записей Auto Hosts.
-- \`autoHostsEndpointResponse\` как механизм, зависящий от наличия домена в Auto Hosts.
-- Geosite matcher/parser из \`internal/geosite/\`, если Geosite полностью обслуживается правилами панели/Xray.
-- Auto Hosts UI, API и настройки, не нужные для новой архитектуры.
-- Весь \`daemon.go\` без разборки: он включает инициализацию Auto Hosts, Geosite и Quad9, поэтому переносить его целиком нецелесообразно.
+Geosite matching расположен на стороне Xray, внутри `dns-out.settings.rules`. Это зафиксированная архитектура, а не открытая альтернатива. Для утверждённого примера используется `geosite:habr` с последовательностью `direct` → catch-all `hijack`, описанной в §4.4.
 
-DNS wire, кэш и security fixes из v3 не считаются автоматически принятыми только потому, что они присутствуют в исходной ветке. Перенесённые компоненты проверяются по собственному diff и тестам; успешный CI PR #11 не заменяет совместимость с целевой сборкой панели/Xray.
+На этом этапе Xray конфигурация задаётся вручную через штатный редактор панели. Плагин не применяет изменения к Xray и не меняет конфигурацию при запуске. Автоматическое создание/удаление DNS outbound и routing rules не входит в текущую задачу до завершения ручной интеграционной проверки.
 
-## 7. Сравнение исследованных веток
+Операции CLI `integrate` и `remove`, а также старый planner, унаследованы от базовой функциональности панели и не являются механизмом установки утверждённой Geosite policy. Их не следует использовать для создания, проверки или удаления правил §4.4. Структурная проверка утверждённой схемы выполняется read-only checker-ом; сетевой end-to-end тест — отдельно на целевом inbound.
 
-### feature/auto-hosts-design
-
-При сравнении с main на момент обсуждения:
-
-- 11 коммитов впереди, отставания от main нет;
-- единственное изменение — добавлен \`docs/AUTO-HOSTS-PLAN.md\` (387 строк);
-- программный код не менялся.
-
-Документ фиксирует прежнюю концепцию Auto Hosts внутри плагина: фоновые проверки, динамический список доменов и возврат IP активного DoH endpoint для доменов из этого списка.
-
-Полезен как история требований и инженерных ограничений, но его запреты на изменение Xray DNS integration и правила панели не являются требованиями к новой архитектуре.
-
-### feature/auto-hosts-v3 / PR #10
-
-На момент проверки:
-
-- база ветки — main, версия 2.2.1;
-- ветка была на 318 коммитов впереди main;
-- в diff было 38 файлов, около 9 480 добавлений и 1 664 удалений;
-- PR #10 открыт, Draft, не слит;
-- последний проверенный head в этой проверке: \`05b2debe5d3f00a0d4fe9517115b002079084e82\`;
-- CI и DoH integration tests для этого head были отмечены как успешные;
-- полноценная проверка на VPS не выполнялась.
-
-V3 — источник готовых реализаций и тестов, но не база для новой ветки целиком. Большая часть изменений связана с Auto Hosts и не нужна, если Geosite и разделение DNS-потоков перейдут на сторону панели/Xray.
-
-## 8. Где будет находиться Geosite и когда менять панель
-
-Целевое направление — передать сопоставление доменов Geosite на сторону панели/Xray, чтобы не поддерживать второй независимый matcher в плагине.
-
-Для ручного прототипа согласован конкретный механизм, описанный в §4.4:
-
-- routing направляет DNS-трафик с назначением port 53 в DNS outbound;
-- правила внутри DNS outbound сопоставляют QNAME с Geosite;
-- Geosite HIT направляется через `action: "direct"` на переписанный listener плагина `127.0.0.1:5355/UDP`;
-- остальные запросы направляются через `action: "hijack"` во встроенный DNS Xray, использующий настроенный upstream (например, Quad9).
-
-Таким образом, сам способ разделения Geosite DNS-потоков на уровне Xray больше не является открытым архитектурным вопросом. Открытой остаётся проверка фактической конфигурации LucX-UI/Xray и трафика на целевом окружении: inbound WireGuard/TProxy, порядок routing rules, загруженный Geosite asset, доступность plugin listener и поведение всех нужных QTYPE.
-
-**На начальном этапе конфигурацию панели допустимо править вручную.** Автоматизацию изменения панели, Integrate/DeIntegrate и соответствующие доработки плагина отложить на самый конец, после прохождения интеграционных тестов.
-
-## 9. Текущий статус реализации и следующий порядок работы
+## 8. Текущий статус реализации и порядок работы
 
 ### Реализовано в feature/geosite-dns-routing / PR #11
 
-1. Конфигурационная модель двух взаимоисключающих режимов: `dns_mode: endpoint_ip | resolver`; независимые `upstreams` режима 1 и упорядоченный `resolver_upstreams` режима 2; валидация типов system/UDP/TCP/DoH и bootstrap settings.
-2. ActiveDoHSelector выделен в самостоятельный `internal/activedoh`; восемь согласованных контрольных доменов, A/AAAA DNS probes через кандидатов DoH, затем HTTPS/TLS probes по IP с оригинальным hostname/SNI/Host.
-3. Режим `endpoint_ip` возвращает bootstrap IP выбранного DoH endpoint-а, а не IP запрошенного сайта. Реализованы TTL до 60 секунд с ограничением freshness, отдельное пространство кэша и generation, очистка при смене endpoint/IP. Выбор привязан к generation конфигурации; результат старого snapshot не обслуживает DNS-запросы после reload.
-4. Режим `resolver` реализует последовательный fallback для system, UDP, TCP и DoH upstream-ов; транспортные ошибки, SERVFAIL/REFUSED и unusable truncated responses переключают upstream, валидные NXDOMAIN/NODATA — нет.
-5. Кэш режима 2 отделён от режима 1. Положительный cache TTL ограничен 300 секундами; negative cache опирается на SOA TTL и SOA.MINIMUM и не применяется к ответам без SOA. Первый ответ клиенту сохраняет исходный TTL upstream-а, а ограничение 300 секунд применяется к отдельной копии для кэша.
-6. Реализована прямая защита system resolver от совпадения его nameserver с локальным plugin listener на стандартном порту 53. Ограничения для локальных stub-resolver и внешнего TProxy/NAT-перенаправления остаются предметом интеграционной проверки.
-7. Для code head `58870be81651228ebb61a0eb0b09791c8122a0aa` GitHub Actions подтвердил успешные `go vet ./...`, `go test ./...`, Linux amd64 build, проверку shell/JS syntax и отдельный DoH integration workflow.
+1. Конфигурационная модель двух взаимоисключающих режимов: `dns_mode: endpoint_ip | resolver`; независимые DoH upstream режима 1 и упорядоченный `resolver_upstreams` режима 2; валидация system/UDP/TCP/DoH upstream и bootstrap-настроек.
+2. ActiveDoHSelector вынесен в `internal/activedoh`; восемь control domains, DNS A/AAAA probes через каждого DoH candidate и HTTPS/TLS probes по IP с исходными hostname/SNI/Host.
+3. Режим `endpoint_ip` возвращает bootstrap IP выбранного DoH endpoint-а, а не IP исходного QNAME. TTL положительного ответа ограничен 60 секундами и остатком freshness.
+4. Режим `resolver` выполняет последовательный fallback для system, UDP, TCP и DoH upstream-ов. Транспортные ошибки, timeout, SERVFAIL/REFUSED и неисправимый TC ведут к следующему upstream; валидные NXDOMAIN/NODATA завершают resolution.
+5. Cache пространства режимов разделены. Положительный TTL режима 2 ограничен 300 секундами; negative caching требует SOA и использует `min(SOA RR TTL, SOA.MINIMUM)` с cap 300 секунд. Ответы без SOA и synthetic NODATA не кэшируются.
+6. Default `tst-domen.txt` содержит девять проверок: восемь selector domains и `accounts.google.com`; пользовательские существующие файлы не перезаписываются.
+7. Xray Geosite policy остаётся ручной и соответствует §4.4. Read-only checker проверяет структуру правил, но не доказывает фактическую загрузку Geosite asset или end-to-end клиентский путь.
 
-### Следующий порядок работы
+### Проверки кода и VPS
 
-1. Проверить UDP/TCP A/AAAA DNS wire, CNAME chain, EDNS/DO, cache expiry и races на целевом runtime. CI проходит, но дальнейшие edge-case тесты всё ещё нужны.
-2. Интеграционно проверить WireGuard/TProxy → Xray DNS outbound → plugin listener → возврат ответа клиенту на конкретной сборке LucX-UI/Xray.
-3. Подтвердить фактическую Geosite category в загруженном asset, порядок DNS outbound rules и транспорт локального участка до plugin listener.
-4. Проверить системный resolver в реальной сетевой схеме, особенно локальные stub-resolver-ы и косвенную петлю из-за TProxy/NAT redirect.
-5. Проверить поведение клиентов с non-A/AAAA QTYPE. Встроенный Xray catch-all `hijack` не является общим прозрачным DNS proxy для всех типов.
-6. Только после ручной интеграционной проверки рассматривать автоматизацию LucX-UI/Xray, Integrate/DeIntegrate и соответствующие изменения панели.
+Для предыдущего code head `6adae8f2310aa83c36f9a524c4ab5d63172e1801` успешно завершились CI run `44806320988` и DoH integration run `44806320983`. Результаты относятся к тому code head; после изменения документации/checker-а workflow должны быть запущены повторно.
 
-Рабочая ветка: [feature/geosite-dns-routing](https://github.com/agentnht/doh-health-monitor/tree/feature/geosite-dns-routing). Draft PR: [#11](https://github.com/agentnht/doh-health-monitor/pull/11).
+На VPS 2026-11-20 с DoH Health Monitor 2.3.0 и Xray `26.10.21` подтверждены:
+- сервис плагина и HTTP status endpoint доступны;
+- UDP/TCP listener плагина работает на `127.0.0.1:5355`;
+- прямой A query к plugin listener по UDP и TCP возвращал bootstrap IP выбранного endpoint-а; положительный A cache hit подтверждён повторным запросом с одинаковым DNS COOKIE поведением;
+- Xray config проходил `xray run -test`;
+- DNS outbound с `geosite:habr` и catch-all `hijack` присутствовал в конфигурации;
+- Xray и plugin service использовали один network namespace.
 
-## 10. Что остаётся проверить до снятия Draft
+На момент VPS-проверки постоянного клиентского WireGuard/TProxy Tunnel inbound в конфигурации панели не было. Поэтому полный маршрут от пользовательского клиента через inbound до DNS outbound и обратно не подтверждён. Это остаётся отдельным обязательным тестом после появления inbound. Наличие текстов `habr` в файле Geosite и успешный parse config сами по себе не доказывают, что реальная QNAME lookup совпадает с нужной категорией.
 
-Следующие пункты не следует считать завершёнными по одному только факту прохождения CI:
+## 9. Что остаётся проверить до снятия Draft
 
-- поведение при недоступности самого plugin DNS listener-а и маршрутный fallback Xray/панели;
-- прохождение DNS от WireGuard/TProxy inbound через routing Xray и DNS outbound; доступность listener `127.0.0.1:5355` из network namespace Xray; возврат ответа клиенту;
-- фактическая поддержка Geosite category в установленном asset и точный порядок DNS outbound rules в целевой версии;
-- соответствие реальной сборки Xray проверенному upstream source, особенно поведение non-A/AAAA под catch-all `hijack`;
-- CNAME chain, EDNS/DO, DNSSEC flags и ответы с OPT на реальных пакетах и клиентах. Полноценная DNSSEC validation не реализуется;
-- сетевой egress к bootstrap DNS, выбранным DoH endpoint-ам и upstream-ам режима 2;
-- косвенная DNS-петля через локальные stub-resolver-ы или внешние TProxy/NAT правила.
+Следующие проверки не считаются завершёнными по одному только факту прохождения CI или успешного `xray run -test`:
 
-Текущая проверка system resolver блокирует прямое совпадение nameserver с plugin listener, слушающим стандартный DNS-порт 53. Она не анализирует произвольные firewall/NAT rules и не может сама установить, что локальный stub resolver далее пересылает запросы обратно в Xray/plugin. Этот сценарий требует конфигурационной проверки целевого сервера.
+1. Полный пользовательский путь: WireGuard/TProxy client inbound → routing TCP/UDP port 53 → `dns-out` → plugin UDP listener → ответ клиенту.
+2. Реальное совпадение тестовых QNAME с `geosite:habr` в активном Geosite asset целевой сборки.
+3. Порядок и фактическая семантика DNS outbound rules в используемой встроенной сборке Xray.
+4. Доступность `127.0.0.1:5355/UDP` из network namespace Xray.
+5. Поведение non-A/AAAA для обеих веток: Geosite `direct` в plugin listener и non-Geosite `hijack` во встроенный DNS.
+6. CNAME chain, EDNS/DO, DNSSEC flags и ответы с OPT на реальных клиентских пакетах. Полноценная DNSSEC validation плагином не реализуется.
+7. Сетевой egress к bootstrap DNS, выбранным DoH endpoint-ам и resolver upstream режима `resolver`.
+8. Отсутствие косвенной DNS-петли через локальные stub resolver, TProxy или NAT.
 
-Согласованные fallback-правила, cache/TTL политика и базовая DNS wire обработка уже реализованы и покрыты CI тестами. Это не заменяет runtime-интеграцию с конкретной панелью и сетевым окружением.
+Структурный checker может подтвердить, что JSON содержит ожидаемые rewrite target, Geosite direct, catch-all hijack и port-53 route. Он не должен требовать `xui-dns-allow` или считать его частью схемы; также он не может подтвердить загруженную категорию, активный runtime или фактический клиентский трафик.
 
-## 11. Ограничения и границы изменений
+## 10. Ограничения и границы изменений
 
-- PR #11 остаётся Draft до успешной проверки на целевом runtime и устранения обнаруженных интеграционных дефектов.
-- PR #10 — отдельная ветка; не сливать его как основу новой архитектуры и не переносить Auto Hosts целиком.
-- Не добавлять внутренний Geosite matcher в плагин: сопоставление Geosite остаётся ответственностью Xray.
-- Не менять `manifest.json`, версию 2.2.1 и release metadata до отдельного release gate.
-- Не считать CI заменой VPS/WireGuard/TProxy/Xray проверки.
-- Не менять фактическую конфигурацию панели без отдельного поручения.
-- Автоматизацию LucX-UI/Xray и Integrate/DeIntegrate отложить до конца.
+- PR #11 остаётся Draft до прохождения клиентского end-to-end теста на целевом runtime и устранения найденных дефектов.
+- Не добавлять внутренний Geosite matcher в плагин: Geosite matching остаётся ответственностью Xray.
+- Не создавать `dns.servers` entry для `127.0.0.1:5355`; plugin listener вызывается через DNS outbound rewrite target.
+- Не создавать `xui-dns-allow`, отдельное routing-исключение для порта 5355 или allow-правило в `freedom.finalRules`: они не являются частью утверждённой схемы.
+- Не менять фактическую конфигурацию панели автоматически; ручная конфигурация §4.4 является целевой.
+- Не считать read-only структурную проверку доказательством end-to-end работы, корректности Geosite asset или поведения конкретной встроенной сборки.
+- Не привязывать архитектуру к номеру версии панели/Xray; проверять фактический формат и поведение целевого runtime.
+- Версия 2.3.0 находится в feature branch как release candidate; официальный tag/release не создавать до отдельного release gate.
 
 ---
 
 **Текущее резюме:** в PR #11 реализована базовая архитектура Geosite DNS routing: разделённые режимы `endpoint_ip` и `resolver`, ActiveDoHSelector по восьми контрольным доменам с HTTPS/TLS probes, два DNS response pipeline, независимые cache namespace/generation, fallback и TTL/negative-cache policy. `Blackhole` — `NOERROR`/NODATA без SOA и без кэширования; plugin DNS listener отвечает только на A/AAAA. Успешный CI подтверждает тесты кода на зафиксированном head, но не проверяет конкретную интеграцию LucX-UI/Xray, WireGuard/TProxy и сетевой namespace. Проверка целевого runtime и решение о дальнейшей автоматизации остаются следующими этапами.
-
-## 12. План выборочного переноса plugin-management.sh и Web UI из PR #10
-
-**Назначение:** сохранить полезные результаты аудита 17–18 ноября 2026 года, не перенося в новую архитектуру Auto Hosts, внутренний Geosite matcher и связанные с ними API/UI. Источник изменений — история [feature/auto-hosts-v3 / PR #10](https://github.com/agentnht/doh-health-monitor/pull/10). Ссылки ниже указывают на конкретные коммиты PR #10; это ориентиры для переноса отдельных изменений, а не указание cherry-pick-ить их без адаптации.
-
-### 12.1. Что уже есть в main и повторно не реализовывать
-
-В текущем main уже присутствуют:
-
-- SSH-меню с запуском Web UI отдельным дочерним процессом;
-- выделенный loopback listener Web UI на динамическом порту и readiness-сообщение;
-- control pipe, через который закрытие SSH-сессии приводит к остановке Web UI;
-- остановка и ожидание именно дочернего Web UI процесса;
-- проверки Host и Origin в HTTP-обработчике;
-- сессионная cookie HttpOnly / SameSite=Strict для защищённых Web UI маршрутов;
-- ensure_dhm_symlink и определение адреса SSH-сервера для команды туннеля.
-
-Следовательно, из v3 нужно переносить не новый механизм запуска Web UI, а недостающие проверки и усиления безопасности. В частности, в main корневой GET пока сам выдаёт сессию; одноразового launch-token exchange ещё нет. Внутренний daemon /status также ещё не переведён на обязательный Bearer token.
-
-### 12.2. Приоритет P1 — SSH-меню и plugin-management.sh
-
-**P1.1. Ограничить обнаружение процесса панели текущим UID.**
-
-- Коммит: [1888a9c](https://github.com/agentnht/doh-health-monitor/commit/1888a9c67374a1fb5901d80b43fe9d68ae3027bf).
-- Изменение: при сканировании /proc читать UID процесса из /proc/<pid>/status и не использовать процесс x-ui, принадлежащий другому UID.
-- Целевой файл: scripts/plugin-management.sh, функция detect_panel_cwd().
-- Переносить только UID-фильтр, сохранив уже имеющиеся в main выбор предпочтительного пути /usr/local/x-ui/x-ui и защиту от неоднозначного обнаружения нескольких панелей.
-- Проверки: отдельные shell-сценарии для процесса с подходящим UID, чужого UID, отсутствующего процесса и неоднозначного результата. Не должно быть выбора чужого процесса.
-
-**P1.2. Запретить скачивание изменяемого checker-скрипта с последующим запуском от root.**
-
-- Основной коммит: [1888a9c](https://github.com/agentnht/doh-health-monitor/commit/1888a9c67374a1fb5901d80b43fe9d68ae3027bf).
-- Удаление оставшихся неиспользуемых URL-констант: [3719457](https://github.com/agentnht/doh-health-monitor/commit/3719457ea841a436aea51f74e41e01c5b47ad0de).
-- Изменение: run_check() запускает только check-dns-integration.sh, поставляемый в том же ZIP/пакете плагина. Если файла рядом с установленным management script нет, команда завершает работу с понятной ошибкой; curl/wget больше не загружает изменяемую версию скрипта для запуска от root.
-- Условие поставки: проверить, что check-dns-integration.sh гарантированно включён в release ZIP в ожидаемом каталоге. Не возвращать сетевой fallback как обход отсутствующего файла.
-- Проверки: bash -n scripts/plugin-management.sh scripts/check-dns-integration.sh; тест наличия checker в пакете; тест отказа при его отсутствии; подтвердить, что ни одна ветка run_check() не выполняет скачанный код.
-
-**P1.3. Убрать launch secret из stdout и query string.**
-
-- Серверная часть и защищённый файл: [7ca6cd7](https://github.com/agentnht/doh-health-monitor/commit/7ca6cd77f0f525b4d0f5fb95234939881a8321f2).
-- Чтение файла shell-меню, удаление после чтения и URL fragment: [e57e8ad](https://github.com/agentnht/doh-health-monitor/commit/e57e8ad3ff607142e66ec3434180a8e42362c853).
-- Клиентский обмен fragment → POST: [fad979b](https://github.com/agentnht/doh-health-monitor/commit/fad979bcf5162adff58c96366b66390db08e2c47).
-- Дополнительная очистка использованного токена на сервере: [aa77fc7](https://github.com/agentnht/doh-health-monitor/commit/aa77fc73e76ab09cae485c7d136a1d6f1c76a40c).
-- Полная выдача защищённой cookie для всех приватных API: [60c2797](https://github.com/agentnht/doh-health-monitor/commit/60c279768f9bac3af54223ad3a52aac714e3c05d).
-
-Целевой поток:
-
-1. Go генерирует случайный launch token и записывает его в web-ui-launch.token внутри plugin data directory. Файл должен быть обычным файлом без symlink, с правами 0600; запись — через временный файл и атомарную замену.
-2. Go сообщает в stdout только WEB_UI_READY port=<port>. Токен не включается ни в readiness output, ни в аргументы процесса.
-3. SSH-скрипт читает token из защищённого файла, проверяет формат и удаляет файл. Проверка должна отказать для отсутствующего файла, symlink и некорректного токена.
-4. В браузер token передаётся только в URL fragment (#access_token=...), не в query string.
-5. webui/app.js считывает fragment и немедленно удаляет его из адресной строки через history.replaceState, до первого запроса к приватным API.
-6. JavaScript отправляет token на POST /session/exchange. Сервер принимает его только один раз, защищает проверку от конкурентного повторного использования и после успешного обмена очищает сохранённое значение launch token.
-7. Сервер выдаёт отдельную случайную сессионную cookie с HttpOnly, SameSite=Strict, Path=/ и ограниченным сроком действия. Все приватные Web UI API используют именно эту cookie, а не launch token.
-
-Это один согласованный security change через scripts/plugin-management.sh, webui.go, webui/app.js и тесты. Не переносить только часть обмена: иначе можно получить либо неработающий вход, либо незакрытый доступ к приватным API.
-
-### 12.3. Приоритет P1 — аутентификация внутреннего daemon API
-
-Эта задача связана с Web UI security, но отличается от браузерной сессии. Нужны две независимые границы доверия:
-
-- **Web UI session cookie** — авторизует браузер в локальном интерфейсе;
-- **daemon API Bearer token** — авторизует локальные клиенты, которые обращаются к HTTP API работающего DNS-демона.
-
-Ориентиры по коммитам:
-
-- Защита daemon status и строгая проверка формата Bearer: [e164cbf](https://github.com/agentnht/doh-health-monitor/commit/e164cbf6e7b684d2db759292cc96705433e0e7a4), [e763973](https://github.com/agentnht/doh-health-monitor/commit/e7639733c6bc0dfde1b66b788f28e306b484d5fb).
-- Проверка loopback peer address, не только Host/Origin: [98f669c](https://github.com/agentnht/doh-health-monitor/commit/98f669c7d0fd146c6bdfd28dcd0f1c93b5ebd49b).
-- Go preflight: [ca5438b](https://github.com/agentnht/doh-health-monitor/commit/ca5438b13f3d3af0b36f0d3bcde4c6aa1197185b).
-- Python API client: [2c08ec5](https://github.com/agentnht/doh-health-monitor/commit/2c08ec58d80fcdef1224879ce08871819841a7f8).
-- Shell checker: [f97102a](https://github.com/agentnht/doh-health-monitor/commit/f97102a9e859f07224c1d889eb102dbcceeb1e54).
-
-Целевой объём:
-
-1. Создавать отдельный случайный API token в plugin data directory с правами 0600; при чтении проверять тип файла, отсутствие symlink, владельца и права доступа.
-2. Закрыть им внутренний /status и другие действительно необходимые daemon management endpoints.
-3. Проверять Authorization: Bearer <token> строгим парсером, сравнивать секреты constant-time и отклонять отсутствующий, пустой, некорректно оформленный или неверный токен.
-4. Сохранять проверки loopback Host, Origin и фактического RemoteAddr. Проверка только заголовка Host не доказывает, что TCP peer является loopback-клиентом.
-5. Обновить всех клиентов одновременно: Web UI status preflight в webui.go, Go integration check в internal/dohintegration/api.go, Python helper scripts/lucx-ui-doh-api.py и scripts/check-dns-integration.sh.
-6. Не оставлять анонимный status-путь как «временную совместимость», иначе защита endpoint будет неполной.
-
-**Обязательная адаптация под новую архитектуру:** в v3 токен называется auto-hosts-api.token, а middleware/маршруты имеют имена requireAutoHostsAPIToken и /autohosts/.... Не переносить эти имена и Auto Hosts routes буквально. Для нового решения использовать нейтральное имя, например daemon-api.token, и общий middleware для тех endpoint, которые действительно остаются. Сам код защиты и проверку peer address можно переиспользовать; Auto Hosts handlers переносить не нужно.
-
-Проверки: нет токена → 401; неверный формат/значение → 401; непетлевой Host, Origin или RemoteAddr → отказ; корректный loopback Bearer → запрос проходит. Проверить каждый Go/Python/shell клиент и тестами доказать, что все они посылают токен. Cookie Web UI не должна давать доступ к daemon API, а daemon Bearer token не должен выдаваться браузеру.
-
-### 12.4. Приоритет P2 — независимые усиления Web UI
-
-**P2.1. Маскирование секретов в логах.**
-
-- Первоначальная реализация: [c438084](https://github.com/agentnht/doh-health-monitor/commit/c4380849ee945401f4fee2db2e10a04493ecd15e).
-- Тесты форматов: [ccab1ad](https://github.com/agentnht/doh-health-monitor/commit/ccab1ad656c8ccddce3b6a78a12aa7fb19a0ce27).
-- Исправленная регулярная обработка: [0c1dabf](https://github.com/agentnht/doh-health-monitor/commit/0c1dabf29c7804ef22fd8fb1fb8d1cff8e5ca6c4).
-
-Применить к webui_admin.go и webui_admin_test.go. Покрыть Bearer, X-Goog-Api-Key, access_token, apiToken, XUI_API_TOKEN и узнаваемые ключи Gemini. Перед переносом сверить список реально используемых секретов новой реализации; не добавлять специальные правила для отключённых или удалённых подсистем вместо общей redaction-политики.
-
-**P2.2. Валидация DNS-имени перед вызовом dig.**
-
-- Коммит: [4aad79a](https://github.com/agentnht/doh-health-monitor/commit/4aad79a7a8f1c7d167f6856fc5a56f33ce90a614).
-- В webui_admin.go проверять DNS hostname до запуска внешней команды, нормализовать QNAME и передавать его как явный operand через dig -q, а не как произвольную строку рядом с флагами.
-- Перенести вместе с тестами: пустое, некорректное имя, имя с ведущим дефисом, валидные ASCII/IDNA-имена и ожидаемое формирование аргументов. Не менять общую архитектуру диагностики только ради этого исправления.
-**P2.3. Ограничить поиск исполняемого CLI панели по UID.**
-
-- Коммит: [db90644](https://github.com/agentnht/doh-health-monitor/commit/db90644d52d11cf03c1aa983adaf94c12f05142c).
-- Это изменение относится к internal/dohintegration/api.go, а не к shell-меню. Оно полезно, если новая реализация сохраняет автоматическое обнаружение/вызов x-ui для получения API credential: проверять UID процесса и владельца самого executable, а также fallback-кандидатов.
-- Переносить только при сохранении такого способа provisioning; добавить тесты на чужого владельца и допустимый executable. Если новый Geosite DNS routing не вызывает panel CLI автоматически, этот пункт не является блокером новой DNS-схемы.
-
-### 12.5. Условные улучшения — переносить после проверки потребности
-
-- **Reload/config consistency:** коммиты [6d14563](https://github.com/agentnht/doh-health-monitor/commit/6d14563218bb984c9849b65f8902935996ad0b8f), [3dc8234](https://github.com/agentnht/doh-health-monitor/commit/3dc82344a1896d9cdd9794abf7f541e17fb5fa40) и [848d5c2](https://github.com/agentnht/doh-health-monitor/commit/848d5c2f613ab70604ac529c87b9f85475919bd0). Отдельно оценить: не дать запросу от старого runtime snapshot повторно заполнить уже инвалидированный cache; сбрасывать reload error после успешного восстановления; тестировать настраиваемый интервал reload. Gemini-валидацию и Gemini-specific логику из этих изменений не переносить автоматически.
-- **Диагностика фактического DNS endpoint:** коммит [59ae555](https://github.com/agentnht/doh-health-monitor/commit/59ae5558c4d939a58f52464006bd796794138680) исправляет диагностику для динамической пары listener-портов и файла dns-listener.json. Сам механизм auto port mode новой архитектуре не нужен. Полезный принцип — диагностика должна читать фактический адрес/порт активного listener, а не предполагать 5355; реализовать это на основе конфигурации и runtime-состояния новой версии.
-- **Обработка ошибок и загрузки UI:** просмотреть отдельные изменения в webui/app.js и webui/index.html, перенося только общие loading/error states и корректное отображение статуса источников. Изменения, которые управляют Auto Hosts/Geosite настройками, исключить.
-
-### 12.6. Что не переносить из v3 как есть
-
-Не переносить cherry-pick-ом или заменой целых файлов:
-
-- Auto Hosts tab, настройки, Dry Run, pinned/automatic/emergency-off state;
-- динамические QNAME records, LastSeen, ExpiresAt, GC и связанные cache/state модели;
-- Geosite matcher/parser, выбор категорий внутри плагина и управление runtime Geosite index из UI;
-- /autohosts/* API, Auto Hosts daemon token naming и соответствующие JS handlers;
-- автоматический выбор/сохранение пары DNS listener ports и dns-listener.json;
-- Quad9 routing implementation, если ответственность за fallback будет закреплена за Xray/panel;
-- весь daemon.go, webui.go, webui_admin.go, webui/app.js или webui/index.html из v3 без разборки.
-
-Особенно важно: v3 Web UI файлы смешивают общую функциональность управления плагином с Auto Hosts/Geosite. Переносить отдельные согласованные изменения и тесты в текущие файлы main, сохраняя их существующие страницы и API.
-
-### 12.7. Рекомендуемый порядок переноса и зависимости
-
-1. **Shell hardening:** UID-фильтр и запуск только packaged checker. Проверить состав ZIP и shell-сценарии. Это наименее связанный с остальной работой этап.
-2. **Одноразовый Web UI login:** согласованно перенести Go file/token flow, shell handoff, JS bootstrap и session exchange. Включить тесты сервера и браузерной bootstrap-логики в тот же change set.
-3. **Daemon Bearer auth:** сначала определить имя и формат token file, затем защитить /status, после чего одним этапом обновить Go, Python и shell clients. Не выпускать промежуточное состояние, в котором сервер уже требует токен, а клиенты его ещё не посылают.
-4. **Log redaction и DNS test validation:** отдельные небольшие изменения со своими unit tests.
-5. **Reload/cache и фактический listener diagnostics:** только после того, как новая конфигурация DNS режимов и listener lifecycle определены.
-
-Минимальный набор проверок после переноса:
-
-- bash -n scripts/plugin-management.sh scripts/check-dns-integration.sh;
-- node --check webui/app.js;
-- gofmt для изменённых Go-файлов, go test ./... и go vet ./...;
-- тесты одноразового launch token: успешный обмен, повторный обмен отклонён, token очищен из URL до первого API fetch, секрет отсутствует в stdout и query string;
-- тесты cookie: cookie отдельная от launch token, HttpOnly, SameSite=Strict, все приватные routes требуют корректную сессию;
-- тесты daemon API: отсутствующий/неверный Bearer, некорректная схема, не-loopback Host/Origin/RemoteAddr и корректный запрос;
-- тесты Go/Python/shell клиентов, подтверждающие чтение защищённого token file и передачу Bearer;
-- тесты redaction и безопасной передачи QNAME в dig;
-- проверка, что management script и checker присутствуют в реальном release ZIP;
-- затем отдельная проверка на VPS: SSH tunnel, открытие/закрытие Web UI, доступность UDP и TCP DNS listener и фактический статус после перезапуска.
-
-CI и unit tests не заменяют VPS-проверку.
-
-**Статус этого плана:** это список для последующего выборочного переноса, а не выполненный перенос кода. Cherry-pick всего PR #10 или замена файлов из v3 не рекомендуются. Сначала переносить P1-блоки небольшими согласованными наборами с тестами; изменения конфигурации панели и автоматизацию Xray по-прежнему оставить на последний этап.
