@@ -159,7 +159,7 @@ Fallback в двух режимах имеет разную семантику. 
 Для режима 2 (как и для режима 1 на входе плагина) пользовательский DNS listener обслуживает только запросы типов A и AAAA. Для этих запросов режим 2 прозрачно передаёт DNS-пакет upstream-у и возвращает его ответ без самостоятельного синтеза или перестройки RR:
 
 - **CNAME:** сохранять полученную upstream-ом цепочку CNAME и связанные записи. Плагин не должен заменять alias на самостоятельно найденный конечный IP.
-- **HTTPS/SVCB:** поддерживать QTYPE HTTPS (65) и SVCB (64) как обычные типы DNS-запросов и прозрачно передавать полученные RR. Не сводить их к A/AAAA.
+- **HTTPS/SVCB:** отдельные QTYPE HTTPS (65) и SVCB (64) listener плагина не обслуживает: они получают `NOERROR`/NODATA без SOA и без кэширования. Проверка HTTPS/TLS в selector-е — это сетевой probe по IP после A/AAAA bootstrap, а не DNS QTYPE HTTPS.
 - **DNSSEC:** передавать DO bit и DNSSEC RR без изменения. Не выставлять AD в синтетических/локально сформированных ответах, если плагин сам не выполняет DNSSEC validation. Самостоятельный DNSSEC-валидатор в текущий объём не входит.
 - **EDNS:** сохранять значимые параметры запроса при upstream forwarding. В самостоятельно сформированном локальном ответе не отражать клиентские EDNS options вроде COOKIE/ECS; если нужен OPT, использовать минимальный ответный OPT с согласованными UDP payload size, extended RCODE/version и DO bit.
 
@@ -351,7 +351,7 @@ V3 — источник готовых реализаций и тестов, н�
 
 1. Конфигурационная модель двух взаимоисключающих режимов: `dns_mode: endpoint_ip | resolver`; независимые `upstreams` режима 1 и упорядоченный `resolver_upstreams` режима 2; валидация типов system/UDP/TCP/DoH и bootstrap settings.
 2. ActiveDoHSelector выделен в самостоятельный `internal/activedoh`; восемь согласованных контрольных доменов, A/AAAA DNS probes через кандидатов DoH, затем HTTPS/TLS probes по IP с оригинальным hostname/SNI/Host.
-3. Режим `endpoint_ip` возвращает bootstrap IP выбранного DoH endpoint-а, а не IP запрошенного сайта. Реализованы TTL до 60 секунд с ограничением freshness, отдельное пространство кэша и generation, очистка при смене endpoint/IP.
+3. Режим `endpoint_ip` возвращает bootstrap IP выбранного DoH endpoint-а, а не IP запрошенного сайта. Реализованы TTL до 60 секунд с ограничением freshness, отдельное пространство кэша и generation, очистка при смене endpoint/IP. Выбор привязан к generation конфигурации; результат старого snapshot не обслуживает DNS-запросы после reload.
 4. Режим `resolver` реализует последовательный fallback для system, UDP, TCP и DoH upstream-ов; транспортные ошибки, SERVFAIL/REFUSED и unusable truncated responses переключают upstream, валидные NXDOMAIN/NODATA — нет.
 5. Кэш режима 2 отделён от режима 1. Положительный cache TTL ограничен 300 секундами; negative cache опирается на SOA TTL и SOA.MINIMUM и не применяется к ответам без SOA. Первый ответ клиенту сохраняет исходный TTL upstream-а, а ограничение 300 секунд применяется к отдельной копии для кэша.
 6. Реализована прямая защита system resolver от совпадения его nameserver с локальным plugin listener на стандартном порту 53. Ограничения для локальных stub-resolver и внешнего TProxy/NAT-перенаправления остаются предметом интеграционной проверки.

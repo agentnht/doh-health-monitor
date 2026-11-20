@@ -82,6 +82,10 @@ func (r *Runtime) runActiveDoHSelection(parent context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
+	if !r.activeDoHConfigMatches(s) {
+		logLine("INFO", "ACTIVE_DOH selection cycle discarded: configuration changed during bootstrap lookup")
+		return
+	}
 	// Capture the selection timestamp after bootstrap lookups: a successful lookup may
 	// have refreshed ResolvedAt during candidate collection, so it must not appear future-dated.
 	now := time.Now().UTC()
@@ -148,6 +152,10 @@ sendJobs:
 			successes++
 		}
 	}
+	if !r.activeDoHConfigMatches(s) {
+		logLine("INFO", "ACTIVE_DOH selection cycle discarded: configuration changed during probes")
+		return
+	}
 	previousGeneration := r.activeDoHSelector.Generation()
 	selected, ok := r.activeDoHSelector.Select(candidates, results, now)
 	if r.activeDoHSelector.Generation() != previousGeneration {
@@ -200,6 +208,7 @@ func (r *Runtime) activeDoHCandidates(ctx context.Context, snapshot *Snapshot) [
 			URL: upstream.cfg.URL,
 			Hostname: status.Hostname,
 			ResolvedAt: status.ResolvedAt,
+			ConfigGeneration: snapshot.activeDoHGeneration,
 		}
 		for _, raw := range ips {
 			ip := net.ParseIP(raw)
@@ -496,12 +505,24 @@ func isPublicDoHIP(ip net.IP) bool {
 	return true
 }
 
+func (r *Runtime) activeDoHConfigMatches(snapshot *Snapshot) bool {
+	if snapshot == nil {
+		return false
+	}
+	current := r.currentSnapshot()
+	return current != nil && current.activeDoHGeneration == snapshot.activeDoHGeneration
+}
+
 func (r *Runtime) activeDoHStatus() *ActiveDoHStatus {
 	if r.activeDoHSelector == nil {
 		return nil
 	}
+	snapshot := r.currentSnapshot()
+	if snapshot == nil {
+		return nil
+	}
 	selection, ok := r.activeDoHSelector.Current(time.Now())
-	if !ok {
+	if !ok || selection.Candidate.ConfigGeneration != snapshot.activeDoHGeneration {
 		return nil
 	}
 	return &ActiveDoHStatus{

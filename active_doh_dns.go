@@ -15,13 +15,20 @@ const activeDoHAnswerTTL = 60 * time.Second
 // activeDoHDNSResponse constructs the default mode-1 answer: the selected DoH
 // endpoint's bootstrap IPs, not the IPs of the requested website.
 func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte {
-	if r.activeDoHSelector == nil {
+	if r.activeDoHSelector == nil || snapshot == nil {
+		return emptyNoErrorDNSResponse(query)
+	}
+	// A DNS request may have captured an old snapshot immediately before reload.
+	// Never serve a selection unless both the request and current runtime snapshot
+	// agree with the configuration generation used to probe that endpoint.
+	current := r.currentSnapshot()
+	if current == nil || current.activeDoHGeneration != snapshot.activeDoHGeneration {
 		return emptyNoErrorDNSResponse(query)
 	}
 
 	now := time.Now()
 	selection, ok := r.activeDoHSelector.Current(now)
-	if !ok {
+	if !ok || selection.Candidate.ConfigGeneration != current.activeDoHGeneration {
 		return emptyNoErrorDNSResponse(query)
 	}
 

@@ -254,3 +254,26 @@ func TestControlDomainScoreDoesNotExceedEight(t *testing.T) {
 		t.Fatalf("score = %+v, want eight control checks", selected)
 	}
 }
+
+
+func TestConfigGenerationChangeInvalidatesActiveSelection(t *testing.T) {
+	now := time.Now().UTC()
+	s := NewSelector(DefaultPolicy())
+
+	firstCandidate := candidate("a", "192.0.2.1", now)
+	firstCandidate.ConfigGeneration = 41
+	first, ok := s.Select([]Candidate{firstCandidate}, results("a", 8, now), now)
+	if !ok || first.Generation != 1 {
+		t.Fatalf("unexpected initial selection: %+v", first)
+	}
+
+	updatedCandidate := candidate("a", "192.0.2.1", now.Add(time.Second))
+	updatedCandidate.ConfigGeneration = 42
+	updated, ok := s.Select([]Candidate{updatedCandidate}, results("a", 8, now.Add(time.Second)), now.Add(time.Second))
+	if !ok {
+		t.Fatal("selection should remain available after config reload")
+	}
+	if updated.Generation != 2 || updated.Candidate.ConfigGeneration != 42 {
+		t.Fatalf("config generation change was not published: %+v", updated)
+	}
+}

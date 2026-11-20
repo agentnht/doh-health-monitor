@@ -33,12 +33,13 @@ func ControlDomains() []string {
 }
 
 type Candidate struct {
-	ServerID  string
-	URL       string
-	Hostname  string
-	IPv4      []string
-	IPv6      []string
-	ResolvedAt time.Time
+	ServerID         string
+	URL              string
+	Hostname         string
+	IPv4             []string
+	IPv6             []string
+	ResolvedAt       time.Time
+	ConfigGeneration uint64
 }
 
 type ProbeResult struct {
@@ -390,7 +391,8 @@ func isControlDomain(domain string) bool {
 }
 
 func sameEndpoint(a, b Candidate) bool {
-	if a.ServerID != b.ServerID || a.URL != b.URL || normalizeHostname(a.Hostname) != normalizeHostname(b.Hostname) {
+	if a.ConfigGeneration != b.ConfigGeneration ||
+		a.ServerID != b.ServerID || a.URL != b.URL || normalizeHostname(a.Hostname) != normalizeHostname(b.Hostname) {
 		return false
 	}
 	if len(a.IPv4) != len(b.IPv4) || len(a.IPv6) != len(b.IPv6) {

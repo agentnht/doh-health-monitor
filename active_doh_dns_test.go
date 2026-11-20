@@ -173,3 +173,51 @@ func TestActiveDoHResponsePreservesEDNSDOWithoutReflectingOptions(t *testing.T) 
 		t.Fatal("response OPT must not reflect client EDNS options")
 	}
 }
+
+
+func TestActiveDoHResponseRejectsSelectionFromStaleConfigGeneration(t *testing.T) {
+	now := time.Now().UTC()
+	selector := activedoh.NewSelector(activedoh.DefaultPolicy())
+	candidate := activedoh.Candidate{
+		ServerID:         "selected",
+		URL:              "https://doh.example/dns-query",
+		Hostname:         "doh.example",
+		IPv4:             []string{"1.1.1.1"},
+		ResolvedAt:       now,
+		ConfigGeneration: 41,
+	}
+	var probes []activedoh.ProbeResult
+	for _, domain := range activedoh.ControlDomains() {
+		probes = append(probes, activedoh.ProbeResult{
+			ServerID: "selected", Domain: domain, Success: true, CheckedAt: now,
+		})
+	}
+	if _, ok := selector.Select([]activedoh.Candidate{candidate}, probes, now); !ok {
+		t.Fatal("failed to seed active selector")
+	}
+
+	runtime := &Runtime{activeDoHSelector: selector, cache: map[string]cacheItem{}}
+	requestSnapshot := &Snapshot{
+		cfg: Config{Cache: CacheConfig{Enabled: true, MaxEntries: 10, MaxBytes: 4096, MaxTTL: 300}},
+		activeDoHGeneration: 41,
+	}
+	currentSnapshot := &Snapshot{
+		cfg: Config{Cache: CacheConfig{Enabled: true, MaxEntries: 10, MaxBytes: 4096, MaxTTL: 300}},
+		activeDoHGeneration: 42,
+	}
+	runtime.snapshot.Store(currentSnapshot)
+
+	response := runtime.activeDoHDNSResponse(activeDoHTestQuery(1, false), requestSnapshot)
+	if dnsRCode(response) != 0 || dnsAnswerCount(response) != 0 {
+		t.Fatalf("stale config selection leaked into DNS answer: rcode=%d answers=%d", dnsRCode(response), dnsAnswerCount(response))
+	}
+	runtime.cacheMu.Lock()
+	cacheEntries := len(runtime.cache)
+	runtime.cacheMu.Unlock()
+	if cacheEntries != 0 {
+		t.Fatalf("stale config response was cached: entries=%d", cacheEntries)
+	}
+	if status := runtime.activeDoHStatus(); status != nil {
+		t.Fatalf("stale active selection was exposed in status: %+v", status)
+	}
+}
