@@ -24,7 +24,10 @@ jobs:
         run: |
           bash -n scripts/plugin-management.sh
           bash -n scripts/check-dns-integration.sh
+          bash -n scripts/test-check-dns-integration.sh
           node --check webui/app.js
+      - name: Test approved Geosite DNS integration checker
+        run: bash scripts/test-check-dns-integration.sh
       - run: go vet ./...
       - run: go test ./...
       - name: Build Linux amd64 test package
