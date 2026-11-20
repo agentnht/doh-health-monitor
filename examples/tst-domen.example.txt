@@ -1,27 +1,11 @@
 # domain;qtypes;required;http_url;expected_status;verify_oidc
-# qtypes are tried in order; the first successful answer completes the DNS part.
-aistudio.google.com;A,AAAA;0;;;0
-alkalimakersuite-pa.clients6.google.com;A,AAAA;0;;;0
-apis.google.com;A,AAAA;0;;;0
-www.googletagmanager.com;A,AAAA;0;;;0
-waa-pa.clients6.google.com;A,AAAA;0;;;0
-console.cloud.google.com;A,AAAA;0;;;0
-people-pa.clients6.google.com;A,AAAA;0;;;0
-ln3.googleusercontent.com;A,AAAA;0;;;0
-www.google-analytics.com;A,AAAA;0;;;0
-content-autofill.googleapis.com;A,AAAA;0;;;0
-play.google.com;A,AAAA;0;;;0
-google.com;A,AAAA;0;;;0
-googleapis.com;A,AAAA;0;;;0
-gstatic.com;A,AAAA;0;;;0
-googleusercontent.com;A,AAAA;0;;;0
-google.org;A,AAAA;0;;;0
-googleadservices.com;A,AAAA;0;;;0
-google-analytics.com;A,AAAA;0;;;0
+# Eight ActiveDoHSelector control domains plus Google Accounts OIDC.
+chatgpt.com;A,AAAA;0;;;0
+claude.ai;A,AAAA;0;;;0
 gemini.google.com;A,AAAA;1;https://gemini.google.com/;200;0
-generativelanguage.googleapis.com;A,AAAA;0;;;0
-clients6.google.com;A,AAAA;0;;;0
-jnn-pa.googleapis.com;A,AAAA;0;;;0
+elevenlabs.io;A,AAAA;0;;;0
+grok.com;A,AAAA;0;;;0
+www.perplexity.ai;A,AAAA;0;;;0
+notebooklm.google.com;A,AAAA;0;;;0
+aistudio.google.com;A,AAAA;0;;;0
 accounts.google.com;A,AAAA;1;https://accounts.google.com/.well-known/openid-configuration;200;1
-ssl.gstatic.com;A,AAAA;0;;;0
-www.googleapis.com;A,AAAA;0;;;0
