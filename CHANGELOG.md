@@ -7,7 +7,8 @@
 ### Geosite DNS routing
 - Добавлены два взаимоисключающих режима DNS listener-а: `endpoint_ip` (default) и `resolver`.
 - Geosite matching вынесен на сторону Xray: DNS port 53 направляется в DNS outbound, его `settings.rules` отправляют Geosite HIT через `direct` на plugin listener, а остальные запросы — через `hijack` во встроенный DNS Xray.
-- Плагин не включает собственный Geosite matcher и не переносит Auto Hosts/QNAME database.
+- Добавлен read-only checker утверждённой схемы `geosite:habr direct` → catch-all `hijack`; команды CLI `integrate/remove` и Web UI mutation endpoint отключены, так как унаследованный planner не совместим с этим DNS path.
+- Плагин не включает собственный Geosite matcher и не ведёт динамическую базу пользовательских QNAME.
 
 ### ActiveDoHSelector и endpoint_ip
 - Выделен самостоятельный `internal/activedoh.Selector` с восемью контрольными доменами, A/AAAA DoH probes и HTTPS/TLS probes с проверкой SNI/Host/certificate.
