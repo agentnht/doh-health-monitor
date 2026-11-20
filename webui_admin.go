@@ -44,7 +44,6 @@ type webUIEditableConfig struct {
 	Cache                  CacheConfig     `json:"cache"`
 	BootstrapResolvers     []string        `json:"bootstrap_resolvers"`
 	GeminiAPI              GeminiAPIConfig `json:"gemini_api"`
-	Integration            bool            `json:"integration"`
 }
 
 type webUISourceRow struct {
@@ -363,16 +362,12 @@ func webUIAdminAPI(w http.ResponseWriter, r *http.Request, path, dataDir string)
 			return
 		}
 		action := strings.ToLower(strings.TrimSpace(request.Action))
-		if action != "integrate" && action != "remove" && action != "check" {
-			writeWebUIError(w, http.StatusBadRequest, errors.New("action must be integrate, remove or check"))
-			return
-		}
-		if action != "check" && !request.Confirmed {
-			writeWebUIError(w, http.StatusBadRequest, errors.New("operation confirmation is required"))
+		if action != "check" {
+			writeWebUIError(w, http.StatusGone, errors.New("panel-changing Integrate/Remove are disabled for the approved Geosite DNS design; configure Xray manually using doc/GEOSITE-DNS-ROUTING-DESIGN.md"))
 			return
 		}
 		webUIAdminMu.Lock()
-		logOutput, err := runWebUIIntegration(dataDir, action)
+		logOutput, err := runWebUIPluginPreflight(dataDir)
 		webUIAdminMu.Unlock()
 		if err != nil {
 			writeWebUIJSON(w, http.StatusOK, map[string]any{"ok": false, "action": action, "output": logOutput, "error": err.Error()})
@@ -413,7 +408,7 @@ func editableWebUIConfig(config Config) webUIEditableConfig {
 		DoHTimeoutSeconds: config.DoHTimeoutSeconds, DNSMaxConcurrent: config.DNSMaxConcurrent,
 		Health: config.Health, Cache: config.Cache,
 		BootstrapResolvers: append([]string(nil), config.BootstrapResolvers...),
-		GeminiAPI: config.GeminiAPI, Integration: config.Integration,
+		GeminiAPI: config.GeminiAPI,
 	}
 }
 
@@ -718,7 +713,7 @@ func readWebUILogs(dataDir string, count int) ([]string, string, error) {
 		parentLog := filepath.Join(filepath.Dir(root), "plugin.log")
 		if lines, err := readWebUILogFile(parentLog, count); err == nil && len(lines) > 0 {
 			all = append(all, lines...)
-			source = "plugin.log (integration operations)"
+			source = "plugin.log"
 		}
 	}
 	if len(all) == 0 {
@@ -777,16 +772,15 @@ func webUITest(name string, ok bool, reason string) webUITestResult {
 func runWebUIAdminTests(dataDir string) webUITestSummary {
 	summary := webUITestSummary{Status: "NotOK", RunAt: time.Now().UTC(), Tests: []webUITestResult{}}
 
-	// Keep the legacy integration preflight as the first mandatory check.
-	integrationOutput, integrationErr := runWebUIIntegration(dataDir, "check")
-	integrationReason := strings.TrimSpace(integrationOutput)
-	if integrationErr != nil {
-		if integrationReason != "" {
-			integrationReason += "\n"
+	pluginOutput, pluginErr := runWebUIPluginPreflight(dataDir)
+	pluginReason := strings.TrimSpace(pluginOutput)
+	if pluginErr != nil {
+		if pluginReason != "" {
+			pluginReason += "\n"
 		}
-		integrationReason += integrationErr.Error()
+		pluginReason += pluginErr.Error()
 	}
-	summary.Tests = append(summary.Tests, webUITest("DNS integration preflight", integrationErr == nil, integrationReason))
+	summary.Tests = append(summary.Tests, webUITest("Plugin service preflight", pluginErr == nil, pluginReason))
 
 	configPath, _, fileErr := webUIDataFile(dataDir, "config.json", webUIAdminMaxFile)
 	if fileErr != nil {
@@ -838,11 +832,7 @@ func runWebUIAdminTests(dataDir string) webUITestSummary {
 	}
 
 	summary.Tests = append(summary.Tests, testWebUIHTTPListener(config.HTTPListen))
-	if config.Integration {
-		summary.Tests = append(summary.Tests, runWebUIXrayIntegrationCheck(dataDir))
-	} else {
-		summary.Tests = append(summary.Tests, webUITest("Xray DNS integration", true, "Интеграция выключена в config.json"))
-	}
+	summary.Tests = append(summary.Tests, runWebUIXrayIntegrationCheck(dataDir))
 	return finalizeWebUITests(summary)
 }
 
@@ -1003,25 +993,25 @@ func webUIDigResult(domain string, qtype uint16, answer string, elapsed int64, c
 func runWebUIXrayIntegrationCheck(dataDir string) webUITestResult {
 	root, err := webUIDataRoot(dataDir)
 	if err != nil {
-		return webUITest("Xray DNS integration", false, err.Error())
+		return webUITest("Approved Xray Geosite DNS path", false, err.Error())
 	}
 	script := filepath.Join(filepath.Dir(root), "scripts", "check-dns-integration.sh")
 	info, err := os.Lstat(script)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return webUITest("Xray DNS integration", false, "Не найден штатный read-only scripts/check-dns-integration.sh")
+		return webUITest("Approved Xray Geosite DNS path", false, "Не найден штатный read-only scripts/check-dns-integration.sh")
 	}
 	config, err := loadConfigNoCreate(filepath.Join(root, "config.json"))
 	if err != nil {
-		return webUITest("Xray DNS integration", false, "Не удалось прочитать config.json: "+err.Error())
+		return webUITest("Approved Xray Geosite DNS path", false, "Не удалось прочитать config.json: "+err.Error())
 	}
 	udpAddress, err := localListenAddress(config.DNSListenUDP)
 	if err != nil {
-		return webUITest("Xray DNS integration", false, err.Error())
+		return webUITest("Approved Xray Geosite DNS path", false, err.Error())
 	}
 	_, pluginPort, _ := net.SplitHostPort(udpAddress)
 	httpAddress, err := localListenAddress(config.HTTPListen)
 	if err != nil {
-		return webUITest("Xray DNS integration", false, err.Error())
+		return webUITest("Approved Xray Geosite DNS path", false, err.Error())
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
@@ -1039,26 +1029,23 @@ func runWebUIXrayIntegrationCheck(dataDir string) webUITestResult {
 	}
 	text = redactWebUILogLine(text)
 	if ctx.Err() != nil {
-		return webUITest("Xray DNS integration", false, "Проверка превысила лимит 35 секунд")
+		return webUITest("Approved Xray Geosite DNS path", false, "Проверка превысила лимит 35 секунд")
 	}
 	if commandErr != nil {
 		if text == "" {
 			text = commandErr.Error()
 		}
-		return webUITest("Xray DNS integration", false, text)
+		return webUITest("Approved Xray Geosite DNS path", false, text)
 	}
 	if text == "" {
 		text = "Read-only диагностика завершилась успешно"
 	}
-	return webUITest("Xray DNS integration", true, text)
+	return webUITest("Approved Xray Geosite DNS path", true, text)
 }
 
-func runWebUIIntegration(dataDir, action string) (string, error) {
+func runWebUIPluginPreflight(dataDir string) (string, error) {
 	if os.Geteuid() != 0 {
-		return "", errors.New("операции интеграции Web UI должны выполняться от root")
-	}
-	if action != "integrate" && action != "remove" && action != "check" {
-		return "", errors.New("unsupported integration action")
+		return "", errors.New("plugin preflight must run as root")
 	}
 	root, err := webUIDataRoot(dataDir)
 	if err != nil {
@@ -1081,31 +1068,15 @@ func runWebUIIntegration(dataDir, action string) (string, error) {
 	if !dohintegration.IsLocalURL(statusURL) {
 		return "", errors.New("configured status endpoint must use loopback")
 	}
+
 	logger := &webUIOperationLogger{dataDir: root}
-	logger.Printf("INTEGRATION action=%s started", strings.ToUpper(action))
-	args := []string{action, "--plugin-port", pluginPort, "--plugin-status-url", statusURL}
-	done := make(chan error, 1)
-	go func() {
-		done <- dohintegration.RunCommand(args, logger)
-	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			logger.Printf("INTEGRATION action=%s failed: %v", strings.ToUpper(action), err)
-			return logger.String(), err
-		}
-	case <-time.After(45 * time.Second):
-		timeoutErr := errors.New("операция интеграции превысила лимит 45 секунд")
-		logger.Printf("INTEGRATION action=%s failed: %v", strings.ToUpper(action), timeoutErr)
-		return logger.String(), timeoutErr
+	logger.Printf("PLUGIN_CHECK started")
+	err = dohintegration.RunCommand([]string{"check", "--plugin-port", pluginPort, "--plugin-status-url", statusURL}, logger)
+	if err != nil {
+		logger.Printf("PLUGIN_CHECK failed: %v", err)
+		return logger.String(), err
 	}
-	if action == "integrate" || action == "remove" {
-		if err := setIntegrationFlag(filepath.Join(root, "config.json"), action == "integrate"); err != nil {
-			logger.Printf("INTEGRATION action=%s completed but config flag update failed: %v", strings.ToUpper(action), err)
-			return logger.String(), fmt.Errorf("операция завершилась, но не удалось обновить integration в config.json: %w", err)
-		}
-	}
-	logger.Printf("INTEGRATION action=%s completed successfully", strings.ToUpper(action))
+	logger.Printf("PLUGIN_CHECK completed successfully")
 	return logger.String(), nil
 }
 
