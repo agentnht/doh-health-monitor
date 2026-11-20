@@ -365,7 +365,7 @@ func main() {
 			return
 		}
 		if action == "check" {
-			logger := lucxIntegrationLogger{}
+			logger := lucxReadOnlyCheckLogger{}
 			if err := dohintegration.RunCommand(os.Args[1:], logger); err != nil {
 				logLine("ERROR", "CHECK: %v", err)
 				os.Exit(1)
@@ -516,15 +516,10 @@ func main() {
 }
 
 
-type lucxIntegrationLogger struct { file *os.File }
-func (l lucxIntegrationLogger) Printf(format string, args ...any) {
-	message := fmt.Sprintf(format, args...)
-	logLine("INFO", "%s", message)
-	if l.file != nil {
-		_, err := fmt.Fprintf(l.file, "%s level=INFO %s\n", time.Now().UTC().Format(time.RFC3339), message)
-		if err == nil { err = l.file.Sync() }
-		if err != nil { logLine("ERROR", "INTEGRATION log write failed: %v", err) }
-	}
+type lucxReadOnlyCheckLogger struct{}
+
+func (lucxReadOnlyCheckLogger) Printf(format string, args ...any) {
+	logLine("INFO", "CHECK %s", fmt.Sprintf(format, args...))
 }
 
 
