@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-11-20
+
+### Geosite DNS routing
+- Добавлены два взаимоисключающих режима DNS listener-а: `endpoint_ip` (default) и `resolver`.
+- Geosite matching вынесен на сторону Xray: DNS port 53 направляется в DNS outbound, его `settings.rules` отправляют Geosite HIT через `direct` на plugin listener, а остальные запросы — через `hijack` во встроенный DNS Xray.
+- Плагин не включает собственный Geosite matcher и не переносит Auto Hosts/QNAME database.
+
+### ActiveDoHSelector и endpoint_ip
+- Выделен самостоятельный `internal/activedoh.Selector` с восемью контрольными доменами, A/AAAA DoH probes и HTTPS/TLS probes с проверкой SNI/Host/certificate.
+- Режим `endpoint_ip` возвращает bootstrap IP выбранного DoH endpoint-а, а не IP запрошенного сайта.
+- Добавлены freshness, deterministic scoring, anti-flap, failure grace cycles, minimum hold, switch cooldown и config generation fencing.
+- TTL ответов ограничен 60 секундами и остатком freshness endpoint-а; synthetic NODATA не кэшируется.
+
+### Resolver mode и DNS cache
+- Добавлены упорядоченные upstream-ы `system`, UDP, TCP и DoH с последовательным fallback по транспортным ошибкам, timeout, SERVFAIL, REFUSED и unusable truncated responses.
+- System resolver по умолчанию использует `/etc/resolv.conf`; `resolver_upstreams: []` остаётся явно пустым списком и не восстанавливается в default автоматически.
+- Для UDP DNS добавлен retry по TCP при TC; system resolver отказывается от прямого совпадения nameserver с локальным plugin listener на порту 53.
+- Разделены cache namespace/generation режимов 1 и 2. Positive cache TTL режима 2 ограничен 300 секундами; первый ответ клиенту сохраняет upstream TTL.
+- Negative caching NXDOMAIN/NODATA использует `min(SOA RR TTL, SOA.MINIMUM)` с cap 300 секунд. Исправлена классификация CNAME→NODATA; ответы без SOA и synthetic NODATA не кэшируются.
+
+### DNS wire policy и документация
+- Plugin DNS listener обслуживает A/AAAA; остальные QTYPE получают `NOERROR`/NODATA без SOA и без кэширования.
+- Добавлены примеры `resolver_upstreams`, README с двумя режимами и ручной схемой Xray Geosite DNS outbound.
+- Синхронизирован `manifest.json` и version string бинарника на `2.3.0`.
+
+### Проверки
+- GitHub Actions: `go vet ./...`, `go test ./...`, module tidy, shell/JavaScript syntax и Linux amd64 build.
+- Отдельный DoH integration workflow: Go integration/unit tests, Python compile/unit tests, synthetic SQLite lifecycle и shell syntax.
+- Успешный CI не заменяет runtime-проверку WireGuard/TProxy, встроенной версии Xray, Geosite asset и сетевого namespace на целевом VPS; эти проверки остаются обязательными до снятия Draft.
+
 ## [2.2.1] - 2026-11-17
 
 ### Интерактивный Web UI
