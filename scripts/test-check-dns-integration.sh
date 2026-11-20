@@ -85,7 +85,7 @@ write_approved_config
 expect_pass "approved Geosite config passes without legacy localhost exception"
 
 write_approved_config
-jq '(.outbounds[] | select(.tag == "dns-out") | .settings.rules[0].domain) = ["domain:example.com"]' "$CONFIG" >"$TMP_DIR/mutated.json"
+jq '(.outbounds[] | select(.tag == "dns-out") | .settings.rules[0].domain) = ["geosite:cn"]' "$CONFIG" >"$TMP_DIR/mutated.json"
 mv "$TMP_DIR/mutated.json" "$CONFIG"
 expect_fail "Geosite direct rule is required"
 
@@ -103,5 +103,15 @@ write_approved_config
 jq '(.routing.rules) |= (.[0:1] + .[2:] + .[1:2])' "$CONFIG" >"$TMP_DIR/mutated.json"
 mv "$TMP_DIR/mutated.json" "$CONFIG"
 expect_fail "port-53 route must precede geoip:private block"
+
+write_approved_config
+jq '.dns.servers += [{"address":"127.0.0.1","port":5355}]' "$CONFIG" >"$TMP_DIR/mutated.json"
+mv "$TMP_DIR/mutated.json" "$CONFIG"
+expect_fail "plugin listener must not be added to dns.servers"
+
+write_approved_config
+jq '.routing.rules += [.routing.rules[1]]' "$CONFIG" >"$TMP_DIR/mutated.json"
+mv "$TMP_DIR/mutated.json" "$CONFIG"
+expect_fail "duplicate global port-53 routes are ambiguous"
 
 printf 'All DNS integration checker tests passed.\n'
