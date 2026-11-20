@@ -67,8 +67,8 @@ func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 	if got := strings.Count(page, `aria-expanded="false"`); got != 5 {
 		t.Fatalf("all five section buttons must start collapsed, got %d collapsed buttons", got)
 	}
-	if got := strings.Count(page, `<section class="panel tab-page`); got != 6 {
-		t.Fatalf("all section panels, including both log panels, must start hidden; got %d", got)
+	if got := strings.Count(page, `<section class="panel tab-page`); got != 5 {
+		t.Fatalf("all section panels must start hidden; got %d", got)
 	}
 	if strings.Count(page, `class="tab-button"`) != 5 {
 		t.Fatal("expected five independent collapsible section buttons")
