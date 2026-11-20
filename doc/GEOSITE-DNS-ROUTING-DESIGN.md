@@ -355,7 +355,7 @@ V3 — источник готовых реализаций и тестов, н�
 4. Режим `resolver` реализует последовательный fallback для system, UDP, TCP и DoH upstream-ов; транспортные ошибки, SERVFAIL/REFUSED и unusable truncated responses переключают upstream, валидные NXDOMAIN/NODATA — нет.
 5. Кэш режима 2 отделён от режима 1. Положительный cache TTL ограничен 300 секундами; negative cache опирается на SOA TTL и SOA.MINIMUM и не применяется к ответам без SOA. Первый ответ клиенту сохраняет исходный TTL upstream-а, а ограничение 300 секунд применяется к отдельной копии для кэша.
 6. Реализована прямая защита system resolver от совпадения его nameserver с локальным plugin listener на стандартном порту 53. Ограничения для локальных stub-resolver и внешнего TProxy/NAT-перенаправления остаются предметом интеграционной проверки.
-7. Для code head `bb3ee6691545ea94ea6f67ce4b5ca816e5d01086` GitHub Actions подтвердил успешные `go vet ./...`, `go test ./...`, Linux amd64 build, проверку shell/JS syntax и отдельный DoH integration workflow.
+7. Для code head `b31ba20bfb78e4a30576170bbd032a5dc9900b45` GitHub Actions подтвердил успешные `go vet ./...`, `go test ./...`, Linux amd64 build, проверку shell/JS syntax и отдельный DoH integration workflow.
 
 ### Следующий порядок работы
 
