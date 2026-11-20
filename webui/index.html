@@ -54,8 +54,7 @@
     .config-block { border-top: 1px solid #374151; margin-top: .9rem; padding-top: .75rem; }
     .section-actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .8rem; }
     .header-controls { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: .65rem; margin-top: .75rem; }
-    .refresh-group, .integration-buttons { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
-    .integration-buttons { margin-left: auto; }
+    .refresh-group { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
     .tab-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0 0 .85rem; }
     .tab-button { background: #374151; }
     .tab-button[aria-selected="true"] { background: #1d4ed8; box-shadow: inset 0 0 0 1px #60a5fa; }
@@ -114,17 +113,12 @@
     <header>
       <p class="state">Web UI · локальное управление через SSH-туннель</p>
       <h1>DoH Health Monitor</h1>
-      <p>Мониторинг, редактирование конфигурации и списков, проверка DNS и управление интеграцией.</p>
+      <p>Мониторинг, редактирование конфигурации и списков, проверка DNS и утверждённого Xray Geosite DNS path.</p>
       <p class="muted">Версия: <strong id="version">—</strong> · Демон: <strong id="daemon">Проверка…</strong> · Запущен: <strong id="started">—</strong></p>
       <div class="header-controls">
         <div class="refresh-group">
           <button id="refresh" type="button">Обновить состояние</button>
           <span class="muted" id="updated">Загрузка…</span>
-        </div>
-        <div class="integration-buttons" aria-label="Управление DNS integration">
-          <span id="integration-result" class="muted" role="status"></span>
-          <button id="integration-add" type="button" disabled>Integrate</button>
-          <button id="integration-remove" class="danger" type="button" disabled>DeIntegrate</button>
         </div>
       </div>
       <p id="error" role="status"></p>
@@ -224,11 +218,6 @@
     </section>
 
     <section class="panel tab-page" data-page-panel="logs" hidden>
-      <div class="result-head"><h2>Лог интеграции / деинтеграции</h2><button id="refresh-integration-log" class="secondary" type="button">Обновить журнал операций</button></div>
-      <p class="muted">Результаты последних операций Integrate и DeIntegrate, включая ошибки и вывод штатной процедуры.</p>
-      <pre class="log-output" id="integration-log">Журнал пока не загружен.</pre>
-    </section>
-    <section class="panel tab-page" data-page-panel="logs" hidden>
       <div class="result-head"><h2>Логи</h2><button id="refresh-logs" class="secondary" type="button">Обновить логи</button></div>
       <p class="muted" id="logs-source">Источник: systemd journal / plugin.log.</p>
       <pre class="log-output" id="logs">Нажмите «Обновить логи».</pre>
@@ -236,7 +225,7 @@
 
     <section class="panel tab-page" data-page-panel="tests" hidden>
       <h2>Проверка состояния</h2>
-      <p class="muted">Проверяются config.json, файлы списков, фактические DNS-запросы через dig, UDP/HTTP listeners и Xray DNS integration. Предыдущий результат остаётся до нового запуска.</p>
+      <p class="muted">Проверяются config.json, файлы списков, реальные DNS-запросы через dig, UDP/HTTP listeners и структура утверждённого Xray Geosite DNS path. Проверка read-only; Geosite asset match и клиентский end-to-end маршрут проверяются отдельно.</p>
       <div class="section-actions"><button id="run-tests" type="button">Запустить проверки</button><strong id="tests-summary" class="muted">Проверки ещё не запускались</strong></div>
       <div class="results" id="test-results"></div>
     </section>
