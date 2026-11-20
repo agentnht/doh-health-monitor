@@ -138,16 +138,6 @@ ensure_dhm_symlink() {
 }
 
 
-confirm_action() {
-  local prompt="$1" answer
-  printf '%s [y/N]: ' "$prompt"
-  if ! IFS= read -r answer </dev/tty; then
-    printf '\n'
-    return 1
-  fi
-  [[ "$answer" == "y" || "$answer" == "Y" ]]
-}
-
 resolve_server_address() {
   local address="" client_addr="" client_port="" server_port="" extra=""
 
@@ -172,22 +162,6 @@ resolve_server_address() {
     return 1
   fi
   printf '%s\n' "$address"
-}
-
-run_plugin_action() {
-  local action="$1" rc
-  if ! confirm_action "Подтвердите операцию '$action'"; then
-    printf 'Операция отменена.\n'
-    return 0
-  fi
-
-  printf 'Выполняется %s...\n' "$action"
-  if LUCX_PLUGIN_DATA="$PLUGIN_DATA_DIR" "$PLUGIN_BIN" "$action"; then
-    printf '[OK] Операция %s завершена.\n' "$action"
-  else
-    rc=$?
-    printf '[FAIL] Операция %s завершилась с кодом %d.\n' "$action" "$rc" >&2
-  fi
 }
 
 run_check() {
@@ -320,12 +294,10 @@ run_web_ui() {
 
 show_menu() {
   printf '\nDoH Health Monitor 2.3.0 — управление\n'
-  printf '%s\n' '  1) Legacy panel integration (не для утверждённой Geosite-схемы)'
-  printf '%s\n' '  2) Legacy panel removal (не для утверждённой Geosite-схемы)'
-  printf '%s\n' '  3) Проверить plugin и утверждённый Xray Geosite DNS path (read-only)'
-  printf '%s\n' '  4) Запустить Web UI через SSH-туннель'
+  printf '%s\n' '  1) Проверить plugin и утверждённый Xray Geosite DNS path (read-only)'
+  printf '%s\n' '  2) Запустить Web UI через SSH-туннель'
   printf '%s\n' '  0) Выход'
-  printf '%s\n' '  Примечание: Geosite policy задаётся вручную по doc/GEOSITE-DNS-ROUTING-DESIGN.md; пункты 1–2 не устанавливают её.'
+  printf '%s\n' '  Примечание: Xray DNS policy задаётся вручную по doc/GEOSITE-DNS-ROUTING-DESIGN.md.'
   printf 'Выберите действие: '
 }
 
@@ -346,10 +318,8 @@ main() {
     fi
 
     case "$choice" in
-      1) run_plugin_action integrate ;;
-      2) run_plugin_action remove ;;
-      3) run_check || printf '[WARN] Диагностика завершилась с ошибками.\n' >&2 ;;
-      4) run_web_ui || printf '[WARN] Не удалось запустить Web UI.\n' >&2 ;;
+      1) run_check || printf '[WARN] Диагностика завершилась с ошибками.\n' >&2 ;;
+      2) run_web_ui || printf '[WARN] Не удалось запустить Web UI.\n' >&2 ;;
       0) printf 'Выход.\n'; break ;;
       *) printf 'Неизвестный пункт меню.\n' ;;
     esac
