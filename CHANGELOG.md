@@ -22,6 +22,10 @@
 - Разделены cache namespace/generation режимов 1 и 2. Positive cache TTL режима 2 ограничен 300 секундами; первый ответ клиенту сохраняет upstream TTL.
 - Negative caching NXDOMAIN/NODATA использует `min(SOA RR TTL, SOA.MINIMUM)` с cap 300 секунд. Исправлена классификация CNAME→NODATA; ответы без SOA и synthetic NODATA не кэшируются.
 
+### Контрольные домены
+- Встроенный `tst-domen.txt` сокращён до девяти проверок: восемь доменов ActiveDoHSelector и отдельная OIDC-проверка `accounts.google.com`.
+- Уже существующий пользовательский `tst-domen.txt` при обновлении сохраняется; для применения нового набора к старой установке требуется резервная копия и ручная замена файла.
+
 ### DNS wire policy и документация
 - Plugin DNS listener обслуживает A/AAAA; остальные QTYPE получают `NOERROR`/NODATA без SOA и без кэширования.
 - Добавлены примеры `resolver_upstreams`, README с двумя режимами и ручной схемой Xray Geosite DNS outbound.
