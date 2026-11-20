@@ -68,7 +68,7 @@ type webUISecretRequest struct {
 	Key string `json:"key"`
 }
 
-type webUIIntegrationRequest struct {
+type webUIReadOnlyRequest struct {
 	Action    string `json:"action"`
 	Confirmed bool   `json:"confirmed"`
 }
@@ -91,13 +91,13 @@ type webUITestSummary struct {
 	Failed int               `json:"failed"`
 }
 
-type webUIOperationLogger struct {
+type webUIAdminLogger struct {
 	mu      sync.Mutex
 	dataDir string
 	lines   []string
 }
 
-func (l *webUIOperationLogger) Printf(format string, args ...any) {
+func (l *webUIAdminLogger) Printf(format string, args ...any) {
 	line := redactWebUILogLine(fmt.Sprintf(format, args...))
 	l.mu.Lock()
 	l.lines = append(l.lines, line)
@@ -109,7 +109,7 @@ func (l *webUIOperationLogger) Printf(format string, args ...any) {
 	if l.dataDir == "" {
 		return
 	}
-	path := filepath.Join(l.dataDir, "webui-operations.log")
+	path := filepath.Join(l.dataDir, "webui-admin-check.log")
 	fd, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_APPEND|syscall.O_CREAT|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0600)
 	if err != nil {
 		return
@@ -128,7 +128,7 @@ func (l *webUIOperationLogger) Printf(format string, args ...any) {
 	_, _ = fmt.Fprintf(file, "%s level=INFO %s\n", time.Now().UTC().Format(time.RFC3339), line)
 }
 
-func (l *webUIOperationLogger) String() string {
+func (l *webUIAdminLogger) String() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return strings.Join(l.lines, "\n")
@@ -311,17 +311,7 @@ func webUIAdminAPI(w http.ResponseWriter, r *http.Request, path, dataDir string)
 			return
 		}
 		writeWebUIJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "Ключ сохранён в приватный файл с правами 0600. Содержимое не возвращается."})
-	case "/api/v1/integration/logs":
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w, "GET")
-			return
-		}
-		lines, err := readWebUIIntegrationLog(dataDir, 300)
-		if err != nil {
-			writeWebUIError(w, http.StatusInternalServerError, err)
-			return
-		}
-		writeWebUIJSON(w, http.StatusOK, map[string]any{"lines": lines})
+
 	case "/api/v1/logs":
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w, "GET")
@@ -356,7 +346,7 @@ func webUIAdminAPI(w http.ResponseWriter, r *http.Request, path, dataDir string)
 			methodNotAllowed(w, "POST")
 			return
 		}
-		var request webUIIntegrationRequest
+		var request webUIReadOnlyRequest
 		if err := decodeWebUIJSON(r, &request); err != nil {
 			writeWebUIError(w, http.StatusBadRequest, err)
 			return
@@ -832,7 +822,7 @@ func runWebUIAdminTests(dataDir string) webUITestSummary {
 	}
 
 	summary.Tests = append(summary.Tests, testWebUIHTTPListener(config.HTTPListen))
-	summary.Tests = append(summary.Tests, runWebUIXrayIntegrationCheck(dataDir))
+	summary.Tests = append(summary.Tests, runWebUIXrayPolicyCheck(dataDir))
 	return finalizeWebUITests(summary)
 }
 
@@ -990,7 +980,7 @@ func webUIDigResult(domain string, qtype uint16, answer string, elapsed int64, c
 	return webUITestResult{Name: name, Status: "OK", Domain: domain, QType: dnsQTypeName(qtype), Answer: answer, DurationMS: elapsed}
 }
 
-func runWebUIXrayIntegrationCheck(dataDir string) webUITestResult {
+func runWebUIXrayPolicyCheck(dataDir string) webUITestResult {
 	root, err := webUIDataRoot(dataDir)
 	if err != nil {
 		return webUITest("Approved Xray Geosite DNS path", false, err.Error())
@@ -1069,35 +1059,14 @@ func runWebUIPluginPreflight(dataDir string) (string, error) {
 		return "", errors.New("configured status endpoint must use loopback")
 	}
 
-	logger := &webUIOperationLogger{dataDir: root}
-	logger.Printf("PLUGIN_CHECK started")
+	logger := &webUIAdminLogger{dataDir: root}
+	logger.Printf("Xray policy/plugin check started")
 	err = dohintegration.RunCommand([]string{"check", "--plugin-port", pluginPort, "--plugin-status-url", statusURL}, logger)
 	if err != nil {
-		logger.Printf("PLUGIN_CHECK failed: %v", err)
+		logger.Printf("Xray policy/plugin check failed: %v", err)
 		return logger.String(), err
 	}
-	logger.Printf("PLUGIN_CHECK completed successfully")
+	logger.Printf("Xray policy/plugin check completed successfully")
 	return logger.String(), nil
 }
 
-func readWebUIIntegrationLog(dataDir string, count int) ([]string, error) {
-	root, err := webUIDataRoot(dataDir)
-	if err != nil {
-		return nil, err
-	}
-	path := filepath.Join(root, "webui-operations.log")
-	lines, err := readWebUILogFile(path, count)
-	if errors.Is(err, os.ErrNotExist) {
-		return []string{"Операции интеграции/деинтеграции ещё не выполнялись."}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if len(lines) == 0 {
-		return []string{"Операции интеграции/деинтеграции ещё не выполнялись."}, nil
-	}
-	for index := range lines {
-		lines[index] = redactWebUILogLine(lines[index])
-	}
-	return lines, nil
-}
