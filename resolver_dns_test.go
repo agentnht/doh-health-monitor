@@ -57,6 +57,38 @@ func mode2SOAResponse(query []byte, rcode uint16, soaTTL, minimum uint32) []byte
 	return response
 }
 
+func mode2CNAMEAndSOAResponse(query []byte, cnameTTL, soaTTL, minimum uint32) []byte {
+	response := mode2ResponseWithRCode(query, 0)
+
+	cnameTarget := appendDNSName(nil, "target.example")
+	response = append(response, 0xc0, 0x0c, 0, 5, 0, 1) // CNAME, IN
+	var cnameTTLBytes [4]byte
+	binary.BigEndian.PutUint32(cnameTTLBytes[:], cnameTTL)
+	response = append(response, cnameTTLBytes[:]...)
+	response = append(response, byte(len(cnameTarget)>>8), byte(len(cnameTarget)))
+	response = append(response, cnameTarget...)
+
+	soaOwner := appendDNSName(nil, "example")
+	response = append(response, soaOwner...)
+	response = append(response, 0, 6, 0, 1) // SOA, IN
+	var soaTTLBytes [4]byte
+	binary.BigEndian.PutUint32(soaTTLBytes[:], soaTTL)
+	response = append(response, soaTTLBytes[:]...)
+	soaData := appendDNSName(nil, "ns.example")
+	soaData = appendDNSName(soaData, "hostmaster.example")
+	for _, value := range []uint32{1, 3600, 600, 86400, minimum} {
+		var raw [4]byte
+		binary.BigEndian.PutUint32(raw[:], value)
+		soaData = append(soaData, raw[:]...)
+	}
+	response = append(response, byte(len(soaData)>>8), byte(len(soaData)))
+	response = append(response, soaData...)
+
+	binary.BigEndian.PutUint16(response[6:8], 1) // one CNAME answer
+	binary.BigEndian.PutUint16(response[8:10], 1) // one SOA authority RR
+	return response
+}
+
 func TestMode2FallsBackAfterSERVFAIL(t *testing.T) {
 	badAddress, badCount := startMode2TestUDPResolver(t, func(query []byte) []byte { return mode2ResponseWithRCode(query, 2) })
 	goodAddress, goodCount := startMode2TestUDPResolver(t, func(query []byte) []byte { return testAResponse(query, 90) })
@@ -261,5 +293,111 @@ func TestMode2FirstResponseKeepsUpstreamTTLWhileCacheCapsCopy(t *testing.T) {
 	cachedTTL, ok := minResponseTTL(cachedResponse)
 	if !ok || cachedTTL != 300 {
 		t.Fatalf("cached response TTL=(%d,%t), want 300", cachedTTL, ok)
+	}
+}
+
+
+func TestMode2CNAMEToNODATAUsesSOANegativeTTL(t *testing.T) {
+	query := makeDNSQuery("alias.example", 1)
+	withoutSOA := mode2CNAMEAndSOAResponse(query, 900, 120, 45)
+	cnameRecords, err := dnsRRsInSection(withoutSOA, 0)
+	if err != nil || len(cnameRecords) != 1 {
+		t.Fatalf("could not inspect CNAME-only response: records=%d err=%v", len(cnameRecords), err)
+	}
+	withoutSOA = withoutSOA[:cnameRecords[0].end]
+	binary.BigEndian.PutUint16(withoutSOA[8:10], 0)
+	if prepareMode2ResponseForCache(withoutSOA, 300) {
+		t.Fatal("CNAME-only NODATA without SOA must not be cached")
+	}
+
+	packet := mode2CNAMEAndSOAResponse(query, 900, 120, 45)
+	if !prepareMode2ResponseForCache(packet, 300) {
+		t.Fatal("CNAME followed by SOA NODATA should be cacheable")
+	}
+	answers, err := dnsRRsInSection(packet, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := dnsRRsInSection(packet, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(answers) != 1 || answers[0].typeCode != 5 {
+		t.Fatalf("expected one CNAME answer, got %+v", answers)
+	}
+	if got := binary.BigEndian.Uint32(packet[answers[0].ttlOffset : answers[0].ttlOffset+4]); got != 300 {
+		t.Fatalf("cached CNAME TTL=%d, want max-cache cap 300", got)
+	}
+	if len(authority) != 1 || authority[0].typeCode != 6 {
+		t.Fatalf("expected one SOA authority RR, got %+v", authority)
+	}
+	soaTTL := binary.BigEndian.Uint32(packet[authority[0].ttlOffset : authority[0].ttlOffset+4])
+	if soaTTL != 45 {
+		t.Fatalf("cached SOA TTL=%d, want min(SOA TTL 120, SOA.MINIMUM 45)", soaTTL)
+	}
+	if ttl, ok := minResponseTTL(packet); !ok || ttl != 45 {
+		t.Fatalf("cached response TTL=(%d,%t), want 45", ttl, ok)
+	}
+}
+
+func TestMode2CNAMEToNODATAPreservesFirstUpstreamResponse(t *testing.T) {
+	address, _ := startMode2TestUDPResolver(t, func(query []byte) []byte {
+		return mode2CNAMEAndSOAResponse(query, 900, 120, 45)
+	})
+	snapshot := &Snapshot{
+		cfg: Config{
+			DNSMode: "resolver",
+			Cache: CacheConfig{Enabled: true, MinTTL: 0, MaxTTL: 300, MaxEntries: 10, MaxBytes: 4096},
+			DNSQueryTimeoutSeconds: 3,
+		},
+		resolverGeneration: 78,
+		resolverUpstreams: []*ResolverRuntime{
+			{cfg: ResolverUpstream{ID: "test", Type: "udp"}, address: address},
+		},
+	}
+	runtime := &Runtime{cache: map[string]cacheItem{}}
+	runtime.snapshot.Store(snapshot)
+	query := makeDNSQuery("alias.example", 1)
+
+	firstResponse := runtime.resolverDNSResponse(query, snapshot)
+	firstAnswers, err := dnsRRsInSection(firstResponse, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAuthority, err := dnsRRsInSection(firstResponse, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(firstAnswers) != 1 || len(firstAuthority) != 1 {
+		t.Fatalf("unexpected first response sections: answers=%d authority=%d", len(firstAnswers), len(firstAuthority))
+	}
+	if got := binary.BigEndian.Uint32(firstResponse[firstAnswers[0].ttlOffset : firstAnswers[0].ttlOffset+4]); got != 900 {
+		t.Fatalf("first CNAME TTL=%d, want upstream TTL 900", got)
+	}
+	if got := binary.BigEndian.Uint32(firstResponse[firstAuthority[0].ttlOffset : firstAuthority[0].ttlOffset+4]); got != 120 {
+		t.Fatalf("first SOA TTL=%d, want upstream TTL 120", got)
+	}
+
+	cacheKey := "mode2:78:" + cacheKey(query)
+	cachedResponse, found := runtime.cacheGet(cacheKey, packetID(query))
+	if !found {
+		t.Fatal("expected CNAME/NODATA response in mode-2 cache")
+	}
+	cachedAnswers, err := dnsRRsInSection(cachedResponse, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cachedAuthority, err := dnsRRsInSection(cachedResponse, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cachedAnswers) != 1 || len(cachedAuthority) != 1 {
+		t.Fatalf("unexpected cached sections: answers=%d authority=%d", len(cachedAnswers), len(cachedAuthority))
+	}
+	if got := binary.BigEndian.Uint32(cachedResponse[cachedAnswers[0].ttlOffset : cachedAnswers[0].ttlOffset+4]); got != 300 {
+		t.Fatalf("cached CNAME TTL=%d, want 300", got)
+	}
+	if got := binary.BigEndian.Uint32(cachedResponse[cachedAuthority[0].ttlOffset : cachedAuthority[0].ttlOffset+4]); got != 45 {
+		t.Fatalf("cached SOA TTL=%d, want 45", got)
 	}
 }
