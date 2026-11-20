@@ -5,13 +5,6 @@
 **Тип:** LucX-UI sidecar, `apiVersion: 1`  
 **Режим Gemini API:** необязательный, управляется параметром `gemini_api.enabled`
 
-# DoH DNS Proxy & Health Monitor для LucX-UI
-
-**Версия:** 2.3.0 (release candidate в `feature/geosite-dns-routing`; релиз ещё не опубликован)  
-**Платформа:** Linux x86-64 (`amd64`), статический Go-бинарник  
-**Тип:** LucX-UI sidecar, `apiVersion: 1`  
-**Режим Gemini API:** необязательный, управляется параметром `gemini_api.enabled`
-
 ## 1. Назначение
 
 DoH Health Monitor — локальный DNS sidecar для LucX-UI/Xray. В версии 2.3.0 обработка Geosite DNS-потока разделена между Xray и плагином: Xray сопоставляет QNAME с Geosite и выбирает DNS-ветку, а плагин обслуживает только те запросы, которые Xray направляет в его DNS listener. В самом плагине нет собственного Geosite matcher и динамического Auto Hosts списка.
@@ -625,7 +618,7 @@ dig +tcp @127.0.0.1 -p 5355 example.com A +time=5 +tries=1
 | `all upstreams failed` | Проверьте nameserver-ы из `/etc/resolv.conf` по UDP/TCP 53, `bootstrap_resolvers`, HTTPS egress VPS, резервные `bootstrap_ips` (если заданы), URL/путь DoH, TLS и доступность провайдера |
 | HTTP `401/403` на контрольном URL | Может быть блокировка/авторизация; задайте правильный `expected_status` или `required:false`, если это не индикатор полного отказа |
 | `/healthz` OK, но DNS не отвечает | Смотрите `/status`, `plugin.log`, занят ли порт, совпадает ли `rewritePort` Xray с `dns_listen_udp/tcp` |
-| DNS через Xray возвращает пустой ответ для TXT/MX/HTTPS | Проверьте наличие последнего `{ "action": "direct" }` в `dns-out.settings.rules` |
+| DNS через Xray возвращает пустой ответ для TXT/MX/HTTPS | Для QTYPE вне A/AAAA `NOERROR`/NODATA ожидаем. Проверьте catch-all `hijack` и совместимость конкретной встроенной версии Xray; если проблема с A/AAAA, проверьте Geosite rule и rewrite target `127.0.0.1:5355`. |
 
 ## 9. Безопасность
 
