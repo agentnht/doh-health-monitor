@@ -522,7 +522,8 @@ func (r *Runtime) activeDoHStatus() *ActiveDoHStatus {
 		return nil
 	}
 	selection, ok := r.activeDoHSelector.Current(time.Now())
-	if !ok || selection.Candidate.ConfigGeneration != snapshot.activeDoHGeneration {
+	if !ok || selection.Candidate.ConfigGeneration != snapshot.activeDoHGeneration ||
+		!r.activeDoHConfigMatches(snapshot) {
 		return nil
 	}
 	return &ActiveDoHStatus{

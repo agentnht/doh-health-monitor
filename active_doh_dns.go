@@ -48,12 +48,21 @@ func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte 
 	if cacheConfig.Enabled {
 		if cached, found := r.cacheGet(key, packetID(query)); found {
 			r.cacheHits.Add(1)
+			if !r.activeDoHConfigMatches(snapshot) ||
+				selection.Candidate.ConfigGeneration != snapshot.activeDoHGeneration {
+				return emptyNoErrorDNSResponse(query)
+			}
 			return cached
 		}
 	}
 
 	response, cacheable := buildActiveDoHResponse(query, name, qtype, questionEnd, selection, now)
-	if cacheable && cacheConfig.Enabled && r.activeDoHSelector.Generation() == selection.Generation {
+	if !r.activeDoHConfigMatches(snapshot) ||
+		selection.Candidate.ConfigGeneration != snapshot.activeDoHGeneration {
+		return emptyNoErrorDNSResponse(query)
+	}
+	if cacheable && cacheConfig.Enabled && r.activeDoHSelector.Generation() == selection.Generation &&
+		r.activeDoHConfigMatches(snapshot) {
 		cacheConfig.MaxTTL = int(activeDoHAnswerTTL / time.Second)
 		cacheConfig.MinTTL = 0 // preserve cache entries shorter than the general minimum TTL
 		cacheConfig.NegativeTTL = 0 // synthetic NODATA answers are deliberately not cached
