@@ -65,7 +65,9 @@ type Config struct {
 	BootstrapResolvers     []string        `json:"bootstrap_resolvers,omitempty"`
 	Groups                 []Group         `json:"groups"`
 	GeminiAPI              GeminiAPIConfig `json:"gemini_api"`
-	Integration            bool            `json:"integration"`
+	// Integration is retained only to decode older config.json files. It no longer
+	// controls Xray configuration or enables panel mutation operations.
+	Integration bool `json:"integration"`
 }
 type LocalHost struct {
 	IPv4 []string `json:"ipv4"`
