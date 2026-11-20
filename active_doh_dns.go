@@ -48,6 +48,7 @@ func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte 
 	response, cacheable := buildActiveDoHResponse(query, name, qtype, questionEnd, selection, now)
 	if cacheable && cacheConfig.Enabled && r.activeDoHSelector.Generation() == selection.Generation {
 		cacheConfig.MaxTTL = int(activeDoHAnswerTTL / time.Second)
+		cacheConfig.MinTTL = 0 // preserve cache entries shorter than the general minimum TTL
 		cacheConfig.NegativeTTL = 0 // synthetic NODATA answers are deliberately not cached
 		r.cachePut(key, response, cacheConfig)
 	}

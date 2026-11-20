@@ -226,3 +226,40 @@ func TestSystemResolverLoopGuardOnlyRejectsPort53Listener(t *testing.T) {
 		})
 	}
 }
+
+
+func TestMode2FirstResponseKeepsUpstreamTTLWhileCacheCapsCopy(t *testing.T) {
+	address, _ := startMode2TestUDPResolver(t, func(query []byte) []byte {
+		return testAResponse(query, 900)
+	})
+	snapshot := &Snapshot{
+		cfg: Config{
+			DNSMode: "resolver",
+				Cache: CacheConfig{Enabled: true, MinTTL: 0, MaxTTL: 300, MaxEntries: 10, MaxBytes: 4096},
+			DNSQueryTimeoutSeconds: 3,
+		},
+		resolverGeneration: 77,
+		resolverUpstreams: []*ResolverRuntime{
+			{cfg: ResolverUpstream{ID: "test", Type: "udp"}, address: address},
+		},
+	}
+	runtime := &Runtime{cache: map[string]cacheItem{}}
+	runtime.snapshot.Store(snapshot)
+	query := makeDNSQuery("ttl.example", 1)
+
+	firstResponse := runtime.resolverDNSResponse(query, snapshot)
+	firstTTL, ok := minResponseTTL(firstResponse)
+	if !ok || firstTTL != 900 {
+		t.Fatalf("first upstream response TTL=(%d,%t), want 900", firstTTL, ok)
+	}
+
+	cacheKey := "mode2:77:" + cacheKey(query)
+	cachedResponse, found := runtime.cacheGet(cacheKey, packetID(query))
+	if !found {
+		t.Fatal("expected capped response in resolver cache")
+	}
+	cachedTTL, ok := minResponseTTL(cachedResponse)
+	if !ok || cachedTTL != 300 {
+		t.Fatalf("cached response TTL=(%d,%t), want 300", cachedTTL, ok)
+	}
+}

@@ -52,7 +52,8 @@ func (r *Runtime) resolverDNSResponse(query []byte, snapshot *Snapshot) []byte {
 	if snapshot.cfg.Cache.MaxTTL > 0 && time.Duration(snapshot.cfg.Cache.MaxTTL)*time.Second < maxTTL {
 		maxTTL = time.Duration(snapshot.cfg.Cache.MaxTTL) * time.Second
 	}
-	cacheable := prepareMode2ResponseForCache(response, uint32(maxTTL/time.Second))
+	cacheResponse := append([]byte(nil), response...)
+	cacheable := prepareMode2ResponseForCache(cacheResponse, uint32(maxTTL/time.Second))
 	current := r.currentSnapshot()
 	if cacheable && snapshot.cfg.Cache.Enabled && current != nil &&
 		current.cfg.DNSMode == "resolver" &&
@@ -61,7 +62,7 @@ func (r *Runtime) resolverDNSResponse(query []byte, snapshot *Snapshot) []byte {
 		cacheConfig.MinTTL = 0
 		cacheConfig.NegativeTTL = 0
 		cacheConfig.MaxTTL = int(maxTTL / time.Second)
-		r.cachePut(key, response, cacheConfig)
+		r.cachePut(key, cacheResponse, cacheConfig)
 	}
 	return response
 }
