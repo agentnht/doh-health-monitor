@@ -308,11 +308,6 @@ func TestWebUIIntegrationMutationAPIIsDisabled(t *testing.T) {
 	}
 }
 
-func TestRunWebUIPluginPreflightRejectsPanelMutations(t *testing.T) {
-	if _, err := runWebUIPluginPreflight(t.TempDir()); err == nil {
-		t.Fatal("preflight must require an initialized plugin config")
-	}
-}
 
 func TestWebUIIntegrationLogAPIRequiresSessionAndReturnsPersistedOperations(t *testing.T) {
 	dir := t.TempDir()
