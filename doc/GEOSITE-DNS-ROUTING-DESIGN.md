@@ -1,8 +1,8 @@
 # Концепция: Geosite DNS routing и режимы работы DoH
 
 **Дата последнего обновления:** 2026-11-20  
-**Статус:** Draft PR #11; базовая реализация двух DNS-режимов, ActiveDoHSelector, DNS cache generation и resolver pipeline уже находится в `feature/geosite-dns-routing`. CI (`go vet ./...`, `go test ./...`, Linux amd64 build и отдельный DoH integration workflow) прошёл для code head `bb3ee6691545ea94ea6f67ce4b5ca816e5d01086`. Проверка на реальном VPS и интеграция с конкретной сборкой LucX-UI/Xray ещё не выполнены.  
-**Базовая точка для будущей реализации:** ветка \`main\`, версия 2.2.1.
+**Статус:** Draft PR #11; базовая реализация двух DNS-режимов, ActiveDoHSelector, DNS cache generation и resolver pipeline уже находится в `feature/geosite-dns-routing`. CI (`go vet ./...`, `go test ./...`, Linux amd64 build и отдельный DoH integration workflow) прошёл для текущего code head `b31ba20bfb78e4a30576170bbd032a5dc9900b45`. Проверка на реальном VPS и интеграция с конкретной сборкой LucX-UI/Xray ещё не выполнены.  
+**Базовая точка реализации:** ветка `main`, версия 2.2.1 (`b32d4263dbb43c5162860c0def0e990aac6e6541`).
 
 ## 1. Цель обсуждения
 
