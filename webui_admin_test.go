@@ -250,22 +250,22 @@ func TestWebUISafeListenerProbeRejectsPublicAddresses(t *testing.T) {
 	}
 }
 
-func TestWebUIIntegrationOperationLogPersistsAndRedactsCredentials(t *testing.T) {
+func TestWebUIAdminCheckLogPersistsAndRedactsCredentials(t *testing.T) {
 	dir := t.TempDir()
-	logger := &webUIOperationLogger{dataDir: dir}
-	logger.Printf("INTEGRATION action=INTEGRATE started")
+	logger := &webUIAdminLogger{dataDir: dir}
+	logger.Printf("Xray policy/plugin check started")
 	logger.Printf("Authorization: Bearer secret-token-value")
 
-	lines, err := readWebUIIntegrationLog(dir, 50)
+	lines, err := readWebUILogFile(filepath.Join(dir, "webui-admin-check.log"), 50)
 	if err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(lines, "\n")
-	if !strings.Contains(joined, "INTEGRATION action=INTEGRATE started") {
-		t.Fatalf("integration log is missing operation record: %s", joined)
+	if !strings.Contains(joined, "Xray policy/plugin check started") {
+		t.Fatalf("admin check log is missing record: %s", joined)
 	}
 	if strings.Contains(joined, "secret-token-value") || !strings.Contains(joined, "[REDACTED]") {
-		t.Fatalf("integration log did not redact credential: %s", joined)
+		t.Fatalf("admin check log did not redact credential: %s", joined)
 	}
 }
 
@@ -305,29 +305,5 @@ func TestWebUIIntegrationMutationAPIIsDisabled(t *testing.T) {
 		if !strings.Contains(response.Body.String(), "configure Xray manually") {
 			t.Fatalf("%s API response does not explain manual Xray configuration: %s", action, response.Body.String())
 		}
-	}
-}
-
-
-func TestWebUIIntegrationLogAPIRequiresSessionAndReturnsPersistedOperations(t *testing.T) {
-	dir := t.TempDir()
-	logger := &webUIOperationLogger{dataDir: dir}
-	logger.Printf("INTEGRATION action=DEINTEGRATE completed successfully")
-
-	handler := newWebUIHandlerWithDataDir("http://127.0.0.1:18765/status", "test-session", dir)
-	unauthorized := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/api/v1/integration/logs", nil)
-	unauthorized.Host = "127.0.0.1:19876"
-	unauthorizedRecorder := httptest.NewRecorder()
-	handler.ServeHTTP(unauthorizedRecorder, unauthorized)
-	if unauthorizedRecorder.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated integration log status=%d, want %d", unauthorizedRecorder.Code, http.StatusUnauthorized)
-	}
-
-	authorized := newAuthenticatedWebUIRequest(t, handler, http.MethodGet, "/api/v1/integration/logs", nil)
-	if authorized.Code != http.StatusOK {
-		t.Fatalf("authenticated integration log status=%d, body=%s", authorized.Code, authorized.Body.String())
-	}
-	if !strings.Contains(authorized.Body.String(), "DEINTEGRATE completed successfully") {
-		t.Fatalf("integration log response is missing saved operation: %s", authorized.Body.String())
 	}
 }
