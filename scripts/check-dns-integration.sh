@@ -111,10 +111,12 @@ else
           .value.action == "hijack" and
           ((.value | keys - ["action", "rCode"]) | length) == 0
         ) | .key]) as $catchall_hijack |
-      ($geosite_direct | length) > 0 and
-      ($catchall_hijack | length) == 1 and
-      ($geosite_direct | min) < $catchall_hijack[0] and
-      $catchall_hijack[0] == (($rules | length) - 1)
+      if ($geosite_direct | length) > 0 and ($catchall_hijack | length) == 1 then
+        all($geosite_direct[]; . < $catchall_hijack[0]) and
+        $catchall_hijack[0] == (($rules | length) - 1)
+      else
+        false
+      end
     ' "$XRAY_CONFIG" >/dev/null; then
       pass "DNS outbound содержит Geosite direct перед последним catch-all hijack"
     else
