@@ -98,24 +98,29 @@ else
   if [[ -n "$dns_tag" ]]; then
     if jq -e --arg tag "$dns_tag" '
       [.outbounds[]? | select(.tag == $tag and .protocol == "dns")] as $outbounds |
-      ($outbounds | length) == 1 and
-      ($outbounds[0].settings.rules | type) == "array" and
-      ($outbounds[0].settings.rules) as $rules |
-      ([$rules | to_entries[] |
-        select(
-          .value.action == "direct" and
-          any(.value.domain[]?; type == "string" and startswith("geosite:"))
-        ) | .key]) as $geosite_direct |
-      ([$rules | to_entries[] |
-        select(
-          .value.action == "hijack" and
-          ((.value | keys - ["action", "rCode"]) | length) == 0
-        ) | .key]) as $catchall_hijack |
-      if ($geosite_direct | length) > 0 and ($catchall_hijack | length) == 1 then
-        all($geosite_direct[]; . < $catchall_hijack[0]) and
-        $catchall_hijack[0] == (($rules | length) - 1)
-      else
+      if ($outbounds | length) != 1 then
         false
+      elif ($outbounds[0].settings.rules | type) != "array" then
+        false
+      else
+        ($outbounds[0].settings.rules) as $rules |
+        ([$rules | to_entries[] |
+          select(
+            .value.action == "direct" and
+            any(.value.domain[]?; type == "string" and startswith("geosite:"))
+          ) | .key]) as $geosite_direct |
+        ([$rules | to_entries[] |
+          select(
+            (.value | type) == "object" and
+            .value.action == "hijack" and
+            (((.value | keys) - ["action", "rCode"]) | length) == 0
+          ) | .key]) as $catchall_hijack |
+        if ($geosite_direct | length) > 0 and ($catchall_hijack | length) == 1 then
+          all($geosite_direct[]; . < $catchall_hijack[0]) and
+          $catchall_hijack[0] == (($rules | length) - 1)
+        else
+          false
+        end
       end
     ' "$XRAY_CONFIG" >/dev/null; then
       pass "DNS outbound содержит Geosite direct перед последним catch-all hijack"
