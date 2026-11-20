@@ -486,7 +486,7 @@ Geosite matching расположен на стороне Xray, внутри `dn
 
 ### Проверки кода и VPS
 
-Для текущего code head `0eb371a95af4294985bd6d3ab60cfada93b352c7` успешно завершились оба workflow: CI run `44820017114` и DoH integration run `44820017118`. CI включает `go vet ./...`, `go test ./...`, проверку shell/JavaScript syntax, regression tests read-only Geosite DNS checker-а и Linux amd64 build. Integration workflow включает Go integration/unit tests, Python compile/unit/synthetic SQLite lifecycle tests и shell syntax. Эти результаты относятся именно к указанному head.
+Для code head `7fae2fdc1678f7f7cbb8ab758d60a483f151c6d1` успешно завершились оба workflow: CI run `44820128876` и DoH integration run `44820126933`. CI включает `go vet ./...`, `go test ./...`, проверку shell/JavaScript syntax, regression tests read-only Geosite DNS checker-а и Linux amd64 build. Integration workflow включает Go integration/unit tests, Python compile/unit/synthetic SQLite lifecycle tests и shell syntax. Эти результаты относятся к указанному head.
 
 На VPS 2026-11-20 с DoH Health Monitor 2.3.0 и Xray `26.10.21` подтверждены:
 - сервис плагина и HTTP status endpoint доступны;
