@@ -4,8 +4,6 @@ set -Eeuo pipefail
 
 readonly PLUGIN_ID="doh-health-monitor"
 readonly PLUGIN_BIN_NAME="doh-health-monitor"
-readonly RAW_BASE_URL="https://raw.githubusercontent.com/agentnht/doh-health-monitor/main"
-readonly CHECK_SCRIPT_URL="${RAW_BASE_URL}/scripts/check-dns-integration.sh"
 readonly DHM_SYMLINK_PATH="/usr/local/bin/dhm"
 
 MANAGEMENT_SCRIPT_PATH=""
@@ -34,9 +32,15 @@ require_root() {
 }
 
 detect_panel_cwd() {
-  local proc exe cwd selected="" preferred=""
+  local proc exe cwd process_uid selected="" preferred=""
   for proc in /proc/[0-9]*; do
-    [[ -r "$proc/exe" && -r "$proc/cwd" ]] || continue
+    [[ -r "$proc/exe" && -r "$proc/cwd" && -r "$proc/status" ]] || continue
+
+    # The menu runs as root. Never infer the panel data directory from an
+    # x-ui process owned by another UID.
+    process_uid="$(awk '$1 == "Uid:" { print $2; exit }' "$proc/status" 2>/dev/null || true)"
+    [[ "$process_uid" == "$EUID" ]] || continue
+
     exe="$(readlink "$proc/exe" 2>/dev/null || true)"
     exe="${exe% (deleted)}"
     [[ "${exe##*/}" == "x-ui" ]] || continue
@@ -171,7 +175,7 @@ resolve_server_address() {
 }
 
 run_plugin_action() {
-  local action="$1"
+  local action="$1" rc
   if ! confirm_action "Подтвердите операцию '$action'"; then
     printf 'Операция отменена.\n'
     return 0
@@ -181,54 +185,37 @@ run_plugin_action() {
   if LUCX_PLUGIN_DATA="$PLUGIN_DATA_DIR" "$PLUGIN_BIN" "$action"; then
     printf '[OK] Операция %s завершена.\n' "$action"
   else
-    local rc=$?
+    rc=$?
     printf '[FAIL] Операция %s завершилась с кодом %d.\n' "$action" "$rc" >&2
   fi
 }
 
 run_check() {
-  local tmp="" checker_file="" cleanup_tmp=0 rc
+  local checker_file="" package_scripts_dir="" rc
   printf 'Проверка состояния плагина через Go read-only command...\n'
   if ! "$PLUGIN_BIN" check; then
     fail "Go-проверка плагина завершилась с ошибкой."
     return 1
   fi
 
-  # Prefer the checker shipped beside this menu in the plugin ZIP. The
-  # GitHub process-substitution entry point keeps its historical download fallback.
-  if [[ -n "$MANAGEMENT_SCRIPT_DIR" && -f "$MANAGEMENT_SCRIPT_DIR/check-dns-integration.sh" ]]; then
+  # Run only the checker shipped in the installed plugin package. Do not
+  # download a mutable shell script and execute it as root.
+  package_scripts_dir="$(cd -- "$(dirname -- "$PLUGIN_BIN")/../scripts" 2>/dev/null && pwd -P || true)"
+  if [[ -n "$package_scripts_dir" && -r "$package_scripts_dir/check-dns-integration.sh" ]]; then
+    checker_file="$package_scripts_dir/check-dns-integration.sh"
+  elif [[ -n "$MANAGEMENT_SCRIPT_DIR" && -r "$MANAGEMENT_SCRIPT_DIR/check-dns-integration.sh" ]]; then
     checker_file="$MANAGEMENT_SCRIPT_DIR/check-dns-integration.sh"
   else
-    tmp="$(mktemp)"
-    checker_file="$tmp"
-    cleanup_tmp=1
-    if command -v curl >/dev/null 2>&1; then
-      if ! curl --fail --silent --show-error --location "$CHECK_SCRIPT_URL" --output "$tmp"; then
-        rm -f "$tmp"
-        fail "Не удалось загрузить read-only скрипт диагностики."
-        return 1
-      fi
-    elif command -v wget >/dev/null 2>&1; then
-      if ! wget -q "$CHECK_SCRIPT_URL" -O "$tmp"; then
-        rm -f "$tmp"
-        fail "Не удалось загрузить read-only скрипт диагностики."
-        return 1
-      fi
-    else
-      rm -f "$tmp"
-      fail "Для загрузки скрипта диагностики нужен curl или wget."
-      return 1
-    fi
+    fail "В установленном ZIP отсутствует scripts/check-dns-integration.sh. Переустановите архив плагина 2.3.0."
+    return 1
   fi
 
-  printf 'Проверка выполняется в режиме read-only; конфигурация Xray не изменяется.\n'
+  printf 'Проверка Xray DNS path выполняется в режиме read-only; конфигурация не изменяется.\n'
+  printf '[INFO] Эта проверка не генерирует и не валидирует Geosite policy внутри dns-out.settings.rules.\n'
   if DOH_SKIP_PLUGIN_HEALTH_CHECK=1 bash "$checker_file"; then
     rc=0
   else
     rc=$?
-  fi
-  if (( cleanup_tmp )); then
-    rm -f "$tmp"
   fi
   return "$rc"
 }
@@ -332,12 +319,13 @@ run_web_ui() {
 }
 
 show_menu() {
-  printf '\nDoH Health Monitor — управление\n'
-  printf '%s\n' '  1) Интегрировать DNS в LucX-UI / Xray'
-  printf '%s\n' '  2) Удалить DNS-интеграцию'
-  printf '%s\n' '  3) Проверить состояние (только чтение)'
+  printf '\nDoH Health Monitor 2.3.0 — управление\n'
+  printf '%s\n' '  1) Добавить недостающие DNS-объекты LucX-UI (integrate)'
+  printf '%s\n' '  2) Удалить DNS-объекты плагина (remove)'
+  printf '%s\n' '  3) Проверить plugin и базовый Xray DNS path (read-only)'
   printf '%s\n' '  4) Запустить Web UI через SSH-туннель'
   printf '%s\n' '  0) Выход'
+  printf '%s\n' '  Примечание: Geosite policy в dns-out настраивается отдельно; пункты 1–3 её не создают.'
   printf 'Выберите действие: '
 }
 
