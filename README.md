@@ -345,7 +345,7 @@ accounts.google.com;A,AAAA;1;https://accounts.google.com/.well-known/openid-conf
 
 **HTTP выполняется только при непустом `http_url`.** Флаг `required` не включает и не выключает саму пробу: он определяет только влияние результата на общий статус upstream. Ошибка необязательной DNS/HTTP-проверки видна в диагностике, но не переводит upstream в `down`.
 
-Первоначальный встроенный файл содержит 25 контрольных доменов. Обязательны Gemini и Google Accounts (включая OIDC issuer); остальные проверки диагностические. Две прежние необязательные HTTP-пробы корневых URL `ssl.gstatic.com` и `www.googleapis.com` удалены: для них оставлена DNS-проверка, без ожидаемого 404.
+Встроенный шаблон содержит ровно девять проверок: восемь фиксированных доменов ActiveDoHSelector (`chatgpt.com`, `claude.ai`, `gemini.google.com`, `elevenlabs.io`, `grok.com`, `www.perplexity.ai`, `notebooklm.google.com`, `aistudio.google.com`) и отдельный `accounts.google.com` для проверки OIDC. Обязательны HTTP-проверка Gemini и OIDC Google Accounts; остальные семь строк служат DNS-диагностикой. Сам ActiveDoHSelector использует свои восемь доменов непосредственно из кода и не читает `tst-domen.txt`.
 
 ### 5.6 Автоматическое создание, контроль изменений и config.json
 
