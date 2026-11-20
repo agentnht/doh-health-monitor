@@ -269,7 +269,7 @@ func TestWebUIIntegrationOperationLogPersistsAndRedactsCredentials(t *testing.T)
 	}
 }
 
-func TestWebUIPageHasTabsAndHeaderIntegrationActions(t *testing.T) {
+func TestWebUIPageHasManagementTabsButNoPanelMutationActions(t *testing.T) {
 	handler := webUIHandler()
 	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/", nil)
 	request.Host = "127.0.0.1:19876"
@@ -277,16 +277,40 @@ func TestWebUIPageHasTabsAndHeaderIntegrationActions(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	page := recorder.Body.String()
 
-	for _, label := range []string{"Конфигурация", "DoH-сервера", "Домены", "Проверка состояния", "Логи", "DeIntegrate", "Integrate"} {
+	for _, label := range []string{"Конфигурация", "DoH-сервера", "Домены", "Проверка состояния", "Логи", "Geosite DNS"} {
 		if !strings.Contains(page, label) {
 			t.Errorf("Web UI page is missing %q", label)
 		}
 	}
-	if strings.Contains(page, "integration-check") {
-		t.Fatal("standalone integration check control must be removed from the UI")
+	for _, forbidden := range []string{"integration-add", "integration-remove", "DeIntegrate", ">Integrate<"} {
+		if strings.Contains(page, forbidden) {
+			t.Errorf("Web UI must not expose panel mutation control %q", forbidden)
+		}
 	}
 	if !strings.Contains(page, `data-page="tests"`) || !strings.Contains(page, `data-page-panel="tests"`) {
 		t.Fatal("tests tab is not connected to its page")
+	}
+}
+
+func TestWebUIIntegrationMutationAPIIsDisabled(t *testing.T) {
+	dir := newTestWebUIData(t)
+	handler := newWebUIHandlerWithDataDir("http://127.0.0.1:18765/status", "test-session", dir)
+
+	for _, action := range []string{"integrate", "remove"} {
+		body := []byte(`{"action":"` + action + `","confirmed":true}`)
+		response := newAuthenticatedWebUIRequest(t, handler, http.MethodPost, "/api/v1/integration", body)
+		if response.Code != http.StatusGone {
+			t.Fatalf("%s API status=%d, want %d; body=%s", action, response.Code, http.StatusGone, response.Body.String())
+		}
+		if !strings.Contains(response.Body.String(), "configure Xray manually") {
+			t.Fatalf("%s API response does not explain manual Xray configuration: %s", action, response.Body.String())
+		}
+	}
+}
+
+func TestRunWebUIPluginPreflightRejectsPanelMutations(t *testing.T) {
+	if _, err := runWebUIPluginPreflight(t.TempDir()); err == nil {
+		t.Fatal("preflight must require an initialized plugin config")
 	}
 }
 
