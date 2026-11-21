@@ -1587,7 +1587,7 @@ func TestHandleStatusDoesNotExposePrivatePathsOrSystemDNS(t *testing.T) {
 func TestHandleStatusRequiresBearerToken(t *testing.T) {
 	r := &Runtime{statusToken: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
 	r.snapshot.Store(&Snapshot{cfg: defaultConfig(), groups: map[string]Group{}, upstreams: map[string]*UpstreamRuntime{}})
-	for _, authorization := range []string{"", "Bearer wrong-token", "Basic "+r.statusToken} {
+	for _, authorization := range []string{"", "Bearer wrong-token", "Basic " + r.statusToken} {
 		request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:18765/status", nil)
 		if authorization != "" {
 			request.Header.Set("Authorization", authorization)

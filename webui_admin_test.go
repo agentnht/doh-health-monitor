@@ -710,4 +710,3 @@ func TestWriteManagedSourceWithBackupRejectsSymlinkSource(t *testing.T) {
 		t.Fatalf("backup must not be created for symlink source, stat err=%v", err)
 	}
 }
-
