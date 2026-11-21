@@ -1518,6 +1518,7 @@ func (r *Runtime) initHealth(s *Snapshot) {
 	}
 }
 func (r *Runtime) currentSnapshot() *Snapshot { return r.snapshot.Load() }
+
 const upstreamFailureCooldown = 30 * time.Second
 
 func (r *Runtime) upstreamsToAttempt(order []string, now time.Time) []string {
