@@ -8,7 +8,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync/atomic"
+	"strings"
 	"testing"
 	"time"
 )
@@ -657,5 +660,138 @@ func TestMode2DoHResolverForwardsCNAMEAndEDNSDO(t *testing.T) {
 				t.Fatal("DoH test upstream response did not set AD; plugin must not add a false AD bit")
 			}
 		})
+	}
+}
+
+
+func startMode2TestTCPResolver(t *testing.T, handler func([]byte) []byte) (string, *atomic.Int32) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	count := &atomic.Int32{}
+	go func() {
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				var length [2]byte
+				if _, readErr := io.ReadFull(conn, length[:]); readErr != nil {
+					return
+				}
+				n := int(binary.BigEndian.Uint16(length[:]))
+				if n < 12 || n > maxDNSMessage {
+					return
+				}
+				query := make([]byte, n)
+				if _, readErr := io.ReadFull(conn, query); readErr != nil {
+					return
+				}
+				count.Add(1)
+				response := handler(query)
+				if len(response) < 12 || len(response) > maxDNSMessage {
+					return
+				}
+				binary.BigEndian.PutUint16(length[:], uint16(len(response)))
+				frame := append(length[:], response...)
+				for len(frame) > 0 {
+					written, writeErr := conn.Write(frame)
+					if writeErr != nil || written == 0 {
+						return
+					}
+					frame = frame[written:]
+				}
+			}(conn)
+		}
+	}()
+	return listener.Addr().String(), count
+}
+
+func TestMode2TCPResolverForwardsCNAMEAddressAndEDNSDO(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		qtype uint16
+		want  string
+	}{
+		{name: "CNAME to A", qtype: 1, want: "203.0.113.10"},
+		{name: "CNAME to AAAA", qtype: 28, want: "2001:db8::10"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			receivedQuery := make(chan []byte, 1)
+			address, requestCount := startMode2TestTCPResolver(t, func(query []byte) []byte {
+				receivedQuery <- append([]byte(nil), query...)
+				return mode2AppendResponseOPT(mode2CNAMEAddressResponse(query, tc.qtype, 900, 600))
+			})
+			snapshot := &Snapshot{
+				cfg: Config{
+					DNSMode: "resolver",
+					Cache: CacheConfig{
+						Enabled: true, MinTTL: 0, MaxTTL: 300, MaxEntries: 10, MaxBytes: 4096,
+					},
+					DNSQueryTimeoutSeconds: 3,
+				},
+				resolverGeneration: 93,
+				resolverUpstreams: []*ResolverRuntime{
+					{cfg: ResolverUpstream{ID: "tcp-test", Type: "tcp"}, address: address},
+				},
+			}
+			runtime := &Runtime{cache: map[string]cacheItem{}}
+			runtime.snapshot.Store(snapshot)
+			query := mode2QueryWithEDNSDO("alias.example", tc.qtype)
+			response := runtime.resolverDNSResponse(query, snapshot)
+			if dnsRCode(response) != 0 || requestCount.Load() != 1 {
+				t.Fatalf("response rcode=%d, TCP upstream requests=%d; want NOERROR and one request", dnsRCode(response), requestCount.Load())
+			}
+
+			select {
+			case forwarded := <-receivedQuery:
+				if !bytes.Equal(forwarded, query) {
+					t.Fatal("TCP resolver query was modified; EDNS0/DO/COOKIE must be forwarded unchanged")
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("TCP resolver did not receive the DNS query")
+			}
+
+			answers, err := dnsRRsInSection(response, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(answers) != 2 || answers[0].typeCode != 5 || answers[1].typeCode != tc.qtype {
+				t.Fatalf("expected CNAME plus terminal type %d, got %+v", tc.qtype, answers)
+			}
+			cnameTarget, cnameEnd, err := decodeName(response, answers[0].rdata)
+			if err != nil || cnameEnd != answers[0].end || cnameTarget != "target.example" {
+				t.Fatalf("CNAME target=%q end=%d err=%v, want target.example", cnameTarget, cnameEnd, err)
+			}
+			if got := net.IP(response[answers[1].rdata:answers[1].end]).String(); got != tc.want {
+				t.Fatalf("terminal address=%q, want %q", got, tc.want)
+			}
+			opt := extractEDNSOPT(response)
+			if len(opt) != 19 || binary.BigEndian.Uint16(opt[3:5]) != 1400 ||
+				binary.BigEndian.Uint16(opt[7:9]) != 0x8000 ||
+				!bytes.Equal(opt[15:19], []byte{0x11, 0x22, 0x33, 0x44}) {
+				t.Fatalf("TCP upstream OPT/DO/COOKIE was not preserved: %v", opt)
+			}
+		})
+	}
+}
+
+func TestMode2SystemResolverQueryRejectsPluginListenerLoop(t *testing.T) {
+	resolvConf := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(resolvConf, []byte("nameserver 127.0.0.1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &systemDNSResolver{
+		resolvConfPath:    resolvConf,
+		listenerAddresses: []string{"127.0.0.1:53"},
+	}
+	_, err := resolver.query(context.Background(), makeDNSQuery("loop.example", 1))
+	if err == nil || !strings.Contains(err.Error(), "refusing a DNS loop") {
+		t.Fatalf("system resolver error=%v, want plugin listener DNS-loop refusal", err)
 	}
 }
