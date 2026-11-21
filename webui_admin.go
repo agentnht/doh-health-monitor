@@ -142,7 +142,7 @@ func (l *webUIAdminLogger) String() string {
 var webUILogSecretPattern = regexp.MustCompile("(?i)(Bearer\\s+|apiToken:\\s*|XUI_API_TOKEN=)([^\\s\\\"'<>]+)")
 
 func redactWebUILogLine(line string) string {
-	return webUILogSecretPattern.ReplaceAllString(line, "1[REDACTED]")
+	return webUILogSecretPattern.ReplaceAllString(line, "${1}[REDACTED]")
 }
 
 func webUIDataRoot(dataDir string) (string, error) {
@@ -751,8 +751,8 @@ func saveWebUIGeminiKey(dataDir, key string) error {
 		return err
 	}
 	relative := filepath.Clean(config.GeminiAPI.KeyFile)
-	if filepath.IsAbs(relative) || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
-		return errors.New("gemini_api.key_file must stay inside the plugin data directory")
+	if !validGeminiKeyFilePath(relative) {
+		return errors.New("gemini_api.key_file must be a safe, non-managed relative path inside the plugin data directory")
 	}
 	target := filepath.Join(root, relative)
 	parent := filepath.Dir(target)
@@ -1055,7 +1055,7 @@ func testWebUIHTTPListener(address string) webUITestResult {
 	listener, listenErr := net.Listen("tcp", localAddress)
 	if listenErr == nil {
 		_ = listener.Close()
-		return webUITest("HTTP listener", true, "Порт свободен и доступен для запуска HTTP listener; активный endpoint пока не отвечает")
+		return webUITest("HTTP listener", false, "Порт свободен, но HTTP listener не запущен и /healthz не отвечает")
 	}
 	return webUITest("HTTP listener", false, "Порт занят, но штатный /healthz endpoint недоступен")
 }
@@ -1094,7 +1094,7 @@ func runWebUIDigTests(address string, checks []Check, transport string) []webUIT
 	}
 	if len(queries) > webUIAdminMaxDigQueries {
 		for index, query := range queries[webUIAdminMaxDigQueries:] {
-			results[index] = webUIDigResult(query.domain, query.qtype, transport, "", 0, fmt.Errorf("лимит проверки: выполнено не более %d DNS-запросов за один запуск", webUIAdminMaxDigQueries), false)
+			results[webUIAdminMaxDigQueries+index] = webUIDigResult(query.domain, query.qtype, transport, "", 0, fmt.Errorf("лимит проверки: выполнено не более %d DNS-запросов за один запуск", webUIAdminMaxDigQueries), false)
 		}
 		queries = queries[:webUIAdminMaxDigQueries]
 	}
