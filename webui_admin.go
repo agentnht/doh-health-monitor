@@ -59,6 +59,7 @@ type webUISourceRow struct {
 type webUISourcesResponse struct {
 	DoH    []webUISourceRow `json:"doh"`
 	Checks []webUISourceRow `json:"checks"`
+	Hosts  []webUISourceRow `json:"hosts"`
 }
 
 type webUISourceUpdate struct {
@@ -172,7 +173,7 @@ func webUIDataFile(dataDir, name string, maxBytes int64) (string, []byte, error)
 		return "", nil, err
 	}
 	switch name {
-	case "config.json", "doh-servers.txt", "tst-domen.txt":
+	case "config.json", "doh-servers.txt", "tst-domen.txt", localHostsSourceFile:
 	default:
 		return "", nil, errors.New("unsupported management file")
 	}
@@ -516,9 +517,17 @@ func readWebUISources(dataDir string) (webUISourcesResponse, error) {
 	if err != nil {
 		return webUISourcesResponse{}, err
 	}
+	_, hostsData, err := webUIDataFile(dataDir, localHostsSourceFile, webUIAdminMaxFile)
+	if err != nil {
+		return webUISourcesResponse{}, err
+	}
+	if _, err := parseLocalHostsFile(hostsData); err != nil {
+		return webUISourcesResponse{}, fmt.Errorf("%s validation failed: %w", localHostsSourceFile, err)
+	}
 	return webUISourcesResponse{
 		DoH: parseWebUISourceRows(dohData, 2, "id;url"),
 		Checks: parseWebUISourceRows(checksData, 6, "domain;qtypes"),
+		Hosts: parseWebUISourceRows(hostsData, 3, "hostname;ipv4"),
 	}, nil
 }
 
@@ -552,14 +561,28 @@ func parseWebUISourceRows(data []byte, fieldCount int, header string) []webUISou
 func saveWebUISources(dataDir string, update webUISourceUpdate) error {
 	webUIAdminMu.Lock()
 	defer webUIAdminMu.Unlock()
+	dnsConfigWriteMu.Lock()
+	defer dnsConfigWriteMu.Unlock()
+	root, err := webUIDataRoot(dataDir)
+	if err != nil {
+		return err
+	}
+	releaseFileLock, err := acquireDNSConfigFileLock(root)
+	if err != nil {
+		return err
+	}
+	defer releaseFileLock()
+
 	fieldCount, fileName := 0, ""
 	switch update.Kind {
 	case "doh":
 		fieldCount, fileName = 2, "doh-servers.txt"
 	case "checks":
 		fieldCount, fileName = 6, "tst-domen.txt"
+	case "hosts":
+		fieldCount, fileName = 3, localHostsSourceFile
 	default:
-		return errors.New("kind must be doh or checks")
+		return errors.New("kind must be doh, checks or hosts")
 	}
 	if len(update.Rows) > webUIAdminMaxRows {
 		return fmt.Errorf("too many rows; maximum is %d", webUIAdminMaxRows)
@@ -614,10 +637,18 @@ func saveWebUISources(dataDir string, update webUISourceUpdate) error {
 		return errors.New("doh-servers.txt must keep exactly one system-dns row; disable it with the checkbox instead of deleting it")
 	}
 	data := []byte(output.String())
-	if update.Kind == "doh" && len(strings.TrimSpace(string(data))) == 0 {
-		data = []byte("# id;url — provider ID; HTTPS endpoint\n")
+	if len(strings.TrimSpace(string(data))) == 0 {
+		switch update.Kind {
+		case "doh":
+			data = []byte("# id;url — provider ID; HTTPS endpoint\n")
+		case "checks":
+			return errors.New("tst-domen.txt must keep at least one valid health check")
+		case "hosts":
+			data = []byte(localHostsSourceHeader + "\n")
+		}
 	}
-	if update.Kind == "doh" {
+	switch update.Kind {
+	case "doh":
 		providers, err := parseDoHProviders(data)
 		if err != nil {
 			return fmt.Errorf("doh-servers.txt validation failed: %w", err)
@@ -625,17 +656,52 @@ func saveWebUISources(dataDir string, update webUISourceUpdate) error {
 		if len(providers) == 0 {
 			return errors.New("at least one upstream must remain enabled; keep system-dns active or enable a DoH provider")
 		}
-	} else {
+	case "checks":
 		if _, err := parseHealthChecks(data); err != nil {
 			return fmt.Errorf("tst-domen.txt validation failed: %w", err)
+		}
+	case "hosts":
+		if _, err := parseLocalHostsFile(data); err != nil {
+			return fmt.Errorf("local-hosts.txt validation failed: %w", err)
 		}
 	}
 	path, _, err := webUIDataFile(dataDir, fileName, webUIAdminMaxFile)
 	if err != nil {
 		return err
 	}
-	if err := writeAtomicFile(path, data, 0600); err != nil {
+	if update.Kind == "hosts" {
+		if err := writeManagedSourceWithBackup(path, data); err != nil {
+			return fmt.Errorf("save %s: %w", fileName, err)
+		}
+	} else if err := writeAtomicFile(path, data, 0600); err != nil {
 		return fmt.Errorf("save %s: %w", fileName, err)
+	}
+	return nil
+}
+
+func writeManagedSourceWithBackup(path string, data []byte) error {
+	if info, err := os.Lstat(path); err != nil {
+		return fmt.Errorf("inspect managed source: %w", err)
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > webUIAdminMaxFile {
+		return errors.New("managed source must be a regular non-symlink file within the size limit")
+	}
+	original, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read managed source for backup: %w", err)
+	}
+	backupPath := path + ".bak"
+	if info, err := os.Lstat(backupPath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return errors.New("refusing to replace a non-regular or symlink backup path")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect managed source backup: %w", err)
+	}
+	if err := writeAtomicFile(backupPath, original, 0600); err != nil {
+		return fmt.Errorf("create managed source backup: %w", err)
+	}
+	if err := writeAtomicFile(path, data, 0600); err != nil {
+		return fmt.Errorf("atomic source replacement failed (backup retained): %w", err)
 	}
 	return nil
 }
