@@ -31,8 +31,8 @@ func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 	if rec.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal("Web UI response must not be cached")
 	}
-	if len(rec.Result().Cookies()) != 1 || rec.Result().Cookies()[0].Name != webUISessionCookie {
-		t.Fatal("root page must issue the per-session HttpOnly cookie")
+	if len(rec.Result().Cookies()) != 0 {
+		t.Fatal("unauthenticated root page must not issue a session cookie")
 	}
 	if !strings.Contains(rec.Body.String(), "/app.js") {
 		t.Fatal("dashboard JavaScript asset is missing from the page")
@@ -166,9 +166,28 @@ func TestWebUIStatusAPIRequiresSessionAndReturnsSanitizedStatus(t *testing.T) {
 	rootRequest.Host = "127.0.0.1:19876"
 	rootRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(rootRecorder, rootRequest)
-	cookies := rootRecorder.Result().Cookies()
-	if len(cookies) != 1 {
-		t.Fatal("root page did not issue session cookie")
+	if len(rootRecorder.Result().Cookies()) != 0 {
+		t.Fatal("unauthenticated root request unexpectedly received a session cookie")
+	}
+
+	authRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/auth?token=session-test-token", nil)
+	authRequest.Host = "127.0.0.1:19876"
+	authRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(authRecorder, authRequest)
+	if authRecorder.Code != http.StatusSeeOther {
+		t.Fatalf("bootstrap authentication status=%d, want %d", authRecorder.Code, http.StatusSeeOther)
+	}
+	cookies := authRecorder.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != webUISessionCookie || !cookies[0].HttpOnly {
+		t.Fatal("bootstrap authentication did not issue the HttpOnly session cookie")
+	}
+
+	replayRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/auth?token=session-test-token", nil)
+	replayRequest.Host = "127.0.0.1:19876"
+	replayRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(replayRecorder, replayRequest)
+	if replayRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("replayed bootstrap token status=%d, want %d", replayRecorder.Code, http.StatusUnauthorized)
 	}
 
 	apiRequest = httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/api/v1/status", nil)
@@ -289,8 +308,11 @@ func TestRunWebUIStopsWhenSupervisorPipeCloses(t *testing.T) {
 		t.Fatal("timed out waiting for Web UI readiness line")
 	}
 	fields := strings.Fields(strings.TrimSpace(line))
-	if len(fields) != 2 || fields[0] != "WEB_UI_READY" || !strings.HasPrefix(fields[1], "port=") {
+	if len(fields) != 3 || fields[0] != "WEB_UI_READY" || !strings.HasPrefix(fields[1], "port=") || !strings.HasPrefix(fields[2], "token=") {
 		t.Fatalf("unexpected readiness protocol: %q", line)
+	}
+	if token := strings.TrimPrefix(fields[2], "token="); len(token) != 43 {
+		t.Fatalf("bootstrap token length=%d, want 43", len(token))
 	}
 	port, err := strconv.Atoi(strings.TrimPrefix(fields[1], "port="))
 	if err != nil || port < 1 || port > 65535 {
