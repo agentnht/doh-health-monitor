@@ -1559,3 +1559,43 @@ func TestReloadKeepsListenerChangesPendingRestartWhileApplyingOtherSettings(t *t
 		t.Fatalf("requested listener settings were not preserved on disk: %+v", persisted)
 	}
 }
+
+
+func TestFilterPublicDoHIPsRejectsNonPublicAddresses(t *testing.T) {
+	got := filterPublicDoHIPs([]string{
+		"1.1.1.1", "8.8.8.8", "10.0.0.1", "127.0.0.1",
+		"192.0.2.10", "169.254.1.1", "224.0.0.1", "2001:db8::1",
+		"2001:4860:4860::8888", "1.1.1.1",
+	})
+	want := []string{"1.1.1.1", "8.8.8.8", "2001:4860:4860::8888"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("public bootstrap IPs=%v, want %v", got, want)
+	}
+}
+
+func TestHandleStatusDoesNotExposePrivatePathsOrSystemDNS(t *testing.T) {
+	cfg := defaultConfig()
+	snapshot := &Snapshot{cfg: cfg, groups: map[string]Group{}, upstreams: map[string]*UpstreamRuntime{}}
+	r := &Runtime{configPath: "/root/private/plugin/config.json", cache: map[string]cacheItem{}}
+	r.snapshot.Store(snapshot)
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:18765/status", nil)
+	recorder := httptest.NewRecorder()
+	r.handleStatus(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status code=%d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if strings.Contains(body, "/root/private/plugin/config.json") {
+		t.Fatal("status endpoint exposed the plugin configuration path")
+	}
+	if strings.Contains(body, "system_dns_servers") || strings.Contains(body, "system_dns_error") {
+		t.Fatal("status endpoint exposed host resolver details")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["config"] != "" {
+		t.Fatalf("config field should be empty for unauthenticated status: %#v", payload["config"])
+	}
+}
