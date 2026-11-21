@@ -458,6 +458,23 @@ func parseActiveDoHAddressRecords(packet []byte, qtype uint16) ([]string, error)
 	return ips, nil
 }
 
+func filterPublicDoHIPs(values []string) []string {
+	filtered := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, raw := range values {
+		ip := net.ParseIP(strings.TrimSpace(raw))
+		if !isPublicDoHIP(ip) {
+			continue
+		}
+		value := ip.String()
+		if !seen[value] {
+			seen[value] = true
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
+}
+
 func isPublicDoHIP(ip net.IP) bool {
 	if ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() ||
 		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
