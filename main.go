@@ -20,18 +20,20 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"lucx-doh-health-monitor/internal/activedoh"
 	"lucx-doh-health-monitor/internal/dohintegration"
 )
 
 const (
 	pluginID      = "doh-health-monitor"
-	pluginVersion = "2.2.1"
+	pluginVersion = "2.3.0"
 	systemDNSUpstreamID = "system-dns"
 	systemResolvConfPath = "/etc/resolv.conf"
 	systemDNSPerServerTimeout = 2 * time.Second
@@ -42,12 +44,15 @@ const (
 	maxUDPWorkers        = 64
 	udpQueueCapacity     = 128
 	maxTCPConnections    = 128
+	maxResolverUpstreams = 64
 	tcpIdleTimeout       = 30 * time.Second
 	tcpWriteTimeout      = 10 * time.Second
 )
 
 type Config struct {
 	LocalHosts             map[string]LocalHost `json:"local_hosts"`
+	DNSMode                string               `json:"dns_mode"`
+	ResolverUpstreams       []ResolverUpstream   `json:"resolver_upstreams"`
 	DNSListenUDP           string          `json:"dns_listen_udp"`
 	DNSListenTCP           string          `json:"dns_listen_tcp"`
 	HTTPListen             string          `json:"http_listen"`
@@ -61,7 +66,9 @@ type Config struct {
 	BootstrapResolvers     []string        `json:"bootstrap_resolvers,omitempty"`
 	Groups                 []Group         `json:"groups"`
 	GeminiAPI              GeminiAPIConfig `json:"gemini_api"`
-	Integration            bool            `json:"integration"`
+	// Integration is retained only to decode older config.json files. It no longer
+	// controls Xray configuration or enables panel mutation operations.
+	Integration bool `json:"integration"`
 }
 type LocalHost struct {
 	IPv4 []string `json:"ipv4"`
@@ -87,6 +94,22 @@ type Upstream struct {
 	Type         string   `json:"type,omitempty"`
 	URL          string   `json:"-"`
 	BootstrapIPs []string `json:"bootstrap_ips"`
+}
+
+type ResolverUpstream struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name,omitempty"`
+	Type         string   `json:"type"`
+	Address      string   `json:"address,omitempty"`
+	URL          string   `json:"url,omitempty"`
+	BootstrapIPs []string `json:"bootstrap_ips,omitempty"`
+}
+
+type ResolverRuntime struct {
+	cfg       ResolverUpstream
+	address   string
+	systemDNS *systemDNSResolver
+	upstream  *UpstreamRuntime
 }
 type Group struct {
 	ID        string   `json:"id"`
@@ -116,12 +139,15 @@ type GeminiAPIConfig struct {
 }
 
 type Snapshot struct {
-	cfg        Config
-	localHosts map[string]LocalHost
-	upstreams  map[string]*UpstreamRuntime
-	groups     map[string]Group
-	loadedAt   time.Time
-	configMod  time.Time
+	cfg                    Config
+	localHosts             map[string]LocalHost
+	upstreams              map[string]*UpstreamRuntime
+	groups                 map[string]Group
+	resolverUpstreams      []*ResolverRuntime
+	resolverGeneration     uint64
+	activeDoHGeneration    uint64
+	loadedAt               time.Time
+	configMod              time.Time
 }
 type UpstreamRuntime struct {
 	cfg       Upstream
@@ -131,7 +157,8 @@ type UpstreamRuntime struct {
 }
 
 type systemDNSResolver struct {
-	resolvConfPath string
+	resolvConfPath   string
+	listenerAddresses []string
 }
 
 type bootstrapResolver struct {
@@ -232,11 +259,13 @@ type Status struct {
 	UpdatedAt    time.Time                       `json:"updated_at"`
 	DNSUDP       string                          `json:"dns_udp"`
 	DNSTCP       string                          `json:"dns_tcp"`
+	DNSMode      string                          `json:"dns_mode"`
 	HTTP         string                          `json:"http"`
 	Config       string                          `json:"config"`
 	Cache        CacheStatus                     `json:"cache"`
 	Groups       map[string]GroupStatus          `json:"groups"`
 	DoHBootstrap       map[string]DoHBootstrapStatus `json:"doh_bootstrap,omitempty"`
+	ActiveDoH          *ActiveDoHStatus                 `json:"active_doh,omitempty"`
 	SystemDNSServers    []string                      `json:"system_dns_servers,omitempty"`
 	SystemDNSError      string                        `json:"system_dns_error,omitempty"`
 	GeminiAPI           string                        `json:"gemini_api"`
@@ -295,6 +324,8 @@ type Runtime struct {
 	sourceHashes ConfigSourceChecksums
 	lastRejectedSourceHash string
 	healthCheckTrigger chan struct{}
+	activeDoHTrigger chan struct{}
+	activeDoHSelector *activedoh.Selector
 	snapshot     atomic.Pointer[Snapshot]
 	mu           sync.RWMutex
 	health           map[string]map[string]HealthEntry
@@ -335,62 +366,23 @@ func main() {
 			}
 			return
 		}
+		if action == "config" {
+			if err := runDNSConfigCLI(os.Args[2:]); err != nil {
+				logLine("ERROR", "CONFIG: %v", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if action == "check" {
-			logger := lucxIntegrationLogger{}
+			logger := lucxReadOnlyCheckLogger{}
 			if err := dohintegration.RunCommand(os.Args[1:], logger); err != nil {
 				logLine("ERROR", "CHECK: %v", err)
 				os.Exit(1)
 			}
 			return
 		}
-		if action != "integrate" && action != "remove" {
-			logLine("ERROR", "CLI supports integrate, remove, check, and web")
-			os.Exit(2)
-		}
-		dataDir, err := dohintegration.PluginDataDir()
-		if err != nil {
-			logLine("ERROR", "INTEGRATION data directory: %v", err)
-			os.Exit(1)
-		}
-		if err := os.MkdirAll(dataDir, 0700); err != nil {
-			logLine("ERROR", "INTEGRATION create data directory failed")
-			os.Exit(1)
-		}
-		configPath := filepath.Join(dataDir, "config.json")
-		if _, err := loadConfig(configPath); err != nil {
-			logLine("ERROR", "INTEGRATION config is invalid: %v", err)
-			os.Exit(1)
-		}
-		pluginLog, err := os.OpenFile(filepath.Join(filepath.Dir(dataDir), "plugin.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-		if err != nil {
-			logLine("ERROR", "INTEGRATION cannot open plugin.log: %v", err)
-			os.Exit(1)
-		}
-		info, err := pluginLog.Stat()
-		if err != nil || !info.Mode().IsRegular() {
-			_ = pluginLog.Close()
-			logLine("ERROR", "INTEGRATION plugin.log is not a regular file")
-			os.Exit(1)
-		}
-		if err := pluginLog.Chmod(0600); err != nil {
-			_ = pluginLog.Close()
-			logLine("ERROR", "INTEGRATION cannot secure plugin.log: %v", err)
-			os.Exit(1)
-		}
-		defer pluginLog.Close()
-		logger := lucxIntegrationLogger{file: pluginLog}
-		logger.Printf("INTEGRATION directive=%s started", strings.ToUpper(action))
-		if err := dohintegration.RunCommand(os.Args[1:], logger); err != nil {
-			logger.Printf("INTEGRATION directive=%s failed: %v", strings.ToUpper(action), err)
-			os.Exit(1)
-		}
-		enabled := action == "integrate"
-		if err := setIntegrationFlag(configPath, enabled); err != nil {
-			logger.Printf("INTEGRATION directive=%s succeeded but config flag update failed: %v", strings.ToUpper(action), err)
-			os.Exit(1)
-		}
-		logger.Printf("INTEGRATION directive=%s completed integration=%t", strings.ToUpper(action), enabled)
-		return
+		logLine("ERROR", "CLI supports only read-only check, web and config; Xray Geosite DNS policy must be configured manually")
+		os.Exit(2)
 	}
 	dataDir := strings.TrimSpace(os.Getenv("LUCX_PLUGIN_DATA"))
 	if dataDir == "" {
@@ -405,6 +397,11 @@ func main() {
 	configPath := filepath.Join(dataDir, "config.json")
 	dohPath := filepath.Join(dataDir, "doh-servers.txt")
 	checksPath := filepath.Join(dataDir, "tst-domen.txt")
+	localHostsPath := filepath.Join(dataDir, localHostsSourceFile)
+	startupConfigUnlock, err := acquireDNSConfigFileLock(dataDir)
+	if err != nil {
+		fatal("CONFIG file lock failed: %v", err)
+	}
 	if err := initializeConfigSourceFiles(dataDir); err != nil {
 		fatal("CONFIG sources initialization failed: %v", err)
 	}
@@ -412,7 +409,7 @@ func main() {
 	if err != nil {
 		fatal("CONFIG invalid: %v", err)
 	}
-	sources, err := readConfigSources(dohPath, checksPath)
+	sources, err := readConfigSources(dohPath, checksPath, localHostsPath)
 	if err != nil {
 		fatal("CONFIG sources invalid: %v", err)
 	}
@@ -434,12 +431,15 @@ func main() {
 		dataDir: dataDir, configPath: configPath, dohPath: dohPath, checksPath: checksPath,
 		sourceHashes: sources.Checksums,
 		healthCheckTrigger: make(chan struct{}, 1),
+		activeDoHTrigger: make(chan struct{}, 1),
+		activeDoHSelector: activedoh.NewSelector(activedoh.DefaultPolicy()),
 		health: map[string]map[string]HealthEntry{}, active: map[string]string{},
 		cache: map[string]cacheItem{}, lastGemini: map[string]time.Time{},
 		dnsSem: make(chan struct{}, cfg.DNSMaxConcurrent),
 	}
 	rt.snapshot.Store(snap)
 	rt.initHealth(snap)
+	startupConfigUnlock()
 	logLine("INFO", "CONFIG loaded path=%s doh_list=%s checks_list=%s groups=%d upstreams=%d checks=%d dns_udp=%s dns_tcp=%s gemini_api=%t", configPath, dohPath, checksPath, len(cfg.Groups), len(cfg.Upstreams), len(sources.Checks), cfg.DNSListenUDP, cfg.DNSListenTCP, cfg.GeminiAPI.Enabled)
 
 	udpAddr, err := net.ResolveUDPAddr("udp", cfg.DNSListenUDP)
@@ -492,7 +492,7 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
-	wg.Add(5)
+	wg.Add(6)
 	go func() { defer wg.Done(); rt.serveUDP(ctx, udpConn) }()
 	go func() { defer wg.Done(); rt.serveTCP(ctx, tcpLn) }()
 	go func() {
@@ -503,6 +503,7 @@ func main() {
 		}
 	}()
 	go func() { defer wg.Done(); rt.monitorLoop(ctx) }()
+	go func() { defer wg.Done(); rt.activeDoHLoop(ctx) }()
 	go func() { defer wg.Done(); rt.reloadLoop(ctx) }()
 	logLine("INFO", "READY DNS=%s/%s HTTP=%s", cfg.DNSListenUDP, cfg.DNSListenTCP, cfg.HTTPListen)
 
@@ -530,41 +531,12 @@ func main() {
 }
 
 
-type lucxIntegrationLogger struct { file *os.File }
-func (l lucxIntegrationLogger) Printf(format string, args ...any) {
-	message := fmt.Sprintf(format, args...)
-	logLine("INFO", "%s", message)
-	if l.file != nil {
-		_, err := fmt.Fprintf(l.file, "%s level=INFO %s\n", time.Now().UTC().Format(time.RFC3339), message)
-		if err == nil { err = l.file.Sync() }
-		if err != nil { logLine("ERROR", "INTEGRATION log write failed: %v", err) }
-	}
+type lucxReadOnlyCheckLogger struct{}
+
+func (lucxReadOnlyCheckLogger) Printf(format string, args ...any) {
+	logLine("INFO", "CHECK %s", fmt.Sprintf(format, args...))
 }
 
-func setIntegrationFlag(path string, enabled bool) error {
-	data, err := os.ReadFile(path)
-	if err != nil { return fmt.Errorf("read config: %w", err) }
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	var config map[string]any
-	if err := decoder.Decode(&config); err != nil || config == nil { return errors.New("config.json is not a JSON object") }
-	config["integration"] = enabled
-	encoded, err := json.MarshalIndent(config, "", "  ")
-	if err != nil { return fmt.Errorf("encode config: %w", err) }
-	encoded = append(encoded, '\n')
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".config.json-*")
-	if err != nil { return fmt.Errorf("create temporary config: %w", err) }
-	name := tmp.Name()
-	defer os.Remove(name)
-	if err := tmp.Chmod(0600); err != nil { tmp.Close(); return err }
-	if _, err := tmp.Write(encoded); err != nil { tmp.Close(); return err }
-	if err := tmp.Sync(); err != nil { tmp.Close(); return err }
-	if err := tmp.Close(); err != nil { return err }
-	if err := os.Rename(name, path); err != nil { return fmt.Errorf("replace config atomically: %w", err) }
-	if d, err := os.Open(dir); err == nil { _ = d.Sync(); _ = d.Close() }
-	return nil
-}
 
 func fatal(f string, a ...any) { logLine("ERROR", f, a...); os.Exit(1) }
 func envOr(k, d string) string {
@@ -596,6 +568,7 @@ func loadConfig(path string) (Config, error) {
 	}
 	c, e = normalizeConfigGroups(c)
 	if e != nil { return Config{}, e }
+	c = normalizeDNSConfig(c)
 	c = normalizeCacheConfig(c)
 	if e = validateConfig(c); e != nil {
 		return Config{}, e
@@ -608,6 +581,8 @@ func defaultConfig() Config {
 		DNSQueryTimeoutSeconds: 15, DoHTimeoutSeconds: 10, DNSMaxConcurrent: 256,
 		Health: HealthConfig{IntervalSeconds: 25 * 60, TimeoutSeconds: 5, FailureThreshold: 1, SuccessThreshold: 1},
 		Cache:  CacheConfig{Enabled: true, MinTTL: 5, MaxTTL: 300, NegativeTTL: 15, MaxEntries: 8192, MaxBytes: defaultCacheMaxBytes},
+		DNSMode: "endpoint_ip",
+		ResolverUpstreams: []ResolverUpstream{{ID: "system", Name: "System resolver (OS)", Type: "system"}},
 		LocalHosts: map[string]LocalHost{},
 		BootstrapResolvers: []string{"1.1.1.1", "8.8.8.8"},
 		Upstreams: []Upstream{
@@ -687,6 +662,96 @@ func ensureSystemDNSFirst(c Config) (Config, error) {
 	return c, nil
 }
 
+func normalizeDNSConfig(c Config) Config {
+	if strings.TrimSpace(c.DNSMode) == "" {
+		c.DNSMode = "endpoint_ip"
+	}
+	if c.ResolverUpstreams == nil {
+		// Configurations created before resolver_upstreams existed inherit the
+		// documented default. An explicit empty JSON array remains empty and
+		// therefore means that mode 2 has no configured upstream.
+		c.ResolverUpstreams = []ResolverUpstream{{ID: "system", Name: "System resolver (OS)", Type: "system"}}
+	}
+	return c
+}
+
+func normalizeResolverAddress(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if ip := net.ParseIP(raw); ip != nil {
+		return net.JoinHostPort(ip.String(), "53"), nil
+	}
+	host, port, err := net.SplitHostPort(raw)
+	if err != nil {
+		return "", fmt.Errorf("resolver address must be an IP literal with optional port: %w", err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return "", errors.New("plain DNS resolver address must use an IP literal; use a DoH URL for hostname-based upstreams")
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return "", errors.New("resolver address port must be in 1..65535")
+	}
+	return net.JoinHostPort(ip.String(), strconv.Itoa(portNumber)), nil
+}
+
+func validateResolverUpstreams(upstreams []ResolverUpstream) error {
+	if len(upstreams) > maxResolverUpstreams {
+		return fmt.Errorf("resolver_upstreams supports at most %d entries", maxResolverUpstreams)
+	}
+	ids := make(map[string]bool, len(upstreams))
+	systemCount := 0
+	for i, resolver := range upstreams {
+		id := strings.TrimSpace(resolver.ID)
+		if id == "" || len(id) > 128 || strings.ContainsAny(id, "/:@ \t") || ids[id] {
+			return fmt.Errorf("resolver_upstreams[%d] has an empty, invalid or duplicate id %q", i, resolver.ID)
+		}
+		ids[id] = true
+		switch resolver.Type {
+		case "system":
+			systemCount++
+			if systemCount > 1 {
+				return errors.New("resolver_upstreams may contain at most one system resolver")
+			}
+			if resolver.Address != "" || resolver.URL != "" || len(resolver.BootstrapIPs) != 0 {
+				return fmt.Errorf("system resolver %q must not define address, url or bootstrap_ips", id)
+			}
+		case "udp", "tcp":
+			if resolver.URL != "" || len(resolver.BootstrapIPs) != 0 {
+				return fmt.Errorf("plain DNS resolver %q must not define url or bootstrap_ips", id)
+			}
+			if _, err := normalizeResolverAddress(resolver.Address); err != nil {
+				return fmt.Errorf("resolver %q: %w", id, err)
+			}
+		case "doh":
+			if resolver.Address != "" {
+				return fmt.Errorf("DoH resolver %q must use url, not address", id)
+			}
+			parsed, err := url.Parse(strings.TrimSpace(resolver.URL))
+			if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.Fragment != "" {
+				return fmt.Errorf("DoH resolver %q must have an HTTPS URL without userinfo or fragment", id)
+			}
+			for _, rawIP := range resolver.BootstrapIPs {
+				if net.ParseIP(strings.TrimSpace(rawIP)) == nil {
+					return fmt.Errorf("DoH resolver %q has invalid bootstrap IP %q", id, rawIP)
+				}
+			}
+		default:
+			return fmt.Errorf("resolver %q has unsupported type %q", id, resolver.Type)
+		}
+	}
+	return nil
+}
+
+func configGeneration(value any) uint64 {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return 0
+	}
+	sum := sha256.Sum256(encoded)
+	return binary.BigEndian.Uint64(sum[:8])
+}
+
 func normalizeCacheConfig(c Config) Config {
 	// Older config files predate max_bytes; give them a bounded default.
 	if c.Cache.MaxBytes == 0 {
@@ -696,6 +761,15 @@ func normalizeCacheConfig(c Config) Config {
 }
 
 func validateConfig(c Config) error {
+	if c.DNSMode != "endpoint_ip" && c.DNSMode != "resolver" {
+		return fmt.Errorf("dns_mode must be endpoint_ip or resolver, got %q", c.DNSMode)
+	}
+	if c.DNSMode == "resolver" && len(c.ResolverUpstreams) == 0 {
+		return errors.New("resolver mode requires at least one resolver_upstreams entry")
+	}
+	if err := validateResolverUpstreams(c.ResolverUpstreams); err != nil {
+		return err
+	}
 	if !validListen(c.DNSListenUDP) || !validListen(c.DNSListenTCP) || !validListen(c.HTTPListen) {
 		return errors.New("dns_listen_udp, dns_listen_tcp and http_listen must be host:port")
 	}
@@ -888,6 +962,52 @@ func loadDoHList(path string, create bool) (map[string]string, error) {
 
 func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
 	s := &Snapshot{cfg: c, upstreams: map[string]*UpstreamRuntime{}, groups: map[string]Group{}, localHosts: map[string]LocalHost{}, loadedAt: time.Now().UTC()}
+	resolverBootstrap := c.BootstrapResolvers
+	if len(resolverBootstrap) == 0 {
+		resolverBootstrap = defaultBootstrapResolvers()
+	}
+	for _, configured := range c.ResolverUpstreams {
+		runtimeResolver := &ResolverRuntime{cfg: configured}
+		switch configured.Type {
+		case "system":
+			runtimeResolver.systemDNS = &systemDNSResolver{
+				resolvConfPath: systemResolvConfPath,
+				listenerAddresses: []string{c.DNSListenUDP, c.DNSListenTCP},
+			}
+		case "udp", "tcp":
+			address, err := normalizeResolverAddress(configured.Address)
+			if err != nil {
+				return nil, fmt.Errorf("resolver %s: %w", configured.ID, err)
+			}
+			runtimeResolver.address = address
+		case "doh":
+			upstream := Upstream{
+				ID: configured.ID, Name: configured.Name, Type: "doh",
+				URL: strings.TrimSpace(configured.URL),
+				BootstrapIPs: append([]string(nil), configured.BootstrapIPs...),
+			}
+			client, bootstrap, err := newDoHClient(upstream, resolverBootstrap, time.Duration(c.DoHTimeoutSeconds)*time.Second)
+			if err != nil {
+				return nil, fmt.Errorf("build mode-2 DoH resolver %s: %w", configured.ID, err)
+			}
+			runtimeResolver.upstream = &UpstreamRuntime{cfg: upstream, client: client, bootstrap: bootstrap}
+		}
+		s.resolverUpstreams = append(s.resolverUpstreams, runtimeResolver)
+	}
+	s.resolverGeneration = configGeneration(struct {
+		Mode string
+		Resolvers []ResolverUpstream
+		Bootstrap []string
+		Cache CacheConfig
+		LocalHosts map[string]LocalHost
+	}{c.DNSMode, c.ResolverUpstreams, c.BootstrapResolvers, c.Cache, c.LocalHosts})
+	s.activeDoHGeneration = configGeneration(struct {
+		Mode string
+		Upstreams []Upstream
+		DoHURLs map[string]string
+		Bootstrap []string
+		LocalHosts map[string]LocalHost
+	}{c.DNSMode, c.Upstreams, dohURLs, c.BootstrapResolvers, c.LocalHosts})
 	for host, entry := range c.LocalHosts {
 		s.localHosts[normalizeDomain(host)] = entry
 	}
@@ -1502,6 +1622,12 @@ func sendDoH(ctx context.Context, u *UpstreamRuntime, packet []byte) ([]byte, er
 	return b, nil
 }
 func (r *Runtime) serveUDP(ctx context.Context, c *net.UDPConn) {
+	r.serveUDPWithHandler(ctx, c, r.handleDNS)
+}
+
+// serveUDPWithHandler separates queue/worker scheduling from DNS resolution so
+// the bounded-queue behavior can be tested deterministically.
+func (r *Runtime) serveUDPWithHandler(ctx context.Context, c *net.UDPConn, handle func([]byte) []byte) {
 	type udpJob struct {
 		addr   *net.UDPAddr
 		packet []byte
@@ -1529,7 +1655,7 @@ func (r *Runtime) serveUDP(ctx context.Context, c *net.UDPConn) {
 					}
 					r.udpQueueDepth.Add(-1)
 					r.activeUDP.Add(1)
-					resp := r.handleDNS(job.packet)
+					resp := handle(job.packet)
 					r.activeUDP.Add(-1)
 					if len(resp) > 4096 {
 						resp = resp[:4096]
@@ -1673,32 +1799,25 @@ func (r *Runtime) handleDNS(packet []byte) []byte {
 		return servfailResponse(packet)
 	}
 	r.queries.Add(1)
-	name, qtype, _, e := parseQuestion(packet)
-	if e != nil {
+	name, qtype, _, err := parseQuestion(packet)
+	if err != nil {
 		return formerrResponse(packet)
 	}
 	s := r.currentSnapshot()
-	if response, matched := localHostsResponse(packet, normalizeDomain(name), qtype, s.localHosts); matched {
-		return response
-	}
-	cacheKey := cacheKey(packet)
-	if s.cfg.Cache.Enabled {
-		if v, ok := r.cacheGet(cacheKey, packetID(packet)); ok {
-			r.cacheHits.Add(1)
-			return v
-		}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(s.cfg.DNSQueryTimeoutSeconds)*time.Second)
-	defer cancel()
-	resp, uid, e := r.query(ctx, packet)
-	if e != nil {
+	if s == nil {
 		return servfailResponse(packet)
 	}
-	if s.cfg.Cache.Enabled {
-		r.cachePut(cacheKey, resp, s.cfg.Cache)
+	// Local overrides remain available for A/AAAA. The new Geosite DNS path
+	// deliberately does not serve HTTPS/SVCB or other non-address QTYPEs.
+	if qtype == 1 || qtype == 28 {
+		if response, matched := localHostsResponse(packet, normalizeDomain(name), qtype, s.localHosts); matched {
+			return response
+		}
 	}
-	_ = uid // avoid a log entry for every successful DNS query
-	return resp
+	if s.cfg.DNSMode == "resolver" {
+		return r.resolverDNSResponse(packet, s)
+	}
+	return r.activeDoHDNSResponse(packet, s)
 }
 
 const localHostsTTL uint32 = 60
@@ -2133,6 +2252,10 @@ func (r *systemDNSResolver) query(ctx context.Context, packet []byte) ([]byte, e
 	}
 	var failures []string
 	for _, server := range servers {
+		if r.pointsBackToPluginListener(server) {
+			failures = append(failures, server+": resolver target matches the plugin DNS listener; refusing a DNS loop")
+			continue
+		}
 		perServer := systemDNSPerServerTimeout
 		if deadline, ok := ctx.Deadline(); ok {
 			remaining := time.Until(deadline)
@@ -2665,52 +2788,75 @@ func (r *Runtime) reloadLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
+
+		// Lock before reading either config.json or its managed source files so
+		// a writer cannot race the read/merge/write transaction.
+		dnsConfigWriteMu.Lock()
+		releaseFileLock, lockErr := acquireDNSConfigFileLock(r.dataDir)
+		if lockErr != nil {
+			dnsConfigWriteMu.Unlock()
+			r.rejectConfigReload("config-lock:"+lockErr.Error(), "CONFIG reload rejected: cannot lock config sources: %v", lockErr)
+			continue
+		}
+		unlockConfigWrite := func() {
+			releaseFileLock()
+			dnsConfigWriteMu.Unlock()
+		}
+
 		old := r.currentSnapshot()
 		cfi, err := os.Stat(r.configPath)
 		if err != nil {
+			unlockConfigWrite()
 			r.rejectConfigReload("config-stat:"+err.Error(), "CONFIG reload rejected: cannot stat config.json: %v", err)
 			continue
 		}
-		sources, sourceErr := readConfigSources(r.dohPath, r.checksPath)
+		sources, sourceErr := readConfigSources(r.dohPath, r.checksPath, filepath.Join(r.dataDir, localHostsSourceFile))
 		if sourceErr != nil {
 			rejectedHash := sources.Checksums.Combined
 			if rejectedHash == "" {
 				rejectedHash = "source-read-error:" + sourceErr.Error()
 			}
+			unlockConfigWrite()
 			r.rejectConfigReload(rejectedHash, "CONFIG source reload rejected: %v", sourceErr)
 			continue
 		}
 		sourcesChanged := sources.Checksums != r.sourceHashes
 		configChanged := cfi.ModTime().After(old.configMod)
 		if !sourcesChanged && !configChanged {
-			// A source file may have been reverted byte-for-byte to the last
-			// accepted version after a rejected edit. Clear the stale warning.
+			// A source file may be reverted byte-for-byte after a rejected edit.
 			if r.lastRejectedSourceHash != "" {
 				r.lastRejectedSourceHash = ""
 				r.setError("")
 			}
+			unlockConfigWrite()
 			continue
 		}
+
 		cfg, err := loadConfigNoCreate(r.configPath)
 		if err != nil {
+			unlockConfigWrite()
 			r.rejectConfigReload("config-error:"+cfi.ModTime().UTC().Format(time.RFC3339Nano)+":"+err.Error(), "CONFIG reload rejected: %v", err)
 			continue
 		}
 		if cfg.DNSListenUDP != old.cfg.DNSListenUDP || cfg.DNSListenTCP != old.cfg.DNSListenTCP || cfg.HTTPListen != old.cfg.HTTPListen || cfg.DNSMaxConcurrent != old.cfg.DNSMaxConcurrent {
+			unlockConfigWrite()
 			r.rejectConfigReload("listener-change:"+cfi.ModTime().UTC().Format(time.RFC3339Nano), "CONFIG listener/dns_max_concurrent change requires plugin restart")
 			continue
 		}
 		cfg, err = applyConfigSources(cfg, sources)
 		if err != nil {
+			unlockConfigWrite()
 			r.rejectConfigReload(sources.Checksums.Combined+":generated:"+err.Error(), "CONFIG generation rejected: %v", err)
 			continue
 		}
 		ns, err := buildSnapshot(cfg, sources.DoHURLs)
 		if err != nil {
+			unlockConfigWrite()
 			r.rejectConfigReload(sources.Checksums.Combined+":snapshot:"+err.Error(), "CONFIG snapshot rejected: %v", err)
 			continue
 		}
 		if err := writeConfigAtomic(r.configPath, cfg); err != nil {
+			unlockConfigWrite()
 			r.rejectConfigReload(sources.Checksums.Combined+":write:"+err.Error(), "CONFIG generated file write failed: %v", err)
 			continue
 		}
@@ -2719,24 +2865,29 @@ func (r *Runtime) reloadLoop(ctx context.Context) {
 		}
 		r.snapshot.Store(ns)
 		r.initHealth(ns)
-		r.cacheMu.Lock()
-		r.cache = map[string]cacheItem{}
-		r.cacheOrder = nil
-		r.cacheOrderHead = 0
-		r.cacheBytes = 0
-		r.cacheMu.Unlock()
+		if old.activeDoHGeneration != ns.activeDoHGeneration {
+			r.clearActiveDoHCache()
+		}
+		if old.resolverGeneration != ns.resolverGeneration {
+			r.clearResolverCache()
+		}
 		r.sourceHashes = sources.Checksums
 		r.lastRejectedSourceHash = ""
 		r.mu.Lock()
 		r.lastReload = time.Now().UTC()
 		r.mu.Unlock()
 		r.setError("")
+		unlockConfigWrite()
 		// Run health checks immediately against the newly applied source files.
 		select {
 		case r.healthCheckTrigger <- struct{}{}:
 		default:
 		}
-		logLine("INFO", "CONFIG reloaded upstreams=%d groups=%d checks=%d sources_sha256=%s", len(cfg.Upstreams), len(cfg.Groups), len(sources.Checks), sources.Checksums.Combined)
+		select {
+		case r.activeDoHTrigger <- struct{}{}:
+		default:
+		}
+		logLine("INFO", "CONFIG reloaded upstreams=%d groups=%d checks=%d local_hosts=%d sources_sha256=%s", len(cfg.Upstreams), len(cfg.Groups), len(sources.Checks), len(sources.LocalHosts), sources.Checksums.Combined)
 	}
 }
 
@@ -2761,6 +2912,7 @@ func loadConfigNoCreate(path string) (Config, error) {
 	}
 	c, e = normalizeConfigGroups(c)
 	if e != nil { return Config{}, e }
+	c = normalizeDNSConfig(c)
 	c = normalizeCacheConfig(c)
 	if e = validateConfig(c); e != nil {
 		return Config{}, e
@@ -2780,9 +2932,10 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 	out := Status{
 		ID: envOr("LUCX_PLUGIN_ID", pluginID), Version: envOr("LUCX_PLUGIN_VERSION", pluginVersion),
 		StartedAt: startedAt, UpdatedAt: time.Now().UTC(), DNSUDP: s.cfg.DNSListenUDP,
-		DNSTCP: s.cfg.DNSListenTCP, HTTP: s.cfg.HTTPListen, Config: r.configPath,
+		DNSTCP: s.cfg.DNSListenTCP, DNSMode: s.cfg.DNSMode, HTTP: s.cfg.HTTPListen, Config: r.configPath,
 		Cache: CacheStatus{Enabled: s.cfg.Cache.Enabled, Entries: cacheEntries, MaxEntries: s.cfg.Cache.MaxEntries, Bytes: cacheBytes, MaxBytes: s.cfg.Cache.MaxBytes},
 		Groups: map[string]GroupStatus{}, DoHBootstrap: map[string]DoHBootstrapStatus{},
+		ActiveDoH: r.activeDoHStatus(),
 		Queries: r.queries.Load(), CacheHits: r.cacheHits.Load(), Failures: r.failures.Load(),
 		ActiveUDP: r.activeUDP.Load(), UDPQueueDepth: r.udpQueueDepth.Load(), UDPDropped: r.udpDropped.Load(),
 		ActiveTCP: r.activeTCP.Load(), TCPRejected: r.tcpRejected.Load(), Goroutines: runtime.NumGoroutine(),
@@ -3146,7 +3299,9 @@ func rrTTLPositions(p []byte) ([]int, error) {
 			if off+10 > len(p) {
 				return nil, errors.New("truncated RR")
 			}
-			pos = append(pos, off+4)
+			if binary.BigEndian.Uint16(p[off:off+2]) != 41 {
+				pos = append(pos, off+4)
+			}
 			rd := int(binary.BigEndian.Uint16(p[off+8 : off+10]))
 			off += 10 + rd
 			if off > len(p) {

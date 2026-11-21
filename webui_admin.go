@@ -33,6 +33,8 @@ const (
 var webUIAdminMu sync.Mutex
 
 type webUIEditableConfig struct {
+	DNSMode                string          `json:"dns_mode"`
+	ResolverUpstreams       []ResolverUpstream `json:"resolver_upstreams"`
 	DNSListenUDP           string          `json:"dns_listen_udp"`
 	DNSListenTCP           string          `json:"dns_listen_tcp"`
 	HTTPListen             string          `json:"http_listen"`
@@ -44,7 +46,6 @@ type webUIEditableConfig struct {
 	Cache                  CacheConfig     `json:"cache"`
 	BootstrapResolvers     []string        `json:"bootstrap_resolvers"`
 	GeminiAPI              GeminiAPIConfig `json:"gemini_api"`
-	Integration            bool            `json:"integration"`
 }
 
 type webUISourceRow struct {
@@ -58,6 +59,7 @@ type webUISourceRow struct {
 type webUISourcesResponse struct {
 	DoH    []webUISourceRow `json:"doh"`
 	Checks []webUISourceRow `json:"checks"`
+	Hosts  []webUISourceRow `json:"hosts"`
 }
 
 type webUISourceUpdate struct {
@@ -69,7 +71,7 @@ type webUISecretRequest struct {
 	Key string `json:"key"`
 }
 
-type webUIIntegrationRequest struct {
+type webUIReadOnlyRequest struct {
 	Action    string `json:"action"`
 	Confirmed bool   `json:"confirmed"`
 }
@@ -82,6 +84,7 @@ type webUITestResult struct {
 	QType      string `json:"qtype,omitempty"`
 	Answer     string `json:"answer,omitempty"`
 	DurationMS int64  `json:"duration_ms,omitempty"`
+	Transport  string `json:"transport,omitempty"`
 }
 
 type webUITestSummary struct {
@@ -89,16 +92,17 @@ type webUITestSummary struct {
 	RunAt  time.Time         `json:"run_at"`
 	Tests  []webUITestResult `json:"tests"`
 	Passed int               `json:"passed"`
-	Failed int               `json:"failed"`
+	Failed   int               `json:"failed"`
+	Warnings int               `json:"warnings"`
 }
 
-type webUIOperationLogger struct {
+type webUIAdminLogger struct {
 	mu      sync.Mutex
 	dataDir string
 	lines   []string
 }
 
-func (l *webUIOperationLogger) Printf(format string, args ...any) {
+func (l *webUIAdminLogger) Printf(format string, args ...any) {
 	line := redactWebUILogLine(fmt.Sprintf(format, args...))
 	l.mu.Lock()
 	l.lines = append(l.lines, line)
@@ -110,7 +114,7 @@ func (l *webUIOperationLogger) Printf(format string, args ...any) {
 	if l.dataDir == "" {
 		return
 	}
-	path := filepath.Join(l.dataDir, "webui-operations.log")
+	path := filepath.Join(l.dataDir, "webui-admin-check.log")
 	fd, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_APPEND|syscall.O_CREAT|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0600)
 	if err != nil {
 		return
@@ -129,7 +133,7 @@ func (l *webUIOperationLogger) Printf(format string, args ...any) {
 	_, _ = fmt.Fprintf(file, "%s level=INFO %s\n", time.Now().UTC().Format(time.RFC3339), line)
 }
 
-func (l *webUIOperationLogger) String() string {
+func (l *webUIAdminLogger) String() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return strings.Join(l.lines, "\n")
@@ -169,7 +173,7 @@ func webUIDataFile(dataDir, name string, maxBytes int64) (string, []byte, error)
 		return "", nil, err
 	}
 	switch name {
-	case "config.json", "doh-servers.txt", "tst-domen.txt":
+	case "config.json", "doh-servers.txt", "tst-domen.txt", localHostsSourceFile:
 	default:
 		return "", nil, errors.New("unsupported management file")
 	}
@@ -312,17 +316,7 @@ func webUIAdminAPI(w http.ResponseWriter, r *http.Request, path, dataDir string)
 			return
 		}
 		writeWebUIJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "Ключ сохранён в приватный файл с правами 0600. Содержимое не возвращается."})
-	case "/api/v1/integration/logs":
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w, "GET")
-			return
-		}
-		lines, err := readWebUIIntegrationLog(dataDir, 300)
-		if err != nil {
-			writeWebUIError(w, http.StatusInternalServerError, err)
-			return
-		}
-		writeWebUIJSON(w, http.StatusOK, map[string]any{"lines": lines})
+
 	case "/api/v1/logs":
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w, "GET")
@@ -357,22 +351,18 @@ func webUIAdminAPI(w http.ResponseWriter, r *http.Request, path, dataDir string)
 			methodNotAllowed(w, "POST")
 			return
 		}
-		var request webUIIntegrationRequest
+		var request webUIReadOnlyRequest
 		if err := decodeWebUIJSON(r, &request); err != nil {
 			writeWebUIError(w, http.StatusBadRequest, err)
 			return
 		}
 		action := strings.ToLower(strings.TrimSpace(request.Action))
-		if action != "integrate" && action != "remove" && action != "check" {
-			writeWebUIError(w, http.StatusBadRequest, errors.New("action must be integrate, remove or check"))
-			return
-		}
-		if action != "check" && !request.Confirmed {
-			writeWebUIError(w, http.StatusBadRequest, errors.New("operation confirmation is required"))
+		if action != "check" {
+			writeWebUIError(w, http.StatusGone, errors.New("panel-changing Integrate/Remove are disabled for the approved Geosite DNS design; configure Xray manually using doc/GEOSITE-DNS-ROUTING-DESIGN.md"))
 			return
 		}
 		webUIAdminMu.Lock()
-		logOutput, err := runWebUIIntegration(dataDir, action)
+		logOutput, err := runWebUIPluginPreflight(dataDir)
 		webUIAdminMu.Unlock()
 		if err != nil {
 			writeWebUIJSON(w, http.StatusOK, map[string]any{"ok": false, "action": action, "output": logOutput, "error": err.Error()})
@@ -408,22 +398,30 @@ func readWebUIConfig(dataDir string) (webUIEditableConfig, error) {
 
 func editableWebUIConfig(config Config) webUIEditableConfig {
 	return webUIEditableConfig{
+		DNSMode: config.DNSMode, ResolverUpstreams: append([]ResolverUpstream(nil), config.ResolverUpstreams...),
 		DNSListenUDP: config.DNSListenUDP, DNSListenTCP: config.DNSListenTCP, HTTPListen: config.HTTPListen,
 		ReloadSecs: config.ReloadSecs, DNSQueryTimeoutSeconds: config.DNSQueryTimeoutSeconds,
 		DoHTimeoutSeconds: config.DoHTimeoutSeconds, DNSMaxConcurrent: config.DNSMaxConcurrent,
 		Health: config.Health, Cache: config.Cache,
 		BootstrapResolvers: append([]string(nil), config.BootstrapResolvers...),
-		GeminiAPI: config.GeminiAPI, Integration: config.Integration,
+		GeminiAPI: config.GeminiAPI,
 	}
 }
 
 func saveWebUIConfig(dataDir string, view webUIEditableConfig) (bool, error) {
 	webUIAdminMu.Lock()
 	defer webUIAdminMu.Unlock()
+	dnsConfigWriteMu.Lock()
+	defer dnsConfigWriteMu.Unlock()
 	root, err := webUIDataRoot(dataDir)
 	if err != nil {
 		return false, err
 	}
+	releaseFileLock, err := acquireDNSConfigFileLock(root)
+	if err != nil {
+		return false, err
+	}
+	defer releaseFileLock()
 	path, _, err := webUIDataFile(dataDir, "config.json", webUIAdminMaxFile)
 	if err != nil {
 		return false, err
@@ -436,6 +434,12 @@ func saveWebUIConfig(dataDir string, view webUIEditableConfig) (bool, error) {
 		config.DNSListenTCP != view.DNSListenTCP ||
 		config.HTTPListen != view.HTTPListen ||
 		config.DNSMaxConcurrent != view.DNSMaxConcurrent
+	if strings.TrimSpace(view.DNSMode) != "" {
+		config.DNSMode = strings.TrimSpace(view.DNSMode)
+	}
+	if view.ResolverUpstreams != nil {
+		config.ResolverUpstreams = append([]ResolverUpstream(nil), view.ResolverUpstreams...)
+	}
 	config.DNSListenUDP = strings.TrimSpace(view.DNSListenUDP)
 	config.DNSListenTCP = strings.TrimSpace(view.DNSListenTCP)
 	config.HTTPListen = strings.TrimSpace(view.HTTPListen)
@@ -451,7 +455,12 @@ func saveWebUIConfig(dataDir string, view webUIEditableConfig) (bool, error) {
 	if err := validateConfig(config); err != nil {
 		return false, fmt.Errorf("config validation failed: %w", err)
 	}
-	if err := writeConfigAtomic(filepath.Join(root, "config.json"), config); err != nil {
+	config, err = prepareConfigForRuntime(root, config)
+	if err != nil {
+		return false, err
+	}
+	configPath := filepath.Join(root, "config.json")
+	if err := writeConfigWithBackup(configPath, config); err != nil {
 		return false, fmt.Errorf("save config.json: %w", err)
 	}
 	return restartRequired, nil
@@ -460,10 +469,17 @@ func saveWebUIConfig(dataDir string, view webUIEditableConfig) (bool, error) {
 func resetWebUIConfigSection(dataDir, section string) (bool, error) {
 	webUIAdminMu.Lock()
 	defer webUIAdminMu.Unlock()
+	dnsConfigWriteMu.Lock()
+	defer dnsConfigWriteMu.Unlock()
 	root, err := webUIDataRoot(dataDir)
 	if err != nil {
 		return false, err
 	}
+	releaseFileLock, err := acquireDNSConfigFileLock(root)
+	if err != nil {
+		return false, err
+	}
+	defer releaseFileLock()
 	path, _, err := webUIDataFile(dataDir, "config.json", webUIAdminMaxFile)
 	if err != nil {
 		return false, err
@@ -486,7 +502,7 @@ func resetWebUIConfigSection(dataDir, section string) (bool, error) {
 	if err := validateConfig(normalizeCacheConfig(config)); err != nil {
 		return false, fmt.Errorf("default values failed config validation: %w", err)
 	}
-	if err := writeConfigAtomic(filepath.Join(root, "config.json"), config); err != nil {
+	if err := writeConfigWithBackup(filepath.Join(root, "config.json"), config); err != nil {
 		return false, err
 	}
 	return false, nil
@@ -501,9 +517,17 @@ func readWebUISources(dataDir string) (webUISourcesResponse, error) {
 	if err != nil {
 		return webUISourcesResponse{}, err
 	}
+	_, hostsData, err := webUIDataFile(dataDir, localHostsSourceFile, webUIAdminMaxFile)
+	if err != nil {
+		return webUISourcesResponse{}, err
+	}
+	if _, err := parseLocalHostsFile(hostsData); err != nil {
+		return webUISourcesResponse{}, fmt.Errorf("%s validation failed: %w", localHostsSourceFile, err)
+	}
 	return webUISourcesResponse{
 		DoH: parseWebUISourceRows(dohData, 2, "id;url"),
 		Checks: parseWebUISourceRows(checksData, 6, "domain;qtypes"),
+		Hosts: parseWebUISourceRows(hostsData, 3, "hostname;ipv4"),
 	}, nil
 }
 
@@ -537,17 +561,36 @@ func parseWebUISourceRows(data []byte, fieldCount int, header string) []webUISou
 func saveWebUISources(dataDir string, update webUISourceUpdate) error {
 	webUIAdminMu.Lock()
 	defer webUIAdminMu.Unlock()
+	dnsConfigWriteMu.Lock()
+	defer dnsConfigWriteMu.Unlock()
+	root, err := webUIDataRoot(dataDir)
+	if err != nil {
+		return err
+	}
+	releaseFileLock, err := acquireDNSConfigFileLock(root)
+	if err != nil {
+		return err
+	}
+	defer releaseFileLock()
+
 	fieldCount, fileName := 0, ""
 	switch update.Kind {
 	case "doh":
 		fieldCount, fileName = 2, "doh-servers.txt"
 	case "checks":
 		fieldCount, fileName = 6, "tst-domen.txt"
+	case "hosts":
+		fieldCount, fileName = 3, localHostsSourceFile
 	default:
-		return errors.New("kind must be doh or checks")
+		return errors.New("kind must be doh, checks or hosts")
 	}
-	if len(update.Rows) > webUIAdminMaxRows {
-		return fmt.Errorf("too many rows; maximum is %d", webUIAdminMaxRows)
+	maxRows := webUIAdminMaxRows
+	if update.Kind == "hosts" {
+		// Keep room for the header and user comments in addition to 1000 entries.
+		maxRows = maxLocalHostEntries + webUIAdminMaxRows
+	}
+	if len(update.Rows) > maxRows {
+		return fmt.Errorf("too many rows; maximum is %d", maxRows)
 	}
 	systemRows := 0
 	var output strings.Builder
@@ -574,6 +617,18 @@ func saveWebUISources(dataDir string, update webUISourceUpdate) error {
 			}
 			fields[fieldIndex] = strings.TrimSpace(field)
 		}
+		if update.Kind == "hosts" {
+			host, entry, err := normalizeLocalHostEntry(fields[0], LocalHost{
+				IPv4: splitLocalHostIPs(fields[1]),
+				IPv6: splitLocalHostIPs(fields[2]),
+			})
+			if err != nil {
+				return fmt.Errorf("row %d: %w", index+1, err)
+			}
+			fields[0] = host
+			fields[1] = strings.Join(entry.IPv4, ",")
+			fields[2] = strings.Join(entry.IPv6, ",")
+		}
 		line := strings.Join(fields, ";")
 		if update.Kind == "doh" {
 			isSystemID := strings.EqualFold(fields[0], systemDNSUpstreamID)
@@ -599,10 +654,18 @@ func saveWebUISources(dataDir string, update webUISourceUpdate) error {
 		return errors.New("doh-servers.txt must keep exactly one system-dns row; disable it with the checkbox instead of deleting it")
 	}
 	data := []byte(output.String())
-	if update.Kind == "doh" && len(strings.TrimSpace(string(data))) == 0 {
-		data = []byte("# id;url — provider ID; HTTPS endpoint\n")
+	if len(strings.TrimSpace(string(data))) == 0 {
+		switch update.Kind {
+		case "doh":
+			data = []byte("# id;url — provider ID; HTTPS endpoint\n")
+		case "checks":
+			return errors.New("tst-domen.txt must keep at least one valid health check")
+		case "hosts":
+			data = []byte(localHostsSourceHeader + "\n")
+		}
 	}
-	if update.Kind == "doh" {
+	switch update.Kind {
+	case "doh":
 		providers, err := parseDoHProviders(data)
 		if err != nil {
 			return fmt.Errorf("doh-servers.txt validation failed: %w", err)
@@ -610,17 +673,55 @@ func saveWebUISources(dataDir string, update webUISourceUpdate) error {
 		if len(providers) == 0 {
 			return errors.New("at least one upstream must remain enabled; keep system-dns active or enable a DoH provider")
 		}
-	} else {
+	case "checks":
 		if _, err := parseHealthChecks(data); err != nil {
 			return fmt.Errorf("tst-domen.txt validation failed: %w", err)
+		}
+	case "hosts":
+		if _, err := parseLocalHostsFile(data); err != nil {
+			return fmt.Errorf("local-hosts.txt validation failed: %w", err)
 		}
 	}
 	path, _, err := webUIDataFile(dataDir, fileName, webUIAdminMaxFile)
 	if err != nil {
 		return err
 	}
-	if err := writeAtomicFile(path, data, 0600); err != nil {
+	if update.Kind == "hosts" {
+		if err := writeManagedSourceWithBackup(path, data); err != nil {
+			return fmt.Errorf("save %s: %w", fileName, err)
+		}
+	} else if err := writeAtomicFile(path, data, 0600); err != nil {
 		return fmt.Errorf("save %s: %w", fileName, err)
+	}
+	return nil
+}
+
+func writeManagedSourceWithBackup(path string, data []byte) error {
+	if len(data) > webUIAdminMaxFile {
+		return errors.New("managed source exceeds the size limit")
+	}
+	if info, err := os.Lstat(path); err != nil {
+		return fmt.Errorf("inspect managed source: %w", err)
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > webUIAdminMaxFile {
+		return errors.New("managed source must be a regular non-symlink file within the size limit")
+	}
+	original, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read managed source for backup: %w", err)
+	}
+	backupPath := path + ".bak"
+	if info, err := os.Lstat(backupPath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return errors.New("refusing to replace a non-regular or symlink backup path")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect managed source backup: %w", err)
+	}
+	if err := writeAtomicFile(backupPath, original, 0600); err != nil {
+		return fmt.Errorf("create managed source backup: %w", err)
+	}
+	if err := writeAtomicFile(path, data, 0600); err != nil {
+		return fmt.Errorf("atomic source replacement failed (backup retained): %w", err)
 	}
 	return nil
 }
@@ -702,27 +803,53 @@ func saveWebUIGeminiKey(dataDir, key string) error {
 
 func readWebUILogs(dataDir string, count int) ([]string, string, error) {
 	var all []string
-	source := ""
-	if journalctl, err := exec.LookPath("journalctl"); err == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		command := exec.CommandContext(ctx, journalctl, "-u", webUIAdminService+".service", "-n", strconv.Itoa(count), "--no-pager", "-o", "short-iso-precise")
-		output, commandErr := command.Output()
-		cancel()
-		if commandErr == nil {
-			all = append(all, tailLines(string(output), count)...)
-			source = "systemd journal"
+	var sources []string
+	root, rootErr := webUIDataRoot(dataDir)
+	if rootErr == nil {
+		pluginPath := filepath.Join(filepath.Dir(root), "plugin.log")
+		adminPath := filepath.Join(root, "webui-admin-check.log")
+		pluginLines, _ := readWebUILogFile(pluginPath, count)
+		adminLines, _ := readWebUILogFile(adminPath, count)
+		switch {
+		case len(pluginLines) > 0 && len(adminLines) > 0:
+			budget := count - 2
+			pluginBudget := budget * 2 / 3
+			adminBudget := budget - pluginBudget
+			pluginLines = tailLines(strings.Join(pluginLines, "\n"), pluginBudget)
+			adminLines = tailLines(strings.Join(adminLines, "\n"), adminBudget)
+			all = append(all, "--- plugin.log ---")
+			all = append(all, pluginLines...)
+			all = append(all, "--- webui-admin-check.log ---")
+			all = append(all, adminLines...)
+			sources = append(sources, "plugin.log", "webui-admin-check.log")
+		case len(pluginLines) > 0:
+			all = append(all, "--- plugin.log ---")
+			all = append(all, pluginLines...)
+			sources = append(sources, "plugin.log")
+		case len(adminLines) > 0:
+			all = append(all, "--- webui-admin-check.log ---")
+			all = append(all, adminLines...)
+			sources = append(sources, "webui-admin-check.log")
 		}
 	}
-	root, rootErr := webUIDataRoot(dataDir)
-	if len(all) == 0 && rootErr == nil {
-		parentLog := filepath.Join(filepath.Dir(root), "plugin.log")
-		if lines, err := readWebUILogFile(parentLog, count); err == nil && len(lines) > 0 {
-			all = append(all, lines...)
-			source = "plugin.log (integration operations)"
+	// The daemon may redirect stdout/stderr to plugin.log. systemd journal is
+	// a fallback for service lifecycle records, not a replacement for app logs.
+	if len(all) == 0 {
+		if journalctl, err := exec.LookPath("journalctl"); err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+			command := exec.CommandContext(ctx, journalctl, "-u", webUIAdminService+".service", "-n", strconv.Itoa(count), "--no-pager", "-o", "short-iso-precise")
+			output, commandErr := command.Output()
+			cancel()
+			if commandErr == nil {
+				all = append(all, tailLines(string(output), count)...)
+				if len(all) > 0 {
+					sources = append(sources, "systemd journal")
+				}
+			}
 		}
 	}
 	if len(all) == 0 {
-		return []string{"Записи журнала пока недоступны. Проверьте наличие systemd journal или plugin.log."}, "no log source", nil
+		return []string{"Записи журнала пока недоступны. Проверьте plugin.log, webui-admin-check.log и systemd journal."}, "no log source", nil
 	}
 	if len(all) > count {
 		all = all[len(all)-count:]
@@ -730,7 +857,7 @@ func readWebUILogs(dataDir string, count int) ([]string, string, error) {
 	for index := range all {
 		all[index] = redactWebUILogLine(all[index])
 	}
-	return all, source, nil
+	return all, strings.Join(sources, " + "), nil
 }
 
 func readWebUILogFile(path string, count int) ([]string, error) {
@@ -745,14 +872,28 @@ func readWebUILogFile(path string, count int) ([]string, error) {
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 2<<20 {
-		return nil, errors.New("log file is invalid or too large")
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, errors.New("log file is not a regular file")
 	}
-	data, err := io.ReadAll(io.LimitReader(file, (2<<20)+1))
-	if err != nil || len(data) > 2<<20 {
-		return nil, errors.New("log file is too large")
+	const maxLogRead = int64(2 << 20)
+	start := int64(0)
+	if info.Size() > maxLogRead {
+		start = info.Size() - maxLogRead
+		if _, err := file.Seek(start, io.SeekStart); err != nil {
+			return nil, errors.New("could not seek to log tail")
+		}
 	}
-	return tailLines(string(data), count), nil
+	data, err := io.ReadAll(io.LimitReader(file, maxLogRead))
+	if err != nil {
+		return nil, errors.New("could not read log tail")
+	}
+	value := string(data)
+	if start > 0 {
+		if newline := strings.IndexByte(value, '\n'); newline >= 0 {
+			value = value[newline+1:]
+		}
+	}
+	return tailLines(value, count), nil
 }
 
 func tailLines(value string, count int) []string {
@@ -777,16 +918,15 @@ func webUITest(name string, ok bool, reason string) webUITestResult {
 func runWebUIAdminTests(dataDir string) webUITestSummary {
 	summary := webUITestSummary{Status: "NotOK", RunAt: time.Now().UTC(), Tests: []webUITestResult{}}
 
-	// Keep the legacy integration preflight as the first mandatory check.
-	integrationOutput, integrationErr := runWebUIIntegration(dataDir, "check")
-	integrationReason := strings.TrimSpace(integrationOutput)
-	if integrationErr != nil {
-		if integrationReason != "" {
-			integrationReason += "\n"
+	pluginOutput, pluginErr := runWebUIPluginPreflight(dataDir)
+	pluginReason := strings.TrimSpace(pluginOutput)
+	if pluginErr != nil {
+		if pluginReason != "" {
+			pluginReason += "\n"
 		}
-		integrationReason += integrationErr.Error()
+		pluginReason += pluginErr.Error()
 	}
-	summary.Tests = append(summary.Tests, webUITest("DNS integration preflight", integrationErr == nil, integrationReason))
+	summary.Tests = append(summary.Tests, webUITest("Plugin service preflight", pluginErr == nil, pluginReason))
 
 	configPath, _, fileErr := webUIDataFile(dataDir, "config.json", webUIAdminMaxFile)
 	if fileErr != nil {
@@ -817,50 +957,67 @@ func runWebUIAdminTests(dataDir string) webUITestSummary {
 	}
 	summary.Tests = append(summary.Tests, webUITest("Проверка файлов списков", true, fmt.Sprintf("DoH-серверов: %d, DNS-проверок: %d", len(sources.Providers), len(sources.Checks))))
 
-	digResults := runWebUIDigTests(config.DNSListenUDP, sources.Checks)
-	summary.Tests = append(summary.Tests, digResults...)
-	udpOK := false
-	for _, result := range digResults {
-		if result.Status == "OK" {
-			udpOK = true
-			break
-		}
-	}
-	if udpOK {
-		summary.Tests = append(summary.Tests, webUITest("UDP DNS listener", true, config.DNSListenUDP+" отвечает на реальные dig-запросы"))
-	} else if address, err := localListenAddress(config.DNSListenUDP); err != nil {
-		summary.Tests = append(summary.Tests, webUITest("UDP DNS listener", false, err.Error()))
-	} else if listener, err := net.ListenPacket("udp", address); err == nil {
-		_ = listener.Close()
-		summary.Tests = append(summary.Tests, webUITest("UDP DNS listener", true, "Порт свободен и доступен для запуска DNS-демона; активный ответ DNS не получен"))
-	} else {
-		summary.Tests = append(summary.Tests, webUITest("UDP DNS listener", false, "Порт занят, но ожидаемый DNS-ответ не получен"))
-	}
+	udpResults := runWebUIDigTests(config.DNSListenUDP, sources.Checks, "udp")
+	summary.Tests = append(summary.Tests, udpResults...)
+	summary.Tests = append(summary.Tests, webUIDNSListenerResult("udp", config.DNSListenUDP, udpResults))
+
+	tcpResults := runWebUIDigTests(config.DNSListenTCP, sources.Checks, "tcp")
+	summary.Tests = append(summary.Tests, tcpResults...)
+	summary.Tests = append(summary.Tests, webUIDNSListenerResult("tcp", config.DNSListenTCP, tcpResults))
 
 	summary.Tests = append(summary.Tests, testWebUIHTTPListener(config.HTTPListen))
-	if config.Integration {
-		summary.Tests = append(summary.Tests, runWebUIXrayIntegrationCheck(dataDir))
-	} else {
-		summary.Tests = append(summary.Tests, webUITest("Xray DNS integration", true, "Интеграция выключена в config.json"))
-	}
+	summary.Tests = append(summary.Tests, runWebUIXrayPolicyCheck(dataDir))
 	return finalizeWebUITests(summary)
 }
 
 func finalizeWebUITests(summary webUITestSummary) webUITestSummary {
-	summary.Passed, summary.Failed = 0, 0
+	summary.Passed, summary.Failed, summary.Warnings = 0, 0, 0
 	for _, test := range summary.Tests {
-		if test.Status == "OK" {
+		switch test.Status {
+		case "OK":
 			summary.Passed++
-		} else {
+		case "NODATA", "NXDOMAIN":
+			summary.Warnings++
+		default:
 			summary.Failed++
 		}
 	}
-	if summary.Failed == 0 && len(summary.Tests) > 0 {
+	switch {
+	case summary.Failed > 0:
+		summary.Status = "NotOK"
+	case summary.Warnings > 0:
+		summary.Status = "Warning"
+	case len(summary.Tests) > 0:
 		summary.Status = "OK"
-	} else {
+	default:
 		summary.Status = "NotOK"
 	}
 	return summary
+}
+
+func dnsResponseReceived(status string) bool {
+	switch status {
+	case "OK", "NODATA", "NXDOMAIN", "SERVFAIL", "REFUSED", "OTHER_RCODE":
+		return true
+	default:
+		return false
+	}
+}
+
+func webUIDNSListenerResult(transport, address string, results []webUITestResult) webUITestResult {
+	if _, err := localListenAddress(address); err != nil {
+		return webUITest("DNS "+strings.ToUpper(transport)+" listener", false, err.Error())
+	}
+	responses := 0
+	for _, result := range results {
+		if result.Transport == transport && dnsResponseReceived(result.Status) {
+			responses++
+		}
+	}
+	if responses == 0 {
+		return webUITest("DNS "+strings.ToUpper(transport)+" listener", false, "На настроенном listener не получен DNS-ответ; проверка не подменяется тестом занятости порта")
+	}
+	return webUITest("DNS "+strings.ToUpper(transport)+" listener", true, fmt.Sprintf("%s отвечает на DNS-запросы (%d ответов получено)", address, responses))
 }
 
 func localListenAddress(address string) (string, error) {
@@ -903,7 +1060,15 @@ func testWebUIHTTPListener(address string) webUITestResult {
 	return webUITest("HTTP listener", false, "Порт занят, но штатный /healthz endpoint недоступен")
 }
 
-func runWebUIDigTests(address string, checks []Check) []webUITestResult {
+func webUIDigArgs(host, port, domain string, qtype uint16, transport string) []string {
+	args := []string{"+time=2", "+tries=1", "+noall", "+comments", "+answer"}
+	if transport == "tcp" {
+		args = append(args, "+tcp")
+	}
+	return append(args, "@"+host, "-p", port, domain, dnsQTypeName(qtype))
+}
+
+func runWebUIDigTests(address string, checks []Check, transport string) []webUITestResult {
 	var queries []struct {
 		domain string
 		qtype  uint16
@@ -917,26 +1082,26 @@ func runWebUIDigTests(address string, checks []Check) []webUITestResult {
 		}
 	}
 	if len(queries) == 0 {
-		return []webUITestResult{webUITest("dig", false, "В tst-domen.txt нет активных DNS-проверок")}
+		return []webUITestResult{webUITest("dig "+strings.ToUpper(transport), false, "В tst-domen.txt нет активных DNS-проверок")}
 	}
 	results := make([]webUITestResult, len(queries))
 	executable, err := exec.LookPath("dig")
 	if err != nil {
 		for index, query := range queries {
-			results[index] = webUIDigResult(query.domain, query.qtype, "", 0, errors.New("утилита dig не установлена"))
+			results[index] = webUIDigResult(query.domain, query.qtype, transport, "", 0, errors.New("утилита dig не установлена"), false)
 		}
 		return results
 	}
 	if len(queries) > webUIAdminMaxDigQueries {
 		for index, query := range queries[webUIAdminMaxDigQueries:] {
-			results[index] = webUIDigResult(query.domain, query.qtype, "", 0, fmt.Errorf("лимит проверки: выполнено не более %d DNS-запросов за один запуск", webUIAdminMaxDigQueries))
+			results[index] = webUIDigResult(query.domain, query.qtype, transport, "", 0, fmt.Errorf("лимит проверки: выполнено не более %d DNS-запросов за один запуск", webUIAdminMaxDigQueries), false)
 		}
 		queries = queries[:webUIAdminMaxDigQueries]
 	}
 	localAddress, addressErr := localListenAddress(address)
 	if addressErr != nil {
 		for index, query := range queries {
-			results[index] = webUIDigResult(query.domain, query.qtype, "", 0, addressErr)
+			results[index] = webUIDigResult(query.domain, query.qtype, transport, "", 0, addressErr, false)
 		}
 		return results
 	}
@@ -954,16 +1119,12 @@ func runWebUIDigTests(address string, checks []Check) []webUITestResult {
 			defer workers.Done()
 			for query := range queue {
 				start := time.Now()
-				name := dnsQTypeName(query.qtype)
 				ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-				command := exec.CommandContext(ctx, executable, "+time=2", "+tries=1", "+noall", "+answer", "@"+host, "-p", port, query.domain, name)
+				command := exec.CommandContext(ctx, executable, webUIDigArgs(host, port, query.domain, query.qtype, transport)...)
 				output, commandErr := command.CombinedOutput()
+				timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 				cancel()
-				answer := strings.TrimSpace(string(output))
-				if len(answer) > 2048 {
-					answer = answer[:2048] + "…"
-				}
-				results[query.index] = webUIDigResult(query.domain, query.qtype, answer, time.Since(start).Milliseconds(), commandErr)
+				results[query.index] = webUIDigResult(query.domain, query.qtype, transport, string(output), time.Since(start).Milliseconds(), commandErr, timedOut)
 			}
 		}()
 	}
@@ -975,6 +1136,80 @@ func runWebUIDigTests(address string, checks []Check) []webUITestResult {
 	return results
 }
 
+func digResponseCode(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		index := strings.Index(strings.ToLower(line), "status:")
+		if index < 0 {
+			continue
+		}
+		value := strings.TrimSpace(line[index+len("status:"):])
+		value = strings.SplitN(value, ",", 2)[0]
+		return strings.ToUpper(strings.TrimSpace(value))
+	}
+	return ""
+}
+
+func digAnswerLines(output string) string {
+	var answers []string
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ";") {
+			continue
+		}
+		answers = append(answers, line)
+	}
+	return strings.Join(answers, "\n")
+}
+
+func webUIDigResult(domain string, qtype uint16, transport, output string, elapsed int64, commandErr error, timedOut bool) webUITestResult {
+	result := webUITestResult{Name: "dig " + domain + " " + dnsQTypeName(qtype), Domain: domain, QType: dnsQTypeName(qtype), DurationMS: elapsed, Transport: transport}
+	rcode := digResponseCode(output)
+	if commandErr != nil && rcode == "" {
+		result.Status = "TRANSPORT_ERROR"
+		result.Reason = "DNS transport/query failed: " + commandErr.Error()
+		if timedOut || strings.Contains(strings.ToLower(output), "timed out") {
+			result.Status = "TIMEOUT"
+			result.Reason = "DNS request timed out"
+		}
+		details := strings.TrimSpace(output)
+		if len(details) > 2048 {
+			details = details[:2048] + "…"
+		}
+		result.Answer = details
+		return result
+	}
+	answers := digAnswerLines(output)
+	if len(answers) > 2048 {
+		answers = answers[:2048] + "…"
+	}
+	result.Answer = answers
+	switch rcode {
+	case "NOERROR":
+		if answers == "" {
+			result.Status = "NODATA"
+			result.Reason = "NOERROR/NODATA: DNS ответ получен, но секция Answer пустая"
+		} else {
+			result.Status = "OK"
+		}
+	case "NXDOMAIN":
+		result.Status = "NXDOMAIN"
+		result.Reason = "DNS ответ получен: запрошенное имя не существует (NXDOMAIN)"
+	case "SERVFAIL":
+		result.Status = "SERVFAIL"
+		result.Reason = "DNS сервер ответил SERVFAIL"
+	case "REFUSED":
+		result.Status = "REFUSED"
+		result.Reason = "DNS сервер отклонил запрос (REFUSED)"
+	case "":
+		result.Status = "INVALID_RESPONSE"
+		result.Reason = "dig завершился без ошибки, но DNS RCODE не найден в выводе"
+	default:
+		result.Status = "OTHER_RCODE"
+		result.Reason = "DNS сервер ответил RCODE " + rcode
+	}
+	return result
+}
+
 func dnsQTypeName(value uint16) string {
 	names := map[uint16]string{1: "A", 2: "NS", 5: "CNAME", 6: "SOA", 12: "PTR", 15: "MX", 16: "TXT", 28: "AAAA", 33: "SRV", 64: "SVCB", 65: "HTTPS", 257: "CAA"}
 	if name, ok := names[value]; ok {
@@ -983,45 +1218,28 @@ func dnsQTypeName(value uint16) string {
 	return fmt.Sprintf("TYPE%d", value)
 }
 
-func webUIDigResult(domain string, qtype uint16, answer string, elapsed int64, commandErr error) webUITestResult {
-	name := "dig " + domain + " " + dnsQTypeName(qtype)
-	if commandErr != nil {
-		reason := "DNS-запрос завершился ошибкой"
-		if strings.TrimSpace(answer) != "" {
-			reason += ": " + answer
-		} else {
-			reason += ": " + commandErr.Error()
-		}
-		return webUITestResult{Name: name, Status: "NotOK", Reason: reason, Domain: domain, QType: dnsQTypeName(qtype), DurationMS: elapsed}
-	}
-	if answer == "" {
-		return webUITestResult{Name: name, Status: "NotOK", Reason: "dig не получил секцию ANSWER", Domain: domain, QType: dnsQTypeName(qtype), DurationMS: elapsed}
-	}
-	return webUITestResult{Name: name, Status: "OK", Domain: domain, QType: dnsQTypeName(qtype), Answer: answer, DurationMS: elapsed}
-}
-
-func runWebUIXrayIntegrationCheck(dataDir string) webUITestResult {
+func runWebUIXrayPolicyCheck(dataDir string) webUITestResult {
 	root, err := webUIDataRoot(dataDir)
 	if err != nil {
-		return webUITest("Xray DNS integration", false, err.Error())
+		return webUITest("Approved Xray Geosite DNS path", false, err.Error())
 	}
 	script := filepath.Join(filepath.Dir(root), "scripts", "check-dns-integration.sh")
 	info, err := os.Lstat(script)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return webUITest("Xray DNS integration", false, "Не найден штатный read-only scripts/check-dns-integration.sh")
+		return webUITest("Approved Xray Geosite DNS path", false, "Не найден штатный read-only scripts/check-dns-integration.sh")
 	}
 	config, err := loadConfigNoCreate(filepath.Join(root, "config.json"))
 	if err != nil {
-		return webUITest("Xray DNS integration", false, "Не удалось прочитать config.json: "+err.Error())
+		return webUITest("Approved Xray Geosite DNS path", false, "Не удалось прочитать config.json: "+err.Error())
 	}
 	udpAddress, err := localListenAddress(config.DNSListenUDP)
 	if err != nil {
-		return webUITest("Xray DNS integration", false, err.Error())
+		return webUITest("Approved Xray Geosite DNS path", false, err.Error())
 	}
 	_, pluginPort, _ := net.SplitHostPort(udpAddress)
 	httpAddress, err := localListenAddress(config.HTTPListen)
 	if err != nil {
-		return webUITest("Xray DNS integration", false, err.Error())
+		return webUITest("Approved Xray Geosite DNS path", false, err.Error())
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
@@ -1039,26 +1257,23 @@ func runWebUIXrayIntegrationCheck(dataDir string) webUITestResult {
 	}
 	text = redactWebUILogLine(text)
 	if ctx.Err() != nil {
-		return webUITest("Xray DNS integration", false, "Проверка превысила лимит 35 секунд")
+		return webUITest("Approved Xray Geosite DNS path", false, "Проверка превысила лимит 35 секунд")
 	}
 	if commandErr != nil {
 		if text == "" {
 			text = commandErr.Error()
 		}
-		return webUITest("Xray DNS integration", false, text)
+		return webUITest("Approved Xray Geosite DNS path", false, text)
 	}
 	if text == "" {
 		text = "Read-only диагностика завершилась успешно"
 	}
-	return webUITest("Xray DNS integration", true, text)
+	return webUITest("Approved Xray Geosite DNS path", true, text)
 }
 
-func runWebUIIntegration(dataDir, action string) (string, error) {
+func runWebUIPluginPreflight(dataDir string) (string, error) {
 	if os.Geteuid() != 0 {
-		return "", errors.New("операции интеграции Web UI должны выполняться от root")
-	}
-	if action != "integrate" && action != "remove" && action != "check" {
-		return "", errors.New("unsupported integration action")
+		return "", errors.New("plugin preflight must run as root")
 	}
 	root, err := webUIDataRoot(dataDir)
 	if err != nil {
@@ -1081,52 +1296,15 @@ func runWebUIIntegration(dataDir, action string) (string, error) {
 	if !dohintegration.IsLocalURL(statusURL) {
 		return "", errors.New("configured status endpoint must use loopback")
 	}
-	logger := &webUIOperationLogger{dataDir: root}
-	logger.Printf("INTEGRATION action=%s started", strings.ToUpper(action))
-	args := []string{action, "--plugin-port", pluginPort, "--plugin-status-url", statusURL}
-	done := make(chan error, 1)
-	go func() {
-		done <- dohintegration.RunCommand(args, logger)
-	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			logger.Printf("INTEGRATION action=%s failed: %v", strings.ToUpper(action), err)
-			return logger.String(), err
-		}
-	case <-time.After(45 * time.Second):
-		timeoutErr := errors.New("операция интеграции превысила лимит 45 секунд")
-		logger.Printf("INTEGRATION action=%s failed: %v", strings.ToUpper(action), timeoutErr)
-		return logger.String(), timeoutErr
+
+	logger := &webUIAdminLogger{dataDir: root}
+	logger.Printf("Xray policy/plugin check started")
+	err = dohintegration.RunCommand([]string{"check", "--plugin-port", pluginPort, "--plugin-status-url", statusURL}, logger)
+	if err != nil {
+		logger.Printf("Xray policy/plugin check failed: %v", err)
+		return logger.String(), err
 	}
-	if action == "integrate" || action == "remove" {
-		if err := setIntegrationFlag(filepath.Join(root, "config.json"), action == "integrate"); err != nil {
-			logger.Printf("INTEGRATION action=%s completed but config flag update failed: %v", strings.ToUpper(action), err)
-			return logger.String(), fmt.Errorf("операция завершилась, но не удалось обновить integration в config.json: %w", err)
-		}
-	}
-	logger.Printf("INTEGRATION action=%s completed successfully", strings.ToUpper(action))
+	logger.Printf("Xray policy/plugin check completed successfully")
 	return logger.String(), nil
 }
 
-func readWebUIIntegrationLog(dataDir string, count int) ([]string, error) {
-	root, err := webUIDataRoot(dataDir)
-	if err != nil {
-		return nil, err
-	}
-	path := filepath.Join(root, "webui-operations.log")
-	lines, err := readWebUILogFile(path, count)
-	if errors.Is(err, os.ErrNotExist) {
-		return []string{"Операции интеграции/деинтеграции ещё не выполнялись."}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if len(lines) == 0 {
-		return []string{"Операции интеграции/деинтеграции ещё не выполнялись."}, nil
-	}
-	for index := range lines {
-		lines[index] = redactWebUILogLine(lines[index])
-	}
-	return lines, nil
-}

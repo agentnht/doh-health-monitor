@@ -1,6 +1,48 @@
 # Changelog
 
-## [Unreleased]
+## [2.3.0] - 2026-11-21
+
+### Local hosts editor
+- Добавлен управляемый `local-hosts.txt` и редактор Local hosts в Web UI; редактируются только точные DNS-имена, системный `/etc/hosts` не затрагивается.
+- При первом старте существующие `local_hosts` из `config.json` однократно мигрируют в новый файл; уже существующий `local-hosts.txt` не перезаписывается.
+- Добавлены проверки hostname, отдельных IPv4/IPv6 списков, дубликатов и лимитов; комментарии и отключённые строки сохраняются.
+- Изменение файла выполняется через `local-hosts.txt.bak` с правами `0600`, атомарную замену и общий межпроцессный config lock; daemon применяет валидный новый snapshot через hot reload до 30 секунд.
+- Добавлены регрессионные тесты миграции, source checksum/runtime config generation, API/UI сохранения, backup и отклонения некорректных записей.
+
+### Geosite DNS routing
+- Добавлены два взаимоисключающих режима DNS listener-а: `endpoint_ip` (default) и `resolver`.
+- Geosite matching вынесен на сторону Xray: DNS port 53 направляется в DNS outbound, его `settings.rules` отправляют Geosite HIT через `direct` на plugin listener, а остальные запросы — через `hijack` во встроенный DNS Xray.
+- Добавлен read-only checker структуры DNS path: он находит direct rule с непустым `domain` и выводит найденные значения; конкретная Geosite-категория, число/порядок DNS rules и catch-all action не зашиты в проверку. Команды CLI `integrate/remove` и Web UI mutation endpoint отключены, так как унаследованный planner не совместим с этой DNS-моделью.
+- Плагин не включает собственный Geosite matcher и не ведёт динамическую базу пользовательских QNAME.
+
+### ActiveDoHSelector и endpoint_ip
+- Выделен самостоятельный `internal/activedoh.Selector` с восемью контрольными доменами, A/AAAA DoH probes и HTTPS/TLS probes с проверкой SNI/Host/certificate.
+- Режим `endpoint_ip` возвращает bootstrap IP выбранного DoH endpoint-а, а не IP запрошенного сайта.
+- Добавлены freshness, deterministic scoring, anti-flap, failure grace cycles, minimum hold, switch cooldown и config generation fencing.
+- TTL ответов ограничен 60 секундами и остатком freshness endpoint-а; synthetic NODATA не кэшируется.
+
+### Resolver mode и DNS cache
+- Добавлены упорядоченные upstream-ы `system`, UDP, TCP и DoH с последовательным fallback по транспортным ошибкам, timeout, SERVFAIL, REFUSED и unusable truncated responses.
+- System resolver по умолчанию использует `/etc/resolv.conf`; `resolver_upstreams: []` остаётся явно пустым списком и не восстанавливается в default автоматически.
+- Для UDP DNS добавлен retry по TCP при TC; system resolver отказывается от прямого совпадения nameserver с локальным plugin listener на порту 53.
+- Разделены cache namespace/generation режимов 1 и 2. Positive cache TTL режима 2 ограничен 300 секундами; первый ответ клиенту сохраняет upstream TTL.
+- Negative caching NXDOMAIN/NODATA использует `min(SOA RR TTL, SOA.MINIMUM)` с cap 300 секунд. Исправлена классификация CNAME→NODATA; ответы без SOA и synthetic NODATA не кэшируются.
+
+### Контрольные домены
+- Встроенный `tst-domen.txt` сокращён до девяти проверок: восемь доменов ActiveDoHSelector и отдельная OIDC-проверка `accounts.google.com`.
+- Уже существующий пользовательский `tst-domen.txt` при обновлении сохраняется; для применения нового набора к старой установке требуется резервная копия и ручная замена файла.
+
+### DNS wire policy и документация
+- Plugin DNS listener обслуживает A/AAAA; остальные QTYPE получают `NOERROR`/NODATA без SOA и без кэширования.
+- Добавлены примеры `resolver_upstreams`, README с двумя режимами и ручной схемой Xray Geosite DNS outbound.
+- Синхронизирован `manifest.json` и version string бинарника на `2.3.0`.
+
+### Проверки
+- GitHub Actions: `go vet ./...`, `go test ./...`, module tidy, shell/JavaScript syntax и Linux amd64 build.
+- Отдельный DoH integration workflow: Go integration/unit tests, Python compile/unit tests, synthetic SQLite lifecycle и shell syntax.
+- CI #1046: module tidy, shell/JavaScript syntax, management/checker regression tests, `go vet ./...`, `go test ./...` и Linux amd64 package build — PASS; DoH integration #891 — PASS.
+- VPS smoke tests пройдены: read-only Xray preflight, клиентский DNS path для `habr.com`/ `example.com`, ActiveDoH failover, resolver A/AAAA, CLI/Web UI DNS mode save, backup permissions и hot reload. Внутренний Xray matcher trace не заявляется.
+- Runtime-проверки Local hosts UI и SSH tunnel под non-root не проводились и не входят в release acceptance scope.
 
 ## [2.2.1] - 2026-11-17
 

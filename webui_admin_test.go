@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -70,6 +73,8 @@ func TestWebUIConfigAPIUpdatesValidatedSettingsAndDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	view.Health.TimeoutSeconds = 9
+	view.DNSMode = "resolver"
+	view.ResolverUpstreams = []ResolverUpstream{{ID: "primary", Name: "Primary", Type: "udp", Address: "9.9.9.9"}}
 	body, err := json.Marshal(view)
 	if err != nil {
 		t.Fatal(err)
@@ -85,6 +90,35 @@ func TestWebUIConfigAPIUpdatesValidatedSettingsAndDefaults(t *testing.T) {
 	if config.Health.TimeoutSeconds != 9 {
 		t.Fatalf("saved health timeout=%d, want 9", config.Health.TimeoutSeconds)
 	}
+	if config.DNSMode != "resolver" || len(config.ResolverUpstreams) != 1 || config.ResolverUpstreams[0].ID != "primary" {
+		t.Fatalf("DNS mode/upstreams not saved through Web UI: mode=%s upstreams=%+v", config.DNSMode, config.ResolverUpstreams)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.json.bak")); err != nil {
+		t.Fatalf("Web UI config save did not create backup: %v", err)
+	}
+
+	// A client predating dns_mode/resolver_upstreams must not reset newer fields.
+	legacyPayload := map[string]json.RawMessage{}
+	if err := json.Unmarshal(body, &legacyPayload); err != nil {
+		t.Fatal(err)
+	}
+	delete(legacyPayload, "dns_mode")
+	delete(legacyPayload, "resolver_upstreams")
+	legacyBody, err := json.Marshal(legacyPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacySave := newAuthenticatedWebUIRequest(t, handler, http.MethodPost, "/api/v1/config", legacyBody)
+	if legacySave.Code != http.StatusOK {
+		t.Fatalf("legacy config POST status=%d body=%s", legacySave.Code, legacySave.Body.String())
+	}
+	config, err = loadConfigNoCreate(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.DNSMode != "resolver" || len(config.ResolverUpstreams) != 1 || config.ResolverUpstreams[0].ID != "primary" {
+		t.Fatalf("legacy Web UI client unexpectedly reset DNS settings: mode=%s upstreams=%+v", config.DNSMode, config.ResolverUpstreams)
+	}
 
 	reset := newAuthenticatedWebUIRequest(t, handler, http.MethodPost, "/api/v1/config/defaults", []byte(`{"section":"health"}`))
 	if reset.Code != http.StatusOK {
@@ -99,6 +133,121 @@ func TestWebUIConfigAPIUpdatesValidatedSettingsAndDefaults(t *testing.T) {
 	}
 }
 
+func TestWebUILocalHostsEditorAPIValidatesBacksUpAndPreservesComments(t *testing.T) {
+	dir := newTestWebUIData(t)
+	handler := newWebUIHandlerWithDataDir("http://127.0.0.1:18765/status", "test-session", dir)
+	path := filepath.Join(dir, localHostsSourceFile)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	get := newAuthenticatedWebUIRequest(t, handler, http.MethodGet, "/api/v1/sources", nil)
+	if get.Code != http.StatusOK {
+		t.Fatalf("GET sources status=%d body=%s", get.Code, get.Body.String())
+	}
+	var sources webUISourcesResponse
+	if err := json.Unmarshal(get.Body.Bytes(), &sources); err != nil {
+		t.Fatal(err)
+	}
+	if len(sources.Hosts) == 0 || sources.Hosts[0].Editable || sources.Hosts[0].Raw != localHostsSourceHeader {
+		t.Fatalf("local-hosts header/comment was not surfaced read-only: %+v", sources.Hosts)
+	}
+
+	update := webUISourceUpdate{Kind: "hosts", Rows: []webUISourceRow{
+		{Active: false, Editable: false, Raw: localHostsSourceHeader},
+		{Active: true, Editable: true, Fields: []string{"HOME.example.", "192.0.2.40,192.0.2.41", "2001:db8::40"}},
+		{Active: false, Editable: true, Fields: []string{"disabled.example", "192.0.2.42", ""}},
+	}}
+	body, err := json.Marshal(update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	save := newAuthenticatedWebUIRequest(t, handler, http.MethodPost, "/api/v1/sources", body)
+	if save.Code != http.StatusOK {
+		t.Fatalf("POST local hosts status=%d body=%s", save.Code, save.Body.String())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), localHostsSourceHeader) || !strings.Contains(string(data), "home.example;192.0.2.40,192.0.2.41;2001:db8::40") || !strings.Contains(string(data), "# disabled.example;192.0.2.42;") {
+		t.Fatalf("local-hosts rows/comments were not saved as expected: %s", data)
+	}
+	backup, err := os.ReadFile(path + ".bak")
+	if err != nil {
+		t.Fatalf("read local-hosts backup: %v", err)
+	}
+	if !bytes.Equal(backup, before) {
+		t.Fatalf("local-hosts backup does not preserve original bytes: got=%q want=%q", backup, before)
+	}
+	backupInfo, err := os.Stat(path + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backupInfo.Mode().Perm() != 0600 {
+		t.Fatalf("local-hosts backup permissions=%#o, want 0600", backupInfo.Mode().Perm())
+	}
+	hosts, err := parseLocalHostsFile(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hosts) != 1 || !reflect.DeepEqual(hosts["home.example"].IPv4, []string{"192.0.2.40", "192.0.2.41"}) || len(hosts["home.example"].IPv6) != 1 {
+		t.Fatalf("active local hosts map is incorrect: %+v", hosts)
+	}
+
+	invalid := webUISourceUpdate{Kind: "hosts", Rows: []webUISourceRow{
+		{Active: true, Editable: true, Fields: []string{"bad..example", "192.0.2.99", ""}},
+	}}
+	invalidBody, err := json.Marshal(invalid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badSave := newAuthenticatedWebUIRequest(t, handler, http.MethodPost, "/api/v1/sources", invalidBody)
+	if badSave.Code != http.StatusBadRequest {
+		t.Fatalf("invalid hosts POST status=%d body=%s", badSave.Code, badSave.Body.String())
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, data) {
+		t.Fatal("invalid local hosts update changed the live source file")
+	}
+	backupAfter, err := os.ReadFile(path + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(backupAfter, before) {
+		t.Fatal("invalid local hosts update replaced the previous backup")
+	}
+}
+
+func TestWriteManagedSourceWithBackupRejectsSymlinkBackup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, localHostsSourceFile)
+	target := filepath.Join(dir, "target")
+	original := []byte(localHostsSourceHeader + "\n")
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("unchanged"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path+".bak"); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	if err := writeManagedSourceWithBackup(path, []byte(localHostsSourceHeader+"\nexample.test;192.0.2.1;\n")); err == nil {
+		t.Fatal("symlink backup path should be rejected")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "unchanged" {
+		t.Fatalf("backup symlink target was modified: %q", got)
+	}
+}
 func TestWebUISourceEditorCommentsRowsAndValidatesBeforeWriting(t *testing.T) {
 	dir := newTestWebUIData(t)
 	update := webUISourceUpdate{
@@ -250,26 +399,26 @@ func TestWebUISafeListenerProbeRejectsPublicAddresses(t *testing.T) {
 	}
 }
 
-func TestWebUIIntegrationOperationLogPersistsAndRedactsCredentials(t *testing.T) {
+func TestWebUIAdminCheckLogPersistsAndRedactsCredentials(t *testing.T) {
 	dir := t.TempDir()
-	logger := &webUIOperationLogger{dataDir: dir}
-	logger.Printf("INTEGRATION action=INTEGRATE started")
+	logger := &webUIAdminLogger{dataDir: dir}
+	logger.Printf("Xray policy/plugin check started")
 	logger.Printf("Authorization: Bearer secret-token-value")
 
-	lines, err := readWebUIIntegrationLog(dir, 50)
+	lines, err := readWebUILogFile(filepath.Join(dir, "webui-admin-check.log"), 50)
 	if err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(lines, "\n")
-	if !strings.Contains(joined, "INTEGRATION action=INTEGRATE started") {
-		t.Fatalf("integration log is missing operation record: %s", joined)
+	if !strings.Contains(joined, "Xray policy/plugin check started") {
+		t.Fatalf("admin check log is missing record: %s", joined)
 	}
 	if strings.Contains(joined, "secret-token-value") || !strings.Contains(joined, "[REDACTED]") {
-		t.Fatalf("integration log did not redact credential: %s", joined)
+		t.Fatalf("admin check log did not redact credential: %s", joined)
 	}
 }
 
-func TestWebUIPageHasTabsAndHeaderIntegrationActions(t *testing.T) {
+func TestWebUIPageHasManagementTabsButNoPanelMutationActions(t *testing.T) {
 	handler := webUIHandler()
 	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/", nil)
 	request.Host = "127.0.0.1:19876"
@@ -277,38 +426,130 @@ func TestWebUIPageHasTabsAndHeaderIntegrationActions(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	page := recorder.Body.String()
 
-	for _, label := range []string{"Конфигурация", "DoH-сервера", "Домены", "Проверка состояния", "Логи", "DeIntegrate", "Integrate"} {
+	for _, label := range []string{"Конфигурация", "DoH-сервера", "Домены", "Проверка состояния", "Логи", "Geosite DNS"} {
 		if !strings.Contains(page, label) {
 			t.Errorf("Web UI page is missing %q", label)
 		}
 	}
-	if strings.Contains(page, "integration-check") {
-		t.Fatal("standalone integration check control must be removed from the UI")
+	for _, forbidden := range []string{"integration-add", "integration-remove", "DeIntegrate", ">Integrate<"} {
+		if strings.Contains(page, forbidden) {
+			t.Errorf("Web UI must not expose panel mutation control %q", forbidden)
+		}
 	}
 	if !strings.Contains(page, `data-page="tests"`) || !strings.Contains(page, `data-page-panel="tests"`) {
 		t.Fatal("tests tab is not connected to its page")
 	}
 }
 
-func TestWebUIIntegrationLogAPIRequiresSessionAndReturnsPersistedOperations(t *testing.T) {
-	dir := t.TempDir()
-	logger := &webUIOperationLogger{dataDir: dir}
-	logger.Printf("INTEGRATION action=DEINTEGRATE completed successfully")
-
+func TestWebUIIntegrationMutationAPIIsDisabled(t *testing.T) {
+	dir := newTestWebUIData(t)
 	handler := newWebUIHandlerWithDataDir("http://127.0.0.1:18765/status", "test-session", dir)
-	unauthorized := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/api/v1/integration/logs", nil)
-	unauthorized.Host = "127.0.0.1:19876"
-	unauthorizedRecorder := httptest.NewRecorder()
-	handler.ServeHTTP(unauthorizedRecorder, unauthorized)
-	if unauthorizedRecorder.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated integration log status=%d, want %d", unauthorizedRecorder.Code, http.StatusUnauthorized)
-	}
 
-	authorized := newAuthenticatedWebUIRequest(t, handler, http.MethodGet, "/api/v1/integration/logs", nil)
-	if authorized.Code != http.StatusOK {
-		t.Fatalf("authenticated integration log status=%d, body=%s", authorized.Code, authorized.Body.String())
+	for _, action := range []string{"integrate", "remove"} {
+		body := []byte(`{"action":"` + action + `","confirmed":true}`)
+		response := newAuthenticatedWebUIRequest(t, handler, http.MethodPost, "/api/v1/integration", body)
+		if response.Code != http.StatusGone {
+			t.Fatalf("%s API status=%d, want %d; body=%s", action, response.Code, http.StatusGone, response.Body.String())
+		}
+		if !strings.Contains(response.Body.String(), "configure Xray manually") {
+			t.Fatalf("%s API response does not explain manual Xray configuration: %s", action, response.Body.String())
+		}
 	}
-	if !strings.Contains(authorized.Body.String(), "DEINTEGRATE completed successfully") {
-		t.Fatalf("integration log response is missing saved operation: %s", authorized.Body.String())
+}
+
+func TestWebUILogsPreferPluginAndAdminFilesOverJournal(t *testing.T) {
+	dataDir := newTestWebUIData(t)
+	pluginLog := filepath.Join(filepath.Dir(dataDir), "plugin.log")
+	adminLog := filepath.Join(dataDir, "webui-admin-check.log")
+	if err := os.WriteFile(pluginLog, []byte("plugin-runtime-marker\nAuthorization: Bearer plugin-secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(adminLog, []byte("admin-check-marker\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	lines, source, err := readWebUILogs(dataDir, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(lines, "\n")
+	if source != "plugin.log + webui-admin-check.log" {
+		t.Fatalf("log source=%q, want plugin and admin files", source)
+	}
+	for _, want := range []string{"plugin-runtime-marker", "admin-check-marker", "[REDACTED]"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("combined logs missing %q: %s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "plugin-secret") {
+		t.Fatal("plugin log exposed a bearer token")
+	}
+}
+
+func TestReadWebUILogFileReturnsTailWhenFileExceedsReadWindow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "plugin.log")
+	content := strings.Repeat("old-log-line\n", (2<<20)/13) + "latest-marker\n"
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := readWebUILogFile(path, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), "latest-marker") {
+		t.Fatalf("tail read missed latest log entry: %v", lines)
+	}
+}
+
+func TestWebUIDigResultClassifiesNODATAAndDNSFailures(t *testing.T) {
+	tests := []struct {
+		name string
+		output string
+		err error
+		timedOut bool
+		want string
+	}{
+		{name: "positive", output: ";; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1\nexample.com. 60 IN A 192.0.2.1\n", want: "OK"},
+		{name: "nodata", output: ";; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 2\n", want: "NODATA"},
+		{name: "nxdomain", output: ";; ->>HEADER<<- opcode: QUERY, status: NXDOMAIN, id: 3\n", want: "NXDOMAIN"},
+		{name: "nxdomain with nonzero dig exit", output: ";; ->>HEADER<<- opcode: QUERY, status: NXDOMAIN, id: 33\n", err: errors.New("exit status 9"), want: "NXDOMAIN"},
+		{name: "servfail", output: ";; ->>HEADER<<- opcode: QUERY, status: SERVFAIL, id: 4\n", want: "SERVFAIL"},
+		{name: "refused", output: ";; ->>HEADER<<- opcode: QUERY, status: REFUSED, id: 5\n", want: "REFUSED"},
+		{name: "timeout", err: context.DeadlineExceeded, timedOut: true, want: "TIMEOUT"},
+		{name: "dig timeout output", output: ";; communications error to 127.0.0.1#5355: timed out\\n", err: errors.New("exit status 9"), want: "TIMEOUT"},
+		{name: "transport", err: errors.New("connection refused"), want: "TRANSPORT_ERROR"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := webUIDigResult("example.com", 1, "udp", test.output, 12, test.err, test.timedOut)
+			if result.Status != test.want {
+				t.Fatalf("status=%q, want %q (reason=%q)", result.Status, test.want, result.Reason)
+			}
+		})
+	}
+}
+
+func TestWebUIDNSListenerCountsNODATAAsAReceivedDNSResponse(t *testing.T) {
+	results := []webUITestResult{
+		{Name: "empty.example TXT", Status: "NODATA", Transport: "udp"},
+		{Name: "timeout.example A", Status: "TIMEOUT", Transport: "udp"},
+	}
+	listener := webUIDNSListenerResult("udp", "127.0.0.1:5355", results)
+	if listener.Status != "OK" {
+		t.Fatalf("NODATA is still a DNS response; listener status=%q reason=%q", listener.Status, listener.Reason)
+	}
+	warning := finalizeWebUITests(webUITestSummary{Tests: []webUITestResult{{Status: "NODATA"}}})
+	if warning.Status != "Warning" || warning.Warnings != 1 || warning.Failed != 0 {
+		t.Fatalf("NODATA summary=%+v, want warning without transport failure", warning)
+	}
+}
+
+func TestWebUIDigArgsSelectTransport(t *testing.T) {
+	udp := strings.Join(webUIDigArgs("127.0.0.1", "5355", "example.com", 1, "udp"), " ")
+	tcp := strings.Join(webUIDigArgs("127.0.0.1", "5355", "example.com", 1, "tcp"), " ")
+	if strings.Contains(udp, "+tcp") {
+		t.Fatalf("UDP args contain +tcp: %s", udp)
+	}
+	if !strings.Contains(tcp, "+tcp") {
+		t.Fatalf("TCP args missing +tcp: %s", tcp)
 	}
 }

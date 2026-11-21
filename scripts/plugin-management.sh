@@ -4,8 +4,6 @@ set -Eeuo pipefail
 
 readonly PLUGIN_ID="doh-health-monitor"
 readonly PLUGIN_BIN_NAME="doh-health-monitor"
-readonly RAW_BASE_URL="https://raw.githubusercontent.com/agentnht/doh-health-monitor/main"
-readonly CHECK_SCRIPT_URL="${RAW_BASE_URL}/scripts/check-dns-integration.sh"
 readonly DHM_SYMLINK_PATH="/usr/local/bin/dhm"
 
 MANAGEMENT_SCRIPT_PATH=""
@@ -34,9 +32,15 @@ require_root() {
 }
 
 detect_panel_cwd() {
-  local proc exe cwd selected="" preferred=""
+  local proc exe cwd process_uid selected="" preferred=""
   for proc in /proc/[0-9]*; do
-    [[ -r "$proc/exe" && -r "$proc/cwd" ]] || continue
+    [[ -r "$proc/exe" && -r "$proc/cwd" && -r "$proc/status" ]] || continue
+
+    # The menu runs as root. Never infer the panel data directory from an
+    # x-ui process owned by another UID.
+    process_uid="$(awk '$1 == "Uid:" { print $2; exit }' "$proc/status" 2>/dev/null || true)"
+    [[ "$process_uid" == "$EUID" ]] || continue
+
     exe="$(readlink "$proc/exe" 2>/dev/null || true)"
     exe="${exe% (deleted)}"
     [[ "${exe##*/}" == "x-ui" ]] || continue
@@ -134,14 +138,32 @@ ensure_dhm_symlink() {
 }
 
 
-confirm_action() {
-  local prompt="$1" answer
-  printf '%s [y/N]: ' "$prompt"
-  if ! IFS= read -r answer </dev/tty; then
-    printf '\n'
+resolve_ssh_tunnel_user() {
+  local user="${SSH_TUNNEL_USER:-${SUDO_USER:-${USER:-root}}}"
+  if [[ ! "$user" =~ ^[A-Za-z_][A-Za-z0-9_.-]*\$?$ ]]; then
+    fail "Имя пользователя SSH-туннеля содержит недопустимые символы."
     return 1
   fi
-  [[ "$answer" == "y" || "$answer" == "Y" ]]
+  printf '%s\n' "$user"
+}
+
+parse_web_ui_ready_port() {
+  local ready="${1:-}" port
+  if [[ ! "$ready" =~ ^WEB_UI_READY\ port=([0-9]{1,5})$ ]]; then
+    return 1
+  fi
+  port="${BASH_REMATCH[1]}"
+  if (( port < 1 || port > 65535 )); then return 1; fi
+  printf '%s\n' "$port"
+}
+
+build_ssh_tunnel_command() {
+  local local_port="$1" remote_port="$2" user="$3" address="$4"
+  [[ "$local_port" =~ ^[0-9]{1,5}$ && "$remote_port" =~ ^[0-9]{1,5}$ ]] || return 1
+  (( local_port >= 1 && local_port <= 65535 && remote_port >= 1 && remote_port <= 65535 )) || return 1
+  [[ "$user" =~ ^[A-Za-z_][A-Za-z0-9_.-]*\$?$ ]] || return 1
+  [[ "$address" =~ ^[A-Za-z0-9][A-Za-z0-9._:%-]*$ ]] || return 1
+  printf 'ssh -o ExitOnForwardFailure=yes -L %s:127.0.0.1:%s %s@%s\n' "$local_port" "$remote_port" "$user" "$address"
 }
 
 resolve_server_address() {
@@ -170,65 +192,32 @@ resolve_server_address() {
   printf '%s\n' "$address"
 }
 
-run_plugin_action() {
-  local action="$1"
-  if ! confirm_action "Подтвердите операцию '$action'"; then
-    printf 'Операция отменена.\n'
-    return 0
-  fi
-
-  printf 'Выполняется %s...\n' "$action"
-  if LUCX_PLUGIN_DATA="$PLUGIN_DATA_DIR" "$PLUGIN_BIN" "$action"; then
-    printf '[OK] Операция %s завершена.\n' "$action"
-  else
-    local rc=$?
-    printf '[FAIL] Операция %s завершилась с кодом %d.\n' "$action" "$rc" >&2
-  fi
-}
-
 run_check() {
-  local tmp="" checker_file="" cleanup_tmp=0 rc
+  local checker_file="" package_scripts_dir="" rc
   printf 'Проверка состояния плагина через Go read-only command...\n'
   if ! "$PLUGIN_BIN" check; then
     fail "Go-проверка плагина завершилась с ошибкой."
     return 1
   fi
 
-  # Prefer the checker shipped beside this menu in the plugin ZIP. The
-  # GitHub process-substitution entry point keeps its historical download fallback.
-  if [[ -n "$MANAGEMENT_SCRIPT_DIR" && -f "$MANAGEMENT_SCRIPT_DIR/check-dns-integration.sh" ]]; then
+  # Run only the checker shipped in the installed plugin package. Do not
+  # download a mutable shell script and execute it as root.
+  package_scripts_dir="$(cd -- "$(dirname -- "$PLUGIN_BIN")/../scripts" 2>/dev/null && pwd -P || true)"
+  if [[ -n "$package_scripts_dir" && -r "$package_scripts_dir/check-dns-integration.sh" ]]; then
+    checker_file="$package_scripts_dir/check-dns-integration.sh"
+  elif [[ -n "$MANAGEMENT_SCRIPT_DIR" && -r "$MANAGEMENT_SCRIPT_DIR/check-dns-integration.sh" ]]; then
     checker_file="$MANAGEMENT_SCRIPT_DIR/check-dns-integration.sh"
   else
-    tmp="$(mktemp)"
-    checker_file="$tmp"
-    cleanup_tmp=1
-    if command -v curl >/dev/null 2>&1; then
-      if ! curl --fail --silent --show-error --location "$CHECK_SCRIPT_URL" --output "$tmp"; then
-        rm -f "$tmp"
-        fail "Не удалось загрузить read-only скрипт диагностики."
-        return 1
-      fi
-    elif command -v wget >/dev/null 2>&1; then
-      if ! wget -q "$CHECK_SCRIPT_URL" -O "$tmp"; then
-        rm -f "$tmp"
-        fail "Не удалось загрузить read-only скрипт диагностики."
-        return 1
-      fi
-    else
-      rm -f "$tmp"
-      fail "Для загрузки скрипта диагностики нужен curl или wget."
-      return 1
-    fi
+    fail "В установленном ZIP отсутствует scripts/check-dns-integration.sh. Переустановите архив плагина 2.3.0."
+    return 1
   fi
 
-  printf 'Проверка выполняется в режиме read-only; конфигурация Xray не изменяется.\n'
+  printf 'Проверка Xray DNS path выполняется в режиме read-only; конфигурация не изменяется.\n'
+  printf '[INFO] Проверяется наличие DNS direct rule с domain; все найденные domain будут выведены. Geosite asset и клиентский end-to-end путь требуют отдельной проверки.\n'
   if DOH_SKIP_PLUGIN_HEALTH_CHECK=1 bash "$checker_file"; then
     rc=0
   else
     rc=$?
-  fi
-  if (( cleanup_tmp )); then
-    rm -f "$tmp"
   fi
   return "$rc"
 }
@@ -263,12 +252,15 @@ stop_web_ui() {
   fi
 }
 
-run_web_ui() {
-  local ready remote_port server_address read_status extra
-  printf 'Запуск отдельного процесса Web UI...\n'
+run_dns_config() {
+  printf '\nНастройка DNS mode плагина...\n'
+  printf 'Будет изменён только config.json; Xray routing, firewall и TProxy не затрагиваются.\n'
+  LUCX_PLUGIN_DATA="$PLUGIN_DATA_DIR" "$PLUGIN_BIN" config
+}
 
-  # The shell owns the coprocess stdin writer. Go sees EOF when this session
-  # exits or this descriptor is closed, including an abrupt SSH disconnect.
+run_web_ui() {
+  local ready remote_port server_address tunnel_user tunnel_command read_status extra
+  printf 'Запуск отдельного процесса Web UI...\n'
   coproc WEB_UI { LUCX_PLUGIN_DATA="$PLUGIN_DATA_DIR" "$PLUGIN_BIN" web; }
   WEB_CHILD_PID="$WEB_UI_PID"
   WEB_READ_FD="${WEB_UI[0]}"
@@ -279,26 +271,29 @@ run_web_ui() {
     stop_web_ui
     return 1
   fi
-  if [[ ! "$ready" =~ ^WEB_UI_READY\ port=([0-9]{1,5})$ ]]; then
+  if ! remote_port="$(parse_web_ui_ready_port "$ready")"; then
     fail "Web UI вернул некорректный readiness-ответ: $ready"
     stop_web_ui
     return 1
   fi
-  remote_port="${BASH_REMATCH[1]}"
-  if (( remote_port < 1 || remote_port > 65535 )); then
-    fail "Web UI сообщил недопустимый TCP-порт."
-    stop_web_ui
-    return 1
-  fi
-
   if ! server_address="$(resolve_server_address)"; then
     stop_web_ui
     fail "Не удалось получить адрес SSH-сервера для команды туннеля."
     return 1
   fi
+  if ! tunnel_user="$(resolve_ssh_tunnel_user)"; then
+    stop_web_ui
+    return 1
+  fi
+  if ! tunnel_command="$(build_ssh_tunnel_command 19876 "$remote_port" "$tunnel_user" "$server_address")"; then
+    stop_web_ui
+    fail "Не удалось сформировать безопасную SSH-команду туннеля."
+    return 1
+  fi
+
   printf '\n[OK] Web UI слушает только 127.0.0.1:%s.\n' "$remote_port"
   printf '\nНа Windows откройте отдельный PowerShell и выполните:\n'
-  printf 'ssh -o ExitOnForwardFailure=yes -L 19876:127.0.0.1:%s root@%s\n' "$remote_port" "$server_address"
+  printf '%s\n' "$tunnel_command"
   printf 'Затем откройте в браузере: http://127.0.0.1:19876/\n'
   printf 'Если локальный порт 19876 занят, замените его в SSH-команде и URL браузера на один и тот же свободный порт. Удалённый порт %s не меняйте.\n' "$remote_port"
   printf 'Оставьте открытыми эту SSH-сессию и отдельную SSH-сессию туннеля.\n'
@@ -315,7 +310,6 @@ run_web_ui() {
         break
       fi
     fi
-
     if IFS= read -r -t 0.1 _ </dev/tty; then
       break
     else
@@ -326,18 +320,17 @@ run_web_ui() {
       fi
     fi
   done
-
   stop_web_ui
   printf 'Web UI остановлен.\n'
 }
 
 show_menu() {
-  printf '\nDoH Health Monitor — управление\n'
-  printf '%s\n' '  1) Интегрировать DNS в LucX-UI / Xray'
-  printf '%s\n' '  2) Удалить DNS-интеграцию'
-  printf '%s\n' '  3) Проверить состояние (только чтение)'
-  printf '%s\n' '  4) Запустить Web UI через SSH-туннель'
+  printf '\nDoH Health Monitor 2.3.0 — управление\n'
+  printf '%s\n' '  1) Проверить plugin и утверждённый Xray Geosite DNS path (read-only)'
+  printf '%s\n' '  2) Запустить Web UI через SSH-туннель'
+  printf '%s\n' '  3) Переключить DNS mode / настроить resolver upstreams'
   printf '%s\n' '  0) Выход'
+  printf '%s\n' '  Примечание: Xray DNS policy задаётся вручную по doc/GEOSITE-DNS-ROUTING-DESIGN.md.'
   printf 'Выберите действие: '
 }
 
@@ -358,14 +351,15 @@ main() {
     fi
 
     case "$choice" in
-      1) run_plugin_action integrate ;;
-      2) run_plugin_action remove ;;
-      3) run_check || printf '[WARN] Диагностика завершилась с ошибками.\n' >&2 ;;
-      4) run_web_ui || printf '[WARN] Не удалось запустить Web UI.\n' >&2 ;;
+      1) run_check || printf '[WARN] Диагностика завершилась с ошибками.\n' >&2 ;;
+      2) run_web_ui || printf '[WARN] Не удалось запустить Web UI.\n' >&2 ;;
+      3) run_dns_config || printf '[WARN] DNS-конфигурация не изменена.\n' >&2 ;;
       0) printf 'Выход.\n'; break ;;
       *) printf 'Неизвестный пункт меню.\n' ;;
     esac
   done
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

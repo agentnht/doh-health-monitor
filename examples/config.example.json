@@ -1,6 +1,14 @@
 {
   "dns_listen_udp": "127.0.0.1:5355",
   "dns_listen_tcp": "127.0.0.1:5355",
+  "dns_mode": "endpoint_ip",
+  "resolver_upstreams": [
+    {
+      "id": "system",
+      "name": "System resolver (OS)",
+      "type": "system"
+    }
+  ],
   "http_listen": "127.0.0.1:18765",
   "reload_interval_seconds": 5,
   "dns_query_timeout_seconds": 15,

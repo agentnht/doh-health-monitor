@@ -4,7 +4,7 @@
   const number = (value) => new Intl.NumberFormat("ru-RU").format(Number(value || 0));
   const when = (value) => value ? new Date(value).toLocaleString("ru-RU") : "—";
   let configState = null;
-  const sourceState = { doh: [], checks: [] };
+  const sourceState = { doh: [], checks: [], hosts: [] };
 
   async function api(path, options = {}) {
     const headers = new Headers(options.headers || {});
@@ -107,6 +107,33 @@
     }
   }
 
+  function renderActiveDoH(active) {
+    const root = $("active-doh");
+    root.replaceChildren();
+    const addMetric = (label, value) => {
+      const row = document.createElement("div");
+      row.className = "metric";
+      const name = document.createElement("span");
+      name.textContent = label;
+      const detail = document.createElement("strong");
+      detail.textContent = value == null || value === "" ? "—" : String(value);
+      row.append(name, detail);
+      root.append(row);
+    };
+    if (!active) {
+      addMetric("Состояние", "Нет актуального выбранного endpoint");
+      return;
+    }
+    addMetric("Server ID", active.server_id);
+    addMetric("Hostname", active.hostname);
+    addMetric("IPv4", (active.ipv4 || []).join(", "));
+    addMetric("IPv6", (active.ipv6 || []).join(", "));
+    addMetric("Score", number(active.score) + "/" + number(active.check_count));
+    addMetric("Generation", number(active.generation));
+    addMetric("Выбран", when(active.selected_at));
+    addMetric("Актуален до", when(active.fresh_until));
+  }
+
   async function loadStatus() {
     $("refresh").disabled = true;
     text("updated", "Загрузка…");
@@ -117,6 +144,7 @@
       text("started", when(status.started_at));
       text("dns-udp", status.dns_udp);
       text("dns-tcp", status.dns_tcp);
+      text("dns-mode", status.dns_mode || "unknown");
       text("queries", number(status.queries));
       text("failures", number(status.failures));
       text("cache-hits", number(status.cache_hits));
@@ -128,6 +156,7 @@
         : "Выключен");
       text("gemini", status.gemini_api);
       text("updated", when(status.updated_at));
+      renderActiveDoH(status.active_doh);
       renderGroups(status.groups);
       $("error").textContent = "";
     } catch (error) {
@@ -175,6 +204,8 @@
 
   function renderConfig(config) {
     configState = config;
+    $("config-dns-mode").value = config.dns_mode || "endpoint_ip";
+    $("config-resolver-upstreams").value = JSON.stringify(config.resolver_upstreams || [], null, 2);
     $("config-general").replaceChildren();
     $("config-health").replaceChildren();
     $("config-cache").replaceChildren();
@@ -223,11 +254,6 @@
     prompt.value = config.gemini_api.prompt || "";
     promptLabel.append(prompt);
     gemini.append(promptLabel);
-    text("config-note", config.integration ? "Интеграция включена" : "Интеграция выключена");
-    $("integration-add").disabled = Boolean(config.integration);
-    $("integration-remove").disabled = !config.integration;
-    $("integration-add").setAttribute("aria-pressed", String(!config.integration));
-    $("integration-remove").setAttribute("aria-pressed", String(Boolean(config.integration)));
   }
 
   async function loadConfig() {
@@ -246,6 +272,15 @@
       setPath(next, input.dataset.path, value);
     }
     next.bootstrap_resolvers = $("config-bootstrap").value.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+    next.dns_mode = $("config-dns-mode").value;
+    try {
+      next.resolver_upstreams = JSON.parse($("config-resolver-upstreams").value);
+    } catch (error) {
+      throw new Error("resolver_upstreams: некорректный JSON — " + error.message);
+    }
+    if (!Array.isArray(next.resolver_upstreams)) {
+      throw new Error("resolver_upstreams должен быть JSON-массивом");
+    }
     return next;
   }
 
@@ -257,8 +292,8 @@
       const result = await api("/api/v1/config", { method: "POST", body: JSON.stringify(collectConfig()) });
       renderConfig(result.config);
       const message = result.restart_required
-        ? "Сохранено. Изменение listener/dns_max_concurrent вступит в силу после перезапуска плагина."
-        : "Конфигурация сохранена. Новые значения будут применены механизмом reload.";
+        ? "Сохранено с резервной копией config.json.bak. Изменение listener/dns_max_concurrent вступит в силу после перезапуска плагина."
+        : "Конфигурация сохранена с резервной копией config.json.bak. Новые значения будут применены hot reload (до 30 секунд).";
       notice("config-note", message, true);
     } catch (error) {
       notice("config-note", error.message, false);
@@ -283,18 +318,19 @@
 
   const sourceFields = {
     doh: ["ID", "HTTPS URL"],
-    checks: ["Domain", "QTypes", "Required (0/1)", "HTTP URL", "Expected status", "Verify OIDC (0/1)"]
+    checks: ["Domain", "QTypes", "Required (0/1)", "HTTP URL", "Expected status", "Verify OIDC (0/1)"],
+    hosts: ["Hostname", "IPv4 (comma-separated)", "IPv6 (comma-separated)"]
   };
 
   function renderSource(kind) {
-    const body = $(kind === "doh" ? "doh-rows" : "check-rows");
+    const body = $(kind === "doh" ? "doh-rows" : kind === "checks" ? "check-rows" : "hosts-rows");
     body.replaceChildren();
     sourceState[kind].forEach((row, index) => {
       const tr = document.createElement("tr");
       if (kind === "doh" && row.system) tr.classList.add("source-system");
       if (!row.editable) {
         const td = document.createElement("td");
-        td.colSpan = kind === "doh" ? 4 : 8;
+        td.colSpan = kind === "doh" ? 4 : kind === "checks" ? 8 : 5;
         td.className = "source-comment";
         td.textContent = row.raw || "#";
         tr.append(td);
@@ -359,23 +395,25 @@
     const data = await api("/api/v1/sources");
     sourceState.doh = data.doh || [];
     sourceState.checks = data.checks || [];
+    sourceState.hosts = data.hosts || [];
     renderSource("doh");
     renderSource("checks");
+    renderSource("hosts");
   }
 
   function addSourceRow(kind) {
-    const count = kind === "doh" ? 2 : 6;
+    const count = kind === "doh" ? 2 : kind === "checks" ? 6 : 3;
     sourceState[kind].push({ active: true, editable: true, fields: Array(count).fill("") });
     renderSource(kind);
-    const body = $(kind === "doh" ? "doh-rows" : "check-rows");
+    const body = $(kind === "doh" ? "doh-rows" : kind === "checks" ? "check-rows" : "hosts-rows");
     const last = body.querySelector("tr:last-child");
     const firstInput = last && last.querySelector("input[type=text]");
     if (firstInput) firstInput.focus();
   }
 
   async function saveSources(kind) {
-    const button = $(kind === "doh" ? "doh-save" : "check-save");
-    const note = kind === "doh" ? "doh-note" : "check-note";
+    const button = $(kind === "doh" ? "doh-save" : kind === "checks" ? "check-save" : "hosts-save");
+    const note = kind === "doh" ? "doh-note" : kind === "checks" ? "check-note" : "hosts-note";
     button.disabled = true;
     notice(note, "Проверка и сохранение…", false);
     try {
@@ -395,8 +433,9 @@
   function renderTests(summary) {
     const root = $("test-results");
     root.replaceChildren();
-    const label = summary.status + " · OK: " + number(summary.passed) + " · NotOK: " + number(summary.failed) +
-      " · " + when(summary.run_at);
+    const label = summary.status + " · OK: " + number(summary.passed) +
+      " · Предупреждения: " + number(summary.warnings) +
+      " · Ошибки: " + number(summary.failed) + " · " + when(summary.run_at);
     text("tests-summary", label);
     for (const test of summary.tests || []) {
       const card = document.createElement("details");
@@ -410,13 +449,14 @@
 
       const state = document.createElement("span");
       const passed = test.status === "OK";
-      state.className = "result-status " + (passed ? "ok" : "bad");
+      const warning = test.status === "NODATA" || test.status === "NXDOMAIN";
+      state.className = "result-status " + (passed ? "ok" : warning ? "warn" : "bad");
       state.textContent = passed ? "OK" : (test.status || "NotOK");
 
       const toggle = document.createElement("span");
       toggle.className = "result-toggle";
       toggle.setAttribute("aria-hidden", "true");
-      toggle.textContent = passed ? "✓" : "›";
+      toggle.textContent = passed ? "✓" : warning ? "!" : "›";
       head.append(name, state, toggle);
       card.append(head);
 
@@ -425,7 +465,8 @@
       if (test.domain) {
         const meta = document.createElement("p");
         meta.className = "muted";
-        meta.textContent = test.domain + " · " + test.qtype + " · " + number(test.duration_ms) + " мс";
+        meta.textContent = test.domain + " · " + test.qtype + " · " +
+          String(test.transport || "DNS").toUpperCase() + " · " + number(test.duration_ms) + " мс";
         content.append(meta);
       } else if (test.duration_ms) {
         const meta = document.createElement("p");
@@ -468,54 +509,6 @@
     }
   }
 
-  async function loadIntegrationLog() {
-    const node = $("integration-log");
-    if (!node) return;
-    node.textContent = "Загрузка журнала операций…";
-    try {
-      const result = await api("/api/v1/integration/logs");
-      node.textContent = (result.lines || []).join("\\n");
-    } catch (error) {
-      node.textContent = "Не удалось прочитать журнал операций: " + error.message;
-    }
-  }
-
-  async function integrationAction(action) {
-    const button = $(action === "integrate" ? "integration-add" : "integration-remove");
-    const prompt = action === "integrate"
-      ? "Выполнить DNS-интеграцию в LucX-UI/Xray? Операция изменит настройки панели."
-      : "Удалить DNS-интеграцию из LucX-UI/Xray? Операция изменит настройки панели.";
-    if (!window.confirm(prompt)) return;
-
-    button.disabled = true;
-    notice("integration-result", action === "integrate" ? "Выполняется Integrate…" : "Выполняется DeIntegrate…", false);
-    try {
-      const result = await api("/api/v1/integration", {
-        method: "POST",
-        body: JSON.stringify({ action, confirmed: true })
-      });
-      if (result.ok) {
-        notice("integration-result", action === "integrate" ? "Интеграция выполнена." : "Деинтеграция выполнена.", true);
-      } else {
-        notice("integration-result", (action === "integrate" ? "Ошибка Integrate: " : "Ошибка DeIntegrate: ") + (result.error || "неизвестная ошибка"), false);
-      }
-      await loadIntegrationLog();
-      try { await loadConfig(); } catch (_) { /* preserve operation result */ }
-      setPageOpen("logs", true);
-    } catch (error) {
-      notice("integration-result", error.message, false);
-      await loadIntegrationLog();
-      setPageOpen("logs", true);
-    } finally {
-      if (configState) {
-        $("integration-add").disabled = Boolean(configState.integration);
-        $("integration-remove").disabled = !configState.integration;
-      } else {
-        button.disabled = false;
-      }
-    }
-  }
-
   function setPageOpen(name, open) {
     const panels = Array.from(document.querySelectorAll("[data-page-panel]"));
     const targetPanels = panels.filter(panel => panel.dataset.pagePanel === name);
@@ -536,7 +529,9 @@
     });
     if (shouldOpen && name === "logs") {
       loadLogs();
-      loadIntegrationLog();
+    }
+    if (shouldOpen && name === "hosts") {
+      loadSources().catch(error => notice("hosts-note", error.message, false));
     }
   }
 
@@ -586,13 +581,12 @@
   $("save-gemini-key").addEventListener("click", saveGeminiKey);
   $("doh-add").addEventListener("click", () => addSourceRow("doh"));
   $("check-add").addEventListener("click", () => addSourceRow("checks"));
+  $("hosts-add").addEventListener("click", () => addSourceRow("hosts"));
   $("doh-save").addEventListener("click", () => saveSources("doh"));
   $("check-save").addEventListener("click", () => saveSources("checks"));
+  $("hosts-save").addEventListener("click", () => saveSources("hosts"));
   $("run-tests").addEventListener("click", runTests);
-  $("integration-add").addEventListener("click", () => integrationAction("integrate"));
-  $("integration-remove").addEventListener("click", () => integrationAction("remove"));
   $("refresh-logs").addEventListener("click", loadLogs);
-  $("refresh-integration-log").addEventListener("click", loadIntegrationLog);
   document.querySelectorAll("[data-page]").forEach(button => {
     button.addEventListener("click", () => activatePage(button.dataset.page));
   });
@@ -605,7 +599,7 @@
   loadSources().catch(error => {
     notice("doh-note", error.message, false);
     notice("check-note", error.message, false);
+    notice("hosts-note", error.message, false);
   });
-  loadIntegrationLog();
   window.setInterval(loadStatus, 15000);
 })();

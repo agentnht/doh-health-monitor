@@ -54,8 +54,7 @@
     .config-block { border-top: 1px solid #374151; margin-top: .9rem; padding-top: .75rem; }
     .section-actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .8rem; }
     .header-controls { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: .65rem; margin-top: .75rem; }
-    .refresh-group, .integration-buttons { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
-    .integration-buttons { margin-left: auto; }
+    .refresh-group { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
     .tab-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0 0 .85rem; }
     .tab-button { background: #374151; }
     .tab-button[aria-selected="true"] { background: #1d4ed8; box-shadow: inset 0 0 0 1px #60a5fa; }
@@ -88,6 +87,10 @@
     .result-status { font-size: .75rem; font-weight: 700; white-space: nowrap; }
     .result-status.ok { color: #86efac; }
     .result-status.bad { color: #fca5a5; }
+    .result-status.warn { color: #fbbf24; }
+    .result-status.warn + .result-toggle { color: #fbbf24; }
+    .active-doh-block { border-top: 1px solid #374151; margin-top: .8rem; padding-top: .75rem; }
+    .active-doh-block h3 { margin-bottom: .5rem; }
     .result-toggle { flex: 0 0 1.25rem; text-align: center; font-size: 1rem; font-weight: 800; color: #86efac; }
     .result-status.bad + .result-toggle { color: #fca5a5; }
     .result-details { border-top: 1px solid #374151; padding: .5rem .65rem .6rem; }
@@ -114,17 +117,12 @@
     <header>
       <p class="state">Web UI · локальное управление через SSH-туннель</p>
       <h1>DoH Health Monitor</h1>
-      <p>Мониторинг, редактирование конфигурации и списков, проверка DNS и управление интеграцией.</p>
+      <p>Мониторинг, редактирование конфигурации и списков, проверка DNS и утверждённого Xray Geosite DNS path.</p>
       <p class="muted">Версия: <strong id="version">—</strong> · Демон: <strong id="daemon">Проверка…</strong> · Запущен: <strong id="started">—</strong></p>
       <div class="header-controls">
         <div class="refresh-group">
           <button id="refresh" type="button">Обновить состояние</button>
           <span class="muted" id="updated">Загрузка…</span>
-        </div>
-        <div class="integration-buttons" aria-label="Управление DNS integration">
-          <span id="integration-result" class="muted" role="status"></span>
-          <button id="integration-add" type="button" disabled>Integrate</button>
-          <button id="integration-remove" class="danger" type="button" disabled>DeIntegrate</button>
         </div>
       </div>
       <p id="error" role="status"></p>
@@ -143,6 +141,7 @@
           <section class="dashboard-section">
             <h2>Запросы и ресурсы</h2>
             <div class="metric-list">
+              <div class="metric"><span>DNS mode:</span><strong id="dns-mode">—</strong></div>
               <div class="metric"><span>Запросы:</span><strong id="queries">—</strong></div>
               <div class="metric"><span>Ошибки:</span><strong id="failures">—</strong></div>
               <div class="metric"><span>Попадания в кеш:</span><strong id="cache-hits">—</strong></div>
@@ -151,6 +150,12 @@
               <div class="metric"><span>Потерянные UDP:</span><strong id="udp-dropped">—</strong></div>
               <div class="metric"><span>DNS-кеш:</span><strong id="cache">—</strong></div>
               <div class="metric"><span>Gemini API:</span><strong id="gemini">—</strong></div>
+            </div>
+            <div class="active-doh-block">
+              <h3>Активный DoH endpoint · ActiveDoHSelector</h3>
+              <div class="metric-list" id="active-doh">
+                <div class="metric"><span>Состояние:</span><strong>Загрузка…</strong></div>
+              </div>
             </div>
           </section>
         </section>
@@ -166,6 +171,7 @@
       <button class="tab-button" type="button" data-page="config" aria-selected="false" aria-expanded="false">Конфигурация</button>
       <button class="tab-button" type="button" data-page="doh" aria-selected="false" aria-expanded="false">DoH-сервера</button>
       <button class="tab-button" type="button" data-page="domains" aria-selected="false" aria-expanded="false">Домены</button>
+      <button class="tab-button" type="button" data-page="hosts" aria-selected="false" aria-expanded="false">Local hosts</button>
       <button class="tab-button" type="button" data-page="tests" aria-selected="false" aria-expanded="false">Проверка состояния</button>
       <button class="tab-button" type="button" data-page="logs" aria-selected="false" aria-expanded="false">Логи</button>
     </nav>
@@ -176,6 +182,20 @@
       <div class="config-block">
         <h3>Слушатели и общие параметры</h3>
         <div class="field-grid" id="config-general"></div>
+      </div>
+      <div class="config-block">
+        <h3>DNS mode</h3>
+        <p class="muted">endpoint_ip — текущий режим по умолчанию. resolver — последовательная отправка запросов на настроенные upstream. Изменения применяются hot reload; Xray routing и firewall не изменяются.</p>
+        <label class="field">Режим DNS
+          <select id="config-dns-mode">
+            <option value="endpoint_ip">endpoint_ip</option>
+            <option value="resolver">resolver</option>
+          </select>
+        </label>
+        <label class="field">resolver_upstreams — JSON-массив в порядке приоритета
+          <textarea id="config-resolver-upstreams" rows="9" spellcheck="false"></textarea>
+        </label>
+        <p class="muted">Типы: system; udp/tcp с address (IP или IP:port); doh с HTTPS url и необязательными bootstrap_ips. Пример system: [{"id":"system","name":"System resolver (OS)","type":"system"}].</p>
       </div>
       <div class="config-block">
         <div class="result-head"><h3>Health</h3><button class="secondary small" type="button" data-default-section="health">По умолчанию</button></div>
@@ -223,11 +243,15 @@
       <div class="row-actions"><button class="secondary" id="check-add" type="button">+ Добавить домен</button><button id="check-save" type="button">Сохранить список</button><span id="check-note" class="muted" role="status"></span></div>
     </section>
 
-    <section class="panel tab-page" data-page-panel="logs" hidden>
-      <div class="result-head"><h2>Лог интеграции / деинтеграции</h2><button id="refresh-integration-log" class="secondary" type="button">Обновить журнал операций</button></div>
-      <p class="muted">Результаты последних операций Integrate и DeIntegrate, включая ошибки и вывод штатной процедуры.</p>
-      <pre class="log-output" id="integration-log">Журнал пока не загружен.</pre>
+    <section class="panel tab-page" data-page-panel="hosts" hidden>
+      <h2>Локальные DNS-записи · local-hosts.txt</h2>
+      <p class="muted">Только точные DNS-имена, обслуживаемые локально DNS-плагином. Формат строки: hostname;IPv4[,IPv4...];IPv6[,IPv6...]. Можно указывать несколько адресов каждого семейства. Пустое поле семейства возвращает для него NODATA; если пусты оба поля, A и AAAA этого имени тоже вернут NODATA. Снятие флажка комментирует строку, а не удаляет её. Изменения проверяются и применяются hot reload (до 30 секунд). Системный /etc/hosts не читается и не изменяется.</p>
+      <div class="source-wrap">
+        <table class="source-table"><thead><tr><th>Вкл.</th><th>Hostname</th><th>IPv4 (через запятую)</th><th>IPv6 (через запятую)</th><th></th></tr></thead><tbody id="hosts-rows"></tbody></table>
+      </div>
+      <div class="row-actions"><button class="secondary" id="hosts-add" type="button">+ Добавить hostname</button><button id="hosts-save" type="button">Сохранить hosts</button><span id="hosts-note" class="muted" role="status"></span></div>
     </section>
+
     <section class="panel tab-page" data-page-panel="logs" hidden>
       <div class="result-head"><h2>Логи</h2><button id="refresh-logs" class="secondary" type="button">Обновить логи</button></div>
       <p class="muted" id="logs-source">Источник: systemd journal / plugin.log.</p>
@@ -236,7 +260,7 @@
 
     <section class="panel tab-page" data-page-panel="tests" hidden>
       <h2>Проверка состояния</h2>
-      <p class="muted">Проверяются config.json, файлы списков, фактические DNS-запросы через dig, UDP/HTTP listeners и Xray DNS integration. Предыдущий результат остаётся до нового запуска.</p>
+      <p class="muted">Проверяются config.json, файлы списков, реальные DNS-запросы через dig по UDP и TCP к локальным DNS listeners, HTTP listener и структура утверждённого Xray Geosite DNS path. NOERROR/NODATA и NXDOMAIN показываются отдельно от транспортных ошибок. Это read-only диагностика локального плагина; Geosite asset match и клиентский end-to-end маршрут проверяются отдельно.</p>
       <div class="section-actions"><button id="run-tests" type="button">Запустить проверки</button><strong id="tests-summary" class="muted">Проверки ещё не запускались</strong></div>
       <div class="results" id="test-results"></div>
     </section>

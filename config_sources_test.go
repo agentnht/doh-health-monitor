@@ -15,6 +15,7 @@ func TestInitializeConfigSourceFilesCreatesEmbeddedDefaults(t *testing.T) {
 	}
 	dohPath := filepath.Join(dir, "doh-servers.txt")
 	checksPath := filepath.Join(dir, "tst-domen.txt")
+	hostsPath := filepath.Join(dir, localHostsSourceFile)
 	dohInfo, err := os.Stat(dohPath)
 	if err != nil {
 		t.Fatal(err)
@@ -23,8 +24,12 @@ func TestInitializeConfigSourceFilesCreatesEmbeddedDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dohInfo.Mode().Perm() != 0600 || checksInfo.Mode().Perm() != 0600 {
-		t.Fatalf("source file permissions = %o and %o; want 0600", dohInfo.Mode().Perm(), checksInfo.Mode().Perm())
+	hostsInfo, err := os.Stat(hostsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dohInfo.Mode().Perm() != 0600 || checksInfo.Mode().Perm() != 0600 || hostsInfo.Mode().Perm() != 0600 {
+		t.Fatalf("source file permissions = %o, %o and %o; want 0600", dohInfo.Mode().Perm(), checksInfo.Mode().Perm(), hostsInfo.Mode().Perm())
 	}
 	sources, err := readConfigSources(dohPath, checksPath)
 	if err != nil {
@@ -36,33 +41,45 @@ func TestInitializeConfigSourceFilesCreatesEmbeddedDefaults(t *testing.T) {
 	if !sources.SystemDNSEnabled {
 		t.Fatal("embedded default source must enable system-dns")
 	}
-	if len(sources.Checks) != 25 {
-		t.Fatalf("default checks = %d, want 25", len(sources.Checks))
+	if len(sources.LocalHosts) != 0 || len(sources.Checksums.Hosts) != 64 {
+		t.Fatalf("embedded local hosts source should be empty and hashed: hosts=%+v checksum=%q", sources.LocalHosts, sources.Checksums.Hosts)
+	}
+	if len(sources.Checks) != 9 {
+		t.Fatalf("default checks = %d, want 9", len(sources.Checks))
 	}
 	if sources.DoHURLs["dagami"] != "https://dns.dagami.ru/dns-query" {
 		t.Fatalf("default Dagami endpoint = %q", sources.DoHURLs["dagami"])
 	}
-	var gemini, accounts, ssl, googleAPIs *Check
+	wantDomains := []string{
+		"chatgpt.com",
+		"claude.ai",
+		"gemini.google.com",
+		"elevenlabs.io",
+		"grok.com",
+		"www.perplexity.ai",
+		"notebooklm.google.com",
+		"aistudio.google.com",
+		"accounts.google.com",
+	}
+	gotDomains := make([]string, 0, len(sources.Checks))
+	var gemini, accounts *Check
 	for i := range sources.Checks {
+		gotDomains = append(gotDomains, sources.Checks[i].Domain)
 		switch sources.Checks[i].Domain {
 		case "gemini.google.com":
 			gemini = &sources.Checks[i]
 		case "accounts.google.com":
 			accounts = &sources.Checks[i]
-		case "ssl.gstatic.com":
-			ssl = &sources.Checks[i]
-		case "www.googleapis.com":
-			googleAPIs = &sources.Checks[i]
 		}
+	}
+	if !reflect.DeepEqual(gotDomains, wantDomains) {
+		t.Errorf("default check domains = %v, want %v", gotDomains, wantDomains)
 	}
 	if gemini == nil || !gemini.Required || gemini.HTTPURL != "https://gemini.google.com/" || !reflect.DeepEqual(gemini.ExpectedStatus, []int{200}) {
 		t.Errorf("Gemini default check = %+v", gemini)
 	}
 	if accounts == nil || !accounts.Required || !accounts.VerifyOIDC || accounts.HTTPURL != "https://accounts.google.com/.well-known/openid-configuration" {
 		t.Errorf("Accounts default check = %+v", accounts)
-	}
-	if ssl == nil || ssl.HTTPURL != "" || googleAPIs == nil || googleAPIs.HTTPURL != "" {
-		t.Errorf("optional static checks must be DNS-only: ssl=%+v googleapis=%+v", ssl, googleAPIs)
 	}
 }
 
@@ -92,6 +109,133 @@ func TestInitializeConfigSourceFilesPreservesExistingUserFiles(t *testing.T) {
 	wantDoH := "# id;url\nsystem-dns;\ncustom;https://resolver.example.net/dns-query\n"
 	if string(gotDoH) != wantDoH || string(gotChecks) != checks {
 		t.Fatalf("existing user source files were not preserved with the system row migration: doh=%q checks=%q", gotDoH, gotChecks)
+	}
+}
+
+func TestInitializeConfigSourceFilesMigratesLegacyLocalHosts(t *testing.T) {
+	dir := t.TempDir()
+	legacy := defaultConfig()
+	legacy.LocalHosts = map[string]LocalHost{
+		"LOCAL.example.": {IPv4: []string{"192.0.2.20"}, IPv6: []string{"2001:db8::20"}},
+		"z.internal":    {IPv4: []string{"192.0.2.21"}},
+	}
+	if err := writeConfigAtomic(filepath.Join(dir, "config.json"), legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := initializeConfigSourceFiles(dir); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, localHostsSourceFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := localHostsSourceHeader + "\nlocal.example;192.0.2.20;2001:db8::20\nz.internal;192.0.2.21;\n"
+	if string(data) != want {
+		t.Fatalf("migrated local hosts = %q, want %q", data, want)
+	}
+	parsed, err := parseLocalHostsFile(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed) != 2 || parsed["local.example"].IPv4[0] != "192.0.2.20" {
+		t.Fatalf("migrated local hosts not parsed: %+v", parsed)
+	}
+	if err := os.WriteFile(filepath.Join(dir, localHostsSourceFile), []byte(localHostsSourceHeader+"\ncustom.example;192.0.2.30;\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := initializeConfigSourceFiles(dir); err != nil {
+		t.Fatal(err)
+	}
+	preserved, err := os.ReadFile(filepath.Join(dir, localHostsSourceFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(preserved), "custom.example;192.0.2.30;") {
+		t.Fatalf("existing local-hosts.txt was overwritten during initialization: %s", preserved)
+	}
+}
+
+func TestParseLocalHostsFileValidatesExactHostAndAddressFamilies(t *testing.T) {
+	got, err := parseLocalHostsFile([]byte(localHostsSourceHeader + "\n# disabled.example;192.0.2.1;\nLOCAL.example.;192.0.2.1,192.0.2.2;2001:db8::1\nforced-nodata.example;;\n"))
+	if err != nil {
+		t.Fatalf("valid local hosts rejected: %v", err)
+	}
+	if len(got) != 2 || !reflect.DeepEqual(got["local.example"].IPv4, []string{"192.0.2.1", "192.0.2.2"}) || !reflect.DeepEqual(got["local.example"].IPv6, []string{"2001:db8::1"}) {
+		t.Fatalf("unexpected parsed local hosts: %+v", got)
+	}
+	if len(got["forced-nodata.example"].IPv4) != 0 || len(got["forced-nodata.example"].IPv6) != 0 {
+		t.Fatalf("legacy empty host entry should be retained to force NODATA: %+v", got["forced-nodata.example"])
+	}
+	for _, raw := range []string{
+		"bad..example;192.0.2.1;",
+		"bad.example;2001:db8::1;",
+		"bad.example;;192.0.2.1",
+		"dup.example;192.0.2.1;\nDUP.example.;192.0.2.2;",
+		"bad.example;192.0.2.1,; ",
+		"bad.example;192.0.2.1;2001:db8::1;extra",
+	} {
+		if _, err := parseLocalHostsFile([]byte(raw)); err == nil {
+			t.Errorf("invalid local-hosts row unexpectedly accepted: %q", raw)
+		}
+	}
+}
+
+func TestReadConfigSourcesLoadsManagedLocalHostsFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := initializeConfigSourceFiles(dir); err != nil {
+		t.Fatal(err)
+	}
+	hostsPath := filepath.Join(dir, localHostsSourceFile)
+	data := []byte(localHostsSourceHeader + "\nservice.example;192.0.2.55;2001:db8::55\n")
+	if err := os.WriteFile(hostsPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	sources, err := readConfigSources(filepath.Join(dir, "doh-servers.txt"), filepath.Join(dir, "tst-domen.txt"))
+	if err != nil {
+		t.Fatalf("read managed config sources: %v", err)
+	}
+	entry, ok := sources.LocalHosts["service.example"]
+	if !ok || !reflect.DeepEqual(entry.IPv4, []string{"192.0.2.55"}) || !reflect.DeepEqual(entry.IPv6, []string{"2001:db8::55"}) {
+		t.Fatalf("managed local hosts not loaded into sources: %+v", sources.LocalHosts)
+	}
+	if sources.Checksums.Hosts != configSourceChecksums(nil, nil, data).Hosts {
+		t.Fatalf("local hosts checksum does not match file contents: %s", sources.Checksums.Hosts)
+	}
+	if err := os.WriteFile(hostsPath, []byte("invalid host row\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readConfigSources(filepath.Join(dir, "doh-servers.txt"), filepath.Join(dir, "tst-domen.txt")); err == nil {
+		t.Fatal("invalid managed local hosts source was accepted")
+	}
+}
+
+func TestLocalHostsSourceChangesChecksumAndConfigGeneration(t *testing.T) {
+	first := configSourceChecksums([]byte("doh"), []byte("checks"), []byte(localHostsSourceHeader+"\n"))
+	second := configSourceChecksums([]byte("doh"), []byte("checks"), []byte(localHostsSourceHeader+"\nsite.example;192.0.2.44;\n"))
+	if first.Hosts == second.Hosts || first.Combined == second.Combined {
+		t.Fatal("local-hosts source change did not alter its checksum")
+	}
+	cfg := defaultConfig()
+	cfg.LocalHosts = map[string]LocalHost{"legacy.example": {IPv4: []string{"192.0.2.10"}}}
+	providers, err := parseDoHProviders([]byte("system-dns;\ndagami;https://dns.dagami.ru/dns-query\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks, err := parseHealthChecks([]byte("accounts.google.com;A;1;;;0\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	generated, err := applyConfigSources(cfg, ConfigSources{
+		Providers: providers, Checks: checks, LocalHosts: map[string]LocalHost{
+			"site.example": {IPv4: []string{"192.0.2.44"}},
+		},
+		DoHURLs: map[string]string{"dagami": "https://dns.dagami.ru/dns-query"}, SystemDNSEnabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(generated.LocalHosts) != 1 || generated.LocalHosts["site.example"].IPv4[0] != "192.0.2.44" {
+		t.Fatalf("runtime config did not use managed local-hosts source: %+v", generated.LocalHosts)
 	}
 }
 
@@ -257,7 +401,7 @@ func TestApplyConfigSourcesGeneratesOrderedUpstreamsAndPreservesRuntimeSettings(
 			urls[provider.ID] = provider.URL
 		}
 	}
-	generated, err := applyConfigSources(cfg, ConfigSources{Providers: providers, Checks: checks, DoHURLs: urls, SystemDNSEnabled: true})
+	generated, err := applyConfigSources(cfg, ConfigSources{Providers: providers, Checks: checks, LocalHosts: map[string]LocalHost{"internal.example": {IPv4: []string{"192.0.2.20"}}}, DoHURLs: urls, SystemDNSEnabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +466,7 @@ func TestConfigSourceChecksumsTrackBothFiles(t *testing.T) {
 	if first == configSourceChecksums([]byte("a"), []byte("changed")) {
 		t.Fatal("health check source change did not change hashes")
 	}
-	if len(first.DoH) != 64 || len(first.Checks) != 64 || len(first.Combined) != 64 {
+	if len(first.DoH) != 64 || len(first.Checks) != 64 || len(first.Hosts) != 64 || len(first.Combined) != 64 {
 		t.Fatalf("SHA-256 checksum length is invalid: %+v", first)
 	}
 }

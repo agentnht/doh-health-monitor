@@ -5,21 +5,29 @@ import (
 	"embed"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"encoding/json"
+	"fmt"
 	"io/fs"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
-//go:embed defaults/doh-servers.txt defaults/tst-domen.txt
+//go:embed defaults/doh-servers.txt defaults/tst-domen.txt defaults/local-hosts.txt
 var embeddedConfigSources embed.FS
 
-const configSourcePollInterval = 30 * time.Second
+const (
+	configSourcePollInterval = 30 * time.Second
+	localHostsSourceFile     = "local-hosts.txt"
+	localHostsSourceHeader   = "# hostname;ipv4[,ipv4...];ipv6[,ipv6...]"
+	maxLocalHostEntries      = 1000
+	maxLocalHostIPsPerFamily = 16
+)
 
 type DoHProvider struct {
 	ID     string
@@ -30,12 +38,14 @@ type DoHProvider struct {
 type ConfigSourceChecksums struct {
 	DoH      string
 	Checks   string
+	Hosts    string
 	Combined string
 }
 
 type ConfigSources struct {
 	Providers        []DoHProvider
 	Checks           []Check
+	LocalHosts       map[string]LocalHost
 	DoHURLs          map[string]string
 	SystemDNSEnabled bool
 	Checksums        ConfigSourceChecksums
@@ -91,6 +101,9 @@ func initializeConfigSourceFiles(dataDir string) error {
 			return fmt.Errorf("write system-dns entry to doh-servers.txt: %w", err)
 		}
 		logLine("INFO", "CONFIG_SOURCE_MIGRATED file=doh-servers.txt added_system_dns_entry")
+	}
+	if err := initializeLocalHostsSourceFile(dataDir); err != nil {
+		return fmt.Errorf("initialize %s: %w", localHostsSourceFile, err)
 	}
 	return nil
 }
@@ -191,7 +204,7 @@ func legacyProviderID(host string) string {
 	return "provider-" + strings.ReplaceAll(host, ".", "-")
 }
 
-func readConfigSources(dohPath, checksPath string) (ConfigSources, error) {
+func readConfigSources(dohPath, checksPath string, localHostsPaths ...string) (ConfigSources, error) {
 	dohData, err := os.ReadFile(dohPath)
 	if err != nil {
 		return ConfigSources{}, fmt.Errorf("read doh-servers.txt: %w", err)
@@ -200,7 +213,15 @@ func readConfigSources(dohPath, checksPath string) (ConfigSources, error) {
 	if err != nil {
 		return ConfigSources{}, fmt.Errorf("read tst-domen.txt: %w", err)
 	}
-	checksums := configSourceChecksums(dohData, checksData)
+	localHostsPath := filepath.Join(filepath.Dir(dohPath), localHostsSourceFile)
+	if len(localHostsPaths) > 0 && strings.TrimSpace(localHostsPaths[0]) != "" {
+		localHostsPath = localHostsPaths[0]
+	}
+	hostsData, err := os.ReadFile(localHostsPath)
+	if err != nil {
+		return ConfigSources{}, fmt.Errorf("read %s: %w", localHostsSourceFile, err)
+	}
+	checksums := configSourceChecksums(dohData, checksData, hostsData)
 	providers, err := parseDoHProviders(dohData)
 	if err != nil {
 		return ConfigSources{Checksums: checksums}, fmt.Errorf("doh-servers.txt: %w", err)
@@ -208,6 +229,10 @@ func readConfigSources(dohPath, checksPath string) (ConfigSources, error) {
 	checks, err := parseHealthChecks(checksData)
 	if err != nil {
 		return ConfigSources{Checksums: checksums}, fmt.Errorf("tst-domen.txt: %w", err)
+	}
+	localHosts, err := parseLocalHostsFile(hostsData)
+	if err != nil {
+		return ConfigSources{Checksums: checksums}, fmt.Errorf("%s: %w", localHostsSourceFile, err)
 	}
 	urls := make(map[string]string, len(providers))
 	systemDNSEnabled := false
@@ -219,20 +244,186 @@ func readConfigSources(dohPath, checksPath string) (ConfigSources, error) {
 		urls[provider.ID] = provider.URL
 	}
 	return ConfigSources{
-		Providers: providers, Checks: checks, DoHURLs: urls,
+		Providers: providers, Checks: checks, LocalHosts: localHosts, DoHURLs: urls,
 		SystemDNSEnabled: systemDNSEnabled, Checksums: checksums,
 	}, nil
 }
-
-func configSourceChecksums(dohData, checksData []byte) ConfigSourceChecksums {
+func configSourceChecksums(dohData, checksData []byte, localHostsData ...[]byte) ConfigSourceChecksums {
+	if len(localHostsData) == 0 {
+		localHostsData = [][]byte{[]byte(localHostsSourceHeader + "\n")}
+	}
 	dohHash := sha256.Sum256(dohData)
 	checksHash := sha256.Sum256(checksData)
-	combinedHash := sha256.Sum256([]byte(hex.EncodeToString(dohHash[:]) + "\n" + hex.EncodeToString(checksHash[:])))
-	return ConfigSourceChecksums{
-		DoH:      hex.EncodeToString(dohHash[:]),
-		Checks:   hex.EncodeToString(checksHash[:]),
-		Combined: hex.EncodeToString(combinedHash[:]),
+	hostsHash := sha256.Sum256(localHostsData[0])
+	dohHex := hex.EncodeToString(dohHash[:])
+	checksHex := hex.EncodeToString(checksHash[:])
+	hostsHex := hex.EncodeToString(hostsHash[:])
+	combinedHash := sha256.Sum256([]byte(dohHex + "\n" + checksHex + "\n" + hostsHex))
+	return ConfigSourceChecksums{DoH: dohHex, Checks: checksHex, Hosts: hostsHex, Combined: hex.EncodeToString(combinedHash[:])}
+}
+
+func initializeLocalHostsSourceFile(dataDir string) error {
+	path := filepath.Join(dataDir, localHostsSourceFile)
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > webUIAdminMaxFile {
+			return errors.New("existing local-hosts.txt must be a regular non-symlink file within the size limit")
+		}
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
+
+	legacyHosts := map[string]LocalHost{}
+	configPath := filepath.Join(dataDir, "config.json")
+	if info, err := os.Lstat(configPath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > webUIAdminMaxFile {
+			return errors.New("legacy config.json must be a regular non-symlink file within the size limit")
+		}
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			return fmt.Errorf("read legacy config.json: %w", err)
+		}
+		var legacy struct {
+			LocalHosts map[string]LocalHost `json:"local_hosts"`
+		}
+		if err := json.Unmarshal(data, &legacy); err != nil {
+			return fmt.Errorf("decode legacy local_hosts from config.json: %w", err)
+		}
+		legacyHosts = legacy.LocalHosts
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect legacy config.json: %w", err)
+	}
+
+	var data []byte
+	var err error
+	if len(legacyHosts) == 0 {
+		data, err = fs.ReadFile(embeddedConfigSources, "defaults/local-hosts.txt")
+	} else {
+		data, err = encodeLocalHostsFile(legacyHosts)
+	}
+	if err != nil {
+		return fmt.Errorf("prepare migrated local hosts: %w", err)
+	}
+	if _, err := parseLocalHostsFile(data); err != nil {
+		return fmt.Errorf("validate migrated local hosts: %w", err)
+	}
+	if err := writeAtomicFile(path, data, 0600); err != nil {
+		return fmt.Errorf("create local-hosts.txt: %w", err)
+	}
+	if len(legacyHosts) > 0 {
+		logLine("INFO", "CONFIG_SOURCE_MIGRATED file=local-hosts.txt entries=%d", len(legacyHosts))
+	} else {
+		logLine("INFO", "CONFIG_SOURCE_CREATED file=local-hosts.txt source=embedded_default")
+	}
+	return nil
+}
+
+func parseLocalHostsFile(data []byte) (map[string]LocalHost, error) {
+	if len(data) > webUIAdminMaxFile {
+		return nil, errors.New("file exceeds the size limit")
+	}
+	result := make(map[string]LocalHost)
+	for lineNumber, raw := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, ";")
+		if len(fields) != 3 {
+			return nil, fmt.Errorf("line %d: expected hostname;ipv4[,ipv4...];ipv6[,ipv6...]", lineNumber+1)
+		}
+		host, entry, err := normalizeLocalHostEntry(fields[0], LocalHost{
+			IPv4: splitLocalHostIPs(fields[1]),
+			IPv6: splitLocalHostIPs(fields[2]),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %w", lineNumber+1, err)
+		}
+		if _, exists := result[host]; exists {
+			return nil, fmt.Errorf("line %d: duplicate hostname %q", lineNumber+1, host)
+		}
+		result[host] = entry
+		if len(result) > maxLocalHostEntries {
+			return nil, fmt.Errorf("more than %d host entries", maxLocalHostEntries)
+		}
+	}
+	return result, nil
+}
+
+func splitLocalHostIPs(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	items := strings.Split(raw, ",")
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		out = append(out, strings.TrimSpace(item))
+	}
+	return out
+}
+
+func normalizeLocalHostEntry(rawHost string, entry LocalHost) (string, LocalHost, error) {
+	host := normalizeDomain(rawHost)
+	if !validDNSHostname(host) {
+		return "", LocalHost{}, fmt.Errorf("invalid hostname %q", rawHost)
+	}
+	if len(entry.IPv4) > maxLocalHostIPsPerFamily || len(entry.IPv6) > maxLocalHostIPsPerFamily {
+		return "", LocalHost{}, fmt.Errorf("at most %d IPv4 and %d IPv6 addresses are allowed per hostname", maxLocalHostIPsPerFamily, maxLocalHostIPsPerFamily)
+	}
+	normalized := LocalHost{}
+	seen4, seen6 := map[string]bool{}, map[string]bool{}
+	for _, raw := range entry.IPv4 {
+		ip := net.ParseIP(strings.TrimSpace(raw))
+		if ip == nil || ip.To4() == nil {
+			return "", LocalHost{}, fmt.Errorf("invalid IPv4 address %q", raw)
+		}
+		value := ip.To4().String()
+		if seen4[value] {
+			return "", LocalHost{}, fmt.Errorf("duplicate IPv4 address %q", value)
+		}
+		seen4[value] = true
+		normalized.IPv4 = append(normalized.IPv4, value)
+	}
+	for _, raw := range entry.IPv6 {
+		ip := net.ParseIP(strings.TrimSpace(raw))
+		if ip == nil || ip.To4() != nil || ip.To16() == nil {
+			return "", LocalHost{}, fmt.Errorf("invalid IPv6 address %q", raw)
+		}
+		value := ip.String()
+		if seen6[value] {
+			return "", LocalHost{}, fmt.Errorf("duplicate IPv6 address %q", value)
+		}
+		seen6[value] = true
+		normalized.IPv6 = append(normalized.IPv6, value)
+	}
+	return host, normalized, nil
+}
+
+func encodeLocalHostsFile(hosts map[string]LocalHost) ([]byte, error) {
+	if len(hosts) > maxLocalHostEntries {
+		return nil, fmt.Errorf("more than %d host entries", maxLocalHostEntries)
+	}
+	keys := make([]string, 0, len(hosts))
+	for host := range hosts {
+		keys = append(keys, host)
+	}
+	sort.Strings(keys)
+	var out strings.Builder
+	out.WriteString(localHostsSourceHeader + "\n")
+	seen := make(map[string]bool, len(hosts))
+	for _, rawHost := range keys {
+		host, entry, err := normalizeLocalHostEntry(rawHost, hosts[rawHost])
+		if err != nil {
+			return nil, fmt.Errorf("local_hosts %q: %w", rawHost, err)
+		}
+		if seen[host] {
+			return nil, fmt.Errorf("duplicate local_hosts hostname after normalization: %q", rawHost)
+		}
+		seen[host] = true
+		fmt.Fprintf(&out, "%s;%s;%s\n", host, strings.Join(entry.IPv4, ","), strings.Join(entry.IPv6, ","))
+	}
+	return []byte(out.String()), nil
 }
 
 func parseDoHProviders(data []byte) ([]DoHProvider, error) {
@@ -503,6 +694,12 @@ func applyConfigSources(base Config, sources ConfigSources) (Config, error) {
 	}
 
 	base.Upstreams = upstreams
+	if sources.LocalHosts != nil {
+		base.LocalHosts = make(map[string]LocalHost, len(sources.LocalHosts))
+		for host, entry := range sources.LocalHosts {
+			base.LocalHosts[host] = LocalHost{IPv4: append([]string(nil), entry.IPv4...), IPv6: append([]string(nil), entry.IPv6...)}
+		}
+	}
 	group := base.Groups[groupIndex]
 	group.Upstreams = ordered
 	group.Checks = append([]Check(nil), sources.Checks...)
