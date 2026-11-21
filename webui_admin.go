@@ -612,6 +612,18 @@ func saveWebUISources(dataDir string, update webUISourceUpdate) error {
 			}
 			fields[fieldIndex] = strings.TrimSpace(field)
 		}
+		if update.Kind == "hosts" {
+			host, entry, err := normalizeLocalHostEntry(fields[0], LocalHost{
+				IPv4: splitLocalHostIPs(fields[1]),
+				IPv6: splitLocalHostIPs(fields[2]),
+			})
+			if err != nil {
+				return fmt.Errorf("row %d: %w", index+1, err)
+			}
+			fields[0] = host
+			fields[1] = strings.Join(entry.IPv4, ",")
+			fields[2] = strings.Join(entry.IPv6, ",")
+		}
 		line := strings.Join(fields, ";")
 		if update.Kind == "doh" {
 			isSystemID := strings.EqualFold(fields[0], systemDNSUpstreamID)
