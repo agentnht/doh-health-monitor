@@ -444,21 +444,8 @@ func saveWebUIConfig(dataDir string, view webUIEditableConfig) (bool, error) {
 		return false, fmt.Errorf("config validation failed: %w", err)
 	}
 	configPath := filepath.Join(root, "config.json")
-	original, err := os.ReadFile(configPath)
-	if err != nil {
-		return false, fmt.Errorf("read current config.json for backup: %w", err)
-	}
-	backupPath := configPath + ".bak"
-	if backupInfo, statErr := os.Lstat(backupPath); statErr == nil && backupInfo.Mode()&os.ModeSymlink != 0 {
-		return false, errors.New("refusing to replace a symlink at config.json.bak")
-	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-		return false, fmt.Errorf("inspect config backup: %w", statErr)
-	}
-	if err := writeAtomicFile(backupPath, original, 0600); err != nil {
-		return false, fmt.Errorf("create config.json.bak: %w", err)
-	}
-	if err := writeConfigAtomic(configPath, config); err != nil {
-		return false, fmt.Errorf("save config.json (backup retained): %w", err)
+	if err := writeConfigWithBackup(configPath, config); err != nil {
+		return false, fmt.Errorf("save config.json: %w", err)
 	}
 	return restartRequired, nil
 }
