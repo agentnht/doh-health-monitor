@@ -1580,7 +1580,7 @@ func TestHandleStatusDoesNotExposePrivatePathsOrSystemDNS(t *testing.T) {
 		t.Fatal(err)
 	}
 	if payload["config"] != "" {
-		t.Fatalf("# config field must remain empty in status payload: %#v", payload["config"])
+		t.Fatalf("config field should remain empty in the status payload: %#v", payload["config"])
 	}
 }
 
