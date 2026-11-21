@@ -353,6 +353,7 @@ main() {
     case "$choice" in
       1) run_check || printf '[WARN] Диагностика завершилась с ошибками.\n' >&2 ;;
       2) run_web_ui || printf '[WARN] Не удалось запустить Web UI.\n' >&2 ;;
+      3) run_dns_config || printf '[WARN] DNS-конфигурация не изменена.\n' >&2 ;;
       0) printf 'Выход.\n'; break ;;
       *) printf 'Неизвестный пункт меню.\n' ;;
     esac
