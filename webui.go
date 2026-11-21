@@ -156,7 +156,7 @@ func newWebUIHandlerWithBootstrap(statusURL, sessionToken, bootstrapToken, dataD
 				http.Error(w, "authentication required", http.StatusUnauthorized)
 				return
 			}
-			status, err := fetchWebUIStatus(r.Context(), statusURL)
+			status, err := fetchWebUIStatus(r.Context(), statusURL, dataDir)
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json; charset=utf-8")
 				w.WriteHeader(http.StatusServiceUnavailable)
@@ -251,7 +251,7 @@ func webUIStatusURLFromConfig() (string, error) {
 	return "http://" + net.JoinHostPort(host, port) + "/status", nil
 }
 
-func fetchWebUIStatus(ctx context.Context, statusURL string) (webUIStatus, error) {
+func fetchWebUIStatus(ctx context.Context, statusURL, dataDir string) (webUIStatus, error) {
 	parsed, err := url.Parse(statusURL)
 	if err != nil || parsed.Scheme != "http" || parsed.User != nil || parsed.Host == "" ||
 		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path != "/status" ||
@@ -261,11 +261,16 @@ func fetchWebUIStatus(ctx context.Context, statusURL string) (webUIStatus, error
 	transport := &http.Transport{Proxy: nil}
 	client := &http.Client{Transport: transport, Timeout: 3 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	defer transport.CloseIdleConnections()
+	token, err := readStatusAPIToken(dataDir)
+	if err != nil {
+		return webUIStatus{}, errors.New("local status authentication is unavailable")
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
 	if err != nil {
 		return webUIStatus{}, err
 	}
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := client.Do(req)
 	if err != nil {
 		return webUIStatus{}, err
