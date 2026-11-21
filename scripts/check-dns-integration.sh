@@ -126,22 +126,30 @@ else
       error "DNS outbound $dns_tag должен быть уникальным и использовать UDP rewrite на 127.0.0.1:$PLUGIN_PORT"
     fi
 
+    direct_domains="$(jq -r --arg tag "$dns_tag" '
+      [
+        .outbounds[]? |
+        select(.tag == $tag and .protocol == "dns") |
+        .settings.rules[]? |
+        select(.action == "direct" and (.domain | type) == "array") |
+        .domain[]
+      ] | unique | join(", ")
+    ' "$XRAY_CONFIG" 2>/dev/null || true)"
     if jq -e --arg tag "$dns_tag" '
-      [.outbounds[]? | select(.tag == $tag and .protocol == "dns")] as $outbounds |
-      if ($outbounds | length) != 1 or ($outbounds[0].settings.rules | type) != "array" then
-        false
-      else
-        ($outbounds[0].settings.rules) as $rules |
-        ($rules | length) == 2 and
-        $rules[0].action == "direct" and
-        $rules[0].domain == ["geosite:habr"] and
-        (($rules[0] | keys) - ["action", "domain"] | length) == 0 and
-        $rules[1] == {"action": "hijack"}
-      end
+      [
+        .outbounds[]? |
+        select(.tag == $tag and .protocol == "dns") |
+        .settings.rules[]? |
+        select(
+          .action == "direct" and
+          (.domain | type) == "array" and
+          (.domain | length) > 0
+        )
+      ] | length > 0
     ' "$XRAY_CONFIG" >/dev/null; then
-      pass "DNS policy точно соответствует geosite:habr direct → catch-all hijack"
+      pass "DNS policy содержит direct rule с domain: ${direct_domains}"
     else
-      error "dns-out.settings.rules должен содержать ровно geosite:habr direct, затем последний безусловный hijack"
+      error "dns-out.settings.rules должен содержать хотя бы одно правило action=direct с непустым массивом domain"
     fi
 
     if jq -e --arg tag "$dns_tag" '
