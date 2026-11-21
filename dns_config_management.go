@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -86,7 +87,7 @@ func runDNSConfigCLI(args []string) error {
 	fmt.Println("  2) resolver")
 	fmt.Print("Новый режим [1/2, Enter — отмена]: ")
 	choice, err := reader.ReadString('\n')
-	if err != nil && !errors.Is(err, os.ErrClosed) {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("read mode selection: %w", err)
 	}
 	switch strings.TrimSpace(choice) {
@@ -122,7 +123,7 @@ func runDNSConfigCLI(args []string) error {
 	}
 	fmt.Printf("Будет сохранено: dns_mode=%s, resolver_upstreams=%d. Продолжить? [y/N]: ", cfg.DNSMode, len(cfg.ResolverUpstreams))
 	confirm, err := reader.ReadString('\n')
-	if err != nil && !errors.Is(err, os.ErrClosed) {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("read confirmation: %w", err)
 	}
 	if !strings.EqualFold(strings.TrimSpace(confirm), "y") && !strings.EqualFold(strings.TrimSpace(confirm), "yes") {
