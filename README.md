@@ -421,7 +421,7 @@ accounts.google.com;A,AAAA;1;https://accounts.google.com/.well-known/openid-conf
 
 Для утверждённой схемы DNS path такой:
 
-1. Клиентский WireGuard/TProxy inbound передаёт DNS-трафик в Xray. В конфигурационном снимке из §4.4 пользовательский inbound ещё не показан; inbound `api` на `127.0.0.1:62789` относится к Xray API панели и не заменяет клиентский inbound.
+1. Клиентский WireGuard/TProxy inbound передаёт DNS-трафик в Xray. В примере конфигурации из §4.4 пользовательский inbound не показан; inbound `api` на `127.0.0.1:62789` относится к Xray API панели и не заменяет клиентский inbound. Клиентский path-level smoke test через sing-box → AWG → VPS TProxy уже выполнен для `habr.com` и `example.com`; наблюдения и ограничения доказанного приведены в design doc §8.
 2. Routing rule `network: tcp,udp`, `port: 53` направляет DNS-пакеты в outbound `dns-out`. Это правило стоит до общего `geoip:private` block.
 3. В `dns-out.settings.rules` первое правило `action: direct` с `domain: ["geosite:habr"]` направляет совпавший Geosite QNAME на rewrite target `127.0.0.1:5355`.
 4. `rewriteNetwork: udp` задаёт UDP на локальном участке Xray DNS outbound → plugin listener. Это отдельный участок, не внешний транспорт WireGuard/TProxy.
@@ -431,13 +431,16 @@ accounts.google.com;A,AAAA;1;https://accounts.google.com/.well-known/openid-conf
 
 ### Проверка утверждённой схемы
 
-Пункт 1 SSH-меню запускает read-only checker. Он проверяет наличие:
-- TCP/UDP port-53 routing rule, направленного в DNS outbound с rewrite UDP на plugin listener;
-- Geosite `direct` перед последним безусловным catch-all `hijack`;
-- порядка port-53 rule перед `geoip:private` block, если такой block присутствует;
-- хотя бы одного upstream в `dns.servers` для встроенного DNS Xray.
+Пункт 1 SSH-меню запускает read-only checker. Он проверяет:
+- ровно одно глобальное TCP/UDP port-53 routing rule, направленное в DNS outbound;
+- DNS outbound с UDP rewrite на plugin listener;
+- наличие хотя бы одного DNS rule с `action: "direct"` и непустым массивом `domain`; все найденные значения `domain` выводятся в отчёт. Конкретная категория, число и порядок DNS rules, а также catch-all action checker-ом не фиксируются;
+- порядок port-53 rule перед `geoip:private` block, если такой block присутствует;
+- хотя бы одного upstream в `dns.servers` для встроенного DNS Xray;
+- отсутствие plugin listener в `dns.servers`;
+- текущий DNS mode из Status API и, для `endpoint_ip`, ID/hostname/IP/score активного DoH endpoint-а. URL endpoint-а не выводится.
 
-Checker не изменяет конфигурацию. Он не может доказать наличие Geosite category в реально загруженном asset, фактическое совпадение QNAME, доступность из network namespace Xray или полный путь клиентского трафика. Эти проверки выполняются отдельно на целевом runtime.
+Checker не изменяет конфигурацию. Он остаётся структурной проверкой и сам по себе не доказывает наличие категории в реально загруженном Geosite asset или точное внутреннее решение Xray matcher-а. Клиентские path-level smoke tests через sing-box → AWG → VPS TProxy уже выполнены для `habr.com` и `example.com`; результаты и границы доказанного приведены в [design doc §8](doc/GEOSITE-DNS-ROUTING-DESIGN.md).
 
 ### Отключённые операции изменения Xray
 
