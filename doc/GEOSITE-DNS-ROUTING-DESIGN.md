@@ -502,20 +502,40 @@ Geosite matching расположен на стороне Xray, внутри `dn
 
 Эти клиентские проверки считаются выполненными и не требуют повтора. Ограничение сохраняется: точный внутренний Xray Geosite matcher/rule-decision trace не снимался, а само наличие строки category в JSON или asset не является таким trace. Позднее read-only состояние на установленном VPS checker подтвердил как **9 OK, 0 WARN, 0 FAIL**; он обнаружил `action: direct` с `domain: ["geosite:category-ai-chat-!cn"]`, но намеренно не оценивает внутреннее решение matcher-а.
 
-## 9. Что остаётся проверить до снятия Draft
+## 9. Acceptance этапа 3 — CLI и Web UI management smoke test — PASS (2026-11-21)
 
-Клиентский DNS path через sing-box → AWG → VPS TProxy для `habr.com` и `example.com` уже проверен и описан в §8. ActiveDoH failover и runtime smoke test самого режима `resolver` на VPS также выполнены; повторять эти тесты не требуется.
+Клиентский DNS path через sing-box → AWG → VPS TProxy для `habr.com` и `example.com`, ActiveDoH failover и runtime smoke test самого режима `resolver` выполнены ранее и не повторялись в этом этапе. Здесь проверялись именно новые средства управления режимами.
 
-**Оставшийся обязательный acceptance этап — проверить новые средства управления DNS mode через CLI и Web UI**, поскольку прежние runtime smoke tests режима resolver выполнялись отдельно от новых control surfaces:
+**Исходное состояние и сохранение:**
+- Исходный режим: `endpoint_ip`.
+- Исходный `resolver_upstreams`: один upstream `system` типа `system`; в CLI на предложении JSON был нажат Enter, то есть существующий список оставлен без изменений.
+- До теста создана независимая датированная копия: `config.json.pre-dns-mode-20261121T112345Z`.
+- Исходный `last_reload` был нулевым sentinel `0001-01-01T00:00:00Z`.
 
-1. Сохранить исходный `config.json` в отдельную датированную копию до теста.
-2. Через SSH menu → пункт 3 переключить `dns_mode` с `endpoint_ip` на `resolver`, оставить существующий `resolver_upstreams` без изменений (Enter), подтвердить запись и проверить создание `config.json.bak` с mode `0600`.
-3. Дождаться daemon hot reload (до 30 секунд) и проверить через `/status`, что `dns_mode=resolver`, `last_reload` обновился, `last_error` пустой. Выполнить A и AAAA запросы к `127.0.0.1:5355` и подтвердить, что в режиме resolver возвращаются адреса исходного домена, а не IP DoH endpoint.
-4. Через Web UI → «Конфигурация» убедиться, что загруженный mode равен `resolver`, переключить только DNS mode обратно на `endpoint_ip`, не менять JSON `resolver_upstreams`, сохранить и дождаться hot reload.
-5. Через `/status` подтвердить `dns_mode=endpoint_ip`, актуальный `active_doh` и отсутствие `last_error`. A query должен вернуть активный bootstrap IP DoH endpoint-а с TTL не более 60 секунд; если у endpoint нет IPv6, AAAA NODATA ожидаем.
-6. Проверить, что `config.json.bak` после Web UI save содержит предыдущий рабочий mode `resolver` и имеет права `0600`. Итоговое состояние оставить `endpoint_ip`; Xray config, routing, firewall и TProxy не менять.
+**CLI пункт 3 — переключение на resolver:**
+- Через SSH menu `dhm` → пункт 3 выбран режим `resolver`, текущий resolver list оставлен без изменений, подтверждение `y`.
+- CLI сообщил `[OK] Сохранено: dns_mode=resolver, resolver_upstreams=1` и создание `config.json.bak`.
+- Backup имел mode `0600`; в backup находился предыдущий `endpoint_ip`, а в текущем `config.json` — `resolver`.
+- Status API подтвердил hot reload: `last_reload=2026-11-21T11:25:51.686579621Z`, `last_error=null`, `system_dns_servers=["127.0.0.53"]`, `system_dns_error=null`.
+- Прямые запросы к `127.0.0.1:5355` вернули реальные записи `example.com`: A `104.20.23.154`, `172.66.147.243`; AAAA `2606:4700:10::ac42:93f3`, `2606:4700:10::6814:179a`. TTL ответов был 300 секунд. Это подтверждает resolver mode, а не синтетический IP DoH endpoint-а.
 
-Runtime smoke test вкладки Local hosts и проверка SSH tunnel под non-root/SUDO_USER остаются отдельными follow-up проверками и не являются повторением уже выполненного клиентского DNS path. Полноценная DNSSEC validation плагином не заявляется.
+**Web UI — сохранение возврата на endpoint_ip:**
+- Web UI успешно запущен только на loopback `127.0.0.1:46085`, через SSH tunnel; после проверки управляющий процесс завершился cleanly (`WEB_UI stopped cleanly`).
+- После Web UI save Status API показал `dns_mode=endpoint_ip`, `last_reload=2026-11-21T11:27:51.68340471Z`, `last_error=null`.
+- ActiveDoH: `bezmezhau`, hostname `dns.bezmezhau.com`, IPv4 `143.20.64.55`, IPv6 отсутствует, score `6/8`.
+- Прямой A query к `127.0.0.1:5355` вернул `143.20.64.55` с TTL 60 секунд; AAAA вернул пустой Answer (NODATA), ожидаемый при отсутствии IPv6 у выбранного endpoint-а.
+- После Web UI save `config.json.bak` имел mode `0600` и содержал предыдущий `resolver`; текущий `config.json` содержал `endpoint_ip`.
+
+**Вывод:** CLI save, сохранение неизменённого `resolver_upstreams`, backup/mode `0600`, daemon hot reload/status projection и Web UI save с возвратом в исходный `endpoint_ip` подтверждены. Режим после теста оставлен `endpoint_ip`. Xray config, routing, firewall и TProxy в этом smoke test не менялись.
+
+**Ограничение покрытия:** фактический resolver list на VPS содержал только системный upstream. Runtime добавление новых UDP/TCP/DoH resolver entries через controls не выполнялось; валидация этих типов и порядка покрыта CI/regression tests. Это не блокирует проверку сохранения текущего списка и переключения режима.
+
+Оставшиеся отдельные follow-ups:
+- runtime smoke test вкладки Local hosts;
+- runtime SSH tunnel под non-root/SUDO_USER (root tunnel проверен);
+- точный внутренний Xray Geosite matcher/rule-decision trace не снимался, хотя клиентские path-level smoke tests выполнены.
+
+Полноценная DNSSEC validation плагином не заявляется.
 
 ## 10. Ограничения и границы изменений
 
