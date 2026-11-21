@@ -68,7 +68,7 @@ func checkPluginHealth(opts Options, logger Logger) error {
 		return problem("Invalid DoH Health Monitor systemd service name")
 	}
 	if !IsLocalURL(opts.StatusURL) {
-		return problem("DoH Health Monitor status URL must use localhost/loopback")
+		return problem("DoH Health Monitor health URL must use localhost/loopback")
 	}
 	systemctl, err := exec.LookPath("systemctl")
 	if err != nil {
