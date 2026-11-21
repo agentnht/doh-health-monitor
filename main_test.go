@@ -607,8 +607,8 @@ func TestDefaultConfigUsesSystemDNSFirstAndDoHProviders(t *testing.T) {
 	if strings.Join(google.Upstreams, ",") != strings.Join(want, ",") {
 		t.Errorf("Google upstreams = %v, want %v", google.Upstreams, want)
 	}
-	if len(google.Checks) != 10 {
-		t.Fatalf("Google checks = %d, want 10", len(google.Checks))
+	if len(google.Checks) != 9 {
+		t.Fatalf("Google checks = %d, want 9", len(google.Checks))
 	}
 	var geminiCheck, notebookCheck, accountsCheck *Check
 	for i := range google.Checks {

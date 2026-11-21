@@ -44,8 +44,8 @@ func TestInitializeConfigSourceFilesCreatesEmbeddedDefaults(t *testing.T) {
 	if len(sources.LocalHosts) != 0 || len(sources.Checksums.Hosts) != 64 {
 		t.Fatalf("embedded local hosts source should be empty and hashed: hosts=%+v checksum=%q", sources.LocalHosts, sources.Checksums.Hosts)
 	}
-	if len(sources.Checks) != 10 {
-		t.Fatalf("default checks = %d, want 10", len(sources.Checks))
+	if len(sources.Checks) != 9 {
+		t.Fatalf("default checks = %d, want 9", len(sources.Checks))
 	}
 	if sources.DoHURLs["dagami"] != "https://dns.dagami.ru/dns-query" {
 		t.Fatalf("default Dagami endpoint = %q", sources.DoHURLs["dagami"])
@@ -60,7 +60,6 @@ func TestInitializeConfigSourceFilesCreatesEmbeddedDefaults(t *testing.T) {
 		"elevenlabs.io",
 		"grok.com",
 		"www.perplexity.ai",
-		"notebooklm.google.com",
 		"notebook.google.com",
 		"aistudio.google.com",
 		"accounts.google.com",

@@ -423,9 +423,9 @@ Fallback в двух режимах имеет разную семантику. 
 
 Официальные описания синтаксиса и действий DNS outbound: [Xray DNS outbound (RU)](https://xtls.github.io/ru/config/outbounds/dns.html), [Xray DNS outbound (EN)](https://xtls.github.io/en/config/outbounds/dns.html). Эти документы описывают контракт конфигурации; для конкретного форка/сборки результат подтверждается runtime-проверкой.
 
-## 5. Выбор активного DoH endpoint по восьми контрольным доменам
+## 5. Выбор активного DoH endpoint по семи контрольным доменам
 
-Для режима `endpoint_ip` плагин самостоятельно выбирает один активный DoH endpoint из настроенного списка. Выбор основан на восьми фиксированных контрольных доменах; список не является Geosite policy и не влияет на то, какие пользовательские QNAME направляются в плагин.
+Для режима `endpoint_ip` плагин самостоятельно выбирает один активный DoH endpoint из настроенного списка. Выбор основан на семи фиксированных контрольных доменах; список не является Geosite policy и не влияет на то, какие пользовательские QNAME направляются в плагин.
 
 Контрольные домены:
 - `chatgpt.com`
@@ -434,21 +434,20 @@ Fallback в двух режимах имеет разную семантику. 
 - `elevenlabs.io`
 - `grok.com`
 - `www.perplexity.ai`
-- `notebooklm.google.com`
 - `aistudio.google.com`
 
 Для каждого кандидата выполняются DNS A/AAAA probes через сам проверяемый DoH, затем HTTPS/TLS probes к полученным IP с исходными hostname, SNI, HTTP Host и проверкой сертификата. Результат выбора содержит идентификатор и hostname endpoint-а, IPv4/IPv6 адреса, freshness, generation и score.
 
-В PR #11 самостоятельный selector реализован в `internal/activedoh/selector.go`; runtime bootstrap/probe цикл находится в `active_doh.go` и запускается примерно раз в 5 минут. Score — это фактическое число успешных probes от 0 до 8; **жёсткого порога 6/8 в алгоритме нет**. При первичном выборе подходит любой кандидат с положительным score, выбирается кандидат с наибольшим score. При равном или меньшем score сохраняется текущий endpoint. Новый более сильный кандидат должен показать преимущество два цикла подряд; переключение дополнительно ограничено minimum hold 10 минут и switch cooldown 10 минут. При нулевом score текущий endpoint немедленно заменяется здоровой альтернативой в том же probe cycle, обходя minimum hold и switch cooldown; если здоровой альтернативы нет, выбор сразу отзывается. Максимальный возраст bootstrap endpoint — 6 часов. Наблюдавшийся на VPS `score: 6, check_count: 8` был результатом одного цикла, а не настроенным порогом.
+В PR #11 самостоятельный selector реализован в `internal/activedoh/selector.go`; runtime bootstrap/probe цикл находится в `active_doh.go` и запускается примерно раз в 5 минут. Score — это фактическое число успешных probes от 0 до 7; **жёсткого порога 6/7 в алгоритме нет**. При первичном выборе подходит любой кандидат с положительным score, выбирается кандидат с наибольшим score. При равном или меньшем score сохраняется текущий endpoint. Новый более сильный кандидат должен показать преимущество два цикла подряд; переключение дополнительно ограничено minimum hold 10 минут и switch cooldown 10 минут. При нулевом score текущий endpoint немедленно заменяется здоровой альтернативой в том же probe cycle, обходя minimum hold и switch cooldown; если здоровой альтернативы нет, выбор сразу отзывается. Максимальный возраст bootstrap endpoint — 6 часов. Историческое наблюдение на VPS `score: 6, check_count: 8` относится к прежнему набору до удаления `notebooklm.google.com`; текущий максимум — 7.
 
-Список health-check файла `tst-domen.txt` не является списком Geosite и не управляет маршрутом DNS-пакета. Встроенный default содержит девять проверок: восемь selector control domains и отдельную обязательную OIDC-проверку `accounts.google.com`. Результаты health monitor и ActiveDoHSelector имеют разные назначения и не должны смешиваться.
+Список health-check файла `tst-domen.txt` не является списком Geosite и не управляет маршрутом DNS-пакета. Встроенный default содержит девять проверок: семь selector control domains, отдельную обязательную A/AAAA + HTTPS-проверку `notebook.google.com` и обязательную OIDC-проверку `accounts.google.com`. Результаты health monitor и ActiveDoHSelector имеют разные назначения и не должны смешиваться.
 
 ## 6. Состав реализации PR #11 и границы ответственности
 
 PR #11 должен реализовывать только компоненты, требуемые этим документом:
 
 1. DNS режимы `endpoint_ip` и `resolver` с независимыми наборами upstream и bootstrap-настроек.
-2. ActiveDoHSelector по восьми контрольным доменам для выбора endpoint режима `endpoint_ip`.
+2. ActiveDoHSelector по семи контрольным доменам для выбора endpoint режима `endpoint_ip`.
 3. DNS listener с A/AAAA wire handling, предусмотренной CNAME/EDNS обработкой и согласованной NODATA семантикой для неподдерживаемых QTYPE.
 4. Раздельные cache namespace/generation и TTL/negative-cache поведение режимов.
 5. Read-only проверку установленной конфигурации на соответствие ручной схеме §4.4.
@@ -477,11 +476,11 @@ Geosite matching расположен на стороне Xray, внутри `dn
 ### Реализовано в feature/geosite-dns-routing / PR #11
 
 1. Конфигурационная модель двух взаимоисключающих режимов: `dns_mode: endpoint_ip | resolver`; независимые DoH upstream режима 1 и упорядоченный `resolver_upstreams` режима 2; валидация system/UDP/TCP/DoH upstream и bootstrap-настроек.
-2. ActiveDoHSelector вынесен в `internal/activedoh`; восемь control domains, DNS A/AAAA probes через каждого DoH candidate и HTTPS/TLS probes по IP с исходными hostname/SNI/Host.
+2. ActiveDoHSelector вынесен в `internal/activedoh`; семь control domains, DNS A/AAAA probes через каждого DoH candidate и HTTPS/TLS probes по IP с исходными hostname/SNI/Host.
 3. Режим `endpoint_ip` возвращает bootstrap IP выбранного DoH endpoint-а, а не IP исходного QNAME. TTL положительного ответа ограничен 60 секундами и остатком freshness.
 4. Режим `resolver` выполняет последовательный fallback для system, UDP, TCP и DoH upstream-ов. Транспортные ошибки, timeout, SERVFAIL/REFUSED и неисправимый TC ведут к следующему upstream; валидные NXDOMAIN/NODATA завершают resolution.
 5. Cache пространства режимов разделены. Положительный TTL режима 2 ограничен 300 секундами; negative caching требует SOA и использует `min(SOA RR TTL, SOA.MINIMUM)` с cap 300 секунд. Ответы без SOA и synthetic NODATA не кэшируются.
-6. Default `tst-domen.txt` содержит девять проверок: восемь selector domains и `accounts.google.com`; пользовательские существующие файлы не перезаписываются.
+6. Default `tst-domen.txt` содержит девять проверок: семь selector domains, `notebook.google.com` и `accounts.google.com`; пользовательские существующие файлы не перезаписываются.
 7. Xray Geosite policy остаётся ручной и соответствует §4.4. Read-only checker проверяет структуру правил, но не доказывает фактическую загрузку Geosite asset или end-to-end клиентский путь.
 
 ### Проверки кода и VPS
@@ -522,7 +521,7 @@ Geosite matching расположен на стороне Xray, внутри `dn
 **Web UI — сохранение возврата на endpoint_ip:**
 - Web UI успешно запущен только на loopback `127.0.0.1:46085`, через SSH tunnel; после проверки управляющий процесс завершился cleanly (`WEB_UI stopped cleanly`).
 - После Web UI save Status API показал `dns_mode=endpoint_ip`, `last_reload=2026-11-21T11:27:51.68340471Z`, `last_error=null`.
-- ActiveDoH: `bezmezhau`, hostname `dns.bezmezhau.com`, IPv4 `143.20.64.55`, IPv6 отсутствует, score `6/8`.
+- ActiveDoH: `bezmezhau`, hostname `dns.bezmezhau.com`, IPv4 `143.20.64.55`, IPv6 отсутствует, исторический score `6/8` (до удаления восьмого контрольного домена).
 - Прямой A query к `127.0.0.1:5355` вернул `143.20.64.55` с TTL 60 секунд; AAAA вернул пустой Answer (NODATA), ожидаемый при отсутствии IPv6 у выбранного endpoint-а.
 - После Web UI save `config.json.bak` имел mode `0600` и содержал предыдущий `resolver`; текущий `config.json` содержал `endpoint_ip`.
 

@@ -22,7 +22,7 @@ DoH Health Monitor — локальный DNS sidecar для LucX-UI/Xray. В л
 
 - UDP и TCP DNS listener по умолчанию на `127.0.0.1:5355`; конфигурация принимает только loopback IP literals и валидные порты 1–65535.
 - DNS UDP payload учитывает EDNS buffer size клиента (или 512 байт без EDNS); при нехватке места ответ обрезается по границе RR и получает флаг TC.
-- ActiveDoHSelector: восемь контрольных доменов, A/AAAA DNS probes через кандидатов DoH, затем HTTPS/TLS probes по IP с исходными hostname, SNI, HTTP Host и проверкой сертификата.
+- ActiveDoHSelector: семи контрольным доменам, A/AAAA DNS probes через кандидатов DoH, затем HTTPS/TLS probes по IP с исходными hostname, SNI, HTTP Host и проверкой сертификата.
 - Отдельный режим `endpoint_ip` с TTL до 60 секунд, ограниченным временем актуальности выбранного endpoint-а.
 - Режим `resolver` с последовательным fallback через system, UDP, TCP и DoH upstream-ы; упавшие upstream-ы получают cooldown, а отказ всех upstream-ов возвращает DNS SERVFAIL вместо ложного NODATA.
 - Раздельные cache namespace/generation для двух режимов; режим 2 использует positive cache TTL не более 300 секунд и SOA-based negative caching по RFC 2308.
@@ -302,7 +302,7 @@ Web UI создаёт `local-hosts.txt.bak` с правами `0600` перед 
 
 Обычный health monitor продолжает собирать DNS/HTTP/OIDC результаты по группам `config.json`. Он показывает состояние upstream-ов и не является тем же механизмом, что ActiveDoHSelector.
 
-ActiveDoHSelector режима `endpoint_ip` независимо оценивает настроенные DoH endpoint-ы по восьми контрольным доменам: `chatgpt.com`, `claude.ai`, `gemini.google.com`, `elevenlabs.io`, `grok.com`, `www.perplexity.ai`, `notebooklm.google.com` и `aistudio.google.com`. Для каждого кандидата выполняются A/AAAA запросы через проверяемый DoH, затем HTTPS/TLS probes напрямую к IP сайта с исходным hostname/SNI/Host и проверкой сертификата.
+ActiveDoHSelector режима `endpoint_ip` независимо оценивает настроенные DoH endpoint-ы по семи контрольным доменам: `chatgpt.com`, `claude.ai`, `gemini.google.com`, `elevenlabs.io`, `grok.com`, `www.perplexity.ai` и `aistudio.google.com`. Для каждого кандидата выполняются A/AAAA запросы через проверяемый DoH, затем HTTPS/TLS probes напрямую к IP сайта с исходным hostname/SNI/Host и проверкой сертификата.
 
 Selector использует freshness, score, failure grace cycles, minimum hold и switch cooldown для снижения flapping. Системный resolver не является кандидатом ActiveDoHSelector: он может использоваться отдельно в `resolver_upstreams` режима 2.
 
@@ -382,11 +382,11 @@ accounts.google.com;A,AAAA;1;https://accounts.google.com/.well-known/openid-conf
 
 **HTTP выполняется только при непустом `http_url`.** Флаг `required` не включает и не выключает саму пробу: он определяет только влияние результата на общий статус upstream. Ошибка необязательной DNS/HTTP-проверки видна в диагностике, но не переводит upstream в `down`.
 
-Встроенный шаблон содержит десять проверок: восемь фиксированных доменов ActiveDoHSelector (`chatgpt.com`, `claude.ai`, `gemini.google.com`, `elevenlabs.io`, `grok.com`, `www.perplexity.ai`, `notebooklm.google.com`, `aistudio.google.com`), отдельный `accounts.google.com` для OIDC и дополнительный обязательный `notebook.google.com`. Для `notebook.google.com` выполняются A/AAAA и HTTPS-проверка `https://notebook.google.com/` с ожидаемым HTTP 200. Обязательны HTTP-проверки Gemini, Notebook и OIDC Google Accounts; остальные семь строк служат DNS-диагностикой. Сам ActiveDoHSelector использует свои восемь доменов непосредственно из кода и не читает `tst-domen.txt`.
+Встроенный `tst-domen.txt` содержит девять проверок: семь контрольных доменов ActiveDoHSelector (`chatgpt.com`, `claude.ai`, `gemini.google.com`, `elevenlabs.io`, `grok.com`, `www.perplexity.ai`, `aistudio.google.com`), обязательную A/AAAA + HTTPS-проверку `notebook.google.com` и отдельную OIDC-проверку `accounts.google.com`. Обязательны HTTP-проверки Gemini, Notebook и OIDC Google Accounts; остальные шесть строк являются DNS-диагностикой. Сам ActiveDoHSelector оценивает только семь доменов из своего фиксированного списка и не читает `tst-domen.txt`.
 
 ### 5.6 Автоматическое создание, контроль изменений и config.json
 
-Встроенные шаблоны `defaults/doh-servers.txt` и `defaults/tst-domen.txt` упакованы в бинарник. При первой установке они создают в `$LUCX_PLUGIN_DATA` списки с upstream `pereval;https://free.pereval.top/dns-query` и обязательной A/AAAA + HTTPS-проверкой `notebook.google.com` (HTTP 200). Если файл уже существует, его пользовательское содержимое сохраняется и используется: обновление плагина не добавляет новые строки автоматически и не перезаписывает операторский список. Повреждённый существующий файл также не заменяется шаблоном автоматически. Чтобы получить новые defaults на уже установленной системе, добавьте строки вручную через Web UI или в соответствующие файлы.
+Встроенные шаблоны `defaults/doh-servers.txt` и `defaults/tst-domen.txt` упакованы в бинарник. При первой установке они создают в `$LUCX_PLUGIN_DATA` список DoH upstream-ов (включая `pereval;https://free.pereval.top/dns-query`) и `tst-domen.txt` с девятью проверками: семь selector control domains, обязательной A/AAAA + HTTPS-проверкой `notebook.google.com` (HTTP 200) и OIDC-проверкой `accounts.google.com`. Домен `notebooklm.google.com` больше не входит ни в selector, ни во встроенный health-check. Если файл уже существует, его пользовательское содержимое сохраняется: обновление плагина не добавляет и не удаляет строки автоматически. На уже установленной системе удалите устаревшую строку `notebooklm.google.com;A,AAAA;0;;;0` вручную после резервного копирования `tst-domen.txt`; остальные строки будут сохранены. Повреждённый существующий файл автоматически не заменяется шаблоном.
 
 При запуске и затем каждые 30 секунд плагин рассчитывает SHA-256 обоих файлов. Хэши хранятся только в оперативной памяти процесса — отдельного checksum-файла нет. При изменении содержимого плагин проверяет оба файла, формирует новые `upstreams`, `groups[].upstreams` и `groups[].checks`, атомарно записывает сгенерированный `config.json` и применяет новый runtime-снимок без остановки DNS-процесса.
 
@@ -609,11 +609,11 @@ go test -race ./...
 go vet ./...
 ```
 
-**Автоматические проверки release candidate 2.3.2:**
+**Автоматические проверки версии 2.3.2:**
 - GitHub Actions CI: module tidy, shell/JavaScript syntax, management helper tests, DNS checker tests, `go vet ./...`, `go test ./...`, `go test -race ./...` и Linux amd64 package build.
 - Устаревшие panel mutation helpers, planner/diagnostics, admin-token minting и SQLite dependency удалены; sidecar содержит только read-only plugin preflight, не меняющий LucX-UI/Xray.
 - Регрессионные тесты охватывают анонимный доступ к Web UI, одноразовый bootstrap token, listener validation, Gemini key path, DoH URL redaction, resolver SERVFAIL/cooldown, ActiveDoH hard-failure failover, EDNS-aware UDP truncation, DNS error packet shape, OIDC URL validation, reload interval, pending restart semantics, status redaction, bootstrap public-IP filtering и symlinked configuration sources.
-- Эти проверки выполнены в GitHub Actions. Новый VPS release smoke test для `v2.3.2` оставлен перед публикацией; тесты на установленном релизном ZIP будут выполнены отдельно.
+- Проверки CI выполнены в GitHub Actions. Установочный smoke test опубликованного ZIP на VPS не выполнялся; конфигурация VPS и Xray в рамках подготовки версии не изменялась.
 
 ## 12. Ограничения текущей реализации
 
