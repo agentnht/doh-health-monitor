@@ -223,7 +223,7 @@ run_check() {
 
   printf 'Проверка Xray DNS path выполняется в режиме read-only; конфигурация не изменяется.\n'
   printf '[INFO] Проверяется наличие DNS direct rule с domain; все найденные domain будут выведены. Geosite asset и клиентский end-to-end путь требуют отдельной проверки.\n'
-  if DOH_SKIP_PLUGIN_HEALTH_CHECK=1 bash "$checker_file"; then
+  if LUCX_PLUGIN_DATA="$PLUGIN_DATA_DIR" DOH_SKIP_PLUGIN_HEALTH_CHECK=1 bash "$checker_file"; then
     rc=0
   else
     rc=$?
