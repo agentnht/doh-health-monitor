@@ -11,6 +11,27 @@ import (
 	"strings"
 )
 
+// writeConfigWithBackup is shared by CLI and Web UI for all config.json writes.
+func writeConfigWithBackup(path string, cfg Config) error {
+	original, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read current config.json for backup: %w", err)
+	}
+	backupPath := path + ".bak"
+	if backupInfo, err := os.Lstat(backupPath); err == nil && backupInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("refusing to replace a symlink at config.json.bak")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect config backup: %w", err)
+	}
+	if err := writeAtomicFile(backupPath, original, 0600); err != nil {
+		return fmt.Errorf("create config.json.bak: %w", err)
+	}
+	if err := writeConfigAtomic(path, cfg); err != nil {
+		return fmt.Errorf("atomic config.json replacement failed (backup retained): %w", err)
+	}
+	return nil
+}
+
 // saveDNSModeConfig is the single write path used by the CLI and Web UI.
 // It validates the complete resulting config before creating a backup or
 // replacing config.json. The daemon applies the atomic replacement by hot reload.
@@ -48,21 +69,8 @@ func saveDNSModeConfig(dataDir, mode string, resolvers []ResolverUpstream) (Conf
 	if err := validateConfig(cfg); err != nil {
 		return Config{}, fmt.Errorf("DNS configuration validation failed: %w", err)
 	}
-	original, err := os.ReadFile(path)
-	if err != nil {
-		return Config{}, fmt.Errorf("read current config.json: %w", err)
-	}
-	backupPath := path + ".bak"
-	if backupInfo, err := os.Lstat(backupPath); err == nil && backupInfo.Mode()&os.ModeSymlink != 0 {
-		return Config{}, errors.New("refusing to replace a symlink at config.json.bak")
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return Config{}, fmt.Errorf("inspect config backup: %w", err)
-	}
-	if err := writeAtomicFile(backupPath, original, 0600); err != nil {
-		return Config{}, fmt.Errorf("create config.json.bak: %w", err)
-	}
-	if err := writeConfigAtomic(path, cfg); err != nil {
-		return Config{}, fmt.Errorf("atomic config.json replacement failed (backup retained): %w", err)
+	if err := writeConfigWithBackup(path, cfg); err != nil {
+		return Config{}, err
 	}
 	return cfg, nil
 }
