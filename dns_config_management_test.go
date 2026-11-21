@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 	"fmt"
+	"strings"
 )
 
 func TestSaveDNSModeConfigBacksUpAndPreservesResolverOrder(t *testing.T) {
@@ -107,5 +109,60 @@ func TestValidateResolverUpstreamsEnforcesMaximum(t *testing.T) {
 	}
 	if err := validateResolverUpstreams(upstreams); err == nil {
 		t.Fatal("resolver list larger than maximum unexpectedly accepted")
+	}
+}
+
+func TestRunDNSConfigCLIChangesModeAndResolverListWithBackup(t *testing.T) {
+	dir := newTestWebUIData(t)
+	input := strings.Join([]string{
+		"2",
+		`[{"id":"primary","name":"Primary","type":"udp","address":"9.9.9.9"},{"id":"fallback","name":"Fallback","type":"system"}]`,
+		"yes",
+	}, "\n") + "\n"
+	var output bytes.Buffer
+	if err := runDNSConfigCLIWithIO(nil, dir, bufio.NewReader(strings.NewReader(input)), &output); err != nil {
+		t.Fatalf("run DNS config CLI: %v", err)
+	}
+	cfg, err := loadConfigNoCreate(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DNSMode != "resolver" || len(cfg.ResolverUpstreams) != 2 || cfg.ResolverUpstreams[0].ID != "primary" || cfg.ResolverUpstreams[1].ID != "fallback" {
+		t.Fatalf("CLI saved unexpected DNS mode/upstreams: mode=%s upstreams=%+v", cfg.DNSMode, cfg.ResolverUpstreams)
+	}
+	if !strings.Contains(output.String(), "[OK] Сохранено: dns_mode=resolver") {
+		t.Fatalf("CLI success confirmation missing: %s", output.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.json.bak")); err != nil {
+		t.Fatalf("CLI did not create backup: %v", err)
+	}
+}
+
+func TestRunDNSConfigCLIRejectsBadJSONAndSupportsCancel(t *testing.T) {
+	dir := newTestWebUIData(t)
+	configPath := filepath.Join(dir, "config.json")
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	err = runDNSConfigCLIWithIO(nil, dir, bufio.NewReader(strings.NewReader("2\nnull\ny\n")), &output)
+	if err == nil {
+		t.Fatal("CLI accepted null resolver_upstreams JSON")
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("invalid CLI JSON changed config.json")
+	}
+
+	output.Reset()
+	if err := runDNSConfigCLIWithIO(nil, dir, bufio.NewReader(strings.NewReader("\n")), &output); err != nil {
+		t.Fatalf("cancel should be clean: %v", err)
+	}
+	if !strings.Contains(output.String(), "Изменения отменены") {
+		t.Fatalf("cancel confirmation missing: %s", output.String())
 	}
 }
