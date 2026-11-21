@@ -1097,7 +1097,7 @@ func runWebUIDigTests(address string, checks []Check, transport string) []webUIT
 	}
 	if len(queries) > webUIAdminMaxDigQueries {
 		for index, query := range queries[webUIAdminMaxDigQueries:] {
-			results[index] = webUIDigResult(query.domain, query.qtype, transport, "", 0, fmt.Errorf("лимит проверки: выполнено не более %d DNS-запросов за один запуск", webUIAdminMaxDigQueries), false)
+			results[index+webUIAdminMaxDigQueries] = webUIDigResult(query.domain, query.qtype, transport, "", 0, fmt.Errorf("лимит проверки: выполнено не более %d DNS-запросов за один запуск", webUIAdminMaxDigQueries), false)
 		}
 		queries = queries[:webUIAdminMaxDigQueries]
 	}
