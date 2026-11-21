@@ -1057,11 +1057,11 @@ func TestBootstrapFallbackSourceIsReportedDuringRetryCooldown(t *testing.T) {
 	b := &bootstrapResolver{
 		host:        "doh.example",
 		endpoint:    "https://doh.example/dns-query",
-		fallback:    []string{"192.0.2.77"},
+		fallback:    []string{"8.8.8.8"},
 		lastAttempt: time.Now(),
 		refreshFor:  6 * time.Hour,
 		probe: func(ctx context.Context, endpoint, ip string, timeout time.Duration) (time.Duration, error) {
-			if ip != "192.0.2.77" {
+			if ip != "8.8.8.8" {
 				return 0, fmt.Errorf("unexpected probe IP %s", ip)
 			}
 			return 9 * time.Millisecond, nil
@@ -1072,7 +1072,7 @@ func TestBootstrapFallbackSourceIsReportedDuringRetryCooldown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ip != "192.0.2.77" {
+	if ip != "8.8.8.8" {
 		t.Fatalf("selected IP = %s, want configured fallback", ip)
 	}
 	status := b.status()
