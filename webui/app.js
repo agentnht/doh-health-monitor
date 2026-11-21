@@ -596,6 +596,7 @@
   loadSources().catch(error => {
     notice("doh-note", error.message, false);
     notice("check-note", error.message, false);
+    notice("hosts-note", error.message, false);
   });
   window.setInterval(loadStatus, 15000);
 })();
