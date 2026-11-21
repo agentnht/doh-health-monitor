@@ -430,6 +430,7 @@ func saveWebUIConfig(dataDir string, view webUIEditableConfig) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("existing config.json is invalid: %w", err)
 	}
+	currentConfig := config
 	restartRequired := config.DNSListenUDP != view.DNSListenUDP ||
 		config.DNSListenTCP != view.DNSListenTCP ||
 		config.HTTPListen != view.HTTPListen ||
@@ -454,6 +455,9 @@ func saveWebUIConfig(dataDir string, view webUIEditableConfig) (bool, error) {
 	config = normalizeCacheConfig(config)
 	if err := validateConfig(config); err != nil {
 		return false, fmt.Errorf("config validation failed: %w", err)
+	}
+	if err := validateChangedListenerBinds(config, currentConfig); err != nil {
+		return false, fmt.Errorf("listener preflight failed: %w", err)
 	}
 	config, err = prepareConfigForRuntime(root, config)
 	if err != nil {

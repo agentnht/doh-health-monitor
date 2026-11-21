@@ -105,7 +105,6 @@ type Selector struct {
 
 	activeSince time.Time
 	lastSwitch time.Time
-	activeFailures int
 	betterCandidate string
 	betterCandidateStreak int
 }
@@ -172,21 +171,17 @@ func (s *Selector) Select(candidates []Candidate, results []ProbeResult, now tim
 
 	currentCandidate := eligible[currentID]
 	if currentScore == 0 {
-		s.activeFailures++
-	} else {
-		s.activeFailures = 0
-	}
-
-	// No candidate passed any probe. Keep the current selection for the configured
-	// failure grace cycles, then withdraw it rather than silently choosing an unhealthy server.
-	if bestID == "" || bestScore == 0 {
+		// A zero score is a hard failure, not an ordinary anti-flap improvement.
+		// Never keep returning an endpoint that failed every health probe while a
+		// healthy alternative exists. If no candidate is healthy, withdraw it so
+		// endpoint_ip answers SERVFAIL instead of a stale bootstrap address.
 		s.betterCandidate = ""
 		s.betterCandidateStreak = 0
-		if s.activeFailures >= s.policy.FailureCycles {
-			s.clearCurrent()
-			return Selection{}, false
+		if bestID != "" && bestScore > 0 && bestID != currentID {
+			return s.setCurrent(eligible[bestID], bestScore, len(controlDomains), now), true
 		}
-		return s.refreshCurrent(currentCandidate, currentScore, len(controlDomains), now), true
+		s.clearCurrent()
+		return Selection{}, false
 	}
 
 	// Ties retain the current endpoint. This also makes selection stable across map iteration
@@ -204,9 +199,8 @@ func (s *Selector) Select(candidates []Candidate, results []ProbeResult, now tim
 		s.betterCandidateStreak = 1
 	}
 
-	repeatedFailure := currentScore == 0 && s.activeFailures >= s.policy.FailureCycles
 	repeatedImprovement := s.betterCandidateStreak >= 2
-	if repeatedFailure || (repeatedImprovement && s.canSwitch(now)) {
+	if repeatedImprovement && s.canSwitch(now) {
 		return s.setCurrent(eligible[bestID], bestScore, len(controlDomains), now), true
 	}
 

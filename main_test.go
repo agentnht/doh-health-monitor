@@ -1639,3 +1639,22 @@ func TestLoadConfigNoCreateRejectsSymlink(t *testing.T) {
 		t.Fatal("config loader must reject symlinked config files")
 	}
 }
+
+func TestLoadConfigRejectsSymlinkedStartupConfig(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real-config.json")
+	link := filepath.Join(dir, "config.json")
+	data, err := json.Marshal(defaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadConfig(link); err == nil {
+		t.Fatal("startup config loader must reject a symlinked config.json")
+	}
+}

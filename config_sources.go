@@ -77,7 +77,7 @@ func initializeConfigSourceFiles(dataDir string) error {
 	// Older installations stored URL-only entries. Convert them once to the
 	// stable ID;URL format without changing endpoints or their order.
 	dohPath := filepath.Join(dataDir, "doh-servers.txt")
-	raw, err := os.ReadFile(dohPath)
+	raw, err := readRegularPluginFileNoFollow(dohPath, 2<<20)
 	if err != nil {
 		return fmt.Errorf("read doh-servers.txt: %w", err)
 	}
@@ -279,7 +279,7 @@ func initializeLocalHostsSourceFile(dataDir string) error {
 		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > webUIAdminMaxFile {
 			return errors.New("legacy config.json must be a regular non-symlink file within the size limit")
 		}
-		data, err := os.ReadFile(configPath)
+		data, err := readRegularPluginFileNoFollow(configPath, webUIAdminMaxFile)
 		if err != nil {
 			return fmt.Errorf("read legacy config.json: %w", err)
 		}
