@@ -13,31 +13,40 @@ import (
 )
 
 func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
-	handler := webUIHandler()
+	handler := newWebUIHandlerWithDataDir("http://127.0.0.1:18765/status", "test-session-token", "")
 
-	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:19876/", nil)
+	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:19876/?token=test-session-token", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	req.Host = "127.0.0.1:19876"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET / status=%d, want %d", rec.Code, http.StatusOK)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("bootstrap GET / status=%d, want %d", rec.Code, http.StatusSeeOther)
 	}
-	if !strings.Contains(rec.Body.String(), "DoH Health Monitor") {
-		t.Fatal("placeholder page content is missing")
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != webUISessionCookie || !cookies[0].HttpOnly {
+		t.Fatal("valid one-time bootstrap ticket must issue an HttpOnly session cookie")
+	}
+	pageRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/", nil)
+	pageRequest.Host = "127.0.0.1:19876"
+	pageRequest.AddCookie(cookies[0])
+	pageRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(pageRecorder, pageRequest)
+	if pageRecorder.Code != http.StatusOK {
+		t.Fatalf("authenticated GET / status=%d, want %d", pageRecorder.Code, http.StatusOK)
 	}
 	if rec.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal("Web UI response must not be cached")
 	}
-	if len(rec.Result().Cookies()) != 1 || rec.Result().Cookies()[0].Name != webUISessionCookie {
-		t.Fatal("root page must issue the per-session HttpOnly cookie")
+	if !strings.Contains(pageRecorder.Body.String(), "DoH Health Monitor") {
+		t.Fatal("placeholder page content is missing")
 	}
-	if !strings.Contains(rec.Body.String(), "/app.js") {
+	if !strings.Contains(pageRecorder.Body.String(), "/app.js") {
 		t.Fatal("dashboard JavaScript asset is missing from the page")
 	}
-	page := rec.Body.String()
+	page := pageRecorder.Body.String()
 	if got := strings.Count(page, `<section class="panel dashboard-panel">`); got != 1 {
 		t.Fatalf("dashboard should have exactly one combined data panel, got %d", got)
 	}
@@ -162,13 +171,13 @@ func TestWebUIStatusAPIRequiresSessionAndReturnsSanitizedStatus(t *testing.T) {
 		t.Fatalf("unauthenticated status request=%d, want %d", apiRecorder.Code, http.StatusUnauthorized)
 	}
 
-	rootRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/", nil)
+	rootRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/?token=session-test-token", nil)
 	rootRequest.Host = "127.0.0.1:19876"
 	rootRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(rootRecorder, rootRequest)
 	cookies := rootRecorder.Result().Cookies()
-	if len(cookies) != 1 {
-		t.Fatal("root page did not issue session cookie")
+	if rootRecorder.Code != http.StatusSeeOther || len(cookies) != 1 {
+		t.Fatal("valid bootstrap ticket did not exchange for a session cookie")
 	}
 
 	apiRequest = httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/api/v1/status", nil)
@@ -289,21 +298,36 @@ func TestRunWebUIStopsWhenSupervisorPipeCloses(t *testing.T) {
 		t.Fatal("timed out waiting for Web UI readiness line")
 	}
 	fields := strings.Fields(strings.TrimSpace(line))
-	if len(fields) != 2 || fields[0] != "WEB_UI_READY" || !strings.HasPrefix(fields[1], "port=") {
+	if len(fields) != 3 || fields[0] != "WEB_UI_READY" || !strings.HasPrefix(fields[1], "port=") || !strings.HasPrefix(fields[2], "token=") {
 		t.Fatalf("unexpected readiness protocol: %q", line)
+	}
+	bootstrapToken := strings.TrimPrefix(fields[2], "token=")
+	if len(bootstrapToken) != 43 {
+		t.Fatalf("invalid bootstrap token length in readiness protocol: %q", line)
 	}
 	port, err := strconv.Atoi(strings.TrimPrefix(fields[1], "port="))
 	if err != nil || port < 1 || port > 65535 {
 		t.Fatalf("invalid readiness port in %q", line)
 	}
 
-	response, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
+	client := &http.Client{CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/?token=%s", port, bootstrapToken))
 	if err != nil {
-		t.Fatalf("request placeholder page: %v", err)
+		t.Fatalf("exchange Web UI bootstrap token: %v", err)
 	}
 	_ = response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("Web UI status=%d, want %d", response.StatusCode, http.StatusOK)
+	if response.StatusCode != http.StatusSeeOther || len(response.Cookies()) != 1 {
+		t.Fatalf("Web UI bootstrap response=%d cookies=%d, want redirect and one cookie", response.StatusCode, len(response.Cookies()))
+	}
+	pageRequest, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/", port), nil)
+	pageRequest.AddCookie(response.Cookies()[0])
+	pageResponse, err := client.Do(pageRequest)
+	if err != nil {
+		t.Fatalf("request authenticated placeholder page: %v", err)
+	}
+	_ = pageResponse.Body.Close()
+	if pageResponse.StatusCode != http.StatusOK {
+		t.Fatalf("authenticated Web UI status=%d, want %d", pageResponse.StatusCode, http.StatusOK)
 	}
 
 	if err := controlWrite.Close(); err != nil {

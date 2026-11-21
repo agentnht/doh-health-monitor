@@ -18,11 +18,13 @@ pass "invalid account rejected"
 expected='ssh -o ExitOnForwardFailure=yes -L 19876:127.0.0.1:41237 operator@203.0.113.8'
 [[ "$(build_ssh_tunnel_command 19876 41237 operator 203.0.113.8)" == "$expected" ]] || fail_test "tunnel command format"
 pass "tunnel command uses the selected account"
-[[ "$(parse_web_ui_ready_port 'WEB_UI_READY port=41237')" == "41237" ]] || fail_test "valid readiness line"
-for invalid in "" "WEB_UI_READY port=0" "WEB_UI_READY port=65536" "WEB_UI_READY port=abc" "noise WEB_UI_READY port=19876"; do
+ready_line='WEB_UI_READY port=41237 token=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+[[ "$(parse_web_ui_ready_port "$ready_line")" == "41237" ]] || fail_test "valid readiness line"
+[[ "$(parse_web_ui_ready_token "$ready_line")" == "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" ]] || fail_test "valid bootstrap token"
+for invalid in "" "WEB_UI_READY port=41237" "WEB_UI_READY port=0 token=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" "WEB_UI_READY port=65536 token=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" "WEB_UI_READY port=abc token=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" "noise WEB_UI_READY port=19876 token=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; do
   if parse_web_ui_ready_port "$invalid" >/dev/null 2>&1; then fail_test "invalid readiness accepted: $invalid"; fi
 done
-pass "readiness protocol and port range validated"
+pass "readiness protocol, one-time token and port range validated"
 menu_output="$(show_menu)"
 grep -Fq '3) Переключить DNS mode / настроить resolver upstreams' <<<"$menu_output" || fail_test "DNS mode menu entry"
 grep -Fq '3) run_dns_config' "$SCRIPT_DIR/plugin-management.sh" || fail_test "DNS mode menu dispatch"

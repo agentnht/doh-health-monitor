@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -27,22 +28,31 @@ func newTestWebUIData(t *testing.T) string {
 	return dir
 }
 
+var webUITestSessionCookies sync.Map
+
 func newAuthenticatedWebUIRequest(t *testing.T, handler http.Handler, method, path string, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
 	const host = "127.0.0.1:19876"
-	root := httptest.NewRequest(http.MethodGet, "http://"+host+"/", nil)
-	root.Host = host
-	rootRecorder := httptest.NewRecorder()
-	handler.ServeHTTP(rootRecorder, root)
-	cookies := rootRecorder.Result().Cookies()
-	if len(cookies) != 1 {
-		t.Fatal("root response did not issue a session cookie")
+	const bootstrapToken = "test-session"
+	cookieValue, ok := webUITestSessionCookies.Load(bootstrapToken)
+	if !ok {
+		root := httptest.NewRequest(http.MethodGet, "http://"+host+"/?token="+bootstrapToken, nil)
+		root.Host = host
+		rootRecorder := httptest.NewRecorder()
+		handler.ServeHTTP(rootRecorder, root)
+		cookies := rootRecorder.Result().Cookies()
+		if rootRecorder.Code != http.StatusSeeOther || len(cookies) != 1 {
+			t.Fatalf("valid bootstrap ticket exchange returned status=%d cookies=%d", rootRecorder.Code, len(cookies))
+		}
+		cookieValue = cookies[0]
+		webUITestSessionCookies.Store(bootstrapToken, cookieValue)
 	}
+	cookie := cookieValue.(*http.Cookie)
 
 	request := httptest.NewRequest(method, "http://"+host+path, bytes.NewReader(body))
 	request.Host = host
 	request.Header.Set("Origin", "http://"+host)
-	request.AddCookie(cookies[0])
+	request.AddCookie(cookie)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	return recorder
@@ -419,11 +429,8 @@ func TestWebUIAdminCheckLogPersistsAndRedactsCredentials(t *testing.T) {
 }
 
 func TestWebUIPageHasManagementTabsButNoPanelMutationActions(t *testing.T) {
-	handler := webUIHandler()
-	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/", nil)
-	request.Host = "127.0.0.1:19876"
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
+	handler := newWebUIHandlerWithDataDir("http://127.0.0.1:18765/status", "test-session", "")
+	recorder := newAuthenticatedWebUIRequest(t, handler, http.MethodGet, "/", nil)
 	page := recorder.Body.String()
 
 	for _, label := range []string{"Конфигурация", "DoH-сервера", "Домены", "Проверка состояния", "Логи", "Geosite DNS"} {
@@ -551,5 +558,33 @@ func TestWebUIDigArgsSelectTransport(t *testing.T) {
 	}
 	if !strings.Contains(tcp, "+tcp") {
 		t.Fatalf("TCP args missing +tcp: %s", tcp)
+	}
+}
+
+
+func TestSaveWebUIGeminiKeyRejectsManagedFileTargets(t *testing.T) {
+	dir := newTestWebUIData(t)
+	configPath := filepath.Join(dir, "config.json")
+	config, err := loadConfigNoCreate(configPath)
+	if err != nil { t.Fatal(err) }
+	config.GeminiAPI.KeyFile = "config.json"
+	if err := writeConfigAtomic(configPath, config); err != nil { t.Fatal(err) }
+	before, err := os.ReadFile(configPath)
+	if err != nil { t.Fatal(err) }
+	if err := saveWebUIGeminiKey(dir, "AAAAAAAAAAAAAAAAAAAAAAAA"); err == nil {
+		t.Fatal("managed config.json target must be rejected")
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil { t.Fatal(err) }
+	if !bytes.Equal(before, after) { t.Fatal("rejected key save modified config.json") }
+}
+
+func TestRedactWebUILogLinePreservesSecretPrefix(t *testing.T) {
+	got := redactWebUILogLine("Authorization: Bearer abc123SECRET")
+	if !strings.Contains(got, "Authorization: Bearer [REDACTED]") {
+		t.Fatalf("secret redaction damaged the prefix: %q", got)
+	}
+	if strings.Contains(got, "abc123SECRET") {
+		t.Fatalf("secret remains in redacted output: %q", got)
 	}
 }
