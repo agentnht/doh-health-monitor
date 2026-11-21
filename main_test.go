@@ -1800,8 +1800,8 @@ func TestBootstrapSelectionGateWaitHonorsContextCancellation(t *testing.T) {
 func TestBootstrapAddressesRetriesWhenNoCachedOrFallbackIPsExist(t *testing.T) {
 	called := false
 	b := &bootstrapResolver{
-		host: "doh.example",
-		resolvers: []string{"1.1.1.1"},
+		host:        "doh.example",
+		resolvers:   []string{"1.1.1.1"},
 		lastAttempt: time.Now(),
 		lookup: func(ctx context.Context, server, host string) ([]net.IP, error) {
 			called = true
@@ -1816,4 +1816,3 @@ func TestBootstrapAddressesRetriesWhenNoCachedOrFallbackIPsExist(t *testing.T) {
 		t.Fatalf("lookup was not retried correctly: called=%t ips=%v", called, ips)
 	}
 }
-
