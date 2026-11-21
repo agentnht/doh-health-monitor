@@ -1653,7 +1653,7 @@ func TestRotateAndReadStatusAPITokenUsesPrivateNoFollowFile(t *testing.T) {
 func TestReadStatusAPITokenRejectsSymlink(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target")
-	if err := os.WriteFile(target, []byte(strings.Repeat("a", 64)+"\\n"), 0600); err != nil {
+	if err := os.WriteFile(target, []byte(strings.Repeat("a", 64)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(target, filepath.Join(dir, statusAPITokenFile)); err != nil {
