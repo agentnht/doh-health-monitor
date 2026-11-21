@@ -121,7 +121,7 @@ func runDNSConfigCLI(args []string) error {
 			resolvers = cfg.ResolverUpstreams
 		}
 	}
-	fmt.Printf("Будет сохранено: dns_mode=%s, resolver_upstreams=%d. Продолжить? [y/N]: ", cfg.DNSMode, len(cfg.ResolverUpstreams))
+	fmt.Printf("Будет сохранено: dns_mode=%s, resolver_upstreams=%d. Продолжить? [y/N]: ", cfg.DNSMode, func() int { if resolvers != nil { return len(resolvers) }; return len(cfg.ResolverUpstreams) }())
 	confirm, err := reader.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("read confirmation: %w", err)
