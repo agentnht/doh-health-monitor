@@ -153,12 +153,15 @@ func TestInitializeConfigSourceFilesMigratesLegacyLocalHosts(t *testing.T) {
 }
 
 func TestParseLocalHostsFileValidatesExactHostAndAddressFamilies(t *testing.T) {
-	got, err := parseLocalHostsFile([]byte(localHostsSourceHeader + "\n# disabled.example;192.0.2.1;\nLOCAL.example.;192.0.2.1,192.0.2.2;2001:db8::1\n"))
+	got, err := parseLocalHostsFile([]byte(localHostsSourceHeader + "\n# disabled.example;192.0.2.1;\nLOCAL.example.;192.0.2.1,192.0.2.2;2001:db8::1\nforced-nodata.example;;\n"))
 	if err != nil {
 		t.Fatalf("valid local hosts rejected: %v", err)
 	}
-	if len(got) != 1 || !reflect.DeepEqual(got["local.example"].IPv4, []string{"192.0.2.1", "192.0.2.2"}) || !reflect.DeepEqual(got["local.example"].IPv6, []string{"2001:db8::1"}) {
+	if len(got) != 2 || !reflect.DeepEqual(got["local.example"].IPv4, []string{"192.0.2.1", "192.0.2.2"}) || !reflect.DeepEqual(got["local.example"].IPv6, []string{"2001:db8::1"}) {
 		t.Fatalf("unexpected parsed local hosts: %+v", got)
+	}
+	if len(got["forced-nodata.example"].IPv4) != 0 || len(got["forced-nodata.example"].IPv6) != 0 {
+		t.Fatalf("legacy empty host entry should be retained to force NODATA: %+v", got["forced-nodata.example"])
 	}
 	for _, raw := range []string{
 		"bad..example;192.0.2.1;",
