@@ -1796,3 +1796,24 @@ func TestBootstrapSelectionGateWaitHonorsContextCancellation(t *testing.T) {
 		t.Fatalf("first selection failed: %v", err)
 	}
 }
+
+func TestBootstrapAddressesRetriesWhenNoCachedOrFallbackIPsExist(t *testing.T) {
+	called := false
+	b := &bootstrapResolver{
+		host: "doh.example",
+		resolvers: []string{"1.1.1.1"},
+		lastAttempt: time.Now(),
+		lookup: func(ctx context.Context, server, host string) ([]net.IP, error) {
+			called = true
+			return []net.IP{net.ParseIP("8.8.8.8")}, nil
+		},
+	}
+	ips, err := b.addresses(context.Background(), false)
+	if err != nil {
+		t.Fatalf("bootstrap lookup should retry when no cached/fallback address exists: %v", err)
+	}
+	if !called || len(ips) != 1 || ips[0] != "8.8.8.8" {
+		t.Fatalf("lookup was not retried correctly: called=%t ips=%v", called, ips)
+	}
+}
+
