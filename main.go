@@ -898,8 +898,8 @@ func validateConfig(c Config) error {
 		return errors.New("exactly one group with id 'google' is required")
 	}
 	if c.GeminiAPI.Enabled {
-		if filepath.IsAbs(c.GeminiAPI.KeyFile) || strings.HasPrefix(filepath.Clean(c.GeminiAPI.KeyFile), "..") {
-			return errors.New("gemini_api.key_file must be a relative path inside LUCX_PLUGIN_DATA")
+		if !validGeminiKeyFilePath(c.GeminiAPI.KeyFile) {
+			return errors.New("gemini_api.key_file must be a safe, non-managed relative path inside LUCX_PLUGIN_DATA")
 		}
 		if !groups[c.GeminiAPI.GroupID] {
 			return errors.New("gemini_api.group_id must reference a configured group")
@@ -927,8 +927,36 @@ func validDNSHostname(host string) bool {
 	return true
 }
 func validListen(s string) bool {
-	h, p, e := net.SplitHostPort(s)
-	return e == nil && h != "" && p != ""
+	h, p, err := net.SplitHostPort(strings.TrimSpace(s))
+	if err != nil || h == "" {
+		return false
+	}
+	port, err := strconv.Atoi(p)
+	if err != nil || port < 1 || port > 65535 {
+		return false
+	}
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(h, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+func validGeminiKeyFilePath(value string) bool {
+	clean := filepath.Clean(strings.TrimSpace(value))
+	if clean == "" || clean == "." || filepath.IsAbs(clean) ||
+		clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) ||
+		strings.ContainsRune(clean, 0) {
+		return false
+	}
+	// These files are managed by the plugin itself and must never be used as
+	// a destination for a user-supplied Gemini API key.
+	switch strings.ToLower(filepath.Base(clean)) {
+	case "config.json", "doh-servers.txt", "tst-domen.txt", localHostsSourceFile,
+		"plugin.log", "webui-admin-check.log":
+		return false
+	}
+	return true
 }
 func normalizeDomain(s string) string {
 	return strings.Trim(strings.ToLower(strings.TrimSpace(s)), ".")
@@ -1604,7 +1632,7 @@ func sendDoH(ctx context.Context, u *UpstreamRuntime, packet []byte) ([]byte, er
 		}
 	}
 	if e != nil {
-		return nil, e
+		return nil, safeDoHRequestError(u.cfg.URL)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
@@ -1622,6 +1650,20 @@ func sendDoH(ctx context.Context, u *UpstreamRuntime, packet []byte) ([]byte, er
 	}
 	return b, nil
 }
+func safeDoHRequestError(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Hostname() == "" {
+		return errors.New("DoH request to configured endpoint failed")
+	}
+	host := parsed.Hostname()
+	if port := parsed.Port(); port != "" {
+		host = net.JoinHostPort(host, port)
+	}
+	// Never include the original url.Error: DoH URLs can contain profile IDs,
+	// API tokens or credentials in their path, query, or user-info fields.
+	return fmt.Errorf("DoH request to %s failed", host)
+}
+
 func (r *Runtime) serveUDP(ctx context.Context, c *net.UDPConn) {
 	r.serveUDPWithHandler(ctx, c, r.handleDNS)
 }
