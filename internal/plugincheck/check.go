@@ -2,7 +2,6 @@ package plugincheck
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -16,7 +15,7 @@ import (
 
 const (
 	defaultService   = "lucx-plugin-doh-health-monitor"
-	defaultStatusURL = "http://127.0.0.1:18765/status"
+	defaultStatusURL = "http://127.0.0.1:18765/healthz"
 )
 
 type Error struct {
@@ -47,7 +46,8 @@ func DefaultOptions() Options {
 
 func IsLocalURL(raw string) bool {
 	u, err := url.Parse(raw)
-	if err != nil || u.Hostname() == "" {
+	if err != nil || u.Scheme != "http" || u.User != nil || u.Hostname() == "" ||
+		u.RawQuery != "" || u.Fragment != "" || u.Path != "/healthz" {
 		return false
 	}
 	if strings.EqualFold(u.Hostname(), "localhost") {
@@ -113,24 +113,20 @@ func checkPluginHealth(opts Options, logger Logger) error {
 	client := &http.Client{Timeout: 3 * time.Second}
 	req, err := http.NewRequest(http.MethodGet, opts.StatusURL, nil)
 	if err != nil {
-		return problem("DoH Health Monitor status URL is invalid")
+		return problem("DoH Health Monitor health URL is invalid")
 	}
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", "text/plain")
 	resp, err := client.Do(req)
 	if err != nil {
-		return problem("DoH Health Monitor status API is unavailable; no panel API operation was attempted")
+		return problem("DoH Health Monitor health endpoint is unavailable; no panel API operation was attempted")
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
-	if err != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 || len(data) > 1<<20 {
-		return problem("DoH Health Monitor status API is unavailable; no panel API operation was attempted")
-	}
-	var status map[string]any
-	if json.Unmarshal(data, &status) != nil || status == nil {
-		return problem("DoH Health Monitor status API returned invalid JSON")
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 65))
+	if err != nil || resp.StatusCode != http.StatusOK || len(data) > 64 || strings.TrimSpace(string(data)) != "ok" {
+		return problem("DoH Health Monitor health endpoint is unavailable; no panel API operation was attempted")
 	}
 	if logger != nil {
-		logger.Printf("PASS: DoH Health Monitor status API returns a JSON object")
+		logger.Printf("PASS: DoH Health Monitor minimal /healthz endpoint returns ok")
 	}
 	return nil
 }
