@@ -2813,8 +2813,43 @@ func (r *Runtime) publishHealthState() {
 		}
 	}
 }
+func configReloadInterval(cfg Config) time.Duration {
+	if cfg.ReloadSecs < 1 || cfg.ReloadSecs > 300 {
+		return configSourcePollInterval
+	}
+	return time.Duration(cfg.ReloadSecs) * time.Second
+}
+
+func listenerSettingsChanged(requested, active Config) bool {
+	return requested.DNSListenUDP != active.DNSListenUDP ||
+		requested.DNSListenTCP != active.DNSListenTCP ||
+		requested.HTTPListen != active.HTTPListen ||
+		requested.DNSMaxConcurrent != active.DNSMaxConcurrent
+}
+
+func preserveActiveListenerSettings(next, active Config) Config {
+	next.DNSListenUDP = active.DNSListenUDP
+	next.DNSListenTCP = active.DNSListenTCP
+	next.HTTPListen = active.HTTPListen
+	next.DNSMaxConcurrent = active.DNSMaxConcurrent
+	return next
+}
+
+func restoreRequestedListenerSettings(persisted, requested Config) Config {
+	persisted.DNSListenUDP = requested.DNSListenUDP
+	persisted.DNSListenTCP = requested.DNSListenTCP
+	persisted.HTTPListen = requested.HTTPListen
+	persisted.DNSMaxConcurrent = requested.DNSMaxConcurrent
+	return persisted
+}
+
 func (r *Runtime) reloadLoop(ctx context.Context) {
-	ticker := time.NewTicker(configSourcePollInterval)
+	initial := r.currentSnapshot()
+	interval := configSourcePollInterval
+	if initial != nil {
+		interval = configReloadInterval(initial.cfg)
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -2872,10 +2907,13 @@ func (r *Runtime) reloadLoop(ctx context.Context) {
 			r.rejectConfigReload("config-error:"+cfi.ModTime().UTC().Format(time.RFC3339Nano)+":"+err.Error(), "CONFIG reload rejected: %v", err)
 			continue
 		}
-		if cfg.DNSListenUDP != old.cfg.DNSListenUDP || cfg.DNSListenTCP != old.cfg.DNSListenTCP || cfg.HTTPListen != old.cfg.HTTPListen || cfg.DNSMaxConcurrent != old.cfg.DNSMaxConcurrent {
-			unlockConfigWrite()
-			r.rejectConfigReload("listener-change:"+cfi.ModTime().UTC().Format(time.RFC3339Nano), "CONFIG listener/dns_max_concurrent change requires plugin restart")
-			continue
+		requestedCfg := cfg
+		pendingListenerRestart := listenerSettingsChanged(requestedCfg, old.cfg)
+		if pendingListenerRestart {
+			// Listeners and the UDP admission semaphore are created at process
+			// start. Keep their active values in the runtime snapshot while
+			// retaining the requested values on disk for the next restart.
+			cfg = preserveActiveListenerSettings(cfg, old.cfg)
 		}
 		cfg, err = applyConfigSources(cfg, sources)
 		if err != nil {
@@ -2889,7 +2927,11 @@ func (r *Runtime) reloadLoop(ctx context.Context) {
 			r.rejectConfigReload(sources.Checksums.Combined+":snapshot:"+err.Error(), "CONFIG snapshot rejected: %v", err)
 			continue
 		}
-		if err := writeConfigAtomic(r.configPath, cfg); err != nil {
+		persistedConfig := cfg
+		if pendingListenerRestart {
+			persistedConfig = restoreRequestedListenerSettings(persistedConfig, requestedCfg)
+		}
+		if err := writeConfigAtomic(r.configPath, persistedConfig); err != nil {
 			unlockConfigWrite()
 			r.rejectConfigReload(sources.Checksums.Combined+":write:"+err.Error(), "CONFIG generated file write failed: %v", err)
 			continue
@@ -2898,6 +2940,7 @@ func (r *Runtime) reloadLoop(ctx context.Context) {
 			ns.configMod = fi.ModTime()
 		}
 		r.snapshot.Store(ns)
+		ticker.Reset(configReloadInterval(ns.cfg))
 		r.initHealth(ns)
 		if old.activeDoHGeneration != ns.activeDoHGeneration {
 			r.clearActiveDoHCache()
@@ -2910,7 +2953,12 @@ func (r *Runtime) reloadLoop(ctx context.Context) {
 		r.mu.Lock()
 		r.lastReload = time.Now().UTC()
 		r.mu.Unlock()
-		r.setError("")
+		if pendingListenerRestart {
+			r.setError("Listener configuration saved; restart plugin to apply listener addresses or concurrency changes")
+			logLine("WARN", "CONFIG listener addresses or dns_max_concurrent changed; values saved and will apply after plugin restart")
+		} else {
+			r.setError("")
+		}
 		unlockConfigWrite()
 		// Run health checks immediately against the newly applied source files.
 		select {

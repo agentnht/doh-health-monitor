@@ -1503,3 +1503,59 @@ func TestDNSUDPResponseLimitUsesEDNSAndTruncatesAtRecordBoundaries(t *testing.T)
 		t.Fatalf("truncated EDNS answer is malformed: records=%+v err=%v", rrs, err)
 	}
 }
+
+
+func TestConfigReloadIntervalUsesConfiguredSeconds(t *testing.T) {
+	for _, test := range []struct {
+		seconds int
+		want time.Duration
+	}{
+		{seconds: 1, want: time.Second},
+		{seconds: 5, want: 5 * time.Second},
+		{seconds: 300, want: 5 * time.Minute},
+	} {
+		cfg := defaultConfig()
+		cfg.ReloadSecs = test.seconds
+		if got := configReloadInterval(cfg); got != test.want {
+			t.Errorf("reload interval for %d seconds = %s, want %s", test.seconds, got, test.want)
+		}
+	}
+	cfg := defaultConfig()
+	cfg.ReloadSecs = 0
+	if got := configReloadInterval(cfg); got != configSourcePollInterval {
+		t.Fatalf("invalid reload interval fallback=%s, want %s", got, configSourcePollInterval)
+	}
+}
+
+func TestReloadKeepsListenerChangesPendingRestartWhileApplyingOtherSettings(t *testing.T) {
+	active := defaultConfig()
+	requested := active
+	requested.DNSListenUDP = "127.0.0.1:5356"
+	requested.DNSListenTCP = "127.0.0.1:5357"
+	requested.HTTPListen = "127.0.0.1:18766"
+	requested.DNSMaxConcurrent = active.DNSMaxConcurrent + 1
+	requested.ReloadSecs = 17
+	requested.Health.TimeoutSeconds = 9
+
+	if !listenerSettingsChanged(requested, active) {
+		t.Fatal("listener changes should be detected")
+	}
+	runtimeConfig := preserveActiveListenerSettings(requested, active)
+	if runtimeConfig.DNSListenUDP != active.DNSListenUDP ||
+		runtimeConfig.DNSListenTCP != active.DNSListenTCP ||
+		runtimeConfig.HTTPListen != active.HTTPListen ||
+		runtimeConfig.DNSMaxConcurrent != active.DNSMaxConcurrent {
+		t.Fatalf("runtime listeners changed before restart: %+v", runtimeConfig)
+	}
+	if runtimeConfig.Health.TimeoutSeconds != 9 || runtimeConfig.ReloadSecs != 17 {
+		t.Fatalf("non-listener settings were not preserved for hot reload: health=%d reload=%d",
+			runtimeConfig.Health.TimeoutSeconds, runtimeConfig.ReloadSecs)
+	}
+	persisted := restoreRequestedListenerSettings(runtimeConfig, requested)
+	if persisted.DNSListenUDP != requested.DNSListenUDP ||
+		persisted.DNSListenTCP != requested.DNSListenTCP ||
+		persisted.HTTPListen != requested.HTTPListen ||
+		persisted.DNSMaxConcurrent != requested.DNSMaxConcurrent {
+		t.Fatalf("requested listener settings were not preserved on disk: %+v", persisted)
+	}
+}
