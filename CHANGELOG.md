@@ -1,3 +1,37 @@
+## [2.3.2] - 2026-11-21
+
+### Security hardening
+- Web UI больше не выдаёт сессионную cookie любому loopback-клиенту: доступ начинается с одноразового bootstrap-токена, который SSH-меню выводит в URL. Токен сравнивается constant-time, потребляется один раз, затем выполняется redirect без секрета в адресной строке.
+- DNS/HTTP listener validation принимает только loopback IP literal и порты 1–65535; внешний bind и некорректные порты отклоняются до сохранения конфигурации.
+- Gemini API key нельзя сохранить поверх `config.json`, файлов источников, логов, backup или временных файлов.
+- Ошибки DoH транспортов больше не раскрывают URL path/query и endpoint credentials; URL выбранного endpoint-а в `/status` ограничен origin.
+- Исправлена маска секретов в Web UI logs; префикс `Authorization: Bearer` сохраняется, значение заменяется на `[REDACTED]`.
+- Чтение `config.json`, DoH/health/local-hosts sources и исходной копии перед backup выполняется без перехода по symlink, с проверкой типа и ограничением размера.
+- Неаутентифицированный loopback `/status` больше не раскрывает полный config path, список системных DNS и ошибки чтения resolver config.
+- Bootstrap IP DoH endpoint-ов фильтруются по глобальной публичной адресации; частные, loopback, link-local, multicast и зарезервированные IP не пробуются.
+- Поиск процесса LucX-UI в legacy integration helpers ограничен процессами текущего effective UID.
+
+### DNS reliability and wire correctness
+- При отказе всех upstream-ов режима `resolver` возвращается DNS `SERVFAIL`, а не синтетический `NOERROR/NODATA`; искусственный ответ не попадает в кэш.
+- Resolver upstream failures используют cooldown, чтобы запросы не ожидали последовательные timeout каждого заранее известного упавшего upstream-а.
+- ActiveDoHSelector быстрее переключается после настроенного числа повторных жёстких отказов: `MinimumHold` и `SwitchCooldown` не удерживают заведомо мёртвый endpoint.
+- UDP DNS payload ограничивается размером, объявленным клиентом в EDNS OPT, либо классическим лимитом 512 байт без EDNS. При усечении ответ сохраняет целые DNS questions/resource records, получает флаг `TC` и согласованные section counts.
+- Error DNS packets теперь содержат корректный заголовок и только валидную question section; malformed короткий запрос получает полноценный 12-byte `FORMERR`.
+- Исправлена индексация результатов Web UI dig test при более чем 50 запросах.
+- OIDC discovery URL с trailing slash/query/fragment отклоняется при разборе, а не проходит валидацию и падает на проверке issuer.
+
+### Reload, management and build
+- `reload_interval_seconds` используется как фактический интервал hot reload; после изменения конфигурации таймер перенастраивается.
+- Изменение listener addresses или `dns_max_concurrent` сохраняется в конфигурации, но runtime использует прежние bound values до перезапуска. Остальные изменения config/source продолжают применяться без блокировки всего reload цикла.
+- Web UI HTTP listener test требует реального ответа `/healthz`; свободный порт больше не считается признаком работающего listener-а.
+- SQLite driver и его read-only test изолированы build tag `legacy_integration`, поэтому production sidecar не выполняет SQLite driver init; legacy test остаётся доступным отдельным opt-in запуском.
+- В legacy process discovery добавлена проверка UID процесса.
+- GitHub CI дополнен `go test -race ./...` и явным прогоном `go test -tags legacy_integration ./internal/dohintegration`.
+
+### Version
+- Go binary, User-Agent strings, management menu и `manifest.json` синхронизированы на `2.3.2`.
+- README дополнен новыми границами безопасности, DNS failover/truncation и правилами hot reload.
+
 # Changelog
 
 ## [2.3.1] - 2026-11-21
