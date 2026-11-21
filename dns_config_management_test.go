@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"fmt"
 )
 
 func TestSaveDNSModeConfigBacksUpAndPreservesResolverOrder(t *testing.T) {
@@ -79,5 +80,32 @@ func TestResolverModeRequiresAtLeastOneUpstream(t *testing.T) {
 	cfg.ResolverUpstreams = []ResolverUpstream{}
 	if err := validateConfig(cfg); err == nil {
 		t.Fatal("resolver mode without upstreams should be rejected")
+	}
+}
+
+func TestParseResolverUpstreamsJSONStrict(t *testing.T) {
+	parsed, err := parseResolverUpstreamsJSON(`[{"id":"primary","type":"udp","address":"9.9.9.9"}]`)
+	if err != nil || len(parsed) != 1 || parsed[0].ID != "primary" {
+		t.Fatalf("valid JSON array rejected: parsed=%+v err=%v", parsed, err)
+	}
+	for _, raw := range []string{
+		`null`,
+		`{"id":"primary","type":"udp","address":"9.9.9.9"}`,
+		`[{"id":"primary","type":"udp","address":"9.9.9.9","unknown":true}]`,
+		`[] []`,
+	} {
+		if _, err := parseResolverUpstreamsJSON(raw); err == nil {
+			t.Fatalf("invalid resolver JSON unexpectedly accepted: %s", raw)
+		}
+	}
+}
+
+func TestValidateResolverUpstreamsEnforcesMaximum(t *testing.T) {
+	upstreams := make([]ResolverUpstream, maxResolverUpstreams+1)
+	for i := range upstreams {
+		upstreams[i] = ResolverUpstream{ID: fmt.Sprintf("resolver-%d", i), Type: "system"}
+	}
+	if err := validateResolverUpstreams(upstreams); err == nil {
+		t.Fatal("resolver list larger than maximum unexpectedly accepted")
 	}
 }
