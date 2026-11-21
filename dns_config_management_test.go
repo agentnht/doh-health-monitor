@@ -166,3 +166,54 @@ func TestRunDNSConfigCLIRejectsBadJSONAndSupportsCancel(t *testing.T) {
 		t.Fatalf("cancel confirmation missing: %s", output.String())
 	}
 }
+
+func TestSaveDNSModeConfigRejectsInvalidSourceFilesBeforeBackup(t *testing.T) {
+	dir := newTestWebUIData(t)
+	configPath := filepath.Join(dir, "config.json")
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "doh-servers.txt"), []byte("not-an-id-url-row\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := saveDNSModeConfig(dir, "resolver", defaultConfig().ResolverUpstreams); err == nil {
+		t.Fatal("invalid DoH source file unexpectedly passed runtime validation")
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("invalid source file caused config.json to change")
+	}
+	if _, err := os.Lstat(configPath + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("invalid runtime config unexpectedly created backup: %v", err)
+	}
+}
+
+func TestWriteConfigWithBackupRejectsBackupSymlink(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(path, []byte(`{"dns_mode":"endpoint_ip"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("must stay unchanged"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path+".bak"); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	cfg := defaultConfig()
+	if err := writeConfigWithBackup(path, cfg); err == nil {
+		t.Fatal("backup symlink should be rejected")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "must stay unchanged" {
+		t.Fatalf("backup symlink target was modified: %q", got)
+	}
+}
