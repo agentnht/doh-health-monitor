@@ -1599,3 +1599,28 @@ func TestHandleStatusDoesNotExposePrivatePathsOrSystemDNS(t *testing.T) {
 		t.Fatalf("config field should be empty for unauthenticated status: %#v", payload["config"])
 	}
 }
+
+
+func TestBootstrapResolverFiltersConfiguredFallbackIPs(t *testing.T) {
+	resolver := &bootstrapResolver{
+		host: "doh.example",
+		fallback: []string{"10.0.0.1", "192.0.2.1", "8.8.8.8", "127.0.0.1"},
+	}
+	ips, err := resolver.addresses(context.Background(), true)
+	if err == nil {
+		t.Fatal("missing bootstrap DNS resolver should be reported")
+	}
+	if !reflect.DeepEqual(ips, []string{"8.8.8.8"}) {
+		t.Fatalf("fallback addresses=%v, want only public 8.8.8.8", ips)
+	}
+}
+
+func TestStatusSafeDoHURLRemovesEndpointCredentials(t *testing.T) {
+	got := statusSafeDoHURL("https://doh.example/private/path?profile=SUPERSECRET#fragment")
+	if got != "https://doh.example" {
+		t.Fatalf("status-safe DoH URL=%q, want origin only", got)
+	}
+	if strings.Contains(got, "SUPERSECRET") || strings.Contains(got, "/private") {
+		t.Fatalf("status URL leaked private endpoint data: %q", got)
+	}
+}
