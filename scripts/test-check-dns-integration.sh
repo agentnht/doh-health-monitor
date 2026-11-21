@@ -85,15 +85,26 @@ cat >"$TMP_DIR/mock-bin/curl" <<'MOCK'
 #!/usr/bin/env bash
 set -e
 out=""
+auth=""
 while (($#)); do
-  if [[ "$1" == "-o" ]]; then out="$2"; shift 2; else shift; fi
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    --header|-H) auth="$2"; shift 2 ;;
+    *) shift ;;
+  esac
 done
 [[ -n "$out" && -n "${MOCK_STATUS_JSON:-}" ]]
+[[ "$auth" == "Authorization: Bearer ${MOCK_STATUS_TOKEN:-}" ]]
 cp "$MOCK_STATUS_JSON" "$out"
 MOCK
 chmod +x "$TMP_DIR/mock-bin/curl"
 export PATH="$TMP_DIR/mock-bin:$PATH"
 export DOH_STATUS_URL="http://status.test/status"
+export MOCK_STATUS_TOKEN="$(printf '%064d' 0)"
+export LUCX_PLUGIN_DATA="$TMP_DIR/status-data"
+mkdir -p "$LUCX_PLUGIN_DATA"
+printf '%s\\n' "$MOCK_STATUS_TOKEN" > "$LUCX_PLUGIN_DATA/status-api.token"
+chmod 0600 "$LUCX_PLUGIN_DATA/status-api.token"
 cat >"$TMP_DIR/status-mode1.json" <<'JSON'
 {"dns_mode":"endpoint_ip","active_doh":{"server_id":"active-test","hostname":"doh.example.net","ipv4":["192.0.2.10"],"ipv6":["2001:db8::10"],"score":6,"check_count":8}}
 JSON
