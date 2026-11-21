@@ -59,6 +59,7 @@ type webUIStatus struct {
 	DNSTCP        string                     `json:"dns_tcp"`
 	HTTP          string                     `json:"http"`
 	Cache         CacheStatus                `json:"cache"`
+	ActiveDoH     *ActiveDoHStatus            `json:"active_doh,omitempty"`
 	Groups        map[string]webUIGroupStatus `json:"groups"`
 	GeminiAPI     string                     `json:"gemini_api"`
 	Queries       uint64                     `json:"queries"`
@@ -137,7 +138,7 @@ func newWebUIHandlerWithDataDir(statusURL, sessionToken, dataDir string) http.Ha
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(status)
 		case "/api/v1/config", "/api/v1/config/defaults", "/api/v1/sources",
-			"/api/v1/gemini-key", "/api/v1/logs", "/api/v1/integration/logs",
+			"/api/v1/gemini-key", "/api/v1/logs",
 			"/api/v1/tests/run", "/api/v1/integration":
 			if !webUIRequestAuthorized(r, sessionToken) {
 				http.Error(w, "authentication required", http.StatusUnauthorized)
@@ -254,7 +255,7 @@ func fetchWebUIStatus(ctx context.Context, statusURL string) (webUIStatus, error
 	}
 	out := webUIStatus{
 		ID: raw.ID, Version: raw.Version, StartedAt: raw.StartedAt, UpdatedAt: raw.UpdatedAt,
-		DNSUDP: raw.DNSUDP, DNSTCP: raw.DNSTCP, HTTP: raw.HTTP, Cache: raw.Cache,
+		DNSUDP: raw.DNSUDP, DNSTCP: raw.DNSTCP, HTTP: raw.HTTP, Cache: raw.Cache, ActiveDoH: raw.ActiveDoH,
 		Groups: map[string]webUIGroupStatus{}, GeminiAPI: raw.GeminiAPI,
 		Queries: raw.Queries, CacheHits: raw.CacheHits, Failures: raw.Failures,
 		ActiveUDP: raw.ActiveUDP, UDPQueueDepth: raw.UDPQueueDepth, UDPDropped: raw.UDPDropped,
