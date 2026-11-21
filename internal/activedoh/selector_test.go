@@ -277,3 +277,49 @@ func TestConfigGenerationChangeInvalidatesActiveSelection(t *testing.T) {
 		t.Fatalf("config generation change was not published: %+v", updated)
 	}
 }
+
+
+func TestRepeatedHardFailureBypassesMinimumHoldAndCooldown(t *testing.T) {
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	policy := DefaultPolicy()
+	policy.MinimumHold = 10 * time.Minute
+	policy.SwitchCooldown = 10 * time.Minute
+	policy.FailureCycles = 2
+	s := NewSelector(policy)
+	a := candidate("a", "192.0.2.1", now)
+	b := candidate("b", "192.0.2.2", now)
+	if _, ok := s.Select([]Candidate{a, b}, results("a", 8, now), now); !ok {
+		t.Fatal("failed to select initial endpoint")
+	}
+	first := now.Add(5 * time.Second)
+	selected, ok := s.Select([]Candidate{a, b}, append(results("a", 0, first), results("b", 8, first)...), first)
+	if !ok || selected.Candidate.ServerID != "a" {
+		t.Fatalf("first failure cycle should retain current endpoint: %+v", selected)
+	}
+	second := first.Add(5 * time.Second)
+	selected, ok = s.Select([]Candidate{a, b}, append(results("a", 0, second), results("b", 8, second)...), second)
+	if !ok || selected.Candidate.ServerID != "b" {
+		t.Fatalf("second hard failure should fail over before hold/cooldown: %+v", selected)
+	}
+}
+
+func TestRepeatedHardFailureWithdrawsWithoutWaitingForMinimumHold(t *testing.T) {
+	now := time.Date(2026, 11, 21, 13, 0, 0, 0, time.UTC)
+	policy := DefaultPolicy()
+	policy.MinimumHold = 10 * time.Minute
+	policy.SwitchCooldown = 10 * time.Minute
+	policy.FailureCycles = 2
+	s := NewSelector(policy)
+	a := candidate("a", "192.0.2.1", now)
+	if _, ok := s.Select([]Candidate{a}, results("a", 8, now), now); !ok {
+		t.Fatal("failed to select initial endpoint")
+	}
+	first := now.Add(5 * time.Second)
+	if _, ok := s.Select([]Candidate{a}, results("a", 0, first), first); !ok {
+		t.Fatal("first failure cycle unexpectedly withdrew endpoint")
+	}
+	second := first.Add(5 * time.Second)
+	if _, ok := s.Select([]Candidate{a}, results("a", 0, second), second); ok {
+		t.Fatal("second hard failure should withdraw endpoint before minimum hold")
+	}
+}
