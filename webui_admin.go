@@ -1296,9 +1296,9 @@ func runWebUIPluginPreflight(dataDir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("configured HTTP listener: %w", err)
 	}
-	statusURL := "http://" + httpAddress + "/status"
+	statusURL := "http://" + httpAddress + "/healthz"
 	if !plugincheck.IsLocalURL(statusURL) {
-		return "", errors.New("configured status endpoint must use loopback")
+		return "", errors.New("configured health endpoint must use loopback")
 	}
 
 	logger := &webUIAdminLogger{dataDir: root}
