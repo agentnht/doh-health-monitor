@@ -33,7 +33,7 @@ import (
 
 const (
 	pluginID      = "doh-health-monitor"
-	pluginVersion = "2.3.0"
+	pluginVersion = "2.3.1"
 	systemDNSUpstreamID = "system-dns"
 	systemResolvConfPath = "/etc/resolv.conf"
 	systemDNSPerServerTimeout = 2 * time.Second
