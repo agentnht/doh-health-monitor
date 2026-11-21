@@ -115,7 +115,6 @@ func prepareConfigForRuntime(dataDir string, cfg Config) (Config, error) {
 	return cfg, nil
 }
 
-
 func validateChangedListenerBinds(requested, current Config) error {
 	if requested.DNSListenTCP == requested.HTTPListen {
 		return errors.New("dns_listen_tcp and http_listen cannot use the same address and port")

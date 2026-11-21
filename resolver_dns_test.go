@@ -3,15 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
-	"io"
 	"encoding/binary"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -19,18 +19,24 @@ import (
 func startMode2TestUDPResolver(t *testing.T, handler func([]byte) []byte) (string, *atomic.Int32) {
 	t.Helper()
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { _ = conn.Close() })
 	count := &atomic.Int32{}
 	go func() {
 		buffer := make([]byte, maxDNSMessage+1)
 		for {
 			n, address, readErr := conn.ReadFromUDP(buffer)
-			if readErr != nil { return }
+			if readErr != nil {
+				return
+			}
 			query := append([]byte(nil), buffer[:n]...)
 			count.Add(1)
 			response := handler(query)
-			if len(response) > 0 { _, _ = conn.WriteToUDP(response, address) }
+			if len(response) > 0 {
+				_, _ = conn.WriteToUDP(response, address)
+			}
 		}
 	}()
 	return conn.LocalAddr().String(), count
@@ -39,7 +45,9 @@ func startMode2TestUDPResolver(t *testing.T, handler func([]byte) []byte) (strin
 func mode2ResponseWithRCode(query []byte, rcode uint16) []byte {
 	response := newDNSResponseHeader(query)
 	_, _, questionEnd, err := parseQuestion(query)
-	if err == nil && questionEnd <= len(query) { response = append(response, query[12:questionEnd]...) }
+	if err == nil && questionEnd <= len(query) {
+		response = append(response, query[12:questionEnd]...)
+	}
 	flags := binary.BigEndian.Uint16(response[2:4])
 	binary.BigEndian.PutUint16(response[2:4], (flags&0xfff0)|(rcode&0x000f))
 	return response
@@ -91,7 +99,7 @@ func mode2CNAMEAndSOAResponse(query []byte, cnameTTL, soaTTL, minimum uint32) []
 	response = append(response, byte(len(soaData)>>8), byte(len(soaData)))
 	response = append(response, soaData...)
 
-	binary.BigEndian.PutUint16(response[6:8], 1) // one CNAME answer
+	binary.BigEndian.PutUint16(response[6:8], 1)  // one CNAME answer
 	binary.BigEndian.PutUint16(response[8:10], 1) // one SOA authority RR
 	return response
 }
@@ -107,11 +115,15 @@ func TestMode2FallsBackAfterSERVFAIL(t *testing.T) {
 		},
 	}
 	response, selected, err := (&Runtime{}).queryResolverUpstreams(context.Background(), snapshot, makeDNSQuery("mode2.example", 1))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if selected != "good" || dnsRCode(response) != 0 || dnsAnswerCount(response) != 1 {
 		t.Fatalf("selected=%q rcode=%d answers=%d", selected, dnsRCode(response), dnsAnswerCount(response))
 	}
-	if badCount.Load() != 1 || goodCount.Load() != 1 { t.Fatalf("upstream calls: bad=%d good=%d", badCount.Load(), goodCount.Load()) }
+	if badCount.Load() != 1 || goodCount.Load() != 1 {
+		t.Fatalf("upstream calls: bad=%d good=%d", badCount.Load(), goodCount.Load())
+	}
 }
 
 func TestMode2DoesNotFallbackAfterNXDOMAIN(t *testing.T) {
@@ -125,14 +137,22 @@ func TestMode2DoesNotFallbackAfterNXDOMAIN(t *testing.T) {
 		},
 	}
 	response, selected, err := (&Runtime{}).queryResolverUpstreams(context.Background(), snapshot, makeDNSQuery("missing.example", 1))
-	if err != nil { t.Fatal(err) }
-	if selected != "first" || dnsRCode(response) != 3 { t.Fatalf("selected=%q rcode=%d, want first/NXDOMAIN", selected, dnsRCode(response)) }
-	if firstCount.Load() != 1 || secondCount.Load() != 0 { t.Fatalf("NXDOMAIN was retried: first=%d second=%d", firstCount.Load(), secondCount.Load()) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != "first" || dnsRCode(response) != 3 {
+		t.Fatalf("selected=%q rcode=%d, want first/NXDOMAIN", selected, dnsRCode(response))
+	}
+	if firstCount.Load() != 1 || secondCount.Load() != 0 {
+		t.Fatalf("NXDOMAIN was retried: first=%d second=%d", firstCount.Load(), secondCount.Load())
+	}
 }
 
 func TestMode2ResolverTransportFailureFallsThrough(t *testing.T) {
 	closed, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	unusedAddress := closed.LocalAddr().String()
 	_ = closed.Close()
 	goodAddress, goodCount := startMode2TestUDPResolver(t, func(query []byte) []byte { return testAResponse(query, 30) })
@@ -144,16 +164,20 @@ func TestMode2ResolverTransportFailureFallsThrough(t *testing.T) {
 		},
 	}
 	response, selected, err := (&Runtime{}).queryResolverUpstreams(context.Background(), snapshot, makeDNSQuery("mode2.example", 1))
-	if err != nil { t.Fatal(err) }
-	if selected != "good" || dnsRCode(response) != 0 || goodCount.Load() != 1 { t.Fatalf("selected=%q rcode=%d good calls=%d", selected, dnsRCode(response), goodCount.Load()) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != "good" || dnsRCode(response) != 0 || goodCount.Load() != 1 {
+		t.Fatalf("selected=%q rcode=%d good calls=%d", selected, dnsRCode(response), goodCount.Load())
+	}
 }
 
 func TestMode2UpstreamFailureReturnsUncachedSERVFAIL(t *testing.T) {
 	query := makeDNSQuery("mode2.example", 1)
 	snapshot := &Snapshot{
-		cfg: Config{DNSMode: "resolver", Cache: CacheConfig{Enabled: true, MaxEntries: 10, MaxBytes: 4096, MaxTTL: 300}, DNSQueryTimeoutSeconds: 2},
+		cfg:                Config{DNSMode: "resolver", Cache: CacheConfig{Enabled: true, MaxEntries: 10, MaxBytes: 4096, MaxTTL: 300}, DNSQueryTimeoutSeconds: 2},
 		resolverGeneration: 99,
-		resolverUpstreams: []*ResolverRuntime{},
+		resolverUpstreams:  []*ResolverRuntime{},
 	}
 	runtime := &Runtime{cache: map[string]cacheItem{}}
 	runtime.snapshot.Store(snapshot)
@@ -161,35 +185,54 @@ func TestMode2UpstreamFailureReturnsUncachedSERVFAIL(t *testing.T) {
 	if dnsRCode(response) != 2 || dnsAnswerCount(response) != 0 || binary.BigEndian.Uint16(response[8:10]) != 0 {
 		t.Fatalf("expected SERVFAIL without answer/authority records; rcode=%d answers=%d authority=%d", dnsRCode(response), dnsAnswerCount(response), binary.BigEndian.Uint16(response[8:10]))
 	}
-	if entries, _ := runtime.cacheStats(); entries != 0 { t.Fatalf("synthetic SERVFAIL was cached: %d entries", entries) }
+	if entries, _ := runtime.cacheStats(); entries != 0 {
+		t.Fatalf("synthetic SERVFAIL was cached: %d entries", entries)
+	}
 }
 
 func TestMode2NODATAAndNXDOMAINRequireSOAForNegativeCache(t *testing.T) {
 	query := makeDNSQuery("negative.example", 1)
-	for _, test := range []struct { name string; rcode uint16 }{
+	for _, test := range []struct {
+		name  string
+		rcode uint16
+	}{
 		{name: "NXDOMAIN", rcode: 3}, {name: "NODATA", rcode: 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			packet := mode2SOAResponse(query, test.rcode, 120, 45)
-			if !prepareMode2ResponseForCache(packet, 300) { t.Fatal("valid SOA negative response should be cacheable") }
+			if !prepareMode2ResponseForCache(packet, 300) {
+				t.Fatal("valid SOA negative response should be cacheable")
+			}
 			ttl, ok := minResponseTTL(packet)
-			if !ok || ttl != 45 { t.Fatalf("negative cache TTL=(%d,%t), want 45", ttl, ok) }
+			if !ok || ttl != 45 {
+				t.Fatalf("negative cache TTL=(%d,%t), want 45", ttl, ok)
+			}
 			soaTTL, ok := negativeSOATTL(packet)
-			if !ok || soaTTL != 45 { t.Fatalf("SOA negative TTL=(%d,%t), want 45", soaTTL, ok) }
+			if !ok || soaTTL != 45 {
+				t.Fatalf("SOA negative TTL=(%d,%t), want 45", soaTTL, ok)
+			}
 		})
 	}
 	withoutSOA := mode2ResponseWithRCode(query, 3)
-	if prepareMode2ResponseForCache(withoutSOA, 300) { t.Fatal("negative response without SOA must not be cached") }
+	if prepareMode2ResponseForCache(withoutSOA, 300) {
+		t.Fatal("negative response without SOA must not be cached")
+	}
 }
 
 func TestMode2PositiveTTLIsCappedAndZeroTTLIsNotCached(t *testing.T) {
 	query := makeDNSQuery("positive.example", 1)
 	packet := testAResponse(query, 900)
-	if !prepareMode2ResponseForCache(packet, 300) { t.Fatal("positive answer should be cacheable") }
+	if !prepareMode2ResponseForCache(packet, 300) {
+		t.Fatal("positive answer should be cacheable")
+	}
 	ttl, ok := minResponseTTL(packet)
-	if !ok || ttl != 300 { t.Fatalf("positive TTL=(%d,%t), want 300", ttl, ok) }
+	if !ok || ttl != 300 {
+		t.Fatalf("positive TTL=(%d,%t), want 300", ttl, ok)
+	}
 	zeroTTL := testAResponse(query, 0)
-	if prepareMode2ResponseForCache(zeroTTL, 300) { t.Fatal("TTL=0 answer must not be cached") }
+	if prepareMode2ResponseForCache(zeroTTL, 300) {
+		t.Fatal("TTL=0 answer must not be cached")
+	}
 }
 
 func TestRRMeaningOfOPTIsNotARecordTTL(t *testing.T) {
@@ -198,9 +241,15 @@ func TestRRMeaningOfOPTIsNotARecordTTL(t *testing.T) {
 	binary.BigEndian.PutUint16(packet[10:12], 1)
 	packet = append(packet, 0, 0, 41, 0x04, 0xd0, 0, 0, 0x80, 0, 0, 0, 0)
 	positions, err := rrTTLPositions(packet)
-	if err != nil { t.Fatal(err) }
-	if len(positions) != 1 { t.Fatalf("TTL positions=%v; OPT must be excluded", positions) }
-	if got := binary.BigEndian.Uint32(packet[positions[0]:positions[0]+4]); got != 120 { t.Fatalf("answer TTL=%d, want 120", got) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(positions) != 1 {
+		t.Fatalf("TTL positions=%v; OPT must be excluded", positions)
+	}
+	if got := binary.BigEndian.Uint32(packet[positions[0] : positions[0]+4]); got != 120 {
+		t.Fatalf("answer TTL=%d, want 120", got)
+	}
 }
 
 func TestMode2CacheInvalidationIsNamespaceScoped(t *testing.T) {
@@ -215,21 +264,27 @@ func TestMode2CacheInvalidationIsNamespaceScoped(t *testing.T) {
 	_, mode1Exists := runtime.cache[mode1Key]
 	_, mode2Exists := runtime.cache[mode2Key]
 	runtime.cacheMu.Unlock()
-	if !mode1Exists || mode2Exists { t.Fatalf("namespace invalidation: mode1=%t mode2=%t", mode1Exists, mode2Exists) }
+	if !mode1Exists || mode2Exists {
+		t.Fatalf("namespace invalidation: mode1=%t mode2=%t", mode1Exists, mode2Exists)
+	}
 }
 
 func TestMode2OldSnapshotCannotRefillCacheAfterResolverReload(t *testing.T) {
 	requestReceived := make(chan struct{})
 	releaseResponse := make(chan struct{})
 	address, _ := startMode2TestUDPResolver(t, func(query []byte) []byte {
-		select { case <-requestReceived: default: close(requestReceived) }
+		select {
+		case <-requestReceived:
+		default:
+			close(requestReceived)
+		}
 		<-releaseResponse
 		return testAResponse(query, 60)
 	})
 	oldSnapshot := &Snapshot{
-		cfg: Config{DNSMode: "resolver", Cache: CacheConfig{Enabled: true, MaxEntries: 10, MaxBytes: 4096, MaxTTL: 300}, DNSQueryTimeoutSeconds: 3},
+		cfg:                Config{DNSMode: "resolver", Cache: CacheConfig{Enabled: true, MaxEntries: 10, MaxBytes: 4096, MaxTTL: 300}, DNSQueryTimeoutSeconds: 3},
 		resolverGeneration: 100,
-		resolverUpstreams: []*ResolverRuntime{{cfg: ResolverUpstream{ID: "old", Type: "udp"}, address: address}},
+		resolverUpstreams:  []*ResolverRuntime{{cfg: ResolverUpstream{ID: "old", Type: "udp"}, address: address}},
 	}
 	newSnapshot := &Snapshot{cfg: Config{DNSMode: "resolver"}, resolverGeneration: 101}
 	runtime := &Runtime{cache: map[string]cacheItem{}}
@@ -239,20 +294,31 @@ func TestMode2OldSnapshotCannotRefillCacheAfterResolverReload(t *testing.T) {
 	go func() { done <- runtime.resolverDNSResponse(query, oldSnapshot) }()
 	select {
 	case <-requestReceived:
-	case <-time.After(2 * time.Second): t.Fatal("resolver did not receive the query")
+	case <-time.After(2 * time.Second):
+		t.Fatal("resolver did not receive the query")
 	}
 	runtime.snapshot.Store(newSnapshot)
 	close(releaseResponse)
 	select {
 	case response := <-done:
-		if dnsRCode(response) != 0 || dnsAnswerCount(response) != 1 { t.Fatalf("unexpected response: rcode=%d answers=%d", dnsRCode(response), dnsAnswerCount(response)) }
-	case <-time.After(3 * time.Second): t.Fatal("resolver response did not complete")
+		if dnsRCode(response) != 0 || dnsAnswerCount(response) != 1 {
+			t.Fatalf("unexpected response: rcode=%d answers=%d", dnsRCode(response), dnsAnswerCount(response))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("resolver response did not complete")
 	}
-	if entries, _ := runtime.cacheStats(); entries != 0 { t.Fatalf("old snapshot repopulated cache: %d", entries) }
+	if entries, _ := runtime.cacheStats(); entries != 0 {
+		t.Fatalf("old snapshot repopulated cache: %d", entries)
+	}
 }
 
 func TestSystemResolverLoopGuardOnlyRejectsPort53Listener(t *testing.T) {
-	tests := []struct { name string; listeners []string; server string; want bool }{
+	tests := []struct {
+		name      string
+		listeners []string
+		server    string
+		want      bool
+	}{
 		{name: "same address and port", listeners: []string{"127.0.0.1:53"}, server: "127.0.0.1", want: true},
 		{name: "plugin default port 5355 is not a loop", listeners: []string{"127.0.0.1:5355"}, server: "127.0.0.1", want: false},
 		{name: "different address", listeners: []string{"127.0.0.1:53"}, server: "8.8.8.8", want: false},
@@ -261,11 +327,12 @@ func TestSystemResolverLoopGuardOnlyRejectsPort53Listener(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			resolver := &systemDNSResolver{listenerAddresses: test.listeners}
-			if got := resolver.pointsBackToPluginListener(test.server); got != test.want { t.Fatalf("pointsBackToPluginListener(%q)=%t, want %t", test.server, got, test.want) }
+			if got := resolver.pointsBackToPluginListener(test.server); got != test.want {
+				t.Fatalf("pointsBackToPluginListener(%q)=%t, want %t", test.server, got, test.want)
+			}
 		})
 	}
 }
-
 
 func TestMode2FirstResponseKeepsUpstreamTTLWhileCacheCapsCopy(t *testing.T) {
 	address, _ := startMode2TestUDPResolver(t, func(query []byte) []byte {
@@ -273,8 +340,8 @@ func TestMode2FirstResponseKeepsUpstreamTTLWhileCacheCapsCopy(t *testing.T) {
 	})
 	snapshot := &Snapshot{
 		cfg: Config{
-			DNSMode: "resolver",
-				Cache: CacheConfig{Enabled: true, MinTTL: 0, MaxTTL: 300, MaxEntries: 10, MaxBytes: 4096},
+			DNSMode:                "resolver",
+			Cache:                  CacheConfig{Enabled: true, MinTTL: 0, MaxTTL: 300, MaxEntries: 10, MaxBytes: 4096},
 			DNSQueryTimeoutSeconds: 3,
 		},
 		resolverGeneration: 77,
@@ -302,7 +369,6 @@ func TestMode2FirstResponseKeepsUpstreamTTLWhileCacheCapsCopy(t *testing.T) {
 		t.Fatalf("cached response TTL=(%d,%t), want 300", cachedTTL, ok)
 	}
 }
-
 
 func TestMode2CNAMEToNODATAUsesSOANegativeTTL(t *testing.T) {
 	query := makeDNSQuery("alias.example", 1)
@@ -353,8 +419,8 @@ func TestMode2CNAMEToNODATAPreservesFirstUpstreamResponse(t *testing.T) {
 	})
 	snapshot := &Snapshot{
 		cfg: Config{
-			DNSMode: "resolver",
-			Cache: CacheConfig{Enabled: true, MinTTL: 0, MaxTTL: 300, MaxEntries: 10, MaxBytes: 4096},
+			DNSMode:                "resolver",
+			Cache:                  CacheConfig{Enabled: true, MinTTL: 0, MaxTTL: 300, MaxEntries: 10, MaxBytes: 4096},
 			DNSQueryTimeoutSeconds: 3,
 		},
 		resolverGeneration: 78,
@@ -408,7 +474,6 @@ func TestMode2CNAMEToNODATAPreservesFirstUpstreamResponse(t *testing.T) {
 		t.Fatalf("cached SOA TTL=%d, want 45", got)
 	}
 }
-
 
 // mode2QueryWithEDNSDO creates an A/AAAA query with EDNS0, DO and a COOKIE
 // option so resolver forwarding can be checked byte-for-byte.
@@ -562,7 +627,6 @@ func TestMode2ResolverForwardsCNAMEAddressAndEDNSDO(t *testing.T) {
 	}
 }
 
-
 func TestMode2DoHResolverForwardsCNAMEAndEDNSDO(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -662,7 +726,6 @@ func TestMode2DoHResolverForwardsCNAMEAndEDNSDO(t *testing.T) {
 		})
 	}
 }
-
 
 func startMode2TestTCPResolver(t *testing.T, handler func([]byte) []byte) (string, *atomic.Int32) {
 	t.Helper()
@@ -796,10 +859,11 @@ func TestMode2SystemResolverQueryRejectsPluginListenerLoop(t *testing.T) {
 	}
 }
 
-
 func TestMode2ResolverCooldownSkipsKnownFailedUpstream(t *testing.T) {
 	closed, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	unusedAddress := closed.LocalAddr().String()
 	_ = closed.Close()
 	goodAddress, goodCount := startMode2TestUDPResolver(t, func(query []byte) []byte {
@@ -815,7 +879,9 @@ func TestMode2ResolverCooldownSkipsKnownFailedUpstream(t *testing.T) {
 		},
 	}
 	response, selected, err := runtime.queryResolverUpstreams(context.Background(), snapshot, makeDNSQuery("mode2.example", 1))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if selected != "good" || dnsRCode(response) != 0 || goodCount.Load() != 1 {
 		t.Fatalf("selected=%q rcode=%d good calls=%d", selected, dnsRCode(response), goodCount.Load())
 	}

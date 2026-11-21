@@ -32,40 +32,40 @@ import (
 )
 
 const (
-	pluginID      = "doh-health-monitor"
-	pluginVersion = "2.3.2"
-	systemDNSUpstreamID = "system-dns"
-	systemResolvConfPath = "/etc/resolv.conf"
+	pluginID                  = "doh-health-monitor"
+	pluginVersion             = "2.3.2"
+	systemDNSUpstreamID       = "system-dns"
+	systemResolvConfPath      = "/etc/resolv.conf"
 	systemDNSPerServerTimeout = 2 * time.Second
-	maxDNSMessage        = 65535
-	maxHTTPBody          = 2 << 20
-	defaultCacheMaxBytes = 8 << 20
-	maxCacheMaxBytes     = 256 << 20
-	maxUDPWorkers        = 64
-	udpQueueCapacity     = 128
-	maxTCPConnections    = 128
-	maxResolverUpstreams = 64
-	tcpIdleTimeout       = 30 * time.Second
-	tcpWriteTimeout      = 10 * time.Second
+	maxDNSMessage             = 65535
+	maxHTTPBody               = 2 << 20
+	defaultCacheMaxBytes      = 8 << 20
+	maxCacheMaxBytes          = 256 << 20
+	maxUDPWorkers             = 64
+	udpQueueCapacity          = 128
+	maxTCPConnections         = 128
+	maxResolverUpstreams      = 64
+	tcpIdleTimeout            = 30 * time.Second
+	tcpWriteTimeout           = 10 * time.Second
 )
 
 type Config struct {
 	LocalHosts             map[string]LocalHost `json:"local_hosts"`
 	DNSMode                string               `json:"dns_mode"`
-	ResolverUpstreams       []ResolverUpstream   `json:"resolver_upstreams"`
-	DNSListenUDP           string          `json:"dns_listen_udp"`
-	DNSListenTCP           string          `json:"dns_listen_tcp"`
-	HTTPListen             string          `json:"http_listen"`
-	ReloadSecs             int             `json:"reload_interval_seconds"`
-	DNSQueryTimeoutSeconds int             `json:"dns_query_timeout_seconds"`
-	DoHTimeoutSeconds      int             `json:"doh_timeout_seconds"`
-	DNSMaxConcurrent       int             `json:"dns_max_concurrent"`
-	Health                 HealthConfig    `json:"health"`
-	Cache                  CacheConfig     `json:"cache"`
-	Upstreams              []Upstream      `json:"upstreams"`
-	BootstrapResolvers     []string        `json:"bootstrap_resolvers,omitempty"`
-	Groups                 []Group         `json:"groups"`
-	GeminiAPI              GeminiAPIConfig `json:"gemini_api"`
+	ResolverUpstreams      []ResolverUpstream   `json:"resolver_upstreams"`
+	DNSListenUDP           string               `json:"dns_listen_udp"`
+	DNSListenTCP           string               `json:"dns_listen_tcp"`
+	HTTPListen             string               `json:"http_listen"`
+	ReloadSecs             int                  `json:"reload_interval_seconds"`
+	DNSQueryTimeoutSeconds int                  `json:"dns_query_timeout_seconds"`
+	DoHTimeoutSeconds      int                  `json:"doh_timeout_seconds"`
+	DNSMaxConcurrent       int                  `json:"dns_max_concurrent"`
+	Health                 HealthConfig         `json:"health"`
+	Cache                  CacheConfig          `json:"cache"`
+	Upstreams              []Upstream           `json:"upstreams"`
+	BootstrapResolvers     []string             `json:"bootstrap_resolvers,omitempty"`
+	Groups                 []Group              `json:"groups"`
+	GeminiAPI              GeminiAPIConfig      `json:"gemini_api"`
 	// Integration is retained only to decode older config.json files. It no longer
 	// controls Xray configuration or enables panel mutation operations.
 	Integration bool `json:"integration"`
@@ -112,7 +112,7 @@ type ResolverRuntime struct {
 	upstream  *UpstreamRuntime
 }
 type Group struct {
-	ID        string   `json:"id"`
+	ID string `json:"id"`
 	// Deprecated legacy fields are accepted for config compatibility and ignored.
 	FakeDNS   bool     `json:"fake_dns,omitempty"`
 	Domains   []string `json:"domains,omitempty"`
@@ -139,15 +139,15 @@ type GeminiAPIConfig struct {
 }
 
 type Snapshot struct {
-	cfg                    Config
-	localHosts             map[string]LocalHost
-	upstreams              map[string]*UpstreamRuntime
-	groups                 map[string]Group
-	resolverUpstreams      []*ResolverRuntime
-	resolverGeneration     uint64
-	activeDoHGeneration    uint64
-	loadedAt               time.Time
-	configMod              time.Time
+	cfg                 Config
+	localHosts          map[string]LocalHost
+	upstreams           map[string]*UpstreamRuntime
+	groups              map[string]Group
+	resolverUpstreams   []*ResolverRuntime
+	resolverGeneration  uint64
+	activeDoHGeneration uint64
+	loadedAt            time.Time
+	configMod           time.Time
 }
 type UpstreamRuntime struct {
 	cfg       Upstream
@@ -157,7 +157,7 @@ type UpstreamRuntime struct {
 }
 
 type systemDNSResolver struct {
-	resolvConfPath   string
+	resolvConfPath    string
 	listenerAddresses []string
 }
 
@@ -228,6 +228,7 @@ func (b *bootstrapResolver) recordProbeSnapshot(candidates []string, source stri
 	b.lastProbe = append([]DoHIPProbeStatus(nil), probes...)
 	b.mu.Unlock()
 }
+
 type ProbeStatus struct {
 	Domain      string `json:"domain"`
 	Required    bool   `json:"required"`
@@ -238,53 +239,53 @@ type ProbeStatus struct {
 	Error       string `json:"error,omitempty"`
 }
 type HealthEntry struct {
-	State            string        `json:"state"`
-	Checks           []ProbeStatus `json:"checks,omitempty"`
-	SuccessStreak    int           `json:"success_streak"`
-	FailureStreak    int           `json:"failure_streak"`
-	LastCheck        time.Time     `json:"last_check,omitempty"`
-	CheckDurationMS  int64         `json:"check_duration_ms,omitempty"`
-	LastError        string        `json:"last_error,omitempty"`
-	LastHTTP         int           `json:"last_http_status,omitempty"`
-	GeminiState      string        `json:"gemini_api_state,omitempty"`
+	State           string        `json:"state"`
+	Checks          []ProbeStatus `json:"checks,omitempty"`
+	SuccessStreak   int           `json:"success_streak"`
+	FailureStreak   int           `json:"failure_streak"`
+	LastCheck       time.Time     `json:"last_check,omitempty"`
+	CheckDurationMS int64         `json:"check_duration_ms,omitempty"`
+	LastError       string        `json:"last_error,omitempty"`
+	LastHTTP        int           `json:"last_http_status,omitempty"`
+	GeminiState     string        `json:"gemini_api_state,omitempty"`
 }
 type GroupStatus struct {
 	ActiveUpstream string                 `json:"active_upstream"`
 	Upstreams      map[string]HealthEntry `json:"upstreams"`
 }
 type Status struct {
-	ID           string                          `json:"id"`
-	Version      string                          `json:"version"`
-	StartedAt    time.Time                       `json:"started_at"`
-	UpdatedAt    time.Time                       `json:"updated_at"`
-	DNSUDP       string                          `json:"dns_udp"`
-	DNSTCP       string                          `json:"dns_tcp"`
-	DNSMode      string                          `json:"dns_mode"`
-	HTTP         string                          `json:"http"`
-	Config       string                          `json:"config"`
-	Cache        CacheStatus                     `json:"cache"`
-	Groups       map[string]GroupStatus          `json:"groups"`
-	DoHBootstrap       map[string]DoHBootstrapStatus `json:"doh_bootstrap,omitempty"`
-	ActiveDoH          *ActiveDoHStatus                 `json:"active_doh,omitempty"`
-	SystemDNSServers    []string                      `json:"system_dns_servers,omitempty"`
-	SystemDNSError      string                        `json:"system_dns_error,omitempty"`
-	GeminiAPI           string                        `json:"gemini_api"`
-	Queries      uint64                          `json:"queries"`
-	CacheHits      uint64                          `json:"cache_hits"`
-	Failures       uint64                          `json:"failures"`
-	ActiveUDP      int64                           `json:"active_udp"`
-	UDPQueueDepth  int64                           `json:"udp_queue_depth"`
-	UDPDropped     uint64                          `json:"udp_dropped"`
-	ActiveTCP      int64                           `json:"active_tcp"`
-	TCPRejected    uint64                          `json:"tcp_rejected"`
-	Goroutines     int                             `json:"goroutines"`
-	HeapAllocBytes uint64                          `json:"heap_alloc_bytes"`
-	HeapInuseBytes uint64                          `json:"heap_inuse_bytes"`
-	HeapSysBytes   uint64                          `json:"heap_sys_bytes"`
-	CPUUserNS      uint64                          `json:"cpu_user_ns"`
-	CPUSystemNS    uint64                          `json:"cpu_system_ns"`
-	LastReload   time.Time                       `json:"last_reload,omitempty"`
-	LastError    string                          `json:"last_error,omitempty"`
+	ID               string                        `json:"id"`
+	Version          string                        `json:"version"`
+	StartedAt        time.Time                     `json:"started_at"`
+	UpdatedAt        time.Time                     `json:"updated_at"`
+	DNSUDP           string                        `json:"dns_udp"`
+	DNSTCP           string                        `json:"dns_tcp"`
+	DNSMode          string                        `json:"dns_mode"`
+	HTTP             string                        `json:"http"`
+	Config           string                        `json:"config"`
+	Cache            CacheStatus                   `json:"cache"`
+	Groups           map[string]GroupStatus        `json:"groups"`
+	DoHBootstrap     map[string]DoHBootstrapStatus `json:"doh_bootstrap,omitempty"`
+	ActiveDoH        *ActiveDoHStatus              `json:"active_doh,omitempty"`
+	SystemDNSServers []string                      `json:"system_dns_servers,omitempty"`
+	SystemDNSError   string                        `json:"system_dns_error,omitempty"`
+	GeminiAPI        string                        `json:"gemini_api"`
+	Queries          uint64                        `json:"queries"`
+	CacheHits        uint64                        `json:"cache_hits"`
+	Failures         uint64                        `json:"failures"`
+	ActiveUDP        int64                         `json:"active_udp"`
+	UDPQueueDepth    int64                         `json:"udp_queue_depth"`
+	UDPDropped       uint64                        `json:"udp_dropped"`
+	ActiveTCP        int64                         `json:"active_tcp"`
+	TCPRejected      uint64                        `json:"tcp_rejected"`
+	Goroutines       int                           `json:"goroutines"`
+	HeapAllocBytes   uint64                        `json:"heap_alloc_bytes"`
+	HeapInuseBytes   uint64                        `json:"heap_inuse_bytes"`
+	HeapSysBytes     uint64                        `json:"heap_sys_bytes"`
+	CPUUserNS        uint64                        `json:"cpu_user_ns"`
+	CPUSystemNS      uint64                        `json:"cpu_system_ns"`
+	LastReload       time.Time                     `json:"last_reload,omitempty"`
+	LastError        string                        `json:"last_error,omitempty"`
 }
 type CacheStatus struct {
 	Enabled    bool `json:"enabled"`
@@ -316,39 +317,39 @@ type cacheOrderEntry struct {
 	generation uint64
 }
 type Runtime struct {
-	dnsSem       chan struct{}
-	dataDir      string
-	configPath   string
-	dohPath      string
-	checksPath   string
-	sourceHashes ConfigSourceChecksums
+	dnsSem                 chan struct{}
+	dataDir                string
+	configPath             string
+	dohPath                string
+	checksPath             string
+	sourceHashes           ConfigSourceChecksums
 	lastRejectedSourceHash string
-	healthCheckTrigger chan struct{}
-	activeDoHTrigger chan struct{}
-	activeDoHSelector *activedoh.Selector
-	snapshot     atomic.Pointer[Snapshot]
-	mu           sync.RWMutex
-	health           map[string]map[string]HealthEntry
-	active           map[string]string
-	upstreamCooldown map[string]time.Time
-	cacheMu        sync.Mutex
-	cache          map[string]cacheItem
-	cacheOrder     []cacheOrderEntry
-	cacheOrderHead int
-	cacheBytes     int
-	cacheSeq       uint64
-	cacheHits      atomic.Uint64
-	activeUDP      atomic.Int64
-	udpQueueDepth  atomic.Int64
-	udpDropped     atomic.Uint64
-	activeTCP      atomic.Int64
-	tcpRejected    atomic.Uint64
-	queries    atomic.Uint64
-	failures   atomic.Uint64
-	lastGemini map[string]time.Time
-	statusMu   sync.RWMutex
-	lastError  string
-	lastReload time.Time
+	healthCheckTrigger     chan struct{}
+	activeDoHTrigger       chan struct{}
+	activeDoHSelector      *activedoh.Selector
+	snapshot               atomic.Pointer[Snapshot]
+	mu                     sync.RWMutex
+	health                 map[string]map[string]HealthEntry
+	active                 map[string]string
+	upstreamCooldown       map[string]time.Time
+	cacheMu                sync.Mutex
+	cache                  map[string]cacheItem
+	cacheOrder             []cacheOrderEntry
+	cacheOrderHead         int
+	cacheBytes             int
+	cacheSeq               uint64
+	cacheHits              atomic.Uint64
+	activeUDP              atomic.Int64
+	udpQueueDepth          atomic.Int64
+	udpDropped             atomic.Uint64
+	activeTCP              atomic.Int64
+	tcpRejected            atomic.Uint64
+	queries                atomic.Uint64
+	failures               atomic.Uint64
+	lastGemini             map[string]time.Time
+	statusMu               sync.RWMutex
+	lastError              string
+	lastReload             time.Time
 }
 
 func main() {
@@ -429,11 +430,11 @@ func main() {
 	}
 	rt := &Runtime{
 		dataDir: dataDir, configPath: configPath, dohPath: dohPath, checksPath: checksPath,
-		sourceHashes: sources.Checksums,
+		sourceHashes:       sources.Checksums,
 		healthCheckTrigger: make(chan struct{}, 1),
-		activeDoHTrigger: make(chan struct{}, 1),
-		activeDoHSelector: activedoh.NewSelector(activedoh.DefaultPolicy()),
-		health: map[string]map[string]HealthEntry{}, active: map[string]string{},
+		activeDoHTrigger:   make(chan struct{}, 1),
+		activeDoHSelector:  activedoh.NewSelector(activedoh.DefaultPolicy()),
+		health:             map[string]map[string]HealthEntry{}, active: map[string]string{},
 		cache: map[string]cacheItem{}, lastGemini: map[string]time.Time{},
 		dnsSem: make(chan struct{}, cfg.DNSMaxConcurrent),
 	}
@@ -530,13 +531,11 @@ func main() {
 	logLine("INFO", "STOP clean=true")
 }
 
-
 type lucxReadOnlyCheckLogger struct{}
 
 func (lucxReadOnlyCheckLogger) Printf(format string, args ...any) {
 	logLine("INFO", "CHECK %s", fmt.Sprintf(format, args...))
 }
-
 
 func fatal(f string, a ...any) { logLine("ERROR", f, a...); os.Exit(1) }
 func envOr(k, d string) string {
@@ -566,7 +565,9 @@ func loadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("decode config: %w", e)
 	}
 	c, e = normalizeConfigGroups(c)
-	if e != nil { return Config{}, e }
+	if e != nil {
+		return Config{}, e
+	}
 	c = normalizeDNSConfig(c)
 	c = normalizeCacheConfig(c)
 	if e = validateConfig(c); e != nil {
@@ -578,11 +579,11 @@ func defaultConfig() Config {
 	c := Config{
 		DNSListenUDP: "127.0.0.1:5355", DNSListenTCP: "127.0.0.1:5355", HTTPListen: "127.0.0.1:18765", ReloadSecs: 5,
 		DNSQueryTimeoutSeconds: 15, DoHTimeoutSeconds: 10, DNSMaxConcurrent: 256,
-		Health: HealthConfig{IntervalSeconds: 25 * 60, TimeoutSeconds: 5, FailureThreshold: 1, SuccessThreshold: 1},
-		Cache:  CacheConfig{Enabled: true, MinTTL: 5, MaxTTL: 300, NegativeTTL: 15, MaxEntries: 8192, MaxBytes: defaultCacheMaxBytes},
-		DNSMode: "endpoint_ip",
-		ResolverUpstreams: []ResolverUpstream{{ID: "system", Name: "System resolver (OS)", Type: "system"}},
-		LocalHosts: map[string]LocalHost{},
+		Health:             HealthConfig{IntervalSeconds: 25 * 60, TimeoutSeconds: 5, FailureThreshold: 1, SuccessThreshold: 1},
+		Cache:              CacheConfig{Enabled: true, MinTTL: 5, MaxTTL: 300, NegativeTTL: 15, MaxEntries: 8192, MaxBytes: defaultCacheMaxBytes},
+		DNSMode:            "endpoint_ip",
+		ResolverUpstreams:  []ResolverUpstream{{ID: "system", Name: "System resolver (OS)", Type: "system"}},
+		LocalHosts:         map[string]LocalHost{},
 		BootstrapResolvers: []string{"1.1.1.1", "8.8.8.8"},
 		Upstreams: []Upstream{
 			{ID: systemDNSUpstreamID, Name: "System DNS (VPS)", Type: "system"},
@@ -991,7 +992,7 @@ func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
 		switch configured.Type {
 		case "system":
 			runtimeResolver.systemDNS = &systemDNSResolver{
-				resolvConfPath: systemResolvConfPath,
+				resolvConfPath:    systemResolvConfPath,
 				listenerAddresses: []string{c.DNSListenUDP, c.DNSListenTCP},
 			}
 		case "udp", "tcp":
@@ -1003,7 +1004,7 @@ func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
 		case "doh":
 			upstream := Upstream{
 				ID: configured.ID, Name: configured.Name, Type: "doh",
-				URL: strings.TrimSpace(configured.URL),
+				URL:          strings.TrimSpace(configured.URL),
 				BootstrapIPs: append([]string(nil), configured.BootstrapIPs...),
 			}
 			client, bootstrap, err := newDoHClient(upstream, resolverBootstrap, time.Duration(c.DoHTimeoutSeconds)*time.Second)
@@ -1015,17 +1016,17 @@ func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
 		s.resolverUpstreams = append(s.resolverUpstreams, runtimeResolver)
 	}
 	s.resolverGeneration = configGeneration(struct {
-		Mode string
-		Resolvers []ResolverUpstream
-		Bootstrap []string
-		Cache CacheConfig
+		Mode       string
+		Resolvers  []ResolverUpstream
+		Bootstrap  []string
+		Cache      CacheConfig
 		LocalHosts map[string]LocalHost
 	}{c.DNSMode, c.ResolverUpstreams, c.BootstrapResolvers, c.Cache, c.LocalHosts})
 	s.activeDoHGeneration = configGeneration(struct {
-		Mode string
-		Upstreams []Upstream
-		DoHURLs map[string]string
-		Bootstrap []string
+		Mode       string
+		Upstreams  []Upstream
+		DoHURLs    map[string]string
+		Bootstrap  []string
 		LocalHosts map[string]LocalHost
 	}{c.DNSMode, c.Upstreams, dohURLs, c.BootstrapResolvers, c.LocalHosts})
 	for host, entry := range c.LocalHosts {
@@ -1052,7 +1053,7 @@ func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
 	for _, u := range c.Upstreams {
 		if u.Type == "system" {
 			s.upstreams[u.ID] = &UpstreamRuntime{
-				cfg: u,
+				cfg:       u,
 				systemDNS: &systemDNSResolver{resolvConfPath: systemResolvConfPath},
 			}
 			continue
@@ -1090,7 +1091,7 @@ func newDoHClient(u Upstream, resolvers []string, timeout time.Duration) (*http.
 		fallback: append([]string(nil), u.BootstrapIPs...), refreshFor: 6 * time.Hour,
 	}
 	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: pu.Hostname()},
+		TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12, ServerName: pu.Hostname()},
 		ForceAttemptHTTP2: true, MaxIdleConns: 16, MaxIdleConnsPerHost: 8,
 		IdleConnTimeout: 60 * time.Second, ResponseHeaderTimeout: 10 * time.Second,
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
@@ -1396,7 +1397,7 @@ func probeDoHIP(ctx context.Context, endpoint, ip string, timeout time.Duration)
 	}
 	start := time.Now()
 	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: parsed.Hostname()},
+		TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12, ServerName: parsed.Hostname()},
 		ForceAttemptHTTP2: true, DisableKeepAlives: true,
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			return (&net.Dialer{Timeout: minDuration(timeout, 5*time.Second)}).
@@ -1410,7 +1411,7 @@ func probeDoHIP(ctx context.Context, endpoint, ip string, timeout time.Duration)
 	defer transport.CloseIdleConnections()
 
 	probe := &UpstreamRuntime{
-		cfg: Upstream{ID: parsed.Hostname(), URL: endpoint},
+		cfg:    Upstream{ID: parsed.Hostname(), URL: endpoint},
 		client: client,
 	}
 	if _, err := sendDoH(ctx, probe, makeDNSQuery("example.com", 1)); err != nil {
@@ -1516,6 +1517,7 @@ func (r *Runtime) orderedUpstreams(gid string, s *Snapshot) []string {
 	}
 	return out
 }
+
 const upstreamFailureCooldown = 30 * time.Second
 
 func (r *Runtime) upstreamsToAttempt(order []string, now time.Time) []string {
@@ -1972,8 +1974,8 @@ func extractEDNSOPT(query []byte) []byte {
 			if err != nil || n+10 > len(query) {
 				return nil
 			}
-			typ := binary.BigEndian.Uint16(query[n:n+2])
-			rdlen := int(binary.BigEndian.Uint16(query[n+8:n+10]))
+			typ := binary.BigEndian.Uint16(query[n : n+2])
+			rdlen := int(binary.BigEndian.Uint16(query[n+8 : n+10]))
 			off = n + 10 + rdlen
 			if off > len(query) {
 				return nil
@@ -2080,8 +2082,8 @@ func (r *Runtime) cachePut(key string, packet []byte, c CacheConfig) {
 	}
 	r.cacheSeq++
 	item := cacheItem{
-		packet: append([]byte(nil), packet...),
-		expires: now.Add(time.Duration(ttl) * time.Second),
+		packet:   append([]byte(nil), packet...),
+		expires:  now.Add(time.Duration(ttl) * time.Second),
 		inserted: now, size: cost, generation: r.cacheSeq,
 	}
 	r.cache[key] = item
@@ -3029,7 +3031,9 @@ func loadConfigNoCreate(path string) (Config, error) {
 		return Config{}, e
 	}
 	c, e = normalizeConfigGroups(c)
-	if e != nil { return Config{}, e }
+	if e != nil {
+		return Config{}, e
+	}
 	c = normalizeDNSConfig(c)
 	c = normalizeCacheConfig(c)
 	if e = validateConfig(c); e != nil {
@@ -3051,10 +3055,10 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 		ID: envOr("LUCX_PLUGIN_ID", pluginID), Version: envOr("LUCX_PLUGIN_VERSION", pluginVersion),
 		StartedAt: startedAt, UpdatedAt: time.Now().UTC(), DNSUDP: s.cfg.DNSListenUDP,
 		DNSTCP: s.cfg.DNSListenTCP, DNSMode: s.cfg.DNSMode, HTTP: s.cfg.HTTPListen,
-		Cache: CacheStatus{Enabled: s.cfg.Cache.Enabled, Entries: cacheEntries, MaxEntries: s.cfg.Cache.MaxEntries, Bytes: cacheBytes, MaxBytes: s.cfg.Cache.MaxBytes},
+		Cache:  CacheStatus{Enabled: s.cfg.Cache.Enabled, Entries: cacheEntries, MaxEntries: s.cfg.Cache.MaxEntries, Bytes: cacheBytes, MaxBytes: s.cfg.Cache.MaxBytes},
 		Groups: map[string]GroupStatus{}, DoHBootstrap: map[string]DoHBootstrapStatus{},
 		ActiveDoH: r.activeDoHStatus(),
-		Queries: r.queries.Load(), CacheHits: r.cacheHits.Load(), Failures: r.failures.Load(),
+		Queries:   r.queries.Load(), CacheHits: r.cacheHits.Load(), Failures: r.failures.Load(),
 		ActiveUDP: r.activeUDP.Load(), UDPQueueDepth: r.udpQueueDepth.Load(), UDPDropped: r.udpDropped.Load(),
 		ActiveTCP: r.activeTCP.Load(), TCPRejected: r.tcpRejected.Load(), Goroutines: runtime.NumGoroutine(),
 		HeapAllocBytes: mem.HeapAlloc, HeapInuseBytes: mem.HeapInuse, HeapSysBytes: mem.HeapSys,

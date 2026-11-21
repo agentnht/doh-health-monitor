@@ -57,9 +57,9 @@ func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 		`class="dashboard-column dashboard-overview"`,
 		`class="dashboard-column dashboard-upstreams"`,
 		`class="metric-list"`,
-			`<h2>DNS listeners</h2>`,
-			`<h2>Запросы и ресурсы</h2>`,
-			`<h2>Upstream-группы</h2>`,
+		`<h2>DNS listeners</h2>`,
+		`<h2>Запросы и ресурсы</h2>`,
+		`<h2>Upstream-группы</h2>`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("dashboard is missing expected layout element %q", want)

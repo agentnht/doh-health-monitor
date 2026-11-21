@@ -85,7 +85,7 @@ func normalizePolicy(p Policy) Policy {
 }
 
 type Selection struct {
-	Candidate Candidate
+	Candidate  Candidate
 	Generation uint64
 	SelectedAt time.Time
 	FreshUntil time.Time
@@ -100,13 +100,13 @@ type Selector struct {
 
 	policy Policy
 
-	current *Selection
+	current    *Selection
 	generation uint64
 
-	activeSince time.Time
-	lastSwitch time.Time
-	activeFailures int // retained for selector state reset compatibility; no grace cycle is applied
-	betterCandidate string
+	activeSince           time.Time
+	lastSwitch            time.Time
+	activeFailures        int // retained for selector state reset compatibility; no grace cycle is applied
+	betterCandidate       string
 	betterCandidateStreak int
 }
 
@@ -255,11 +255,11 @@ func (s *Selector) setCurrent(candidate Candidate, score, checkCount int, now ti
 		selectedAt = s.current.SelectedAt
 	}
 	selection := Selection{
-		Candidate: cloneCandidate(candidate),
+		Candidate:  cloneCandidate(candidate),
 		Generation: s.generation,
 		SelectedAt: selectedAt,
 		FreshUntil: freshUntil,
-		Score: score,
+		Score:      score,
 		CheckCount: checkCount,
 	}
 	s.current = &selection

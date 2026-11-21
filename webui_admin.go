@@ -33,19 +33,19 @@ const (
 var webUIAdminMu sync.Mutex
 
 type webUIEditableConfig struct {
-	DNSMode                string          `json:"dns_mode"`
-	ResolverUpstreams       []ResolverUpstream `json:"resolver_upstreams"`
-	DNSListenUDP           string          `json:"dns_listen_udp"`
-	DNSListenTCP           string          `json:"dns_listen_tcp"`
-	HTTPListen             string          `json:"http_listen"`
-	ReloadSecs             int             `json:"reload_interval_seconds"`
-	DNSQueryTimeoutSeconds int             `json:"dns_query_timeout_seconds"`
-	DoHTimeoutSeconds      int             `json:"doh_timeout_seconds"`
-	DNSMaxConcurrent       int             `json:"dns_max_concurrent"`
-	Health                 HealthConfig    `json:"health"`
-	Cache                  CacheConfig     `json:"cache"`
-	BootstrapResolvers     []string        `json:"bootstrap_resolvers"`
-	GeminiAPI              GeminiAPIConfig `json:"gemini_api"`
+	DNSMode                string             `json:"dns_mode"`
+	ResolverUpstreams      []ResolverUpstream `json:"resolver_upstreams"`
+	DNSListenUDP           string             `json:"dns_listen_udp"`
+	DNSListenTCP           string             `json:"dns_listen_tcp"`
+	HTTPListen             string             `json:"http_listen"`
+	ReloadSecs             int                `json:"reload_interval_seconds"`
+	DNSQueryTimeoutSeconds int                `json:"dns_query_timeout_seconds"`
+	DoHTimeoutSeconds      int                `json:"doh_timeout_seconds"`
+	DNSMaxConcurrent       int                `json:"dns_max_concurrent"`
+	Health                 HealthConfig       `json:"health"`
+	Cache                  CacheConfig        `json:"cache"`
+	BootstrapResolvers     []string           `json:"bootstrap_resolvers"`
+	GeminiAPI              GeminiAPIConfig    `json:"gemini_api"`
 }
 
 type webUISourceRow struct {
@@ -88,10 +88,10 @@ type webUITestResult struct {
 }
 
 type webUITestSummary struct {
-	Status string            `json:"status"`
-	RunAt  time.Time         `json:"run_at"`
-	Tests  []webUITestResult `json:"tests"`
-	Passed int               `json:"passed"`
+	Status   string            `json:"status"`
+	RunAt    time.Time         `json:"run_at"`
+	Tests    []webUITestResult `json:"tests"`
+	Passed   int               `json:"passed"`
 	Failed   int               `json:"failed"`
 	Warnings int               `json:"warnings"`
 }
@@ -404,7 +404,7 @@ func editableWebUIConfig(config Config) webUIEditableConfig {
 		DoHTimeoutSeconds: config.DoHTimeoutSeconds, DNSMaxConcurrent: config.DNSMaxConcurrent,
 		Health: config.Health, Cache: config.Cache,
 		BootstrapResolvers: append([]string(nil), config.BootstrapResolvers...),
-		GeminiAPI: config.GeminiAPI,
+		GeminiAPI:          config.GeminiAPI,
 	}
 }
 
@@ -529,9 +529,9 @@ func readWebUISources(dataDir string) (webUISourcesResponse, error) {
 		return webUISourcesResponse{}, fmt.Errorf("%s validation failed: %w", localHostsSourceFile, err)
 	}
 	return webUISourcesResponse{
-		DoH: parseWebUISourceRows(dohData, 2, "id;url"),
+		DoH:    parseWebUISourceRows(dohData, 2, "id;url"),
 		Checks: parseWebUISourceRows(checksData, 6, "domain;qtypes"),
-		Hosts: parseWebUISourceRows(hostsData, 3, "hostname;ipv4"),
+		Hosts:  parseWebUISourceRows(hostsData, 3, "hostname;ipv4"),
 	}, nil
 }
 
@@ -1314,4 +1314,3 @@ func runWebUIPluginPreflight(dataDir string) (string, error) {
 	logger.Printf("Xray policy/plugin check completed successfully")
 	return logger.String(), nil
 }
-

@@ -8,10 +8,10 @@ import (
 
 func candidate(id, ip string, resolvedAt time.Time) Candidate {
 	return Candidate{
-		ServerID: id,
-		URL: "https://" + id + ".example/dns-query",
-		Hostname: id + ".example",
-		IPv4: []string{ip},
+		ServerID:   id,
+		URL:        "https://" + id + ".example/dns-query",
+		Hostname:   id + ".example",
+		IPv4:       []string{ip},
 		ResolvedAt: resolvedAt,
 	}
 }
@@ -21,9 +21,9 @@ func results(id string, successes int, now time.Time) []ProbeResult {
 	out := make([]ProbeResult, 0, len(domains))
 	for i, domain := range domains {
 		out = append(out, ProbeResult{
-			ServerID: id,
-			Domain: domain,
-			Success: i < successes,
+			ServerID:  id,
+			Domain:    domain,
+			Success:   i < successes,
 			CheckedAt: now,
 		})
 	}
@@ -138,7 +138,6 @@ func TestEndpointAddressChangeIncrementsGeneration(t *testing.T) {
 	}
 }
 
-
 func TestEndpointFreshnessAtExactLimitIsExpired(t *testing.T) {
 	now := time.Now().UTC()
 	s := NewSelector(DefaultPolicy())
@@ -213,12 +212,12 @@ func TestDuplicateAndUnknownProbeResultsDoNotInflateScore(t *testing.T) {
 func TestCandidateRejectsInvalidURLHostnameAndIP(t *testing.T) {
 	now := time.Now().UTC()
 	tests := []struct {
-		name string
+		name      string
 		candidate Candidate
 	}{
-		{"url host mismatch", Candidate{ServerID:"a", URL:"https://other.example/dns-query", Hostname:"a.example", IPv4:[]string{"192.0.2.1"}, ResolvedAt:now}},
-		{"non https", Candidate{ServerID:"a", URL:"http://a.example/dns-query", Hostname:"a.example", IPv4:[]string{"192.0.2.1"}, ResolvedAt:now}},
-		{"invalid IP", Candidate{ServerID:"a", URL:"https://a.example/dns-query", Hostname:"a.example", IPv4:[]string{"not-an-ip"}, ResolvedAt:now}},
+		{"url host mismatch", Candidate{ServerID: "a", URL: "https://other.example/dns-query", Hostname: "a.example", IPv4: []string{"192.0.2.1"}, ResolvedAt: now}},
+		{"non https", Candidate{ServerID: "a", URL: "http://a.example/dns-query", Hostname: "a.example", IPv4: []string{"192.0.2.1"}, ResolvedAt: now}},
+		{"invalid IP", Candidate{ServerID: "a", URL: "https://a.example/dns-query", Hostname: "a.example", IPv4: []string{"not-an-ip"}, ResolvedAt: now}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -253,9 +252,9 @@ func TestControlDomainScoreDoesNotExceedEight(t *testing.T) {
 	probes := results("a", 8, now)
 	for i := 0; i < 20; i++ {
 		probes = append(probes, ProbeResult{
-			ServerID: "a",
-			Domain: fmt.Sprintf("extra-%d.example", i),
-			Success: true,
+			ServerID:  "a",
+			Domain:    fmt.Sprintf("extra-%d.example", i),
+			Success:   true,
 			CheckedAt: now,
 		})
 	}
@@ -265,7 +264,6 @@ func TestControlDomainScoreDoesNotExceedEight(t *testing.T) {
 		t.Fatalf("score = %+v, want eight control checks", selected)
 	}
 }
-
 
 func TestConfigGenerationChangeInvalidatesActiveSelection(t *testing.T) {
 	now := time.Now().UTC()
@@ -288,5 +286,3 @@ func TestConfigGenerationChangeInvalidatesActiveSelection(t *testing.T) {
 		t.Fatalf("config generation change was not published: %+v", updated)
 	}
 }
-
-

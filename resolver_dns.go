@@ -230,11 +230,10 @@ func prepareMode2ResponseForCache(response []byte, maxTTL uint32) bool {
 	return ok && ttl > 0
 }
 
-
- // mode2NoErrorResponseIsNODATA recognizes NOERROR responses that do not
- // contain the requested RR type in Answer, including responses with CNAME
- // records but no terminal A/AAAA. Such responses are cacheable only when
- // prepareMode2ResponseForCache can derive a valid negative TTL from SOA.
+// mode2NoErrorResponseIsNODATA recognizes NOERROR responses that do not
+// contain the requested RR type in Answer, including responses with CNAME
+// records but no terminal A/AAAA. Such responses are cacheable only when
+// prepareMode2ResponseForCache can derive a valid negative TTL from SOA.
 func mode2NoErrorResponseIsNODATA(response []byte) (bool, error) {
 	if len(response) < 12 || binary.BigEndian.Uint16(response[4:6]) != 1 {
 		return false, errors.New("mode-2 DNS response must contain exactly one question")

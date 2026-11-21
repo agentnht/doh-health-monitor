@@ -3,10 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -511,11 +511,11 @@ func TestReadWebUILogFileReturnsTailWhenFileExceedsReadWindow(t *testing.T) {
 
 func TestWebUIDigResultClassifiesNODATAAndDNSFailures(t *testing.T) {
 	tests := []struct {
-		name string
-		output string
-		err error
+		name     string
+		output   string
+		err      error
 		timedOut bool
-		want string
+		want     string
 	}{
 		{name: "positive", output: ";; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1\nexample.com. 60 IN A 192.0.2.1\n", want: "OK"},
 		{name: "nodata", output: ";; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 2\n", want: "NODATA"},
@@ -563,22 +563,31 @@ func TestWebUIDigArgsSelectTransport(t *testing.T) {
 	}
 }
 
-
 func TestSaveWebUIGeminiKeyRejectsManagedFileTargets(t *testing.T) {
 	dir := newTestWebUIData(t)
 	configPath := filepath.Join(dir, "config.json")
 	config, err := loadConfigNoCreate(configPath)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	config.GeminiAPI.KeyFile = "config.json"
-	if err := writeConfigAtomic(configPath, config); err != nil { t.Fatal(err) }
+	if err := writeConfigAtomic(configPath, config); err != nil {
+		t.Fatal(err)
+	}
 	before, err := os.ReadFile(configPath)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := saveWebUIGeminiKey(dir, "AAAAAAAAAAAAAAAAAAAAAAAA"); err == nil {
 		t.Fatal("managed config.json target must be rejected")
 	}
 	after, err := os.ReadFile(configPath)
-	if err != nil { t.Fatal(err) }
-	if !bytes.Equal(before, after) { t.Fatal("rejected key save modified config.json") }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("rejected key save modified config.json")
+	}
 }
 
 func TestRedactWebUILogLinePreservesSecretPrefix(t *testing.T) {
@@ -590,7 +599,6 @@ func TestRedactWebUILogLinePreservesSecretPrefix(t *testing.T) {
 		t.Fatalf("secret remains in redacted output: %q", got)
 	}
 }
-
 
 func TestWebUIDigOverflowResultsKeepOriginalIndexes(t *testing.T) {
 	dir := t.TempDir()
@@ -618,7 +626,6 @@ func TestWebUIDigOverflowResultsKeepOriginalIndexes(t *testing.T) {
 		}
 	}
 }
-
 
 func TestWebUIHTTPListenerDoesNotPassWhenOnlyPortIsFree(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

@@ -12,8 +12,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"reflect"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -40,7 +40,6 @@ func testAResponse(q []byte, ttl uint32) []byte {
 	return p
 }
 
-
 func TestValidateDNSResponseMatchesFullQuestion(t *testing.T) {
 	query := makeDNSQuery("www.example.com", 1)
 	response := testAResponse(query, 60)
@@ -62,8 +61,8 @@ func TestValidateDNSResponseMatchesFullQuestion(t *testing.T) {
 		bad := append([]byte(nil), response...)
 		_, _, end, err := parseQuestion(bad)
 		if err != nil {
-		t.Fatal(err)
-	}
+			t.Fatal(err)
+		}
 		binary.BigEndian.PutUint16(bad[end-4:end-2], 28)
 		if err := validateDNSResponse(query, bad, "test"); err == nil {
 			t.Fatal("expected QTYPE mismatch to be rejected")
@@ -102,7 +101,7 @@ func TestUpstreamCooldownSkipsFailedEndpointsAndRecovers(t *testing.T) {
 
 func TestUpstreamCooldownProbesOnlyEarliestWhenAllCooling(t *testing.T) {
 	now := time.Now()
-	r := &Runtime{upstreamCooldown: map[string]time.Time{"later": now.Add(20*time.Second), "first": now.Add(5*time.Second)}}
+	r := &Runtime{upstreamCooldown: map[string]time.Time{"later": now.Add(20 * time.Second), "first": now.Add(5 * time.Second)}}
 	got := r.upstreamsToAttempt([]string{"later", "first"}, now)
 	if len(got) != 1 || got[0] != "first" {
 		t.Fatalf("attempt order = %v, want earliest-expiring upstream only", got)
@@ -113,7 +112,7 @@ func TestSelectAlternateIPExcludesFailedAddress(t *testing.T) {
 	now := time.Now()
 	b := &bootstrapResolver{
 		host: "doh.example", endpoint: "https://doh.example/dns-query",
-		ips: []string{"192.0.2.1", "192.0.2.2", "192.0.2.3"},
+		ips:       []string{"192.0.2.1", "192.0.2.2", "192.0.2.3"},
 		refreshed: now, refreshFor: time.Hour, selectedIP: "192.0.2.1",
 		probe: func(_ context.Context, _ string, ip string, _ time.Duration) (time.Duration, error) {
 			switch ip {
@@ -127,7 +126,9 @@ func TestSelectAlternateIPExcludesFailedAddress(t *testing.T) {
 		},
 	}
 	got, err := b.selectAlternateIP(context.Background(), "192.0.2.1", time.Second)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got != "192.0.2.3" {
 		t.Fatalf("alternate IP = %s, want 192.0.2.3", got)
 	}
@@ -252,7 +253,6 @@ func TestDefaultConfigValid(t *testing.T) {
 	}
 }
 
-
 func TestCacheRejectsZeroEntryLimitWhenEnabled(t *testing.T) {
 	c := defaultConfig()
 	c.Cache.MaxEntries = 0
@@ -295,15 +295,15 @@ func TestCacheFIFOAndByteLimit(t *testing.T) {
 
 func TestInitHealthPrunesRemovedUpstreams(t *testing.T) {
 	s := &Snapshot{
-		groups: map[string]Group{"google": {ID: "google", Upstreams: []string{"current"}}},
+		groups:    map[string]Group{"google": {ID: "google", Upstreams: []string{"current"}}},
 		upstreams: map[string]*UpstreamRuntime{"current": {}},
 	}
 	r := &Runtime{
 		health: map[string]map[string]HealthEntry{
-			"google": {"current": {State: "up"}, "removed": {State: "down"}},
+			"google":    {"current": {State: "up"}, "removed": {State: "down"}},
 			"old-group": {"stale": {State: "down"}},
 		},
-		active: map[string]string{"google": "current", "old-group": "stale"},
+		active:     map[string]string{"google": "current", "old-group": "stale"},
 		lastGemini: map[string]time.Time{"current": time.Now(), "removed": time.Now()},
 	}
 	r.initHealth(s)
@@ -379,19 +379,19 @@ func TestUDPWorkerPoolBoundsQueueUnderLoad(t *testing.T) {
 	defer upstreamServer.Close()
 
 	upstream := &UpstreamRuntime{
-		cfg: Upstream{ID: "slow", URL: upstreamServer.URL},
+		cfg:    Upstream{ID: "slow", URL: upstreamServer.URL},
 		client: upstreamServer.Client(),
 	}
 	s := &Snapshot{
-		cfg: Config{DNSMaxConcurrent: 1, DNSQueryTimeoutSeconds: 3, Cache: CacheConfig{Enabled: false}},
-		groups: map[string]Group{"google": {ID: "google", Upstreams: []string{"slow"}}},
+		cfg:       Config{DNSMaxConcurrent: 1, DNSQueryTimeoutSeconds: 3, Cache: CacheConfig{Enabled: false}},
+		groups:    map[string]Group{"google": {ID: "google", Upstreams: []string{"slow"}}},
 		upstreams: map[string]*UpstreamRuntime{"slow": upstream},
 	}
 	r := &Runtime{
 		dnsSem: make(chan struct{}, 1),
 		health: map[string]map[string]HealthEntry{},
 		active: map[string]string{"google": "slow"},
-		cache: map[string]cacheItem{},
+		cache:  map[string]cacheItem{},
 	}
 	r.snapshot.Store(s)
 
@@ -681,11 +681,11 @@ func TestBuildSnapshotIncludesSystemDNSWithoutDoHURL(t *testing.T) {
 	c := defaultConfig()
 	urls := map[string]string{
 		"geohide-eu": "https://eu.geohide.ru/dns-query",
-		"dagami": "https://dns.dagami.ru/dns-query",
-		"comss-one": "https://dns.comss.one/dns-query",
-		"bezmezhau": "https://dns.bezmezhau.com/dns-query",
-		"zapret": "https://dns.zapret.moe/dns-query",
-		"pereval": "https://free.pereval.top/dns-query",
+		"dagami":     "https://dns.dagami.ru/dns-query",
+		"comss-one":  "https://dns.comss.one/dns-query",
+		"bezmezhau":  "https://dns.bezmezhau.com/dns-query",
+		"zapret":     "https://dns.zapret.moe/dns-query",
+		"pereval":    "https://free.pereval.top/dns-query",
 	}
 	snapshot, err := buildSnapshot(c, urls)
 	if err != nil {
@@ -871,7 +871,7 @@ func TestDNSGatewaySendsArbitraryQNAMEThroughGoogleProfile(t *testing.T) {
 
 	query := makeDNSQuery("completely-unrelated.example", 1)
 	upstream := &UpstreamRuntime{
-		cfg: Upstream{ID: "selected-google-doh", URL: srv.URL},
+		cfg:    Upstream{ID: "selected-google-doh", URL: srv.URL},
 		client: srv.Client(),
 	}
 	snapshot := &Snapshot{
@@ -986,7 +986,7 @@ func TestLoadConfigCreatesAutomaticBootstrapDefaults(t *testing.T) {
 
 func TestBootstrapSelectsFastestDoHIP(t *testing.T) {
 	b := &bootstrapResolver{
-		host: "doh.example",
+		host:     "doh.example",
 		endpoint: "https://doh.example/dns-query",
 		probe: func(ctx context.Context, endpoint, ip string, timeout time.Duration) (time.Duration, error) {
 			switch ip {
@@ -1015,7 +1015,7 @@ func TestBootstrapSelectsFastestDoHIP(t *testing.T) {
 
 func TestBootstrapFastestIPDetailedReportsEveryCandidate(t *testing.T) {
 	b := &bootstrapResolver{
-		host: "doh.example",
+		host:     "doh.example",
 		endpoint: "https://doh.example/dns-query",
 		probe: func(ctx context.Context, endpoint, ip string, timeout time.Duration) (time.Duration, error) {
 			switch ip {
@@ -1089,16 +1089,16 @@ func TestBootstrapStatusReturnsDiagnosticSnapshot(t *testing.T) {
 		{IP: "192.0.2.10", Source: "dns", Result: "ok", ResponseMS: 12},
 	}
 	b := &bootstrapResolver{
-		host: "doh.example",
-		ips: []string{"192.0.2.10", "2001:db8::10"},
-		resolvedBy: "1.1.1.1",
-		refreshed: time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC),
-		selectedIP: "192.0.2.10",
-		selectedTil: time.Date(2026, 11, 10, 18, 0, 0, 0, time.UTC),
-		lastCandidates: []string{"192.0.2.10", "2001:db8::10"},
+		host:                "doh.example",
+		ips:                 []string{"192.0.2.10", "2001:db8::10"},
+		resolvedBy:          "1.1.1.1",
+		refreshed:           time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC),
+		selectedIP:          "192.0.2.10",
+		selectedTil:         time.Date(2026, 11, 10, 18, 0, 0, 0, time.UTC),
+		lastCandidates:      []string{"192.0.2.10", "2001:db8::10"},
 		lastCandidateSource: "dns",
-		lastProbeAt: time.Date(2026, 11, 10, 12, 1, 0, 0, time.UTC),
-		lastProbe: probes,
+		lastProbeAt:         time.Date(2026, 11, 10, 12, 1, 0, 0, time.UTC),
+		lastProbe:           probes,
 	}
 	status := b.status()
 	if status.Hostname != "doh.example" || status.ResolvedBy != "1.1.1.1" || status.SelectedIP != "192.0.2.10" {
@@ -1116,7 +1116,7 @@ func TestBootstrapStatusReturnsDiagnosticSnapshot(t *testing.T) {
 
 func TestBootstrapFastestIPReportsAllFailures(t *testing.T) {
 	b := &bootstrapResolver{
-		host: "doh.example",
+		host:     "doh.example",
 		endpoint: "https://doh.example/dns-query",
 		probe: func(ctx context.Context, endpoint, ip string, timeout time.Duration) (time.Duration, error) {
 			return 0, errors.New("probe failed")
@@ -1324,20 +1324,19 @@ func TestRemoveSocketIfSameRefusesReplacement(t *testing.T) {
 	}
 }
 
-
 func TestLocalHostsOptionalAndFamilySpecificAnswers(t *testing.T) {
 	if got, matched := localHostsResponse(makeDNSQuery("local.example", 1), "local.example", 1, nil); matched || got != nil {
 		t.Fatal("empty local_hosts must not intercept DNS")
 	}
 	hosts := map[string]LocalHost{
-		"local.example": {IPv4: []string{"192.0.2.10"}, IPv6: []string{"2001:db8::10"}},
-		"v4-only.example": {IPv4: []string{"192.0.2.20"}},
+		"local.example":         {IPv4: []string{"192.0.2.10"}, IPv6: []string{"2001:db8::10"}},
+		"v4-only.example":       {IPv4: []string{"192.0.2.20"}},
 		"forced-nodata.example": {},
 	}
 	for _, tc := range []struct {
-		name string
-		qtype uint16
-		wantAnswers uint16
+		name          string
+		qtype         uint16
+		wantAnswers   uint16
 		wantAuthority uint16
 	}{
 		{"local.example", 1, 1, 0},
@@ -1354,16 +1353,32 @@ func TestLocalHostsOptionalAndFamilySpecificAnswers(t *testing.T) {
 			// Ask for authenticated data; locally synthesized answers must never assert AD.
 			binary.BigEndian.PutUint16(q[2:4], 0x0130)
 			got, matched := localHostsResponse(q, tc.name, tc.qtype, hosts)
-			if !matched { t.Fatal("expected local_hosts match") }
-			if dnsRCode(got) != 0 { t.Fatalf("rcode=%d", dnsRCode(got)) }
-			if binary.BigEndian.Uint16(got[2:4])&0x0020 != 0 { t.Fatal("AD flag must be clear") }
-			if binary.BigEndian.Uint16(got[6:8]) != tc.wantAnswers { t.Fatalf("answers=%d", binary.BigEndian.Uint16(got[6:8])) }
-			if binary.BigEndian.Uint16(got[8:10]) != tc.wantAuthority { t.Fatalf("authority=%d", binary.BigEndian.Uint16(got[8:10])) }
+			if !matched {
+				t.Fatal("expected local_hosts match")
+			}
+			if dnsRCode(got) != 0 {
+				t.Fatalf("rcode=%d", dnsRCode(got))
+			}
+			if binary.BigEndian.Uint16(got[2:4])&0x0020 != 0 {
+				t.Fatal("AD flag must be clear")
+			}
+			if binary.BigEndian.Uint16(got[6:8]) != tc.wantAnswers {
+				t.Fatalf("answers=%d", binary.BigEndian.Uint16(got[6:8]))
+			}
+			if binary.BigEndian.Uint16(got[8:10]) != tc.wantAuthority {
+				t.Fatalf("authority=%d", binary.BigEndian.Uint16(got[8:10]))
+			}
 			positions, err := rrTTLPositions(got)
-			if err != nil { t.Fatal(err) }
-			if len(positions) == 0 { t.Fatal("expected answer or SOA TTL") }
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(positions) == 0 {
+				t.Fatal("expected answer or SOA TTL")
+			}
 			for _, pos := range positions {
-				if ttl := binary.BigEndian.Uint32(got[pos:pos+4]); ttl != localHostsTTL { t.Fatalf("TTL=%d, want %d", ttl, localHostsTTL) }
+				if ttl := binary.BigEndian.Uint32(got[pos : pos+4]); ttl != localHostsTTL {
+					t.Fatalf("TTL=%d, want %d", ttl, localHostsTTL)
+				}
 			}
 		})
 	}
@@ -1371,7 +1386,10 @@ func TestLocalHostsOptionalAndFamilySpecificAnswers(t *testing.T) {
 
 func TestLocalHostsDoesNotInterceptOtherTypesOrNames(t *testing.T) {
 	hosts := map[string]LocalHost{"local.example": {IPv4: []string{"192.0.2.1"}}}
-	for _, tc := range []struct{name string; qtype uint16}{
+	for _, tc := range []struct {
+		name  string
+		qtype uint16
+	}{
 		{"local.example", 16}, // TXT continues through DoH
 		{"other.example", 1},
 	} {
@@ -1384,13 +1402,18 @@ func TestLocalHostsDoesNotInterceptOtherTypesOrNames(t *testing.T) {
 func TestLocalHostsConfigValidation(t *testing.T) {
 	c := defaultConfig()
 	c.LocalHosts = map[string]LocalHost{"LOCAL.example.": {IPv4: []string{"192.0.2.1"}, IPv6: []string{"2001:db8::1"}}}
-	if err := validateConfig(c); err != nil { t.Fatalf("valid local_hosts rejected: %v", err) }
+	if err := validateConfig(c); err != nil {
+		t.Fatalf("valid local_hosts rejected: %v", err)
+	}
 	c.LocalHosts = map[string]LocalHost{"bad.example": {IPv4: []string{"2001:db8::1"}}}
-	if err := validateConfig(c); err == nil { t.Fatal("expected IPv4 family validation error") }
+	if err := validateConfig(c); err == nil {
+		t.Fatal("expected IPv4 family validation error")
+	}
 	c.LocalHosts = map[string]LocalHost{"bad..example": {IPv4: []string{"192.0.2.1"}}}
-	if err := validateConfig(c); err == nil { t.Fatal("expected hostname validation error") }
+	if err := validateConfig(c); err == nil {
+		t.Fatal("expected hostname validation error")
+	}
 }
-
 
 func TestLocalHostsPreservesEDNSOPTAndDoesNotOverrideNonIN(t *testing.T) {
 	hosts := map[string]LocalHost{"local.example": {IPv4: []string{"192.0.2.1"}}}
@@ -1398,9 +1421,15 @@ func TestLocalHostsPreservesEDNSOPTAndDoesNotOverrideNonIN(t *testing.T) {
 	q = append(q, 0, 0, 41, 4, 208, 0, 0, 0, 0, 0, 0) // OPT, UDP payload 1232, empty options
 	binary.BigEndian.PutUint16(q[10:12], 1)
 	got, matched := localHostsResponse(q, "local.example", 1, hosts)
-	if !matched { t.Fatal("expected local host match") }
-	if binary.BigEndian.Uint16(got[10:12]) != 1 { t.Fatalf("additional count=%d, want 1", binary.BigEndian.Uint16(got[10:12])) }
-	if !bytes.Contains(got, []byte{0, 0, 41, 4, 208}) { t.Fatal("EDNS OPT record was not echoed") }
+	if !matched {
+		t.Fatal("expected local host match")
+	}
+	if binary.BigEndian.Uint16(got[10:12]) != 1 {
+		t.Fatalf("additional count=%d, want 1", binary.BigEndian.Uint16(got[10:12]))
+	}
+	if !bytes.Contains(got, []byte{0, 0, 41, 4, 208}) {
+		t.Fatal("EDNS OPT record was not echoed")
+	}
 
 	nonIN := makeDNSQuery("local.example", 1)
 	nonIN[len(nonIN)-2] = 0
@@ -1413,7 +1442,7 @@ func TestLocalHostsPreservesEDNSOPTAndDoesNotOverrideNonIN(t *testing.T) {
 func TestLocalHostsRejectsDuplicateNormalizedNames(t *testing.T) {
 	c := defaultConfig()
 	c.LocalHosts = map[string]LocalHost{
-		"LOCAL.example": {IPv4: []string{"192.0.2.1"}},
+		"LOCAL.example":  {IPv4: []string{"192.0.2.1"}},
 		"local.example.": {IPv4: []string{"192.0.2.2"}},
 	}
 	if err := validateConfig(c); err == nil {
@@ -1422,10 +1451,13 @@ func TestLocalHostsRejectsDuplicateNormalizedNames(t *testing.T) {
 }
 
 func containsString(values []string, want string) bool {
-	for _, value := range values { if value == want { return true } }
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
 	return false
 }
-
 
 func TestErrorResponsePreservesOnlyQuestionAndValidHeader(t *testing.T) {
 	query := makeDNSQuery("example.com", 1)
@@ -1464,7 +1496,9 @@ func largeTXTResponse(query []byte, recordLengths ...int) []byte {
 	response = append(response, query[12:questionEnd]...)
 	answerCount := uint16(0)
 	for _, dataLength := range recordLengths {
-		if dataLength <= 0 { continue }
+		if dataLength <= 0 {
+			continue
+		}
 		response = append(response, 0xc0, 0x0c, 0, 16, 0, 1, 0, 0, 0, 60)
 		response = append(response, byte(dataLength>>8), byte(dataLength))
 		response = append(response, make([]byte, dataLength)...)
@@ -1505,11 +1539,10 @@ func TestDNSUDPResponseLimitUsesEDNSAndTruncatesAtRecordBoundaries(t *testing.T)
 	}
 }
 
-
 func TestConfigReloadIntervalUsesConfiguredSeconds(t *testing.T) {
 	for _, test := range []struct {
 		seconds int
-		want time.Duration
+		want    time.Duration
 	}{
 		{seconds: 1, want: time.Second},
 		{seconds: 5, want: 5 * time.Second},
@@ -1561,7 +1594,6 @@ func TestReloadKeepsListenerChangesPendingRestartWhileApplyingOtherSettings(t *t
 	}
 }
 
-
 func TestFilterPublicDoHIPsRejectsNonPublicAddresses(t *testing.T) {
 	got := filterPublicDoHIPs([]string{
 		"1.1.1.1", "8.8.8.8", "10.0.0.1", "127.0.0.1",
@@ -1601,10 +1633,9 @@ func TestHandleStatusDoesNotExposePrivatePathsOrSystemDNS(t *testing.T) {
 	}
 }
 
-
 func TestBootstrapResolverFiltersConfiguredFallbackIPs(t *testing.T) {
 	resolver := &bootstrapResolver{
-		host: "doh.example",
+		host:     "doh.example",
 		fallback: []string{"10.0.0.1", "192.0.2.1", "8.8.8.8", "127.0.0.1"},
 	}
 	ips, err := resolver.addresses(context.Background(), true)
@@ -1626,15 +1657,20 @@ func TestStatusSafeDoHURLRemovesEndpointCredentials(t *testing.T) {
 	}
 }
 
-
 func TestLoadConfigNoCreateRejectsSymlink(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "real-config.json")
 	link := filepath.Join(dir, "config.json")
 	config, err := json.Marshal(defaultConfig())
-	if err != nil { t.Fatal(err) }
-	if err := os.WriteFile(target, config, 0600); err != nil { t.Fatal(err) }
-	if err := os.Symlink(target, link); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, config, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := loadConfigNoCreate(link); err == nil {
 		t.Fatal("config loader must reject symlinked config files")
 	}

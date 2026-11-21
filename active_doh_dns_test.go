@@ -28,7 +28,7 @@ func TestBuildActiveDoHResponseReturnsSelectedEndpointIPv4(t *testing.T) {
 		t.Fatal(err)
 	}
 	selection := activedoh.Selection{
-		Candidate: activedoh.Candidate{IPv4: []string{"1.1.1.1", "8.8.8.8"}},
+		Candidate:  activedoh.Candidate{IPv4: []string{"1.1.1.1", "8.8.8.8"}},
 		FreshUntil: now.Add(31 * time.Second),
 	}
 	response, cacheable := buildActiveDoHResponse(query, "geosite.example", qtype, questionEnd, selection, now)
@@ -59,7 +59,7 @@ func TestBuildActiveDoHResponseCapsTTLAtSixtySeconds(t *testing.T) {
 		t.Fatal(err)
 	}
 	selection := activedoh.Selection{
-		Candidate: activedoh.Candidate{IPv4: []string{"9.9.9.9"}},
+		Candidate:  activedoh.Candidate{IPv4: []string{"9.9.9.9"}},
 		FreshUntil: now.Add(2 * time.Minute),
 	}
 	response, cacheable := buildActiveDoHResponse(query, "geosite.example", qtype, questionEnd, selection, now)
@@ -80,7 +80,7 @@ func TestBuildActiveDoHResponseReturnsSelectedEndpointIPv6(t *testing.T) {
 		t.Fatal(err)
 	}
 	selection := activedoh.Selection{
-		Candidate: activedoh.Candidate{IPv6: []string{"2606:4700:4700::1111"}},
+		Candidate:  activedoh.Candidate{IPv6: []string{"2606:4700:4700::1111"}},
 		FreshUntil: now.Add(time.Minute),
 	}
 	response, cacheable := buildActiveDoHResponse(query, "geosite.example", qtype, questionEnd, selection, now)
@@ -114,7 +114,7 @@ func TestBuildActiveDoHResponseUsesNoErrorNodataForMissingFamilyAndUnsupportedQt
 				t.Fatal(err)
 			}
 			selection := activedoh.Selection{
-				Candidate: activedoh.Candidate{IPv4: []string{"1.1.1.1"}},
+				Candidate:  activedoh.Candidate{IPv4: []string{"1.1.1.1"}},
 				FreshUntil: now.Add(time.Minute),
 			}
 			response, cacheable := buildActiveDoHResponse(query, "geosite.example", qtype, questionEnd, selection, now)
@@ -139,7 +139,7 @@ func TestBuildActiveDoHResponseReturnsNoErrorNodataAfterFreshnessExpires(t *test
 		t.Fatal(err)
 	}
 	selection := activedoh.Selection{
-		Candidate: activedoh.Candidate{IPv4: []string{"1.1.1.1"}},
+		Candidate:  activedoh.Candidate{IPv4: []string{"1.1.1.1"}},
 		FreshUntil: now,
 	}
 	response, cacheable := buildActiveDoHResponse(query, "geosite.example", qtype, questionEnd, selection, now)
@@ -159,7 +159,7 @@ func TestActiveDoHResponsePreservesEDNSDOWithoutReflectingOptions(t *testing.T) 
 		t.Fatal(err)
 	}
 	selection := activedoh.Selection{
-		Candidate: activedoh.Candidate{IPv4: []string{"1.1.1.1"}},
+		Candidate:  activedoh.Candidate{IPv4: []string{"1.1.1.1"}},
 		FreshUntil: now.Add(time.Minute),
 	}
 	response, _ := buildActiveDoHResponse(query, "geosite.example", qtype, questionEnd, selection, now)
@@ -174,7 +174,6 @@ func TestActiveDoHResponsePreservesEDNSDOWithoutReflectingOptions(t *testing.T) 
 		t.Fatal("response OPT must not reflect client EDNS options")
 	}
 }
-
 
 func TestActiveDoHResponseRejectsSelectionFromStaleConfigGeneration(t *testing.T) {
 	now := time.Now().UTC()
@@ -199,11 +198,11 @@ func TestActiveDoHResponseRejectsSelectionFromStaleConfigGeneration(t *testing.T
 
 	runtime := &Runtime{activeDoHSelector: selector, cache: map[string]cacheItem{}}
 	requestSnapshot := &Snapshot{
-		cfg: Config{Cache: CacheConfig{Enabled: true, MaxEntries: 10, MaxBytes: 4096, MaxTTL: 300}},
+		cfg:                 Config{Cache: CacheConfig{Enabled: true, MaxEntries: 10, MaxBytes: 4096, MaxTTL: 300}},
 		activeDoHGeneration: 41,
 	}
 	currentSnapshot := &Snapshot{
-		cfg: Config{Cache: CacheConfig{Enabled: true, MaxEntries: 10, MaxBytes: 4096, MaxTTL: 300}},
+		cfg:                 Config{Cache: CacheConfig{Enabled: true, MaxEntries: 10, MaxBytes: 4096, MaxTTL: 300}},
 		activeDoHGeneration: 42,
 	}
 	runtime.snapshot.Store(currentSnapshot)
@@ -222,7 +221,6 @@ func TestActiveDoHResponseRejectsSelectionFromStaleConfigGeneration(t *testing.T
 		t.Fatalf("stale active selection was exposed in status: %+v", status)
 	}
 }
-
 
 // TestEndpointIPUnsupportedQTypesReturnNoErrorNodata exercises the full
 // endpoint_ip handler. The Geosite listener is an address-only synthetic
@@ -377,7 +375,7 @@ func TestEndpointIPUnsupportedQTypesReturnNoErrorNodata(t *testing.T) {
 func TestEndpointIPUnavailableSelectionReturnsSERVFAIL(t *testing.T) {
 	query := activeDoHTestQuery(1, false)
 	snapshot := &Snapshot{
-		cfg: Config{DNSMode: "endpoint_ip", Cache: CacheConfig{Enabled: false}},
+		cfg:                 Config{DNSMode: "endpoint_ip", Cache: CacheConfig{Enabled: false}},
 		activeDoHGeneration: 7,
 	}
 	t.Run("missing selector", func(t *testing.T) {
@@ -390,7 +388,7 @@ func TestEndpointIPUnavailableSelectionReturnsSERVFAIL(t *testing.T) {
 	t.Run("no selected endpoint", func(t *testing.T) {
 		runtime := &Runtime{
 			activeDoHSelector: activedoh.NewSelector(activedoh.DefaultPolicy()),
-			cache: make(map[string]cacheItem),
+			cache:             make(map[string]cacheItem),
 		}
 		runtime.snapshot.Store(snapshot)
 		if got := dnsRCode(runtime.activeDoHDNSResponse(query, snapshot)); got != 2 {
