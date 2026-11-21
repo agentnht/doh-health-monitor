@@ -252,6 +252,12 @@ stop_web_ui() {
   fi
 }
 
+run_dns_config() {
+  printf '\nНастройка DNS mode плагина...\n'
+  printf 'Будет изменён только config.json; Xray routing, firewall и TProxy не затрагиваются.\n'
+  LUCX_PLUGIN_DATA="$PLUGIN_DATA_DIR" "$PLUGIN_BIN" config
+}
+
 run_web_ui() {
   local ready remote_port server_address tunnel_user tunnel_command read_status extra
   printf 'Запуск отдельного процесса Web UI...\n'
@@ -322,6 +328,7 @@ show_menu() {
   printf '\nDoH Health Monitor 2.3.0 — управление\n'
   printf '%s\n' '  1) Проверить plugin и утверждённый Xray Geosite DNS path (read-only)'
   printf '%s\n' '  2) Запустить Web UI через SSH-туннель'
+  printf '%s\n' '  3) Переключить DNS mode / настроить resolver upstreams'
   printf '%s\n' '  0) Выход'
   printf '%s\n' '  Примечание: Xray DNS policy задаётся вручную по doc/GEOSITE-DNS-ROUTING-DESIGN.md.'
   printf 'Выберите действие: '
