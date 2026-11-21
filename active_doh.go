@@ -522,6 +522,19 @@ func isPublicDoHIP(ip net.IP) bool {
 	return true
 }
 
+func statusSafeDoHURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	parsed.User = nil
+	parsed.Path = ""
+	parsed.RawPath = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String()
+}
+
 func (r *Runtime) activeDoHConfigMatches(snapshot *Snapshot) bool {
 	if snapshot == nil {
 		return false
@@ -545,7 +558,7 @@ func (r *Runtime) activeDoHStatus() *ActiveDoHStatus {
 	}
 	return &ActiveDoHStatus{
 		ServerID: selection.Candidate.ServerID,
-		URL: selection.Candidate.URL,
+		URL: statusSafeDoHURL(selection.Candidate.URL),
 		Hostname: selection.Candidate.Hostname,
 		IPv4: append([]string(nil), selection.Candidate.IPv4...),
 		IPv6: append([]string(nil), selection.Candidate.IPv6...),
