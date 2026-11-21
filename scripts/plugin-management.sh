@@ -138,6 +138,34 @@ ensure_dhm_symlink() {
 }
 
 
+resolve_ssh_tunnel_user() {
+  local user="${SSH_TUNNEL_USER:-${SUDO_USER:-${USER:-root}}}"
+  if [[ ! "$user" =~ ^[A-Za-z_][A-Za-z0-9_.-]*\$?$ ]]; then
+    fail "Имя пользователя SSH-туннеля содержит недопустимые символы."
+    return 1
+  fi
+  printf '%s\n' "$user"
+}
+
+parse_web_ui_ready_port() {
+  local ready="${1:-}" port
+  if [[ ! "$ready" =~ ^WEB_UI_READY\ port=([0-9]{1,5})$ ]]; then
+    return 1
+  fi
+  port="${BASH_REMATCH[1]}"
+  if (( port < 1 || port > 65535 )); then return 1; fi
+  printf '%s\n' "$port"
+}
+
+build_ssh_tunnel_command() {
+  local local_port="$1" remote_port="$2" user="$3" address="$4"
+  [[ "$local_port" =~ ^[0-9]{1,5}$ && "$remote_port" =~ ^[0-9]{1,5}$ ]] || return 1
+  (( local_port >= 1 && local_port <= 65535 && remote_port >= 1 && remote_port <= 65535 )) || return 1
+  [[ "$user" =~ ^[A-Za-z_][A-Za-z0-9_.-]*\$?$ ]] || return 1
+  [[ "$address" =~ ^[A-Za-z0-9][A-Za-z0-9._:%-]*$ ]] || return 1
+  printf 'ssh -o ExitOnForwardFailure=yes -L %s:127.0.0.1:%s %s@%s\n' "$local_port" "$remote_port" "$user" "$address"
+}
+
 resolve_server_address() {
   local address="" client_addr="" client_port="" server_port="" extra=""
 
@@ -225,11 +253,8 @@ stop_web_ui() {
 }
 
 run_web_ui() {
-  local ready remote_port server_address read_status extra
+  local ready remote_port server_address tunnel_user tunnel_command read_status extra
   printf 'Запуск отдельного процесса Web UI...\n'
-
-  # The shell owns the coprocess stdin writer. Go sees EOF when this session
-  # exits or this descriptor is closed, including an abrupt SSH disconnect.
   coproc WEB_UI { LUCX_PLUGIN_DATA="$PLUGIN_DATA_DIR" "$PLUGIN_BIN" web; }
   WEB_CHILD_PID="$WEB_UI_PID"
   WEB_READ_FD="${WEB_UI[0]}"
@@ -240,26 +265,29 @@ run_web_ui() {
     stop_web_ui
     return 1
   fi
-  if [[ ! "$ready" =~ ^WEB_UI_READY\ port=([0-9]{1,5})$ ]]; then
+  if ! remote_port="$(parse_web_ui_ready_port "$ready")"; then
     fail "Web UI вернул некорректный readiness-ответ: $ready"
     stop_web_ui
     return 1
   fi
-  remote_port="${BASH_REMATCH[1]}"
-  if (( remote_port < 1 || remote_port > 65535 )); then
-    fail "Web UI сообщил недопустимый TCP-порт."
-    stop_web_ui
-    return 1
-  fi
-
   if ! server_address="$(resolve_server_address)"; then
     stop_web_ui
     fail "Не удалось получить адрес SSH-сервера для команды туннеля."
     return 1
   fi
+  if ! tunnel_user="$(resolve_ssh_tunnel_user)"; then
+    stop_web_ui
+    return 1
+  fi
+  if ! tunnel_command="$(build_ssh_tunnel_command 19876 "$remote_port" "$tunnel_user" "$server_address")"; then
+    stop_web_ui
+    fail "Не удалось сформировать безопасную SSH-команду туннеля."
+    return 1
+  fi
+
   printf '\n[OK] Web UI слушает только 127.0.0.1:%s.\n' "$remote_port"
   printf '\nНа Windows откройте отдельный PowerShell и выполните:\n'
-  printf 'ssh -o ExitOnForwardFailure=yes -L 19876:127.0.0.1:%s root@%s\n' "$remote_port" "$server_address"
+  printf '%s\n' "$tunnel_command"
   printf 'Затем откройте в браузере: http://127.0.0.1:19876/\n'
   printf 'Если локальный порт 19876 занят, замените его в SSH-команде и URL браузера на один и тот же свободный порт. Удалённый порт %s не меняйте.\n' "$remote_port"
   printf 'Оставьте открытыми эту SSH-сессию и отдельную SSH-сессию туннеля.\n'
@@ -276,7 +304,6 @@ run_web_ui() {
         break
       fi
     fi
-
     if IFS= read -r -t 0.1 _ </dev/tty; then
       break
     else
@@ -287,7 +314,6 @@ run_web_ui() {
       fi
     fi
   done
-
   stop_web_ui
   printf 'Web UI остановлен.\n'
 }
@@ -326,4 +352,6 @@ main() {
   done
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
