@@ -539,7 +539,7 @@ Geosite matching расположен на стороне Xray, внутри `dn
 
 ## 10. Ограничения и границы изменений
 
-- CLI/Web UI management smoke test из §9 завершён; клиентские path-level smoke tests, ActiveDoH failover и runtime smoke test resolver mode также пройдены. PR #11 остаётся Draft до отдельного решения о release gate. Follow-up runtime tests: вкладка Local hosts и SSH tunnel под non-root/SUDO_USER.
+- Приёмочный scope версии 2.3.0 завершён: CLI/Web UI DNS mode management, клиентские path-level smoke tests, ActiveDoH failover и resolver mode проверены на VPS. Runtime-проверки вкладки Local hosts и SSH tunnel под non-root/SUDO_USER сознательно исключены из release acceptance по решению владельца проекта.
 - Не добавлять внутренний Geosite matcher в плагин: Geosite matching остаётся ответственностью Xray.
 - Не создавать `dns.servers` entry для `127.0.0.1:5355`; plugin listener вызывается через DNS outbound rewrite target.
 - Не создавать `xui-dns-allow`, отдельное routing-исключение для порта 5355 или allow-правило в `freedom.finalRules`: они не являются частью утверждённой схемы.
@@ -550,4 +550,4 @@ Geosite matching расположен на стороне Xray, внутри `dn
 
 ---
 
-**Текущее резюме:** в PR #11 реализована базовая архитектура Geosite DNS routing: разделённые режимы `endpoint_ip` и `resolver`, ActiveDoHSelector по восьми контрольным доменам с HTTPS/TLS probes, два DNS response pipeline, независимые cache namespace/generation, fallback и TTL/negative-cache policy. `Blackhole` — `NOERROR`/NODATA без SOA и без кэширования; plugin DNS listener отвечает только на A/AAAA. Успешный CI подтверждает тесты кода на зафиксированном head, но не заменяет целевые runtime-проверки. На VPS уже выполнены read-only Xray preflight, path-level client smoke tests для `habr.com`/`example.com`, ActiveDoH failover, resolver-mode A/AAAA и rollback, а также CLI/Web UI management smoke test из §9. Остаются отдельные эксплуатационные follow-ups для Local hosts и non-root SSH tunnel; release gate решается отдельно.
+**Текущее резюме:** в PR #11 реализована базовая архитектура Geosite DNS routing: разделённые режимы `endpoint_ip` и `resolver`, ActiveDoHSelector по восьми контрольным доменам с HTTPS/TLS probes, два DNS response pipeline, независимые cache namespace/generation, fallback и TTL/negative-cache policy. `Blackhole` — `NOERROR`/NODATA без SOA и без кэширования; plugin DNS listener отвечает только на A/AAAA. Успешный CI подтверждает тесты кода на зафиксированном head, но не заменяет целевые runtime-проверки. На VPS уже выполнены read-only Xray preflight, path-level client smoke tests для `habr.com`/`example.com`, ActiveDoH failover, resolver-mode A/AAAA и rollback, а также CLI/Web UI management smoke test из §9. Runtime-проверки Local hosts и non-root SSH tunnel сознательно не входят в согласованный release acceptance scope.
