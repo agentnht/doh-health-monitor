@@ -85,10 +85,6 @@ func webUIHandler() http.Handler {
 	return newWebUIHandlerWithBootstrap("http://127.0.0.1:18765/status", value, value, strings.TrimSpace(os.Getenv("LUCX_PLUGIN_DATA")))
 }
 
-func newWebUIHandler(statusURL, sessionToken string) http.Handler {
-	return newWebUIHandlerWithDataDir(statusURL, sessionToken, strings.TrimSpace(os.Getenv("LUCX_PLUGIN_DATA")))
-}
-
 func newWebUIHandlerWithDataDir(statusURL, sessionToken, dataDir string) http.Handler {
 	return newWebUIHandlerWithBootstrap(statusURL, sessionToken, sessionToken, dataDir)
 }
