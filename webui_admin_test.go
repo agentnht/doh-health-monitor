@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -305,5 +307,89 @@ func TestWebUIIntegrationMutationAPIIsDisabled(t *testing.T) {
 		if !strings.Contains(response.Body.String(), "configure Xray manually") {
 			t.Fatalf("%s API response does not explain manual Xray configuration: %s", action, response.Body.String())
 		}
+	}
+}
+
+func TestWebUILogsPreferPluginAndAdminFilesOverJournal(t *testing.T) {
+	dataDir := newTestWebUIData(t)
+	pluginLog := filepath.Join(filepath.Dir(dataDir), "plugin.log")
+	adminLog := filepath.Join(dataDir, "webui-admin-check.log")
+	if err := os.WriteFile(pluginLog, []byte("plugin-runtime-marker\nAuthorization: Bearer plugin-secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(adminLog, []byte("admin-check-marker\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	lines, source, err := readWebUILogs(dataDir, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(lines, "\n")
+	if source != "plugin.log + webui-admin-check.log" {
+		t.Fatalf("log source=%q, want plugin and admin files", source)
+	}
+	for _, want := range []string{"plugin-runtime-marker", "admin-check-marker", "[REDACTED]"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("combined logs missing %q: %s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "plugin-secret") {
+		t.Fatal("plugin log exposed a bearer token")
+	}
+}
+
+func TestReadWebUILogFileReturnsTailWhenFileExceedsReadWindow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "plugin.log")
+	content := strings.Repeat("old-log-line\n", (2<<20)/13) + "latest-marker\n"
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := readWebUILogFile(path, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), "latest-marker") {
+		t.Fatalf("tail read missed latest log entry: %v", lines)
+	}
+}
+
+func TestWebUIDigResultClassifiesNODATAAndDNSFailures(t *testing.T) {
+	tests := []struct {
+		name string
+		output string
+		err error
+		timedOut bool
+		want string
+	}{
+		{name: "positive", output: ";; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1\nexample.com. 60 IN A 192.0.2.1\n", want: "OK"},
+		{name: "nodata", output: ";; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 2\n", want: "NODATA"},
+		{name: "nxdomain", output: ";; ->>HEADER<<- opcode: QUERY, status: NXDOMAIN, id: 3\n", want: "NXDOMAIN"},
+		{name: "servfail", output: ";; ->>HEADER<<- opcode: QUERY, status: SERVFAIL, id: 4\n", want: "SERVFAIL"},
+		{name: "refused", output: ";; ->>HEADER<<- opcode: QUERY, status: REFUSED, id: 5\n", want: "REFUSED"},
+		{name: "timeout", err: context.DeadlineExceeded, timedOut: true, want: "TIMEOUT"},
+		{name: "transport", err: errors.New("connection refused"), want: "TRANSPORT_ERROR"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := webUIDigResult("example.com", 1, "udp", test.output, 12, test.err, test.timedOut)
+			if result.Status != test.want {
+				t.Fatalf("status=%q, want %q (reason=%q)", result.Status, test.want, result.Reason)
+			}
+		})
+	}
+}
+
+func TestWebUIDNSListenerCountsNODATAAsAReceivedDNSResponse(t *testing.T) {
+	results := []webUITestResult{
+		{Name: "empty.example TXT", Status: "NODATA", Transport: "udp"},
+		{Name: "timeout.example A", Status: "TIMEOUT", Transport: "udp"},
+	}
+	listener := webUIDNSListenerResult("udp", "127.0.0.1:5355", results)
+	if listener.Status != "OK" {
+		t.Fatalf("NODATA is still a DNS response; listener status=%q reason=%q", listener.Status, listener.Reason)
+	}
+	warning := finalizeWebUITests(webUITestSummary{Tests: []webUITestResult{{Status: "NODATA"}}})
+	if warning.Status != "Warning" || warning.Warnings != 1 || warning.Failed != 0 {
+		t.Fatalf("NODATA summary=%+v, want warning without transport failure", warning)
 	}
 }

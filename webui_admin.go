@@ -81,6 +81,7 @@ type webUITestResult struct {
 	QType      string `json:"qtype,omitempty"`
 	Answer     string `json:"answer,omitempty"`
 	DurationMS int64  `json:"duration_ms,omitempty"`
+	Transport  string `json:"transport,omitempty"`
 }
 
 type webUITestSummary struct {
@@ -88,7 +89,8 @@ type webUITestSummary struct {
 	RunAt  time.Time         `json:"run_at"`
 	Tests  []webUITestResult `json:"tests"`
 	Passed int               `json:"passed"`
-	Failed int               `json:"failed"`
+	Failed   int               `json:"failed"`
+	Warnings int               `json:"warnings"`
 }
 
 type webUIAdminLogger struct {
@@ -687,27 +689,53 @@ func saveWebUIGeminiKey(dataDir, key string) error {
 
 func readWebUILogs(dataDir string, count int) ([]string, string, error) {
 	var all []string
-	source := ""
-	if journalctl, err := exec.LookPath("journalctl"); err == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		command := exec.CommandContext(ctx, journalctl, "-u", webUIAdminService+".service", "-n", strconv.Itoa(count), "--no-pager", "-o", "short-iso-precise")
-		output, commandErr := command.Output()
-		cancel()
-		if commandErr == nil {
-			all = append(all, tailLines(string(output), count)...)
-			source = "systemd journal"
+	var sources []string
+	root, rootErr := webUIDataRoot(dataDir)
+	if rootErr == nil {
+		pluginPath := filepath.Join(filepath.Dir(root), "plugin.log")
+		adminPath := filepath.Join(root, "webui-admin-check.log")
+		pluginLines, _ := readWebUILogFile(pluginPath, count)
+		adminLines, _ := readWebUILogFile(adminPath, count)
+		switch {
+		case len(pluginLines) > 0 && len(adminLines) > 0:
+			budget := count - 2
+			pluginBudget := budget * 2 / 3
+			adminBudget := budget - pluginBudget
+			pluginLines = tailLines(strings.Join(pluginLines, "\n"), pluginBudget)
+			adminLines = tailLines(strings.Join(adminLines, "\n"), adminBudget)
+			all = append(all, "--- plugin.log ---")
+			all = append(all, pluginLines...)
+			all = append(all, "--- webui-admin-check.log ---")
+			all = append(all, adminLines...)
+			sources = append(sources, "plugin.log", "webui-admin-check.log")
+		case len(pluginLines) > 0:
+			all = append(all, "--- plugin.log ---")
+			all = append(all, pluginLines...)
+			sources = append(sources, "plugin.log")
+		case len(adminLines) > 0:
+			all = append(all, "--- webui-admin-check.log ---")
+			all = append(all, adminLines...)
+			sources = append(sources, "webui-admin-check.log")
 		}
 	}
-	root, rootErr := webUIDataRoot(dataDir)
-	if len(all) == 0 && rootErr == nil {
-		parentLog := filepath.Join(filepath.Dir(root), "plugin.log")
-		if lines, err := readWebUILogFile(parentLog, count); err == nil && len(lines) > 0 {
-			all = append(all, lines...)
-			source = "plugin.log"
+	// The daemon may redirect stdout/stderr to plugin.log. systemd journal is
+	// a fallback for service lifecycle records, not a replacement for app logs.
+	if len(all) == 0 {
+		if journalctl, err := exec.LookPath("journalctl"); err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+			command := exec.CommandContext(ctx, journalctl, "-u", webUIAdminService+".service", "-n", strconv.Itoa(count), "--no-pager", "-o", "short-iso-precise")
+			output, commandErr := command.Output()
+			cancel()
+			if commandErr == nil {
+				all = append(all, tailLines(string(output), count)...)
+				if len(all) > 0 {
+					sources = append(sources, "systemd journal")
+				}
+			}
 		}
 	}
 	if len(all) == 0 {
-		return []string{"Записи журнала пока недоступны. Проверьте наличие systemd journal или plugin.log."}, "no log source", nil
+		return []string{"Записи журнала пока недоступны. Проверьте plugin.log, webui-admin-check.log и systemd journal."}, "no log source", nil
 	}
 	if len(all) > count {
 		all = all[len(all)-count:]
@@ -715,7 +743,7 @@ func readWebUILogs(dataDir string, count int) ([]string, string, error) {
 	for index := range all {
 		all[index] = redactWebUILogLine(all[index])
 	}
-	return all, source, nil
+	return all, strings.Join(sources, " + "), nil
 }
 
 func readWebUILogFile(path string, count int) ([]string, error) {
@@ -730,14 +758,28 @@ func readWebUILogFile(path string, count int) ([]string, error) {
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 2<<20 {
-		return nil, errors.New("log file is invalid or too large")
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, errors.New("log file is not a regular file")
 	}
-	data, err := io.ReadAll(io.LimitReader(file, (2<<20)+1))
-	if err != nil || len(data) > 2<<20 {
-		return nil, errors.New("log file is too large")
+	const maxLogRead = int64(2 << 20)
+	start := int64(0)
+	if info.Size() > maxLogRead {
+		start = info.Size() - maxLogRead
+		if _, err := file.Seek(start, io.SeekStart); err != nil {
+			return nil, errors.New("could not seek to log tail")
+		}
 	}
-	return tailLines(string(data), count), nil
+	data, err := io.ReadAll(io.LimitReader(file, maxLogRead))
+	if err != nil {
+		return nil, errors.New("could not read log tail")
+	}
+	value := string(data)
+	if start > 0 {
+		if newline := strings.IndexByte(value, '\n'); newline >= 0 {
+			value = value[newline+1:]
+		}
+	}
+	return tailLines(value, count), nil
 }
 
 func tailLines(value string, count int) []string {
@@ -801,25 +843,13 @@ func runWebUIAdminTests(dataDir string) webUITestSummary {
 	}
 	summary.Tests = append(summary.Tests, webUITest("Проверка файлов списков", true, fmt.Sprintf("DoH-серверов: %d, DNS-проверок: %d", len(sources.Providers), len(sources.Checks))))
 
-	digResults := runWebUIDigTests(config.DNSListenUDP, sources.Checks)
-	summary.Tests = append(summary.Tests, digResults...)
-	udpOK := false
-	for _, result := range digResults {
-		if result.Status == "OK" {
-			udpOK = true
-			break
-		}
-	}
-	if udpOK {
-		summary.Tests = append(summary.Tests, webUITest("UDP DNS listener", true, config.DNSListenUDP+" отвечает на реальные dig-запросы"))
-	} else if address, err := localListenAddress(config.DNSListenUDP); err != nil {
-		summary.Tests = append(summary.Tests, webUITest("UDP DNS listener", false, err.Error()))
-	} else if listener, err := net.ListenPacket("udp", address); err == nil {
-		_ = listener.Close()
-		summary.Tests = append(summary.Tests, webUITest("UDP DNS listener", true, "Порт свободен и доступен для запуска DNS-демона; активный ответ DNS не получен"))
-	} else {
-		summary.Tests = append(summary.Tests, webUITest("UDP DNS listener", false, "Порт занят, но ожидаемый DNS-ответ не получен"))
-	}
+	udpResults := runWebUIDigTests(config.DNSListenUDP, sources.Checks, "udp")
+	summary.Tests = append(summary.Tests, udpResults...)
+	summary.Tests = append(summary.Tests, webUIDNSListenerResult("udp", config.DNSListenUDP, udpResults))
+
+	tcpResults := runWebUIDigTests(config.DNSListenTCP, sources.Checks, "tcp")
+	summary.Tests = append(summary.Tests, tcpResults...)
+	summary.Tests = append(summary.Tests, webUIDNSListenerResult("tcp", config.DNSListenTCP, tcpResults))
 
 	summary.Tests = append(summary.Tests, testWebUIHTTPListener(config.HTTPListen))
 	summary.Tests = append(summary.Tests, runWebUIXrayPolicyCheck(dataDir))
@@ -827,20 +857,53 @@ func runWebUIAdminTests(dataDir string) webUITestSummary {
 }
 
 func finalizeWebUITests(summary webUITestSummary) webUITestSummary {
-	summary.Passed, summary.Failed = 0, 0
+	summary.Passed, summary.Failed, summary.Warnings = 0, 0, 0
 	for _, test := range summary.Tests {
-		if test.Status == "OK" {
+		switch test.Status {
+		case "OK":
 			summary.Passed++
-		} else {
+		case "NODATA", "NXDOMAIN":
+			summary.Warnings++
+		default:
 			summary.Failed++
 		}
 	}
-	if summary.Failed == 0 && len(summary.Tests) > 0 {
+	switch {
+	case summary.Failed > 0:
+		summary.Status = "NotOK"
+	case summary.Warnings > 0:
+		summary.Status = "Warning"
+	case len(summary.Tests) > 0:
 		summary.Status = "OK"
-	} else {
+	default:
 		summary.Status = "NotOK"
 	}
 	return summary
+}
+
+func dnsResponseReceived(status string) bool {
+	switch status {
+	case "OK", "NODATA", "NXDOMAIN", "SERVFAIL", "REFUSED", "OTHER_RCODE":
+		return true
+	default:
+		return false
+	}
+}
+
+func webUIDNSListenerResult(transport, address string, results []webUITestResult) webUITestResult {
+	if _, err := localListenAddress(address); err != nil {
+		return webUITest("DNS "+strings.ToUpper(transport)+" listener", false, err.Error())
+	}
+	responses := 0
+	for _, result := range results {
+		if result.Transport == transport && dnsResponseReceived(result.Status) {
+			responses++
+		}
+	}
+	if responses == 0 {
+		return webUITest("DNS "+strings.ToUpper(transport)+" listener", false, "На настроенном listener не получен DNS-ответ; проверка не подменяется тестом занятости порта")
+	}
+	return webUITest("DNS "+strings.ToUpper(transport)+" listener", true, fmt.Sprintf("%s отвечает на DNS-запросы (%d ответов получено)", address, responses))
 }
 
 func localListenAddress(address string) (string, error) {
@@ -883,7 +946,7 @@ func testWebUIHTTPListener(address string) webUITestResult {
 	return webUITest("HTTP listener", false, "Порт занят, но штатный /healthz endpoint недоступен")
 }
 
-func runWebUIDigTests(address string, checks []Check) []webUITestResult {
+func runWebUIDigTests(address string, checks []Check, transport string) []webUITestResult {
 	var queries []struct {
 		domain string
 		qtype  uint16
@@ -897,26 +960,26 @@ func runWebUIDigTests(address string, checks []Check) []webUITestResult {
 		}
 	}
 	if len(queries) == 0 {
-		return []webUITestResult{webUITest("dig", false, "В tst-domen.txt нет активных DNS-проверок")}
+		return []webUITestResult{webUITest("dig "+strings.ToUpper(transport), false, "В tst-domen.txt нет активных DNS-проверок")}
 	}
 	results := make([]webUITestResult, len(queries))
 	executable, err := exec.LookPath("dig")
 	if err != nil {
 		for index, query := range queries {
-			results[index] = webUIDigResult(query.domain, query.qtype, "", 0, errors.New("утилита dig не установлена"))
+			results[index] = webUIDigResult(query.domain, query.qtype, transport, "", 0, errors.New("утилита dig не установлена"), false)
 		}
 		return results
 	}
 	if len(queries) > webUIAdminMaxDigQueries {
 		for index, query := range queries[webUIAdminMaxDigQueries:] {
-			results[index] = webUIDigResult(query.domain, query.qtype, "", 0, fmt.Errorf("лимит проверки: выполнено не более %d DNS-запросов за один запуск", webUIAdminMaxDigQueries))
+			results[index] = webUIDigResult(query.domain, query.qtype, transport, "", 0, fmt.Errorf("лимит проверки: выполнено не более %d DNS-запросов за один запуск", webUIAdminMaxDigQueries), false)
 		}
 		queries = queries[:webUIAdminMaxDigQueries]
 	}
 	localAddress, addressErr := localListenAddress(address)
 	if addressErr != nil {
 		for index, query := range queries {
-			results[index] = webUIDigResult(query.domain, query.qtype, "", 0, addressErr)
+			results[index] = webUIDigResult(query.domain, query.qtype, transport, "", 0, addressErr, false)
 		}
 		return results
 	}
@@ -935,15 +998,17 @@ func runWebUIDigTests(address string, checks []Check) []webUITestResult {
 			for query := range queue {
 				start := time.Now()
 				name := dnsQTypeName(query.qtype)
-				ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-				command := exec.CommandContext(ctx, executable, "+time=2", "+tries=1", "+noall", "+answer", "@"+host, "-p", port, query.domain, name)
-				output, commandErr := command.CombinedOutput()
-				cancel()
-				answer := strings.TrimSpace(string(output))
-				if len(answer) > 2048 {
-					answer = answer[:2048] + "…"
+				args := []string{"+time=2", "+tries=1", "+noall", "+comments", "+answer"}
+				if transport == "tcp" {
+					args = append(args, "+tcp")
 				}
-				results[query.index] = webUIDigResult(query.domain, query.qtype, answer, time.Since(start).Milliseconds(), commandErr)
+				args = append(args, "@"+host, "-p", port, query.domain, name)
+				ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+				command := exec.CommandContext(ctx, executable, args...)
+				output, commandErr := command.CombinedOutput()
+				timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
+				cancel()
+				results[query.index] = webUIDigResult(query.domain, query.qtype, transport, string(output), time.Since(start).Milliseconds(), commandErr, timedOut)
 			}
 		}()
 	}
@@ -953,6 +1018,81 @@ func runWebUIDigTests(address string, checks []Check) []webUITestResult {
 	close(queue)
 	workers.Wait()
 	return results
+}
+
+func digResponseCode(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		index := strings.Index(strings.ToLower(line), "status:")
+		if index < 0 {
+			continue
+		}
+		value := strings.TrimSpace(line[index+len("status:"):])
+		value = strings.SplitN(value, ",", 2)[0]
+		return strings.ToUpper(strings.TrimSpace(value))
+	}
+	return ""
+}
+
+func digAnswerLines(output string) string {
+	var answers []string
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ";") {
+			continue
+		}
+		answers = append(answers, line)
+	}
+	return strings.Join(answers, "\n")
+}
+
+func webUIDigResult(domain string, qtype uint16, transport, output string, elapsed int64, commandErr error, timedOut bool) webUITestResult {
+	result := webUITestResult{Name: "dig " + domain + " " + dnsQTypeName(qtype), Domain: domain, QType: dnsQTypeName(qtype), DurationMS: elapsed, Transport: transport}
+	if commandErr != nil {
+		result.Status = "TRANSPORT_ERROR"
+		result.Reason = "DNS transport/query failed: " + commandErr.Error()
+		if timedOut {
+			result.Status = "TIMEOUT"
+			result.Reason = "DNS request timed out"
+		}
+		details := strings.TrimSpace(output)
+		if len(details) > 2048 {
+			details = details[:2048] + "…"
+		}
+		result.Answer = details
+		return result
+	}
+
+	rcode := digResponseCode(output)
+	answers := digAnswerLines(output)
+	if len(answers) > 2048 {
+		answers = answers[:2048] + "…"
+	}
+	result.Answer = answers
+	switch rcode {
+	case "NOERROR":
+		if answers == "" {
+			result.Status = "NODATA"
+			result.Reason = "NOERROR/NODATA: DNS ответ получен, но секция Answer пустая"
+		} else {
+			result.Status = "OK"
+		}
+	case "NXDOMAIN":
+		result.Status = "NXDOMAIN"
+		result.Reason = "DNS ответ получен: запрошенное имя не существует (NXDOMAIN)"
+	case "SERVFAIL":
+		result.Status = "SERVFAIL"
+		result.Reason = "DNS сервер ответил SERVFAIL"
+	case "REFUSED":
+		result.Status = "REFUSED"
+		result.Reason = "DNS сервер отклонил запрос (REFUSED)"
+	case "":
+		result.Status = "INVALID_RESPONSE"
+		result.Reason = "dig завершился без ошибки, но DNS RCODE не найден в выводе"
+	default:
+		result.Status = "OTHER_RCODE"
+		result.Reason = "DNS сервер ответил RCODE " + rcode
+	}
+	return result
 }
 
 func dnsQTypeName(value uint16) string {
