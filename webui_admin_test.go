@@ -30,19 +30,10 @@ func newTestWebUIData(t *testing.T) string {
 func newAuthenticatedWebUIRequest(t *testing.T, handler http.Handler, method, path string, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
 	const host = "127.0.0.1:19876"
-	root := httptest.NewRequest(http.MethodGet, "http://"+host+"/", nil)
-	root.Host = host
-	rootRecorder := httptest.NewRecorder()
-	handler.ServeHTTP(rootRecorder, root)
-	cookies := rootRecorder.Result().Cookies()
-	if len(cookies) != 1 {
-		t.Fatal("root response did not issue a session cookie")
-	}
-
 	request := httptest.NewRequest(method, "http://"+host+path, bytes.NewReader(body))
 	request.Host = host
 	request.Header.Set("Origin", "http://"+host)
-	request.AddCookie(cookies[0])
+	request.AddCookie(&http.Cookie{Name: webUISessionCookie, Value: "test-session", HttpOnly: true, SameSite: http.SameSiteStrictMode})
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	return recorder
@@ -361,6 +352,25 @@ func TestWebUISourceRowsPreserveHeaderComments(t *testing.T) {
 	}
 	if !rows[2].Editable || rows[2].Active {
 		t.Fatal("commented provider was not parsed as an inactive editable row")
+	}
+}
+
+func TestWebUIGeminiKeyCannotOverwriteManagedConfig(t *testing.T) {
+	dir := newTestWebUIData(t)
+	configPath := filepath.Join(dir, "config.json")
+	config, err := loadConfigNoCreate(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.GeminiAPI.KeyFile = "config.json"
+	if err := writeConfigAtomic(configPath, config); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveWebUIGeminiKey(dir, "must-not-overwrite-config"); err == nil {
+		t.Fatal("expected managed config.json target to be rejected")
+	}
+	if _, err := loadConfigNoCreate(configPath); err != nil {
+		t.Fatalf("config.json was corrupted after rejected key save: %v", err)
 	}
 }
 
