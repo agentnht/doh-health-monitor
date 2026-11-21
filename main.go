@@ -1160,7 +1160,7 @@ func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string
 		if len(found) > 0 {
 			for _, ip := range found {
 				v := ip.String()
-				if isPublicDoHIP(ip) && !seen[v] {
+				if isPublicDoHIP(net.IP(ip.AsSlice())) && !seen[v] {
 					seen[v] = true
 					ips = append(ips, v)
 				}
