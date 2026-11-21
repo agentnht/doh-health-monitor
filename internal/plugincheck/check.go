@@ -1,4 +1,4 @@
-package dohintegration
+package plugincheck
 
 import (
 	"context"
