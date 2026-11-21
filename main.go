@@ -400,6 +400,10 @@ func main() {
 	if err := initializeConfigSourceFiles(dataDir); err != nil {
 		fatal("CONFIG sources initialization failed: %v", err)
 	}
+	startupConfigUnlock, err := acquireDNSConfigFileLock(dataDir)
+	if err != nil {
+		fatal("CONFIG file lock failed: %v", err)
+	}
 	cfg, err := loadConfig(configPath)
 	if err != nil {
 		fatal("CONFIG invalid: %v", err)
@@ -434,6 +438,7 @@ func main() {
 	}
 	rt.snapshot.Store(snap)
 	rt.initHealth(snap)
+	startupConfigUnlock()
 	logLine("INFO", "CONFIG loaded path=%s doh_list=%s checks_list=%s groups=%d upstreams=%d checks=%d dns_udp=%s dns_tcp=%s gemini_api=%t", configPath, dohPath, checksPath, len(cfg.Groups), len(cfg.Upstreams), len(sources.Checks), cfg.DNSListenUDP, cfg.DNSListenTCP, cfg.GeminiAPI.Enabled)
 
 	udpAddr, err := net.ResolveUDPAddr("udp", cfg.DNSListenUDP)
