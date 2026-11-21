@@ -4,7 +4,7 @@
   const number = (value) => new Intl.NumberFormat("ru-RU").format(Number(value || 0));
   const when = (value) => value ? new Date(value).toLocaleString("ru-RU") : "—";
   let configState = null;
-  const sourceState = { doh: [], checks: [] };
+  const sourceState = { doh: [], checks: [], hosts: [] };
 
   async function api(path, options = {}) {
     const headers = new Headers(options.headers || {});
@@ -318,18 +318,19 @@
 
   const sourceFields = {
     doh: ["ID", "HTTPS URL"],
-    checks: ["Domain", "QTypes", "Required (0/1)", "HTTP URL", "Expected status", "Verify OIDC (0/1)"]
+    checks: ["Domain", "QTypes", "Required (0/1)", "HTTP URL", "Expected status", "Verify OIDC (0/1)"],
+    hosts: ["Hostname", "IPv4 (comma-separated)", "IPv6 (comma-separated)"]
   };
 
   function renderSource(kind) {
-    const body = $(kind === "doh" ? "doh-rows" : "check-rows");
+    const body = $(kind === "doh" ? "doh-rows" : kind === "checks" ? "check-rows" : "hosts-rows");
     body.replaceChildren();
     sourceState[kind].forEach((row, index) => {
       const tr = document.createElement("tr");
       if (kind === "doh" && row.system) tr.classList.add("source-system");
       if (!row.editable) {
         const td = document.createElement("td");
-        td.colSpan = kind === "doh" ? 4 : 8;
+        td.colSpan = kind === "doh" ? 4 : kind === "checks" ? 8 : 5;
         td.className = "source-comment";
         td.textContent = row.raw || "#";
         tr.append(td);
@@ -394,23 +395,25 @@
     const data = await api("/api/v1/sources");
     sourceState.doh = data.doh || [];
     sourceState.checks = data.checks || [];
+    sourceState.hosts = data.hosts || [];
     renderSource("doh");
     renderSource("checks");
+    renderSource("hosts");
   }
 
   function addSourceRow(kind) {
-    const count = kind === "doh" ? 2 : 6;
+    const count = kind === "doh" ? 2 : kind === "checks" ? 6 : 3;
     sourceState[kind].push({ active: true, editable: true, fields: Array(count).fill("") });
     renderSource(kind);
-    const body = $(kind === "doh" ? "doh-rows" : "check-rows");
+    const body = $(kind === "doh" ? "doh-rows" : kind === "checks" ? "check-rows" : "hosts-rows");
     const last = body.querySelector("tr:last-child");
     const firstInput = last && last.querySelector("input[type=text]");
     if (firstInput) firstInput.focus();
   }
 
   async function saveSources(kind) {
-    const button = $(kind === "doh" ? "doh-save" : "check-save");
-    const note = kind === "doh" ? "doh-note" : "check-note";
+    const button = $(kind === "doh" ? "doh-save" : kind === "checks" ? "check-save" : "hosts-save");
+    const note = kind === "doh" ? "doh-note" : kind === "checks" ? "check-note" : "hosts-note";
     button.disabled = true;
     notice(note, "Проверка и сохранение…", false);
     try {
@@ -575,8 +578,10 @@
   $("save-gemini-key").addEventListener("click", saveGeminiKey);
   $("doh-add").addEventListener("click", () => addSourceRow("doh"));
   $("check-add").addEventListener("click", () => addSourceRow("checks"));
+  $("hosts-add").addEventListener("click", () => addSourceRow("hosts"));
   $("doh-save").addEventListener("click", () => saveSources("doh"));
   $("check-save").addEventListener("click", () => saveSources("checks"));
+  $("hosts-save").addEventListener("click", () => saveSources("hosts"));
   $("run-tests").addEventListener("click", runTests);
   $("refresh-logs").addEventListener("click", loadLogs);
   document.querySelectorAll("[data-page]").forEach(button => {
