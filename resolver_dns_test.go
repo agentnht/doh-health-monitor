@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
 	"encoding/binary"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -551,6 +554,107 @@ func TestMode2ResolverForwardsCNAMEAddressAndEDNSDO(t *testing.T) {
 			}
 			if cachedOPT := extractEDNSOPT(cached); !bytes.Equal(cachedOPT, opt) {
 				t.Fatalf("cached response changed upstream OPT: got %v want %v", cachedOPT, opt)
+			}
+		})
+	}
+}
+
+
+func TestMode2DoHResolverForwardsCNAMEAndEDNSDO(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		qtype uint16
+		want  string
+	}{
+		{name: "CNAME to A", qtype: 1, want: "203.0.113.10"},
+		{name: "CNAME to AAAA", qtype: 28, want: "2001:db8::10"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			receivedQuery := make(chan []byte, 1)
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.Method != http.MethodPost {
+					t.Errorf("DoH method=%q, want POST", req.Method)
+				}
+				if got := req.Header.Get("Content-Type"); got != "application/dns-message" {
+					t.Errorf("DoH Content-Type=%q", got)
+				}
+				if got := req.Header.Get("Accept"); got != "application/dns-message" {
+					t.Errorf("DoH Accept=%q", got)
+				}
+				body, err := io.ReadAll(req.Body)
+				if err != nil {
+					t.Errorf("read DoH request: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				receivedQuery <- append([]byte(nil), body...)
+				response := mode2AppendResponseOPT(mode2CNAMEAddressResponse(body, tc.qtype, 900, 600))
+				w.Header().Set("Content-Type", "application/dns-message")
+				_, _ = w.Write(response)
+			}))
+			defer server.Close()
+
+			snapshot := &Snapshot{
+				cfg: Config{
+					DNSMode: "resolver",
+					Cache: CacheConfig{
+						Enabled: true, MinTTL: 0, MaxTTL: 300, MaxEntries: 10, MaxBytes: 4096,
+					},
+					DNSQueryTimeoutSeconds: 3,
+					DoHTimeoutSeconds:      3,
+				},
+				resolverGeneration: 92,
+				resolverUpstreams: []*ResolverRuntime{
+					{
+						cfg: ResolverUpstream{ID: "doh-test", Type: "doh"},
+						upstream: &UpstreamRuntime{
+							cfg:    Upstream{ID: "doh-test", URL: server.URL},
+							client: server.Client(),
+						},
+					},
+				},
+			}
+			runtime := &Runtime{cache: map[string]cacheItem{}}
+			runtime.snapshot.Store(snapshot)
+
+			query := mode2QueryWithEDNSDO("alias.example", tc.qtype)
+			response := runtime.resolverDNSResponse(query, snapshot)
+			if dnsRCode(response) != 0 {
+				t.Fatalf("DoH resolver response rcode=%d, want NOERROR", dnsRCode(response))
+			}
+			select {
+			case forwarded := <-receivedQuery:
+				if !bytes.Equal(forwarded, query) {
+					t.Fatal("DoH query was modified; EDNS0/DO/COOKIE and DNS question must be forwarded unchanged")
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("DoH resolver did not receive the DNS query")
+			}
+
+			answers, err := dnsRRsInSection(response, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(answers) != 2 || answers[0].typeCode != 5 || answers[1].typeCode != tc.qtype {
+				t.Fatalf("expected CNAME plus terminal type %d, got %+v", tc.qtype, answers)
+			}
+			cnameTarget, cnameEnd, err := decodeName(response, answers[0].rdata)
+			if err != nil || cnameEnd != answers[0].end || cnameTarget != "target.example" {
+				t.Fatalf("CNAME target=%q end=%d err=%v, want target.example", cnameTarget, cnameEnd, err)
+			}
+			if got := net.IP(response[answers[1].rdata:answers[1].end]).String(); got != tc.want {
+				t.Fatalf("terminal address=%q, want %q", got, tc.want)
+			}
+
+			opt := extractEDNSOPT(response)
+			if len(opt) != 19 || binary.BigEndian.Uint16(opt[3:5]) != 1400 ||
+				binary.BigEndian.Uint16(opt[7:9]) != 0x8000 ||
+				binary.BigEndian.Uint16(opt[11:13]) != 10 ||
+				!bytes.Equal(opt[15:19], []byte{0x11, 0x22, 0x33, 0x44}) {
+				t.Fatalf("DoH upstream OPT/DO/COOKIE was not preserved: %v", opt)
+			}
+			if binary.BigEndian.Uint16(response[2:4])&0x0020 != 0 {
+				t.Fatal("DoH test upstream response did not set AD; plugin must not add a false AD bit")
 			}
 		})
 	}
