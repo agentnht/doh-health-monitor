@@ -28,7 +28,7 @@ import (
 	"time"
 
 	"lucx-doh-health-monitor/internal/activedoh"
-	"lucx-doh-health-monitor/internal/dohintegration"
+	"lucx-doh-health-monitor/internal/plugincheck"
 )
 
 const (
@@ -375,7 +375,7 @@ func main() {
 		}
 		if action == "check" {
 			logger := lucxReadOnlyCheckLogger{}
-			if err := dohintegration.RunCommand(os.Args[1:], logger); err != nil {
+			if err := plugincheck.RunCommand(os.Args[1:], logger); err != nil {
 				logLine("ERROR", "CHECK: %v", err)
 				os.Exit(1)
 			}
