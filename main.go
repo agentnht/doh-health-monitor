@@ -2819,7 +2819,7 @@ func (r *Runtime) reloadLoop(ctx context.Context) {
 		}
 		unlockConfigWrite := func() {
 			releaseFileLock()
-			unlockConfigWrite()
+			dnsConfigWriteMu.Unlock()
 		}
 		old = r.currentSnapshot()
 		cfi, err = os.Stat(r.configPath)
