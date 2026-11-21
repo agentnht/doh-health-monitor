@@ -3071,7 +3071,7 @@ func (r *Runtime) handleHealthz(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	if req.Method != http.MethodHead {
-		_, _ = io.WriteString(w, "ok\\n")
+		_, _ = io.WriteString(w, "ok\n")
 	}
 }
 
@@ -3144,9 +3144,8 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 			out.DoHBootstrap[uid] = upstream.bootstrap.status()
 		}
 	}
-	// /status is intentionally readable by local diagnostic clients without an
-	// authentication exchange. Do not expose filesystem paths or host resolver
-	// details through this endpoint.
+	// /status contains detailed diagnostics and requires the private bearer token.
+	// Keep filesystem paths and host resolver details out of the response as well.
 	out.Config = ""
 	out.SystemDNSServers = nil
 	out.SystemDNSError = ""
