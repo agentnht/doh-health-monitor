@@ -331,5 +331,3 @@ func DetectAndAuthorize(opts Options,logger Logger)(Endpoint,*PanelAPI,error){
 	token,err:=resolveToken(opts,cwd,logger);if err!=nil{return endpoint,nil,err}
 	api,err:=NewPanelAPI(endpoint,token,opts.Timeout,opts.AllowInsecureHTTP,logger);return endpoint,api,err
 }
-
-}
