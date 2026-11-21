@@ -401,3 +401,156 @@ func TestMode2CNAMEToNODATAPreservesFirstUpstreamResponse(t *testing.T) {
 		t.Fatalf("cached SOA TTL=%d, want 45", got)
 	}
 }
+
+
+// mode2QueryWithEDNSDO creates an A/AAAA query with EDNS0, DO and a COOKIE
+// option so resolver forwarding can be checked byte-for-byte.
+func mode2QueryWithEDNSDO(name string, qtype uint16) []byte {
+	query := makeDNSQuery(name, qtype)
+	binary.BigEndian.PutUint16(query[10:12], 1)
+	// OPT: UDP payload=1400, EDNS version=0, DO=1, COOKIE option (4 bytes).
+	return append(query, 0, 0, 41, 0x05, 0x78, 0, 0, 0x80, 0, 0, 8, 0, 10, 0, 4, 0x11, 0x22, 0x33, 0x44)
+}
+
+func mode2CNAMEAddressResponse(query []byte, qtype uint16, cnameTTL, addressTTL uint32) []byte {
+	response := mode2ResponseWithRCode(query, 0)
+	target := "target.example"
+
+	// alias.example CNAME target.example
+	cnameRData := appendDNSName(nil, target)
+	response = append(response, 0xc0, 0x0c, 0, 5, 0, 1)
+	var ttl [4]byte
+	binary.BigEndian.PutUint32(ttl[:], cnameTTL)
+	response = append(response, ttl[:]...)
+	response = append(response, byte(len(cnameRData)>>8), byte(len(cnameRData)))
+	response = append(response, cnameRData...)
+
+	// target.example A/AAAA terminal address record.
+	response = appendDNSName(response, target)
+	response = append(response, byte(qtype>>8), byte(qtype), 0, 1)
+	binary.BigEndian.PutUint32(ttl[:], addressTTL)
+	response = append(response, ttl[:]...)
+	var ip net.IP
+	if qtype == 1 {
+		ip = net.ParseIP("203.0.113.10").To4()
+	} else if qtype == 28 {
+		ip = net.ParseIP("2001:db8::10").To16()
+	} else {
+		return nil
+	}
+	response = append(response, byte(len(ip)>>8), byte(len(ip)))
+	response = append(response, ip...)
+	binary.BigEndian.PutUint16(response[6:8], 2)
+	return response
+}
+
+func mode2AppendResponseOPT(response []byte) []byte {
+	// Preserve the EDNS UDP size and DO bit. Include a COOKIE option to prove
+	// that resolver mode returns upstream OPT data rather than synthesizing it.
+	response = append(response, 0, 0, 41, 0x05, 0x78, 0, 0, 0x80, 0, 0, 8, 0, 10, 0, 4, 0x11, 0x22, 0x33, 0x44)
+	binary.BigEndian.PutUint16(response[10:12], 1)
+	return response
+}
+
+func TestMode2ResolverForwardsCNAMEAddressAndEDNSDO(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		qtype uint16
+		want  string
+	}{
+		{name: "CNAME to A", qtype: 1, want: "203.0.113.10"},
+		{name: "CNAME to AAAA", qtype: 28, want: "2001:db8::10"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			receivedQuery := make(chan []byte, 1)
+			address, requestCount := startMode2TestUDPResolver(t, func(query []byte) []byte {
+				receivedQuery <- append([]byte(nil), query...)
+				return mode2AppendResponseOPT(mode2CNAMEAddressResponse(query, tc.qtype, 900, 600))
+			})
+
+			snapshot := &Snapshot{
+				cfg: Config{
+					DNSMode: "resolver",
+					Cache: CacheConfig{
+						Enabled: true, MinTTL: 0, MaxTTL: 300, MaxEntries: 10, MaxBytes: 4096,
+					},
+					DNSQueryTimeoutSeconds: 3,
+				},
+				resolverGeneration: 91,
+				resolverUpstreams: []*ResolverRuntime{
+					{cfg: ResolverUpstream{ID: "test", Type: "udp"}, address: address},
+				},
+			}
+			runtime := &Runtime{cache: map[string]cacheItem{}}
+			runtime.snapshot.Store(snapshot)
+
+			query := mode2QueryWithEDNSDO("alias.example", tc.qtype)
+			response := runtime.resolverDNSResponse(query, snapshot)
+			if dnsRCode(response) != 0 {
+				t.Fatalf("resolver response rcode=%d, want NOERROR", dnsRCode(response))
+			}
+			if requestCount.Load() != 1 {
+				t.Fatalf("upstream request count=%d, want 1", requestCount.Load())
+			}
+
+			select {
+			case forwarded := <-receivedQuery:
+				if !bytes.Equal(forwarded, query) {
+					t.Fatal("resolver query was modified; EDNS0/DO/COOKIE and DNS question must be forwarded unchanged")
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("resolver did not receive the DNS query")
+			}
+
+			answers, err := dnsRRsInSection(response, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(answers) != 2 || answers[0].typeCode != 5 || answers[1].typeCode != tc.qtype {
+				t.Fatalf("expected CNAME plus terminal type %d, got %+v", tc.qtype, answers)
+			}
+			cnameTarget, cnameEnd, err := decodeName(response, answers[0].rdata)
+			if err != nil || cnameEnd != answers[0].end || cnameTarget != "target.example" {
+				t.Fatalf("CNAME target=%q end=%d err=%v, want target.example", cnameTarget, cnameEnd, err)
+			}
+			gotIP := net.IP(response[answers[1].rdata:answers[1].end]).String()
+			if gotIP != tc.want {
+				t.Fatalf("terminal address=%q, want %q", gotIP, tc.want)
+			}
+
+			opt := extractEDNSOPT(response)
+			if len(opt) != 19 || binary.BigEndian.Uint16(opt[1:3]) != 41 ||
+				binary.BigEndian.Uint16(opt[3:5]) != 1400 ||
+				opt[6] != 0 || binary.BigEndian.Uint16(opt[7:9]) != 0x8000 ||
+				binary.BigEndian.Uint16(opt[9:11]) != 8 ||
+				binary.BigEndian.Uint16(opt[11:13]) != 10 ||
+				binary.BigEndian.Uint16(opt[13:15]) != 4 ||
+				!bytes.Equal(opt[15:19], []byte{0x11, 0x22, 0x33, 0x44}) {
+				t.Fatalf("upstream OPT/DO/COOKIE was not preserved: %v", opt)
+			}
+			if binary.BigEndian.Uint16(response[2:4])&0x0020 != 0 {
+				t.Fatal("test upstream response did not set AD; plugin must not add a false AD bit")
+			}
+
+			cached, found := runtime.cacheGet("mode2:91:"+cacheKey(query), packetID(query))
+			if !found {
+				t.Fatal("expected positive CNAME/address response to be cached")
+			}
+			cachedAnswers, err := dnsRRsInSection(cached, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cachedAnswers) != 2 {
+				t.Fatalf("cached answer count=%d, want 2", len(cachedAnswers))
+			}
+			for _, answer := range cachedAnswers {
+				if ttl := binary.BigEndian.Uint32(cached[answer.ttlOffset : answer.ttlOffset+4]); ttl > 300 {
+					t.Fatalf("cached RR TTL=%d exceeds 300 second cap", ttl)
+				}
+			}
+			if cachedOPT := extractEDNSOPT(cached); !bytes.Equal(cachedOPT, opt) {
+				t.Fatalf("cached response changed upstream OPT: got %v want %v", cachedOPT, opt)
+			}
+		})
+	}
+}
