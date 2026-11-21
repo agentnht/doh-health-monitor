@@ -118,12 +118,12 @@ func runDNSConfigCLIWithIO(args []string, dataDir string, reader *bufio.Reader, 
 	if reader == nil || out == nil {
 		return errors.New("CLI input and output streams are required")
 	}
-	fmt.Fprintf(out, "Текущий DNS mode: %s\\n", cfg.DNSMode)
+	fmt.Fprintf(out, "Текущий DNS mode: %s\n", cfg.DNSMode)
 	fmt.Fprintln(out, "Выберите режим:")
 	fmt.Fprintln(out, "  1) endpoint_ip (режим по умолчанию)")
 	fmt.Fprintln(out, "  2) resolver")
 	fmt.Fprint(out, "Новый режим [1/2, Enter — отмена]: ")
-	choice, err := reader.ReadString('\\n')
+	choice, err := reader.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("read mode selection: %w", err)
 	}
@@ -146,7 +146,7 @@ func runDNSConfigCLIWithIO(args []string, dataDir string, reader *bufio.Reader, 
 		fmt.Fprintln(out, string(encoded))
 		fmt.Fprintln(out, "Вставьте новый JSON-массив одной строкой или нажмите Enter, чтобы оставить текущий порядок и параметры.")
 		fmt.Fprint(out, "resolver_upstreams JSON [Enter — оставить]: ")
-		line, readErr := reader.ReadString('\\n')
+		line, readErr := reader.ReadString('\n')
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			return fmt.Errorf("read resolver_upstreams: %w", readErr)
 		}
@@ -165,7 +165,7 @@ func runDNSConfigCLIWithIO(args []string, dataDir string, reader *bufio.Reader, 
 		resolverCount = len(resolvers)
 	}
 	fmt.Fprintf(out, "Будет сохранено: dns_mode=%s, resolver_upstreams=%d. Продолжить? [y/N]: ", cfg.DNSMode, resolverCount)
-	confirm, err := reader.ReadString('\\n')
+	confirm, err := reader.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("read confirmation: %w", err)
 	}
@@ -180,7 +180,7 @@ func runDNSConfigCLIWithIO(args []string, dataDir string, reader *bufio.Reader, 
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "[OK] Сохранено: dns_mode=%s, resolver_upstreams=%d\\n", saved.DNSMode, len(saved.ResolverUpstreams))
+	fmt.Fprintf(out, "[OK] Сохранено: dns_mode=%s, resolver_upstreams=%d\n", saved.DNSMode, len(saved.ResolverUpstreams))
 	fmt.Fprintln(out, "Создан config.json.bak. Демон применит изменения автоматически в течение 30 секунд.")
 	fmt.Fprintln(out, "Проверьте /status: last_reload обновится, last_error должен быть пустым.")
 	return nil
