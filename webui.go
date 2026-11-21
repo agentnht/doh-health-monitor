@@ -74,6 +74,14 @@ type webUIStatus struct {
 	TCPRejected   uint64                     `json:"tcp_rejected"`
 }
 
+type webUIHandlerInstance struct {
+	delegate http.Handler
+}
+
+func (h *webUIHandlerInstance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.delegate.ServeHTTP(w, r)
+}
+
 func webUIHandler() http.Handler {
 	token := make([]byte, 32)
 	if _, err := rand.Read(token); err != nil {
@@ -91,15 +99,15 @@ func newWebUIHandler(statusURL, sessionToken string) http.Handler {
 func newWebUIHandlerWithDataDir(statusURL, bootstrapToken, dataDir string) http.Handler {
 	sessionBytes := make([]byte, 32)
 	if _, err := rand.Read(sessionBytes); err != nil {
-		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		return &webUIHandlerInstance{delegate: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			setWebUISecurityHeaders(w)
 			http.Error(w, "Web UI session initialization failed", http.StatusInternalServerError)
-		})
+		})}
 	}
 	sessionToken := base64.RawURLEncoding.EncodeToString(sessionBytes)
 	var bootstrapMu sync.Mutex
 	bootstrapUsed := false
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return &webUIHandlerInstance{delegate: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setWebUISecurityHeaders(w)
 		if !isLoopbackWebHost(r.Host) {
 			http.Error(w, "invalid host", http.StatusForbidden)
@@ -179,7 +187,7 @@ func newWebUIHandlerWithDataDir(statusURL, bootstrapToken, dataDir string) http.
 		default:
 			http.NotFound(w, r)
 		}
-	})
+	})}
 }
 
 func webUIRequestAuthorized(r *http.Request, sessionToken string) bool {
