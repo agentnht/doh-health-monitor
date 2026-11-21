@@ -753,6 +753,9 @@ func validateConfig(c Config) error {
 	if c.DNSMode != "endpoint_ip" && c.DNSMode != "resolver" {
 		return fmt.Errorf("dns_mode must be endpoint_ip or resolver, got %q", c.DNSMode)
 	}
+	if c.DNSMode == "resolver" && len(c.ResolverUpstreams) == 0 {
+		return errors.New("resolver mode requires at least one resolver_upstreams entry")
+	}
 	if err := validateResolverUpstreams(c.ResolverUpstreams); err != nil {
 		return err
 	}
