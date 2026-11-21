@@ -105,6 +105,7 @@ type Selector struct {
 
 	activeSince time.Time
 	lastSwitch time.Time
+	activeFailures int // retained for selector state reset compatibility; no grace cycle is applied
 	betterCandidate string
 	betterCandidateStreak int
 }
