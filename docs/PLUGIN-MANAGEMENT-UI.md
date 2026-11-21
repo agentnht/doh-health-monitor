@@ -70,6 +70,7 @@ The management tabs are:
 - **Configuration:** supported allowlisted fields from `config.json`, including the `endpoint_ip` / `resolver` selector and the ordered `resolver_upstreams` JSON array, as well as cache, health, bootstrap resolvers and Gemini settings.
 - **DoH servers:** edit `doh-servers.txt`; the protected `system-dns` row can be disabled but not deleted or assigned a DoH URL.
 - **Domains:** edit DNS/HTTP health checks in `tst-domen.txt`.
+- **Local hosts:** edit exact-name DNS overrides in `local-hosts.txt`. Rows can be enabled/disabled without losing their order or comments; IPv4 and IPv6 address families are validated separately.
 - **Checks:** plugin preflight, file/config validation, configured DNS listener queries and read-only Xray DNS structure check.
 - **Logs:** bounded and redacted application/admin log output.
 
@@ -94,14 +95,14 @@ Current API surface:
 
 - `GET /api/v1/status` — sanitized daemon status, including the ActiveDoH selection.
 - `GET/POST /api/v1/config` and `POST /api/v1/config/defaults` — allowlisted config editing, including DNS mode/upstreams.
-- `GET/POST /api/v1/sources` — DoH and health-check source lists.
+- `GET/POST /api/v1/sources` — DoH, health-check and local-host source lists. The `hosts` update kind is restricted to the fixed `local-hosts.txt` path.
 - `POST /api/v1/gemini-key` — store the secret in a private file; never return it.
 - `GET /api/v1/logs` — bounded/redacted application and administration logs.
 - `POST /api/v1/tests/run` — run read-only checks.
 
 The legacy `POST /api/v1/integration` endpoint accepts only the read-only `check` action. Attempts to request `integrate` or `remove` return HTTP 410 Gone. The obsolete `/api/v1/integration/logs` route is not exposed.
 
-The UI does not provide arbitrary file paths, arbitrary shell commands, or Xray mutation operations. File names are allowlisted, request bodies and row counts are bounded, and configuration/source files are validated before an atomic write. Config writes create or replace `config.json.bak` with mode 0600 before atomically replacing `config.json`. A stable `config.json.lock` file (mode 0600, advisory `flock`) serializes daemon, CLI and Web UI writes across separate processes; the daemon uses the same lock for startup and hot-reload read/merge/write transactions. DNS mode/upstream changes are applied by the daemon's existing hot-reload loop (up to 30 seconds); listener and concurrency changes continue to require a plugin restart. The UI reports the saved configuration and whether a restart is required; the dashboard's DNS mode shows what the running daemon has loaded.
+The UI does not provide arbitrary file paths, arbitrary shell commands, or Xray mutation operations. File names are allowlisted, request bodies and row counts are bounded, and configuration/source files are validated before an atomic write. Config writes create or replace `config.json.bak` with mode 0600 before atomically replacing `config.json`. Local hosts writes create or replace `local-hosts.txt.bak` with mode 0600 before atomically replacing `local-hosts.txt`. A stable `config.json.lock` file (mode 0600, advisory `flock`) serializes daemon, CLI and Web UI writes across separate processes, including managed source-file updates; the daemon uses the same lock for startup and hot-reload source-read/merge/write transactions. DNS mode/upstream and local-host source changes are applied by the daemon's existing hot-reload loop (up to 30 seconds); listener and concurrency changes continue to require a plugin restart. The UI reports the saved configuration and whether a restart is required; the dashboard's DNS mode shows what the running daemon has loaded.
 
 ## Regression coverage
 
@@ -110,6 +111,7 @@ CI covers JavaScript syntax, shell syntax and SSH menu helper tests. Go tests co
 - Web UI loopback/Host/Origin/session protections and graceful process shutdown.
 - Sanitized status projection, including ActiveDoH fields without endpoint URL secrets.
 - Configuration/source/runtime-snapshot validation, DNS mode/upstream validation, backup/atomic-write behavior and secret-file handling.
+- Legacy `local_hosts` migration, exact hostname/IP-family validation, comment and disabled-row preservation, Web UI save/backup, and source checksum/runtime reload coverage.
 - CLI DNS mode selection, strict resolver JSON parsing, menu dispatch and compatibility with older Web UI clients that omit the DNS fields.
 - Plugin/admin log source selection, bounded tail reads and secret redaction.
 - DNS status classification for NODATA/NXDOMAIN/server failures versus transport errors.
