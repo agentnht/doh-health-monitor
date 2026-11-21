@@ -3,12 +3,12 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
-	"testing"
-	"fmt"
 	"strings"
+	"testing"
 )
 
 func TestSaveDNSModeConfigBacksUpAndPreservesResolverOrder(t *testing.T) {
