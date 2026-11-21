@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -27,21 +28,34 @@ func newTestWebUIData(t *testing.T) string {
 	return dir
 }
 
+var (
+	webUITestSessionMu sync.Mutex
+	webUITestSessions  = make(map[http.Handler]*http.Cookie)
+)
+
 func newAuthenticatedWebUIRequest(t *testing.T, handler http.Handler, method, path string, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
 	const host = "127.0.0.1:19876"
-	auth := httptest.NewRequest(http.MethodGet, "http://"+host+"/auth?token=test-session", nil)
-	auth.Host = host
-	authRecorder := httptest.NewRecorder()
-	handler.ServeHTTP(authRecorder, auth)
-	cookies := authRecorder.Result().Cookies()
-	if authRecorder.Code != http.StatusSeeOther || len(cookies) != 1 {
-		t.Fatalf("bootstrap authentication failed: status=%d cookies=%d", authRecorder.Code, len(cookies))
+	webUITestSessionMu.Lock()
+	cookie := webUITestSessions[handler]
+	if cookie == nil {
+		auth := httptest.NewRequest(http.MethodGet, "http://"+host+"/auth?token=test-session", nil)
+		auth.Host = host
+		authRecorder := httptest.NewRecorder()
+		handler.ServeHTTP(authRecorder, auth)
+		cookies := authRecorder.Result().Cookies()
+		if authRecorder.Code != http.StatusSeeOther || len(cookies) != 1 {
+			webUITestSessionMu.Unlock()
+			t.Fatalf("bootstrap authentication failed: status=%d cookies=%d", authRecorder.Code, len(cookies))
+		}
+		cookie = cookies[0]
+		webUITestSessions[handler] = cookie
 	}
+	webUITestSessionMu.Unlock()
 	request := httptest.NewRequest(method, "http://"+host+path, bytes.NewReader(body))
 	request.Host = host
 	request.Header.Set("Origin", "http://"+host)
-	request.AddCookie(cookies[0])
+	request.AddCookie(cookie)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	return recorder
