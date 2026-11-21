@@ -1,6 +1,6 @@
 # DoH DNS Proxy & Health Monitor для LucX-UI
 
-**Версия:** 2.3.0 (release candidate в `feature/geosite-dns-routing`; релиз ещё не опубликован)  
+**Версия:** 2.3.0  
 **Платформа:** Linux x86-64 (`amd64`), статический Go-бинарник  
 **Тип:** LucX-UI sidecar, `apiVersion: 1`  
 **Режим Gemini API:** необязательный, управляется параметром `gemini_api.enabled`
@@ -42,7 +42,7 @@ Geosite matching находится в правилах внутри Xray DNS ou
 - Не определяет по одному DNS-пакету, какое правило Xray совпало; разделение потоков должно произойти до передачи пакета listener-у.
 - Не обслуживает отдельные QTYPE HTTPS/SVCB, MX, TXT и другие типы; для них listener возвращает NODATA.
 - Не выполняет полноценную DNSSEC validation и не устанавливает AD в синтетических ответах.
-- Не меняет Xray DNS policy при обычном запуске daemon. Geosite rules в целевой конфигурации Xray настраиваются вручную; автоматизация панели для этой схемы отложена до интеграционной проверки.
+- Не меняет Xray DNS policy при обычном запуске daemon. Geosite rules настраиваются вручную; автоматические CLI/Web UI операции изменения Xray отключены в версии 2.3.0, поскольку прежний planner не соответствует этой схеме.
 - Не отключает проверку TLS-сертификатов и hostname.
 
 ## 2. Схема работы
@@ -193,7 +193,7 @@ Web UI не содержит кнопок изменения Xray-конфигу
 
 ### 5.1.1 Режимы Geosite DNS в версии 2.3.0
 
-> **Статус версии:** схема и код версии 2.3.0 находятся в ветке `feature/geosite-dns-routing` и Draft [PR #11](https://github.com/agentnht/doh-health-monitor/pull/11). Ветка содержит `manifest.json` и бинарный version string `2.3.0`, но официальный GitHub Release/tag `v2.3.0` ещё не опубликован. Не устанавливайте эту ветку в production до прохождения интеграционных проверок и публикации релиза.
+ > **Релиз:** код и документация версии 2.3.0 подготовлены к публикации. Официальный tag `v2.3.0` и GitHub Release публикуются отдельно; до появления release ZIP устанавливайте только ранее опубликованную версию.
 
 В новой модели `dns_mode` выбирает ровно один способ обработки запросов, пришедших на DNS listener плагина:
 
@@ -417,13 +417,13 @@ accounts.google.com;A,AAAA;1;https://accounts.google.com/.well-known/openid-conf
 
 ## 6. Подключение к панели / Xray
 
-**Нормативная схема и полный утверждённый JSON приведены в [doc/GEOSITE-DNS-ROUTING-DESIGN.md, §4.4](doc/GEOSITE-DNS-ROUTING-DESIGN.md).** При расхождении README с design doc приоритет имеет design doc из ветки `feature/geosite-dns-routing`.
+**Нормативная схема и полный пример JSON приведены в [doc/GEOSITE-DNS-ROUTING-DESIGN.md, §4.4](doc/GEOSITE-DNS-ROUTING-DESIGN.md).**
 
 Для утверждённой схемы DNS path такой:
 
 1. Клиентский WireGuard/TProxy inbound передаёт DNS-трафик в Xray. В примере конфигурации из §4.4 пользовательский inbound не показан; inbound `api` на `127.0.0.1:62789` относится к Xray API панели и не заменяет клиентский inbound. Клиентский path-level smoke test через sing-box → AWG → VPS TProxy уже выполнен для `habr.com` и `example.com`; наблюдения и ограничения доказанного приведены в design doc §8.
 2. Routing rule `network: tcp,udp`, `port: 53` направляет DNS-пакеты в outbound `dns-out`. Это правило стоит до общего `geoip:private` block.
-3. В `dns-out.settings.rules` первое правило `action: direct` с `domain: ["geosite:habr"]` направляет совпавший Geosite QNAME на rewrite target `127.0.0.1:5355`.
+3. В `dns-out.settings.rules` правило с `action: direct` и непустым `domain` направляет совпавшие QNAME на rewrite target `127.0.0.1:5355`. Значения `domain` определяются политикой оператора; `geosite:habr` в design doc — пример, а не жёстко зашитое требование checker-а.
 4. `rewriteNetwork: udp` задаёт UDP на локальном участке Xray DNS outbound → plugin listener. Это отдельный участок, не внешний транспорт WireGuard/TProxy.
 5. Catch-all `action: hijack` передаёт все остальные QNAME встроенному DNS Xray, upstream которого задан в `dns.servers` (в утверждённом JSON — Quad9 DoH `https://9.9.9.9/dns-query`).
 
@@ -450,7 +450,7 @@ Checker не изменяет конфигурацию. Он остаётся с
 
 Для режима `endpoint_ip` плагин возвращает bootstrap IP выбранного DoH endpoint-а. Для режима `resolver` плагин разрешает исходный QNAME через отдельный `resolver_upstreams`. В обоих случаях эта логика применяется только к запросам, которые Xray направил через Geosite `direct` на локальный listener плагина.
 
-Подробные ограничения QTYPE, cache/TTL, DNS loop checks и проверок целевого runtime описаны в design doc §4.4 и §9.
+Подробные ограничения QTYPE, cache/TTL, DNS loop checks и результаты приёмочных проверок описаны в design doc §4.4 и §9.
 
 ## 7. Проверка работы
 
@@ -587,6 +587,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 go test -race ./...
 go vet ./...
 ```
+
+**Проверки версии 2.3.0 перед публикацией:**
+- GitHub Actions CI #1046: module tidy, shell/JavaScript syntax, management helper tests, DNS checker regression tests, `go vet ./...`, `go test ./...`, Linux amd64 package build — PASS.
+- DoH integration workflow #891 — PASS.
+- VPS smoke tests: read-only Xray preflight; клиентский DNS path для `habr.com` и `example.com`; ActiveDoH failover; resolver mode с A/AAAA и возвратом в `endpoint_ip`; сохранение DNS mode через SSH CLI и Web UI, backup `0600` и hot reload.
+- Эти проверки не утверждают, что выполнены runtime-тесты вкладки Local hosts или SSH tunnel под non-root.
 
 ## 12. Ограничения текущей реализации
 
