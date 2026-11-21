@@ -144,6 +144,7 @@
       text("started", when(status.started_at));
       text("dns-udp", status.dns_udp);
       text("dns-tcp", status.dns_tcp);
+      text("dns-mode", status.dns_mode || "unknown");
       text("queries", number(status.queries));
       text("failures", number(status.failures));
       text("cache-hits", number(status.cache_hits));
