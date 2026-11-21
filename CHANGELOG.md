@@ -9,7 +9,8 @@
 - Чтение `config.json`, DoH/health/local-hosts sources и исходной копии перед backup выполняется без перехода по symlink, с проверкой типа и ограничением размера.
 - Неаутентифицированный loopback `/status` больше не раскрывает полный config path, список системных DNS и ошибки чтения resolver config.
 - Bootstrap IP DoH endpoint-ов фильтруются по глобальной публичной адресации; частные, loopback, link-local, multicast и зарезервированные IP не пробуются.
-- Поиск процесса LucX-UI в legacy integration helpers ограничен процессами текущего effective UID.
+- Удалён неиспользуемый Go panel-integration subsystem: выдача admin-токенов, panel API mutation, Xray planner и диагностический Tunnel lifecycle больше не входят в исходники sidecar. Оставлен только read-only preflight службы/listener/status.
+- Полностью удалена Go-зависимость SQLite (`modernc.org/sqlite`) и её транзитивные зависимости; в sidecar больше нет SQLite driver, `database/sql` panel adapter или build-tagged legacy пути.
 
 ### DNS reliability and wire correctness
 - При отказе всех upstream-ов режима `resolver` возвращается DNS `SERVFAIL`, а не синтетический `NOERROR/NODATA`; искусственный ответ не попадает в кэш.
@@ -24,9 +25,7 @@
 - `reload_interval_seconds` используется как фактический интервал hot reload; после изменения конфигурации таймер перенастраивается.
 - Изменение listener addresses или `dns_max_concurrent` сохраняется в конфигурации, но runtime использует прежние bound values до перезапуска. Остальные изменения config/source продолжают применяться без блокировки всего reload цикла.
 - Web UI HTTP listener test требует реального ответа `/healthz`; свободный порт больше не считается признаком работающего listener-а.
-- SQLite driver и его read-only test изолированы build tag `legacy_integration`, поэтому production sidecar не выполняет SQLite driver init; legacy test остаётся доступным отдельным opt-in запуском.
-- В legacy process discovery добавлена проверка UID процесса.
-- GitHub CI дополнен `go test -race ./...` и явным прогоном `go test -tags legacy_integration ./internal/dohintegration`.
+- Go CI выполняет `go test -race ./...`; legacy panel/SQLite integration suite удалён вместе с неиспользуемым кодом и зависимостями.
 
 ### Version
 - Go binary, User-Agent strings, management menu и `manifest.json` синхронизированы на `2.3.2`.
