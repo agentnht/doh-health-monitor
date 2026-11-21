@@ -374,6 +374,25 @@ func TestWebUIGeminiKeyCannotOverwriteManagedConfig(t *testing.T) {
 	}
 }
 
+func TestWebUIGeminiKeyCannotOverwriteManagedConfig(t *testing.T) {
+	dir := newTestWebUIData(t)
+	configPath := filepath.Join(dir, "config.json")
+	config, err := loadConfigNoCreate(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.GeminiAPI.KeyFile = "config.json"
+	if err := writeConfigAtomic(configPath, config); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveWebUIGeminiKey(dir, "must-not-overwrite-config"); err == nil {
+		t.Fatal("expected managed config.json target to be rejected")
+	}
+	if _, err := loadConfigNoCreate(configPath); err != nil {
+		t.Fatalf("config.json was corrupted after rejected key save: %v", err)
+	}
+}
+
 func TestWebUIGeminiKeyIsStoredPrivatelyWithoutReturningSecret(t *testing.T) {
 	dir := newTestWebUIData(t)
 	if err := saveWebUIGeminiKey(dir, "test-gemini-secret"); err != nil {
