@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -132,6 +133,121 @@ func TestWebUIConfigAPIUpdatesValidatedSettingsAndDefaults(t *testing.T) {
 	}
 }
 
+func TestWebUILocalHostsEditorAPIValidatesBacksUpAndPreservesComments(t *testing.T) {
+	dir := newTestWebUIData(t)
+	handler := newWebUIHandlerWithDataDir("http://127.0.0.1:18765/status", "test-session", dir)
+	path := filepath.Join(dir, localHostsSourceFile)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	get := newAuthenticatedWebUIRequest(t, handler, http.MethodGet, "/api/v1/sources", nil)
+	if get.Code != http.StatusOK {
+		t.Fatalf("GET sources status=%d body=%s", get.Code, get.Body.String())
+	}
+	var sources webUISourcesResponse
+	if err := json.Unmarshal(get.Body.Bytes(), &sources); err != nil {
+		t.Fatal(err)
+	}
+	if len(sources.Hosts) == 0 || sources.Hosts[0].Editable || sources.Hosts[0].Raw != localHostsSourceHeader {
+		t.Fatalf("local-hosts header/comment was not surfaced read-only: %+v", sources.Hosts)
+	}
+
+	update := webUISourceUpdate{Kind: "hosts", Rows: []webUISourceRow{
+		{Active: false, Editable: false, Raw: localHostsSourceHeader},
+		{Active: true, Editable: true, Fields: []string{"HOME.example.", "192.0.2.40,192.0.2.41", "2001:db8::40"}},
+		{Active: false, Editable: true, Fields: []string{"disabled.example", "192.0.2.42", ""}},
+	}}
+	body, err := json.Marshal(update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	save := newAuthenticatedWebUIRequest(t, handler, http.MethodPost, "/api/v1/sources", body)
+	if save.Code != http.StatusOK {
+		t.Fatalf("POST local hosts status=%d body=%s", save.Code, save.Body.String())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "# "+localHostsSourceHeader) || !strings.Contains(string(data), "home.example;192.0.2.40,192.0.2.41;2001:db8::40") || !strings.Contains(string(data), "# disabled.example;192.0.2.42;") {
+		t.Fatalf("local-hosts rows/comments were not saved as expected: %s", data)
+	}
+	backup, err := os.ReadFile(path + ".bak")
+	if err != nil {
+		t.Fatalf("read local-hosts backup: %v", err)
+	}
+	if !bytes.Equal(backup, before) {
+		t.Fatalf("local-hosts backup does not preserve original bytes: got=%q want=%q", backup, before)
+	}
+	backupInfo, err := os.Stat(path + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backupInfo.Mode().Perm() != 0600 {
+		t.Fatalf("local-hosts backup permissions=%#o, want 0600", backupInfo.Mode().Perm())
+	}
+	hosts, err := parseLocalHostsFile(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hosts) != 1 || !reflect.DeepEqual(hosts["home.example"].IPv4, []string{"192.0.2.40", "192.0.2.41"}) || len(hosts["home.example"].IPv6) != 1 {
+		t.Fatalf("active local hosts map is incorrect: %+v", hosts)
+	}
+
+	invalid := webUISourceUpdate{Kind: "hosts", Rows: []webUISourceRow{
+		{Active: true, Editable: true, Fields: []string{"bad..example", "192.0.2.99", ""}},
+	}}
+	invalidBody, err := json.Marshal(invalid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badSave := newAuthenticatedWebUIRequest(t, handler, http.MethodPost, "/api/v1/sources", invalidBody)
+	if badSave.Code != http.StatusBadRequest {
+		t.Fatalf("invalid hosts POST status=%d body=%s", badSave.Code, badSave.Body.String())
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, data) {
+		t.Fatal("invalid local hosts update changed the live source file")
+	}
+	backupAfter, err := os.ReadFile(path + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(backupAfter, before) {
+		t.Fatal("invalid local hosts update replaced the previous backup")
+	}
+}
+
+func TestWriteManagedSourceWithBackupRejectsSymlinkBackup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, localHostsSourceFile)
+	target := filepath.Join(dir, "target")
+	original := []byte(localHostsSourceHeader + "\n")
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("unchanged"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path+".bak"); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	if err := writeManagedSourceWithBackup(path, []byte(localHostsSourceHeader+"\nexample.test;192.0.2.1;\n")); err == nil {
+		t.Fatal("symlink backup path should be rejected")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "unchanged" {
+		t.Fatalf("backup symlink target was modified: %q", got)
+	}
+}
 func TestWebUISourceEditorCommentsRowsAndValidatesBeforeWriting(t *testing.T) {
 	dir := newTestWebUIData(t)
 	update := webUISourceUpdate{
