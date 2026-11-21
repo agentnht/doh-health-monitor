@@ -388,7 +388,7 @@ func runWebUIWithStatusURL(statusURL string) error {
 		return fmt.Errorf("graceful web UI shutdown failed: %w", err)
 	}
 	if serveErr := <-serveResult; serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-		return fmt.Errorf("Web UI HTTP server stopped: %w", serveErr)
+		return fmt.Errorf("web UI HTTP server stopped: %w", serveErr)
 	}
 	logLine("INFO", "WEB_UI stopped cleanly")
 	return nil
