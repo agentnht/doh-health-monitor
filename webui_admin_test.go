@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -615,5 +616,24 @@ func TestWebUIDigOverflowResultsKeepOriginalIndexes(t *testing.T) {
 		if results[i].Status == "" || !strings.Contains(results[i].Reason, "лимит проверки") {
 			t.Fatalf("overflow result %d is not marked as intentionally skipped: %+v", i, results[i])
 		}
+	}
+}
+
+
+func TestWebUIHTTPListenerDoesNotPassWhenOnlyPortIsFree(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	result := testWebUIHTTPListener(address)
+	if result.Status == "OK" {
+		t.Fatalf("free port without a running /healthz endpoint must not pass: %+v", result)
+	}
+	if !strings.Contains(result.Reason, "не отвечает") {
+		t.Fatalf("failure should explain that /healthz is not responding: %+v", result)
 	}
 }
