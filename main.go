@@ -2369,13 +2369,13 @@ func exchangeSystemDNSNetwork(ctx context.Context, address, network string, pack
 		if _, err := conn.Write(packet); err != nil {
 			return nil, err
 		}
-		buf := make([]byte, maxDNSMessage+1)
+		buf := make([]byte, dnsUDPResponseLimit(packet)+1)
 		n, err := conn.Read(buf)
 		if err != nil {
 			return nil, err
 		}
-		if n > maxDNSMessage {
-			return nil, errors.New("system DNS UDP response exceeds maximum DNS message size")
+		if n > dnsUDPResponseLimit(packet) {
+			return nil, errors.New("system DNS UDP response exceeds the query's advertised UDP payload size")
 		}
 		return append([]byte(nil), buf[:n]...), nil
 	}
@@ -2983,8 +2983,43 @@ func (r *Runtime) rejectConfigReload(key, format string, args ...any) {
 	}
 }
 
+func readRegularPluginFileNoFollow(path string, maxBytes int64) ([]byte, error) {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = syscall.Close(fd)
+		return nil, errors.New("could not open plugin data file")
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("plugin data path is not a regular file")
+	}
+	if maxBytes > 0 && info.Size() > maxBytes {
+		return nil, fmt.Errorf("plugin data file exceeds %d bytes", maxBytes)
+	}
+	limit := maxBytes
+	if limit <= 0 {
+		limit = 2 << 20
+	}
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("plugin data file exceeds %d bytes", limit)
+	}
+	return data, nil
+}
+
 func loadConfigNoCreate(path string) (Config, error) {
-	b, e := os.ReadFile(path)
+	b, e := readRegularPluginFileNoFollow(path, 2<<20)
 	if e != nil {
 		return Config{}, e
 	}
