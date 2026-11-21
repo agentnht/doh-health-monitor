@@ -1,13 +1,13 @@
 # DoH DNS Proxy & Health Monitor для LucX-UI
 
-**Версия:** 2.3.0  
+**Версия:** 2.3.1  
 **Платформа:** Linux x86-64 (`amd64`), статический Go-бинарник  
 **Тип:** LucX-UI sidecar, `apiVersion: 1`  
 **Режим Gemini API:** необязательный, управляется параметром `gemini_api.enabled`
 
 ## 1. Назначение
 
-DoH Health Monitor — локальный DNS sidecar для LucX-UI/Xray. В версии 2.3.0 обработка Geosite DNS-потока разделена между Xray и плагином: Xray сопоставляет QNAME с Geosite и выбирает DNS-ветку, а плагин обслуживает только те запросы, которые Xray направляет в его DNS listener. В самом плагине нет собственного Geosite matcher и динамической базы пользовательских QNAME.
+DoH Health Monitor — локальный DNS sidecar для LucX-UI/Xray. В линейке 2.3.x обработка Geosite DNS-потока разделена между Xray и плагином: Xray сопоставляет QNAME с Geosite и выбирает DNS-ветку, а плагин обслуживает только те запросы, которые Xray направляет в его DNS listener. В самом плагине нет собственного Geosite matcher и динамической базы пользовательских QNAME.
 
 Плагин поддерживает два взаимоисключающих режима обработки A/AAAA запросов:
 
@@ -42,7 +42,7 @@ Geosite matching находится в правилах внутри Xray DNS ou
 - Не определяет по одному DNS-пакету, какое правило Xray совпало; разделение потоков должно произойти до передачи пакета listener-у.
 - Не обслуживает отдельные QTYPE HTTPS/SVCB, MX, TXT и другие типы; для них listener возвращает NODATA.
 - Не выполняет полноценную DNSSEC validation и не устанавливает AD в синтетических ответах.
-- Не меняет Xray DNS policy при обычном запуске daemon. Geosite rules настраиваются вручную; автоматические CLI/Web UI операции изменения Xray отключены в версии 2.3.0, поскольку прежний planner не соответствует этой схеме.
+- Не меняет Xray DNS policy при обычном запуске daemon. Geosite rules настраиваются вручную; автоматические CLI/Web UI операции изменения Xray отключены в линейке 2.3.x, поскольку прежний planner не соответствует этой схеме.
 - Не отключает проверку TLS-сертификатов и hostname.
 
 ## 2. Схема работы
@@ -109,14 +109,14 @@ $LUCX_PLUGIN_DATA/gemini_api_key
 
 ## 4. Установка в LucX-UI
 
-1. Для опубликованного релиза скачайте ZIP с соответствующим номером версии. Для подготовленной в этой ветке версии имя пакета — `doh-health-monitor-v2.3.0.zip`; скачать его со страницы Releases можно будет только после слияния PR и публикации тега `v2.3.0`.
+1. Для опубликованного релиза скачайте ZIP с соответствующим номером версии. Для релиза `v2.3.1` используйте пакет `doh-health-monitor-v2.3.1.zip` со страницы GitHub Releases.
 2. В LucX-UI откройте менеджер плагинов и установите ZIP.
 3. Запустите плагин из панели.
 4. При первом запуске плагин создаст `config.json`, `doh-servers.txt`, `tst-domen.txt` и `local-hosts.txt`. Уже существующие текстовые файлы не перезаписываются (старый URL-only список DoH автоматически мигрирует в новый формат). Если `local-hosts.txt` отсутствует, старые записи `local_hosts` из `config.json` однократно переносятся в новый файл.
 5. Посмотрите журнал плагина. Нормальный старт содержит строки примерно такого вида:
 
 ```text
-level=INFO START id=doh-health-monitor version=2.3.0 arch=amd64 data=...
+level=INFO START id=doh-health-monitor version=2.3.1 arch=amd64 data=...
 level=INFO CONFIG loaded ... gemini_api=false
 level=INFO EVENT_SOCKET listening ...
 level=INFO READY DNS=127.0.0.1:5355/127.0.0.1:5355 HTTP=127.0.0.1:18765
@@ -191,9 +191,9 @@ Web UI не содержит кнопок изменения Xray-конфигу
 
 Образец `examples/config.example.json` доступен в GitHub-репозитории, но не входит в ZIP. При первом старте плагин создаёт реальный `config.json` из встроенного шаблона. Обычно достаточно редактировать созданный файл.
 
-### 5.1.1 Режимы Geosite DNS в версии 2.3.0
+### 5.1.1 Режимы Geosite DNS в линейке 2.3.x
 
-> **Релиз:** код и документация версии 2.3.0 подготовлены к публикации. Официальный tag `v2.3.0` и GitHub Release публикуются отдельно; до появления release ZIP устанавливайте только ранее опубликованную версию.
+> DNS architecture и management smoke tests введены в `v2.3.0`; обновления списка upstream-ов и health-check по умолчанию для `v2.3.1` перечислены в `CHANGELOG.md`.
 
 В новой модели `dns_mode` выбирает ровно один способ обработки запросов, пришедших на DNS listener плагина:
 
@@ -329,9 +329,10 @@ dagami;https://dns.dagami.ru/dns-query
 comss-one;https://dns.comss.one/dns-query
 bezmezhau;https://dns.bezmezhau.com/dns-query
 zapret;https://dns.zapret.moe/dns-query
+pereval;https://free.pereval.top/dns-query
 ```
 
-Порядок строк по-прежнему влияет на существующие upstream groups. ActiveDoHSelector выбирает DoH endpoint по результатам контрольных DNS/HTTPS/TLS probes и своей anti-flap политике; не следует трактовать `system-dns` как fallback-кандидата selector-а.
+Новая установка по умолчанию включает `pereval` с URL `https://free.pereval.top/dns-query`. Порядок строк по-прежнему влияет на существующие upstream groups. ActiveDoHSelector выбирает DoH endpoint по результатам контрольных DNS/HTTPS/TLS probes и своей anti-flap политике; не следует трактовать `system-dns` как fallback-кандидата selector-а.
 
 Старый URL-only `doh-servers.txt` и hostname-based IDs поддерживают предусмотренную в проекте миграцию. Изменения конфигурации проходят валидацию и применяются через runtime snapshot.
 
@@ -363,11 +364,11 @@ accounts.google.com;A,AAAA;1;https://accounts.google.com/.well-known/openid-conf
 
 **HTTP выполняется только при непустом `http_url`.** Флаг `required` не включает и не выключает саму пробу: он определяет только влияние результата на общий статус upstream. Ошибка необязательной DNS/HTTP-проверки видна в диагностике, но не переводит upstream в `down`.
 
-Встроенный шаблон содержит ровно девять проверок: восемь фиксированных доменов ActiveDoHSelector (`chatgpt.com`, `claude.ai`, `gemini.google.com`, `elevenlabs.io`, `grok.com`, `www.perplexity.ai`, `notebooklm.google.com`, `aistudio.google.com`) и отдельный `accounts.google.com` для проверки OIDC. Обязательны HTTP-проверка Gemini и OIDC Google Accounts; остальные семь строк служат DNS-диагностикой. Сам ActiveDoHSelector использует свои восемь доменов непосредственно из кода и не читает `tst-domen.txt`.
+Встроенный шаблон содержит десять проверок: восемь фиксированных доменов ActiveDoHSelector (`chatgpt.com`, `claude.ai`, `gemini.google.com`, `elevenlabs.io`, `grok.com`, `www.perplexity.ai`, `notebooklm.google.com`, `aistudio.google.com`), отдельный `accounts.google.com` для OIDC и дополнительный обязательный `notebook.google.com`. Для `notebook.google.com` выполняются A/AAAA и HTTPS-проверка `https://notebook.google.com/` с ожидаемым HTTP 200. Обязательны HTTP-проверки Gemini, Notebook и OIDC Google Accounts; остальные семь строк служат DNS-диагностикой. Сам ActiveDoHSelector использует свои восемь доменов непосредственно из кода и не читает `tst-domen.txt`.
 
 ### 5.6 Автоматическое создание, контроль изменений и config.json
 
-Встроенные шаблоны `defaults/doh-servers.txt` и `defaults/tst-domen.txt` упакованы в бинарник. Если соответствующего файла нет, он создаётся в `$LUCX_PLUGIN_DATA` из встроенного шаблона. Если файл уже существует, его пользовательское содержимое сохраняется и используется. Повреждённый существующий файл не заменяется шаблоном автоматически.
+Встроенные шаблоны `defaults/doh-servers.txt` и `defaults/tst-domen.txt` упакованы в бинарник. При первой установке они создают в `$LUCX_PLUGIN_DATA` списки с upstream `pereval;https://free.pereval.top/dns-query` и обязательной A/AAAA + HTTPS-проверкой `notebook.google.com` (HTTP 200). Если файл уже существует, его пользовательское содержимое сохраняется и используется: обновление плагина не добавляет новые строки автоматически и не перезаписывает операторский список. Повреждённый существующий файл также не заменяется шаблоном автоматически. Чтобы получить новые defaults на уже установленной системе, добавьте строки вручную через Web UI или в соответствующие файлы.
 
 При запуске и затем каждые 30 секунд плагин рассчитывает SHA-256 обоих файлов. Хэши хранятся только в оперативной памяти процесса — отдельного checksum-файла нет. При изменении содержимого плагин проверяет оба файла, формирует новые `upstreams`, `groups[].upstreams` и `groups[].checks`, атомарно записывает сгенерированный `config.json` и применяет новый runtime-снимок без остановки DNS-процесса.
 
