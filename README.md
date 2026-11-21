@@ -14,7 +14,7 @@ DoH Health Monitor — локальный DNS sidecar для LucX-UI/Xray. В в
 - **`endpoint_ip` (режим по умолчанию):** ActiveDoHSelector выбирает один доступный DoH endpoint по восьми контрольным доменам. Для DNS-запроса плагин возвращает bootstrap IP выбранного DoH endpoint-а, а не IP запрошенного сайта. Это режим для схемы, где дальнейшее назначение трафика определяет Xray.
 - **`resolver`:** плагин разрешает исходное имя запроса через независимый упорядоченный список `resolver_upstreams`. По умолчанию используется системный resolver ОС сервера; можно настроить UDP, TCP и DoH upstream-ы.
 
-Обычная DNS-ветка listener-а принимает A и AAAA. Для точно совпавшего имени из управляемого `local-hosts.txt` плагин дополнительно отвечает локальными A/AAAA и HTTPS/SVCB записями, если они поддерживаются записью. Остальные неподдерживаемые QTYPE возвращают `NOERROR`/NODATA без SOA и без кэширования. CNAME RR в составе ответа upstream на A/AAAA сохраняются.
+Обычная DNS-ветка listener-а принимает A и AAAA. Для точно совпавшего имени из управляемого `local-hosts.txt` плагин возвращает настроенные локальные A/AAAA; HTTPS/SVCB и остальные неподдерживаемые QTYPE получают `NOERROR`/NODATA без SOA и без кэширования. CNAME RR в составе ответа upstream на A/AAAA сохраняются.
 
 `bootstrap_resolvers` и `resolver_upstreams` — разные настройки: первые разрешают hostname DoH endpoint-ов для исходящих соединений самого плагина, вторые выполняют обычный DNS resolve пользовательского QNAME только в режиме `resolver`.
 
