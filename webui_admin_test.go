@@ -96,6 +96,29 @@ func TestWebUIConfigAPIUpdatesValidatedSettingsAndDefaults(t *testing.T) {
 		t.Fatalf("Web UI config save did not create backup: %v", err)
 	}
 
+	// A client predating dns_mode/resolver_upstreams must not reset newer fields.
+	legacyPayload := map[string]json.RawMessage{}
+	if err := json.Unmarshal(body, &legacyPayload); err != nil {
+		t.Fatal(err)
+	}
+	delete(legacyPayload, "dns_mode")
+	delete(legacyPayload, "resolver_upstreams")
+	legacyBody, err := json.Marshal(legacyPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacySave := newAuthenticatedWebUIRequest(t, handler, http.MethodPost, "/api/v1/config", legacyBody)
+	if legacySave.Code != http.StatusOK {
+		t.Fatalf("legacy config POST status=%d body=%s", legacySave.Code, legacySave.Body.String())
+	}
+	config, err = loadConfigNoCreate(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.DNSMode != "resolver" || len(config.ResolverUpstreams) != 1 || config.ResolverUpstreams[0].ID != "primary" {
+		t.Fatalf("legacy Web UI client unexpectedly reset DNS settings: mode=%s upstreams=%+v", config.DNSMode, config.ResolverUpstreams)
+	}
+
 	reset := newAuthenticatedWebUIRequest(t, handler, http.MethodPost, "/api/v1/config/defaults", []byte(`{"section":"health"}`))
 	if reset.Code != http.StatusOK {
 		t.Fatalf("reset health status=%d body=%s", reset.Code, reset.Body.String())
