@@ -14,7 +14,8 @@ func activeDoHTestQuery(qtype uint16, withEDNS bool) []byte {
 	if withEDNS {
 		binary.BigEndian.PutUint16(query[10:12], 1)
 		// UDP payload 1232, EDNS version 0, DO=1, no request options.
-		query = append(query, 0, 0, 41, 0x04, 0xd0, 0, 0, 0x80, 0, 0)
+		// OPT RR: root, TYPE=41, UDP payload=1232, EDNS version=0, DO=1, RDLEN=0.
+		query = append(query, 0, 0, 41, 0x04, 0xd0, 0, 0, 0x80, 0, 0, 0)
 	}
 	return query
 }
