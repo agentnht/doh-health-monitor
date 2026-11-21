@@ -135,7 +135,15 @@ func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 }
 
 func TestWebUIStatusAPIRequiresSessionAndReturnsSanitizedStatus(t *testing.T) {
+	statusToken := strings.Repeat("a", 64)
+	dataDir := t.TempDir()
+	if err := os.WriteFile(dataDir+string(os.PathSeparator)+statusAPITokenFile, []byte(statusToken+"\\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+statusToken {
+			t.Errorf("status proxy Authorization=%q, want bearer token", got)
+		}
 		if r.Method != http.MethodGet || r.URL.Path != "/status" {
 			t.Errorf("status request=%s %s, want GET /status", r.Method, r.URL.Path)
 		}
@@ -162,7 +170,7 @@ func TestWebUIStatusAPIRequiresSessionAndReturnsSanitizedStatus(t *testing.T) {
 	}))
 	defer statusServer.Close()
 
-	handler := newWebUIHandler(statusServer.URL+"/status", "session-test-token")
+	handler := newWebUIHandlerWithDataDir(statusServer.URL+"/status", "session-test-token", dataDir)
 	apiRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/api/v1/status", nil)
 	apiRequest.Host = "127.0.0.1:19876"
 	apiRecorder := httptest.NewRecorder()
