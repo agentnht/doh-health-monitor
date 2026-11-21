@@ -735,11 +735,11 @@ func saveWebUIGeminiKey(dataDir, key string) error {
 	defer webUIAdminMu.Unlock()
 	key = strings.TrimSpace(key)
 	if key == "" || len(key) > 8192 || strings.ContainsAny(key, "\r\n\t ") {
-		return errors.New("Gemini API key must be a non-empty single-line value of at most 8192 bytes")
+		return errors.New("gemini API key must be a non-empty single-line value of at most 8192 bytes")
 	}
 	for _, r := range key {
 		if r < 0x21 || r > 0x7e {
-			return errors.New("Gemini API key contains unsupported characters")
+			return errors.New("gemini API key contains unsupported characters")
 		}
 	}
 	root, err := webUIDataRoot(dataDir)

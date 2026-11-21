@@ -167,7 +167,9 @@ type bootstrapResolver struct {
 	resolvers           []string
 	fallback            []string
 	mu                  sync.Mutex
-	selectMu            sync.Mutex
+	refreshGate         chan struct{}
+	selectGate          chan struct{}
+	lookup              func(context.Context, string, string) ([]net.IP, error)
 	ips                 []string
 	resolvedBy          string
 	refreshed           time.Time
@@ -953,34 +955,6 @@ func reservedGeminiKeyPath(path string) bool {
 func normalizeDomain(s string) string {
 	return strings.Trim(strings.ToLower(strings.TrimSpace(s)), ".")
 }
-func loadDoHList(path string, create bool) (map[string]string, error) {
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) && create {
-		defaults, readErr := embeddedConfigSources.ReadFile("defaults/doh-servers.txt")
-		if readErr != nil {
-			return nil, readErr
-		}
-		if writeErr := writeAtomicFile(path, defaults, 0600); writeErr != nil {
-			return nil, writeErr
-		}
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	providers, err := parseDoHProviders(data)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]string, len(providers))
-	for _, provider := range providers {
-		if provider.System || provider.ID == systemDNSUpstreamID {
-			continue
-		}
-		out[provider.ID] = provider.URL
-	}
-	return out, nil
-}
-
 func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
 	s := &Snapshot{cfg: c, upstreams: map[string]*UpstreamRuntime{}, groups: map[string]Group{}, localHosts: map[string]LocalHost{}, loadedAt: time.Now().UTC()}
 	resolverBootstrap := c.BootstrapResolvers
@@ -1128,78 +1102,129 @@ func newDoHClient(u Upstream, resolvers []string, timeout time.Duration) (*http.
 	return client, bootstrap, nil
 }
 
-func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string, error) {
+func (b *bootstrapResolver) acquireGate(ctx context.Context, gate *chan struct{}) (func(), error) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	if *gate == nil {
+		*gate = make(chan struct{}, 1)
+	}
+	current := *gate
+	b.mu.Unlock()
+
+	select {
+	case current <- struct{}{}:
+		return func() { <-current }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func lookupBootstrapIPs(ctx context.Context, server, host string) ([]net.IP, error) {
+	resolver := &net.Resolver{
+		PreferGo: true,
+		StrictErrors: false,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{Timeout: 1500 * time.Millisecond}).DialContext(ctx, network, net.JoinHostPort(server, "53"))
+		},
+	}
+	return resolver.LookupIP(ctx, "ip", host)
+}
+
+func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string, error) {
+	release, err := b.acquireGate(ctx, &b.refreshGate)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	b.mu.Lock()
 	if !force && len(b.ips) > 0 && time.Since(b.refreshed) < b.refreshFor {
-		return append([]string(nil), b.ips...), nil
+		ips := append([]string(nil), b.ips...)
+		b.mu.Unlock()
+		return ips, nil
 	}
 	if !force && time.Since(b.lastAttempt) < time.Minute {
-		if len(b.ips) > 0 {
-			return append([]string(nil), b.ips...), nil
+		ips := append([]string(nil), b.ips...)
+		fallback := filterPublicDoHIPs(b.fallback)
+		b.mu.Unlock()
+		if len(ips) > 0 {
+			return ips, nil
 		}
-		if fallback := filterPublicDoHIPs(b.fallback); len(fallback) > 0 {
+		if len(fallback) > 0 {
 			return fallback, nil
 		}
+		return nil, errors.New("bootstrap DNS retry is cooling down")
 	}
+
 	b.lastAttempt = time.Now()
+	host := b.host
+	resolvers := append([]string(nil), b.resolvers...)
+	cachedIPs := append([]string(nil), b.ips...)
+	fallback := filterPublicDoHIPs(b.fallback)
+	lookup := b.lookup
+	b.mu.Unlock()
+
+	if lookup == nil {
+		lookup = lookupBootstrapIPs
+	}
 	ips := make([]string, 0, 8)
 	seen := map[string]bool{}
 	resolvedBy := ""
-	var err error
-	for _, server := range b.resolvers {
+	var lookupErr error
+	for _, server := range resolvers {
 		lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		resolver := &net.Resolver{
-			PreferGo: true, StrictErrors: false,
-			Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-				return (&net.Dialer{Timeout: 1500 * time.Millisecond}).DialContext(ctx, network, net.JoinHostPort(server, "53"))
-			},
-		}
-		found, lookupErr := resolver.LookupNetIP(lookupCtx, "ip", b.host)
+		found, err := lookup(lookupCtx, server, host)
 		cancel()
 		if len(found) > 0 {
 			for _, ip := range found {
-				v := ip.String()
-				if isPublicDoHIP(net.IP(ip.AsSlice())) && !seen[v] {
-					seen[v] = true
-					ips = append(ips, v)
+				value := ip.String()
+				if isPublicDoHIP(ip) && !seen[value] {
+					seen[value] = true
+					ips = append(ips, value)
 				}
 			}
 			if len(ips) > 0 {
-				err = nil
+				lookupErr = nil
 				resolvedBy = server
 				break
 			}
 		}
-		err = lookupErr
+		lookupErr = err
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 	}
-	if len(b.resolvers) == 0 {
-		err = errors.New("no bootstrap DNS resolvers configured")
+	if len(resolvers) == 0 {
+		lookupErr = errors.New("no bootstrap DNS resolvers configured")
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 	if len(ips) > 0 {
-		b.ips = ips
+		b.mu.Lock()
+		b.ips = append([]string(nil), ips...)
 		b.resolvedBy = resolvedBy
 		b.refreshed = time.Now()
+		b.mu.Unlock()
 		return append([]string(nil), ips...), nil
 	}
-	if err == nil {
-		err = errors.New("DNS lookup returned no A or AAAA records")
+	if lookupErr == nil {
+		lookupErr = errors.New("DNS lookup returned no A or AAAA records")
 	}
-	if len(b.ips) > 0 {
-		return append([]string(nil), b.ips...), fmt.Errorf("DNS refresh failed; using cached IPs: %w", err)
+	if len(cachedIPs) > 0 {
+		return cachedIPs, fmt.Errorf("DNS refresh failed; using cached IPs: %w", lookupErr)
 	}
-	if fallback := filterPublicDoHIPs(b.fallback); len(fallback) > 0 {
-		return fallback, fmt.Errorf("DNS lookup failed; using configured public bootstrap_ips: %w", err)
+	if len(fallback) > 0 {
+		return fallback, fmt.Errorf("DNS lookup failed; using configured public bootstrap_ips: %w", lookupErr)
 	}
-	return nil, err
+	return nil, lookupErr
 }
 
 func (b *bootstrapResolver) bestIP(ctx context.Context, force bool, timeout time.Duration) (string, error) {
-	b.selectMu.Lock()
-	defer b.selectMu.Unlock()
+	release, err := b.acquireGate(ctx, &b.selectGate)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 
 	b.mu.Lock()
 	if !force && b.selectedIP != "" && time.Now().Before(b.selectedTil) {
@@ -1284,6 +1309,11 @@ func (b *bootstrapResolver) bestIP(ctx context.Context, force bool, timeout time
 }
 
 func (b *bootstrapResolver) selectAlternateIP(ctx context.Context, currentIP string, timeout time.Duration) (string, error) {
+	release, err := b.acquireGate(ctx, &b.selectGate)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	ips, resolveErr := b.addresses(ctx, false)
 	fallback := filterPublicDoHIPs(b.fallback)
 	candidates := make([]string, 0, len(ips)+len(fallback))
@@ -1328,11 +1358,6 @@ func appendUniqueString(items []string, value string) []string {
 		}
 	}
 	return append(items, value)
-}
-
-func (b *bootstrapResolver) fastestIP(ctx context.Context, ips []string, timeout time.Duration) (string, time.Duration, error) {
-	bestIP, bestLatency, _, err := b.fastestIPDetailed(ctx, ips, timeout)
-	return bestIP, bestLatency, err
 }
 
 func (b *bootstrapResolver) fastestIPDetailed(ctx context.Context, ips []string, timeout time.Duration) (string, time.Duration, []DoHIPProbeStatus, error) {
@@ -1566,38 +1591,6 @@ func (r *Runtime) markUpstreamSuccess(uid string) {
 	r.mu.Unlock()
 }
 
-func (r *Runtime) query(ctx context.Context, packet []byte) ([]byte, string, error) {
-	name, _, _, e := parseQuestion(packet)
-	if e != nil {
-		return nil, "", e
-	}
-	s := r.currentSnapshot()
-	// Every DNS question received by this listener uses the single Google-qualified gateway.
-	const gid = "google"
-	order := r.upstreamsToAttempt(r.orderedUpstreams(gid, s), time.Now())
-	var errs []string
-	for _, uid := range order {
-		u := s.upstreams[uid]
-		if u == nil {
-			continue
-		}
-		resp, e := sendUpstreamDNS(ctx, u, packet)
-		if e == nil {
-			if dnsRCode(resp) == 2 || dnsRCode(resp) == 5 {
-				e = fmt.Errorf("upstream returned DNS RCODE %d", dnsRCode(resp))
-			} else if dnsTruncated(resp) {
-				e = errors.New("upstream returned truncated response; TCP retry not available over DoH")
-			} else {
-				r.markUpstreamSuccess(uid)
-				return resp, uid, nil
-			}
-		}
-		r.markUpstreamFailure(uid, time.Now())
-		errs = append(errs, uid+": "+e.Error())
-	}
-	r.failures.Add(1)
-	return nil, "", fmt.Errorf("all upstreams failed for %s (%s)", name, strings.Join(errs, "; "))
-}
 func sendUpstreamDNS(ctx context.Context, u *UpstreamRuntime, packet []byte) ([]byte, error) {
 	if u != nil && u.systemDNS != nil {
 		return u.systemDNS.query(ctx, packet)
@@ -2530,7 +2523,7 @@ func (r *Runtime) httpProbe(ctx context.Context, u *UpstreamRuntime, ch Check) (
 	}
 	isGemini := strings.EqualFold(ch.Domain, "gemini.google.com")
 	if isGemini && geminiRegionBlocked(body) {
-		return resp.StatusCode, errors.New("Gemini regional restriction detected in response body")
+		return resp.StatusCode, errors.New("gemini regional restriction detected in response body")
 	}
 	ok := len(ch.ExpectedStatus) == 0 && resp.StatusCode >= 200 && resp.StatusCode < 400
 	for _, s := range ch.ExpectedStatus {
@@ -2667,22 +2660,18 @@ func readGeminiAPIKey(dataDir, relativePath string) ([]byte, error) {
 }
 
 func (r *Runtime) geminiProbe(ctx context.Context, u *UpstreamRuntime, c GeminiAPIConfig) (string, error) {
-	keyPath := c.KeyFile
-	if !filepath.IsAbs(keyPath) {
-		keyPath = filepath.Join(r.dataDir, keyPath)
-	}
 	b, e := readGeminiAPIKey(r.dataDir, c.KeyFile)
 	if e != nil {
 		return "", fmt.Errorf("read Gemini API key file: %w", e)
 	}
 	key := strings.TrimSpace(string(b))
 	if key == "" {
-		return "", errors.New("Gemini API key is empty")
+		return "", errors.New("gemini API key is empty")
 	}
 	host := "generativelanguage.googleapis.com"
 	ips, e := r.resolveA(ctx, u, host)
 	if e != nil || len(ips) == 0 {
-		return "", fmt.Errorf("resolve Gemini API: %v", e)
+		return "", fmt.Errorf("resolve gemini API: %v", e)
 	}
 	endpoint := "https://" + host + "/v1beta/models/" + url.PathEscape(c.Model) + ":generateContent"
 	payload := map[string]any{"contents": []any{map[string]any{"parts": []any{map[string]string{"text": c.Prompt}}}}, "generationConfig": map[string]any{"maxOutputTokens": c.MaxOutputTokens, "temperature": 0}}
@@ -2699,10 +2688,10 @@ func (r *Runtime) geminiProbe(ctx context.Context, u *UpstreamRuntime, c GeminiA
 	defer resp.Body.Close()
 	rb, readErr := io.ReadAll(io.LimitReader(resp.Body, maxHTTPBody+1))
 	if readErr != nil {
-		return "", fmt.Errorf("read Gemini API response: %w", readErr)
+		return "", fmt.Errorf("read gemini API response: %w", readErr)
 	}
 	if len(rb) > maxHTTPBody {
-		return "", fmt.Errorf("Gemini API response exceeds %d bytes", maxHTTPBody)
+		return "", fmt.Errorf("gemini API response exceeds %d bytes", maxHTTPBody)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return "", GeminiHTTPError{Status: resp.StatusCode}
@@ -2717,7 +2706,7 @@ func (r *Runtime) geminiProbe(ctx context.Context, u *UpstreamRuntime, c GeminiA
 		} `json:"candidates"`
 	}
 	if e = json.Unmarshal(rb, &out); e != nil || len(out.Candidates) == 0 || len(out.Candidates[0].Content.Parts) == 0 || strings.TrimSpace(out.Candidates[0].Content.Parts[0].Text) == "" {
-		return "", errors.New("Gemini API returned no text candidate")
+		return "", errors.New("gemini API returned no text candidate")
 	}
 	return strings.TrimSpace(out.Candidates[0].Content.Parts[0].Text), nil
 }
@@ -3116,29 +3105,6 @@ func (r *Runtime) cacheStats() (int, int) {
 	defer r.cacheMu.Unlock()
 	return len(r.cache), r.cacheBytes
 }
-func (r *Runtime) cacheLen() int {
-	entries, _ := r.cacheStats()
-	return entries
-}
-func (r *Runtime) serveEvent(w http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodPost || req.URL.Path != "/_lucx/events" {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-	b, e := io.ReadAll(io.LimitReader(req.Body, 64<<10))
-	if e != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	var ev Event
-	if json.Unmarshal(b, &ev) != nil || ev.Type == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	logLine("INFO", "EVENT received id=%s type=%s source=%s", safeLog(ev.ID), safeLog(ev.Type), safeLog(ev.Source))
-	w.WriteHeader(http.StatusNoContent)
-}
-
 func removeStaleSocket(path string) error {
 	fi, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {

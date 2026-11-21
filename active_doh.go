@@ -339,7 +339,7 @@ func (r *Runtime) probeActiveDoHDomain(ctx context.Context, job activeDoHProbeJo
 			// probeActiveDoHIP already rejected redirects outside Google's allowed hosts.
 			accepted = status >= 200 && status < 400
 			if geminiRegionBlocked(body) {
-				lastErr = fmt.Errorf("Gemini regional restriction detected")
+				lastErr = fmt.Errorf("gemini regional restriction detected")
 				continue
 			}
 		}

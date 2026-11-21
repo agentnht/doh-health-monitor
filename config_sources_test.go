@@ -538,3 +538,37 @@ func TestReadConfigSourcesRejectsSymlinkedSource(t *testing.T) {
 		t.Fatal("config source reader must reject symlinked files")
 	}
 }
+
+func TestEmbeddedDoHDefaultsParseToApprovedProviderSet(t *testing.T) {
+	data, err := embeddedConfigSources.ReadFile("defaults/doh-servers.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	providers, err := parseDoHProviders(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		"geohide-eu": true,
+		"dagami": true,
+		"comss-one": true,
+		"bezmezhau": true,
+		"zapret": true,
+		"pereval": true,
+	}
+	got := make(map[string]string, len(providers))
+	for _, provider := range providers {
+		if provider.System || provider.ID == systemDNSUpstreamID {
+			continue
+		}
+		got[provider.ID] = provider.URL
+	}
+	if len(got) != len(want) {
+		t.Fatalf("embedded DoH provider count=%d, want %d: %#v", len(got), len(want), got)
+	}
+	for id := range want {
+		if got[id] == "" {
+			t.Errorf("embedded default provider %q is missing", id)
+		}
+	}
+}

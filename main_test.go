@@ -900,36 +900,6 @@ func TestDNSGatewaySendsArbitraryQNAMEThroughGoogleProfile(t *testing.T) {
 	}
 }
 
-func intsToStrings(values []int) []string {
-	out := make([]string, len(values))
-	for i, value := range values {
-		out[i] = fmt.Sprint(value)
-	}
-	return out
-}
-
-func TestLoadDoHListCreatesProxyProviderDefaults(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "doh-servers.txt")
-	urls, err := loadDoHList(path, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"geohide-eu", "dagami", "comss-one", "bezmezhau", "zapret", "pereval"}
-	if len(urls) != len(want) {
-		t.Fatalf("default DoH URL count = %d, want %d: %#v", len(urls), len(want), urls)
-	}
-	for _, host := range want {
-		if urls[host] == "" {
-			t.Errorf("default DoH URL missing %s", host)
-		}
-	}
-	for _, excluded := range []string{"free.shecan.ir", "dns.google", "cloudflare-dns.com", "dns.quad9.net"} {
-		if _, ok := urls[excluded]; ok {
-			t.Errorf("excluded non-default provider %s is present", excluded)
-		}
-	}
-}
-
 func TestDefaultConfigUsesAutomaticBootstrap(t *testing.T) {
 	c := defaultConfig()
 	if len(c.BootstrapResolvers) == 0 {
@@ -1001,7 +971,7 @@ func TestBootstrapSelectsFastestDoHIP(t *testing.T) {
 			}
 		},
 	}
-	got, latency, err := b.fastestIP(context.Background(), []string{"192.0.2.10", "192.0.2.20", "192.0.2.30"}, time.Second)
+	got, latency, _, err := b.fastestIPDetailed(context.Background(), []string{"192.0.2.10", "192.0.2.20", "192.0.2.30"}, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1122,7 +1092,7 @@ func TestBootstrapFastestIPReportsAllFailures(t *testing.T) {
 			return 0, errors.New("probe failed")
 		},
 	}
-	if _, _, err := b.fastestIP(context.Background(), []string{"192.0.2.1", "192.0.2.2"}, time.Second); err == nil {
+	if _, _, _, err := b.fastestIPDetailed(context.Background(), []string{"192.0.2.1", "192.0.2.2"}, time.Second); err == nil {
 		t.Fatal("expected all probes to fail")
 	}
 }
@@ -1174,24 +1144,6 @@ func TestRFC8484DoHRoundTrip(t *testing.T) {
 	}
 	if len(ips) != 1 || ips[0] != "203.0.113.10" {
 		t.Fatalf("unexpected response: %#v", ips)
-	}
-}
-
-func TestDoHListOneURLPerLine(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "doh-servers.txt")
-	content := "# id;url\ngeohide-eu;https://eu.geohide.ru/dns-query\n\ndagami;https://dns.dagami.ru/dns-query\n"
-	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
-		t.Fatal(err)
-	}
-	urls, err := loadDoHList(path, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if urls["geohide-eu"] != "https://eu.geohide.ru/dns-query" {
-		t.Fatalf("GeoHide URL: %q", urls["geohide-eu"])
-	}
-	if urls["dagami"] != "https://dns.dagami.ru/dns-query" {
-		t.Fatalf("Dagami URL: %q", urls["dagami"])
 	}
 }
 
@@ -1692,5 +1644,155 @@ func TestLoadConfigRejectsSymlinkedStartupConfig(t *testing.T) {
 	}
 	if _, err := loadConfig(link); err == nil {
 		t.Fatal("startup config loader must reject a symlinked config.json")
+	}
+}
+
+func TestBootstrapAddressesDoesNotHoldStateLockDuringLookup(t *testing.T) {
+	lookupStarted := make(chan struct{})
+	releaseLookup := make(chan struct{})
+	b := &bootstrapResolver{
+		host: "doh.example",
+		resolvers: []string{"1.1.1.1"},
+		refreshFor: time.Hour,
+		lookup: func(ctx context.Context, server, host string) ([]net.IP, error) {
+			close(lookupStarted)
+			select {
+			case <-releaseLookup:
+				return []net.IP{net.ParseIP("8.8.8.8")}, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		},
+	}
+	type lookupResult struct {
+		ips []string
+		err error
+	}
+	result := make(chan lookupResult, 1)
+	go func() {
+		ips, err := b.addresses(context.Background(), true)
+		result <- lookupResult{ips: ips, err: err}
+	}()
+	<-lookupStarted
+
+	statusDone := make(chan struct{})
+	go func() {
+		_ = b.status()
+		close(statusDone)
+	}()
+	select {
+	case <-statusDone:
+	case <-time.After(time.Second):
+		t.Fatal("status blocked behind the network bootstrap lookup")
+	}
+
+	close(releaseLookup)
+	got := <-result
+	if got.err != nil || len(got.ips) != 1 || got.ips[0] != "8.8.8.8" {
+		t.Fatalf("lookup result=%v err=%v, want 8.8.8.8", got.ips, got.err)
+	}
+}
+
+func TestBootstrapRefreshGateWaitHonorsContextCancellation(t *testing.T) {
+	lookupStarted := make(chan struct{})
+	releaseLookup := make(chan struct{})
+	b := &bootstrapResolver{
+		host: "doh.example",
+		resolvers: []string{"1.1.1.1"},
+		refreshFor: time.Hour,
+		lookup: func(ctx context.Context, server, host string) ([]net.IP, error) {
+			close(lookupStarted)
+			select {
+			case <-releaseLookup:
+				return []net.IP{net.ParseIP("8.8.8.8")}, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		},
+	}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := b.addresses(context.Background(), true)
+		firstDone <- err
+	}()
+	<-lookupStarted
+
+	waiterCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	waiterStarted := make(chan struct{})
+	waiterDone := make(chan error, 1)
+	go func() {
+		close(waiterStarted)
+		_, err := b.addresses(waiterCtx, true)
+		waiterDone <- err
+	}()
+	<-waiterStarted
+	cancel()
+	select {
+	case err := <-waiterDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiting refresh error=%v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiting refresh did not honor caller cancellation")
+	}
+
+	close(releaseLookup)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first refresh failed: %v", err)
+	}
+}
+
+func TestBootstrapSelectionGateWaitHonorsContextCancellation(t *testing.T) {
+	probeStarted := make(chan struct{})
+	releaseProbe := make(chan struct{})
+	b := &bootstrapResolver{
+		host: "doh.example",
+		endpoint: "https://doh.example/dns-query",
+		ips: []string{"8.8.8.8"},
+		refreshed: time.Now(),
+		refreshFor: time.Hour,
+		probe: func(ctx context.Context, endpoint, ip string, timeout time.Duration) (time.Duration, error) {
+			select {
+			case probeStarted <- struct{}{}:
+			default:
+			}
+			select {
+			case <-releaseProbe:
+				return time.Millisecond, nil
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			}
+		},
+	}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := b.bestIP(context.Background(), false, time.Second)
+		firstDone <- err
+	}()
+	<-probeStarted
+
+	waiterCtx, cancel := context.WithCancel(context.Background())
+	waiterStarted := make(chan struct{})
+	waiterDone := make(chan error, 1)
+	go func() {
+		close(waiterStarted)
+		_, err := b.bestIP(waiterCtx, false, time.Second)
+		waiterDone <- err
+	}()
+	<-waiterStarted
+	cancel()
+	select {
+	case err := <-waiterDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiting selection error=%v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiting selection did not honor caller cancellation")
+	}
+
+	close(releaseProbe)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first selection failed: %v", err)
 	}
 }

@@ -372,7 +372,7 @@ func runWebUIWithStatusURL(statusURL string) error {
 	select {
 	case serveErr := <-serveResult:
 		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-			return fmt.Errorf("Web UI HTTP server stopped: %w", serveErr)
+			return fmt.Errorf("web UI HTTP server stopped: %w", serveErr)
 		}
 		return nil
 	case <-controlClosed:
@@ -385,7 +385,7 @@ func runWebUIWithStatusURL(statusURL string) error {
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
 		_ = server.Close()
-		return fmt.Errorf("graceful Web UI shutdown failed: %w", err)
+		return fmt.Errorf("graceful web UI shutdown failed: %w", err)
 	}
 	if serveErr := <-serveResult; serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 		return fmt.Errorf("Web UI HTTP server stopped: %w", serveErr)
