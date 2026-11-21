@@ -259,6 +259,7 @@ type Status struct {
 	UpdatedAt    time.Time                       `json:"updated_at"`
 	DNSUDP       string                          `json:"dns_udp"`
 	DNSTCP       string                          `json:"dns_tcp"`
+	DNSMode      string                          `json:"dns_mode"`
 	HTTP         string                          `json:"http"`
 	Config       string                          `json:"config"`
 	Cache        CacheStatus                     `json:"cache"`
@@ -2922,7 +2923,7 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 	out := Status{
 		ID: envOr("LUCX_PLUGIN_ID", pluginID), Version: envOr("LUCX_PLUGIN_VERSION", pluginVersion),
 		StartedAt: startedAt, UpdatedAt: time.Now().UTC(), DNSUDP: s.cfg.DNSListenUDP,
-		DNSTCP: s.cfg.DNSListenTCP, HTTP: s.cfg.HTTPListen, Config: r.configPath,
+		DNSTCP: s.cfg.DNSListenTCP, DNSMode: s.cfg.DNSMode, HTTP: s.cfg.HTTPListen, Config: r.configPath,
 		Cache: CacheStatus{Enabled: s.cfg.Cache.Enabled, Entries: cacheEntries, MaxEntries: s.cfg.Cache.MaxEntries, Bytes: cacheBytes, MaxBytes: s.cfg.Cache.MaxBytes},
 		Groups: map[string]GroupStatus{}, DoHBootstrap: map[string]DoHBootstrapStatus{},
 		ActiveDoH: r.activeDoHStatus(),
