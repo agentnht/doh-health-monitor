@@ -70,7 +70,7 @@ func acquireDNSConfigFileLock(dataDir string) (func(), error) {
 
 // writeConfigWithBackup is shared by CLI and Web UI for all config.json writes.
 func writeConfigWithBackup(path string, cfg Config) error {
-	original, err := os.ReadFile(path)
+	original, err := readRegularPluginFileNoFollow(path, 2<<20)
 	if err != nil {
 		return fmt.Errorf("read current config.json for backup: %w", err)
 	}

@@ -205,11 +205,11 @@ func legacyProviderID(host string) string {
 }
 
 func readConfigSources(dohPath, checksPath string, localHostsPaths ...string) (ConfigSources, error) {
-	dohData, err := os.ReadFile(dohPath)
+	dohData, err := readRegularPluginFileNoFollow(dohPath, 2<<20)
 	if err != nil {
 		return ConfigSources{}, fmt.Errorf("read doh-servers.txt: %w", err)
 	}
-	checksData, err := os.ReadFile(checksPath)
+	checksData, err := readRegularPluginFileNoFollow(checksPath, 2<<20)
 	if err != nil {
 		return ConfigSources{}, fmt.Errorf("read tst-domen.txt: %w", err)
 	}
@@ -217,7 +217,7 @@ func readConfigSources(dohPath, checksPath string, localHostsPaths ...string) (C
 	if len(localHostsPaths) > 0 && strings.TrimSpace(localHostsPaths[0]) != "" {
 		localHostsPath = localHostsPaths[0]
 	}
-	hostsData, err := os.ReadFile(localHostsPath)
+	hostsData, err := readRegularPluginFileNoFollow(localHostsPath, 2<<20)
 	if err != nil {
 		return ConfigSources{}, fmt.Errorf("read %s: %w", localHostsSourceFile, err)
 	}

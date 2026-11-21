@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1056,11 +1057,11 @@ func TestBootstrapFallbackSourceIsReportedDuringRetryCooldown(t *testing.T) {
 	b := &bootstrapResolver{
 		host:        "doh.example",
 		endpoint:    "https://doh.example/dns-query",
-		fallback:    []string{"192.0.2.77"},
+		fallback:    []string{"8.8.8.8"},
 		lastAttempt: time.Now(),
 		refreshFor:  6 * time.Hour,
 		probe: func(ctx context.Context, endpoint, ip string, timeout time.Duration) (time.Duration, error) {
-			if ip != "192.0.2.77" {
+			if ip != "8.8.8.8" {
 				return 0, fmt.Errorf("unexpected probe IP %s", ip)
 			}
 			return 9 * time.Millisecond, nil
@@ -1071,7 +1072,7 @@ func TestBootstrapFallbackSourceIsReportedDuringRetryCooldown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ip != "192.0.2.77" {
+	if ip != "8.8.8.8" {
 		t.Fatalf("selected IP = %s, want configured fallback", ip)
 	}
 	status := b.status()
@@ -1557,5 +1558,84 @@ func TestReloadKeepsListenerChangesPendingRestartWhileApplyingOtherSettings(t *t
 		persisted.HTTPListen != requested.HTTPListen ||
 		persisted.DNSMaxConcurrent != requested.DNSMaxConcurrent {
 		t.Fatalf("requested listener settings were not preserved on disk: %+v", persisted)
+	}
+}
+
+
+func TestFilterPublicDoHIPsRejectsNonPublicAddresses(t *testing.T) {
+	got := filterPublicDoHIPs([]string{
+		"1.1.1.1", "8.8.8.8", "10.0.0.1", "127.0.0.1",
+		"192.0.2.10", "169.254.1.1", "224.0.0.1", "2001:db8::1",
+		"2001:4860:4860::8888", "1.1.1.1",
+	})
+	want := []string{"1.1.1.1", "8.8.8.8", "2001:4860:4860::8888"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("public bootstrap IPs=%v, want %v", got, want)
+	}
+}
+
+func TestHandleStatusDoesNotExposePrivatePathsOrSystemDNS(t *testing.T) {
+	cfg := defaultConfig()
+	snapshot := &Snapshot{cfg: cfg, groups: map[string]Group{}, upstreams: map[string]*UpstreamRuntime{}}
+	r := &Runtime{configPath: "/root/private/plugin/config.json", cache: map[string]cacheItem{}}
+	r.snapshot.Store(snapshot)
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:18765/status", nil)
+	recorder := httptest.NewRecorder()
+	r.handleStatus(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status code=%d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if strings.Contains(body, "/root/private/plugin/config.json") {
+		t.Fatal("status endpoint exposed the plugin configuration path")
+	}
+	if strings.Contains(body, "system_dns_servers") || strings.Contains(body, "system_dns_error") {
+		t.Fatal("status endpoint exposed host resolver details")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["config"] != "" {
+		t.Fatalf("config field should be empty for unauthenticated status: %#v", payload["config"])
+	}
+}
+
+
+func TestBootstrapResolverFiltersConfiguredFallbackIPs(t *testing.T) {
+	resolver := &bootstrapResolver{
+		host: "doh.example",
+		fallback: []string{"10.0.0.1", "192.0.2.1", "8.8.8.8", "127.0.0.1"},
+	}
+	ips, err := resolver.addresses(context.Background(), true)
+	if err == nil {
+		t.Fatal("missing bootstrap DNS resolver should be reported")
+	}
+	if !reflect.DeepEqual(ips, []string{"8.8.8.8"}) {
+		t.Fatalf("fallback addresses=%v, want only public 8.8.8.8", ips)
+	}
+}
+
+func TestStatusSafeDoHURLRemovesEndpointCredentials(t *testing.T) {
+	got := statusSafeDoHURL("https://doh.example/private/path?profile=SUPERSECRET#fragment")
+	if got != "https://doh.example" {
+		t.Fatalf("status-safe DoH URL=%q, want origin only", got)
+	}
+	if strings.Contains(got, "SUPERSECRET") || strings.Contains(got, "/private") {
+		t.Fatalf("status URL leaked private endpoint data: %q", got)
+	}
+}
+
+
+func TestLoadConfigNoCreateRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real-config.json")
+	link := filepath.Join(dir, "config.json")
+	config, err := json.Marshal(defaultConfig())
+	if err != nil { t.Fatal(err) }
+	if err := os.WriteFile(target, config, 0600); err != nil { t.Fatal(err) }
+	if err := os.Symlink(target, link); err != nil { t.Fatal(err) }
+	if _, err := loadConfigNoCreate(link); err == nil {
+		t.Fatal("config loader must reject symlinked config files")
 	}
 }

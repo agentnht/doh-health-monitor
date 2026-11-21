@@ -516,3 +516,19 @@ func TestParseHealthChecksRejectsTrailingSlashOnOIDCDiscoveryURL(t *testing.T) {
 		t.Fatal("OIDC discovery URL with a trailing slash must be rejected during source parsing")
 	}
 }
+
+
+func TestReadConfigSourcesRejectsSymlinkedSource(t *testing.T) {
+	dir := t.TempDir()
+	realDoH := filepath.Join(dir, "real-doh.txt")
+	dohLink := filepath.Join(dir, "doh-servers.txt")
+	checks := filepath.Join(dir, "tst-domen.txt")
+	hosts := filepath.Join(dir, localHostsSourceFile)
+	if err := os.WriteFile(realDoH, []byte("cloudflare;https://cloudflare-dns.com/dns-query\n"), 0600); err != nil { t.Fatal(err) }
+	if err := os.Symlink(realDoH, dohLink); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(checks, []byte("example.com;A;1;https://example.com/;200;0\n"), 0600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(hosts, nil, 0600); err != nil { t.Fatal(err) }
+	if _, err := readConfigSources(dohLink, checks, hosts); err == nil {
+		t.Fatal("config source reader must reject symlinked files")
+	}
+}
