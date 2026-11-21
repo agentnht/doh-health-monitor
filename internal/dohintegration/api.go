@@ -296,7 +296,7 @@ func (p *PanelAPI) request(method,path string,form url.Values,payload any)(map[s
 	if form!=nil{body=strings.NewReader(form.Encode());contentType="application/x-www-form-urlencoded"}
 	if payload!=nil{b,err:=json.Marshal(payload);if err!=nil{return nil,problem("Could not encode panel API request")};body=bytes.NewReader(b);contentType="application/json"}
 	req,err:=http.NewRequest(method,p.root+path,body);if err!=nil{return nil,problem("Could not create panel API request")}
-	req.Header.Set("Authorization","Bearer "+p.token);req.Header.Set("Accept","application/json");req.Header.Set("User-Agent","doh-health-monitor/2.1.0")
+	req.Header.Set("Authorization","Bearer "+p.token);req.Header.Set("Accept","application/json");req.Header.Set("User-Agent","doh-health-monitor/2.3.2")
 	if contentType!=""{req.Header.Set("Content-Type",contentType)};if p.hostHeader!=""{req.Host=p.hostHeader}
 	resp,err:=p.client.Do(req);if err!=nil{return nil,problem("Could not reach LucX-UI API; network details suppressed")};defer resp.Body.Close()
 	data,err:=io.ReadAll(io.LimitReader(resp.Body,maxResponseBytes+1));if err!=nil{return nil,problem("Could not read LucX-UI API response")}
