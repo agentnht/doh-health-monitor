@@ -1742,7 +1742,7 @@ func TestBootstrapRefreshGateWaitHonorsContextCancellation(t *testing.T) {
 }
 
 func TestBootstrapSelectionGateWaitHonorsContextCancellation(t *testing.T) {
-	probeStarted := make(chan struct{})
+	probeStarted := make(chan struct{}, 1)
 	releaseProbe := make(chan struct{})
 	b := &bootstrapResolver{
 		host:       "doh.example",
