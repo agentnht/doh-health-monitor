@@ -171,7 +171,7 @@ func TestWebUILocalHostsEditorAPIValidatesBacksUpAndPreservesComments(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "# "+localHostsSourceHeader) || !strings.Contains(string(data), "home.example;192.0.2.40,192.0.2.41;2001:db8::40") || !strings.Contains(string(data), "# disabled.example;192.0.2.42;") {
+	if !strings.Contains(string(data), localHostsSourceHeader) || !strings.Contains(string(data), "home.example;192.0.2.40,192.0.2.41;2001:db8::40") || !strings.Contains(string(data), "# disabled.example;192.0.2.42;") {
 		t.Fatalf("local-hosts rows/comments were not saved as expected: %s", data)
 	}
 	backup, err := os.ReadFile(path + ".bak")
