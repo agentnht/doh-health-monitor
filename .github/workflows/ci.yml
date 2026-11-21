@@ -33,6 +33,10 @@ jobs:
         run: bash scripts/test-check-dns-integration.sh
       - run: go vet ./...
       - run: go test ./...
+      - name: Run Go race detector
+        run: go test -race ./...
+      - name: Run opt-in legacy SQLite integration tests
+        run: go test -tags legacy_integration ./internal/dohintegration
       - name: Build Linux amd64 test package
         env:
           CGO_ENABLED: "0"
