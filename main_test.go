@@ -1424,3 +1424,34 @@ func containsString(values []string, want string) bool {
 	for _, value := range values { if value == want { return true } }
 	return false
 }
+
+
+func TestValidListenRequiresLoopbackAndValidPort(t *testing.T) {
+	for _, address := range []string{
+		"0.0.0.0:53", "192.0.2.1:5355", "127.0.0.1:0", "127.0.0.1:65536",
+		"127.0.0.1:99999", "127.0.0.1:abc", "localhost:abc", ":5355",
+	} {
+		if validListen(address) {
+			t.Errorf("validListen(%q) = true, want false", address)
+		}
+	}
+	for _, address := range []string{"127.0.0.1:5355", "localhost:18765", "[::1]:5355"} {
+		if !validListen(address) {
+			t.Errorf("validListen(%q) = false, want true", address)
+		}
+	}
+}
+
+func TestSendDoHErrorDoesNotExposeURLSecrets(t *testing.T) {
+	upstream := &UpstreamRuntime{
+		cfg: Upstream{ID: "test", URL: "https://127.0.0.1:1/dns-query?token=SUPERSECRET"},
+		client: &http.Client{Timeout: time.Second},
+	}
+	_, err := sendDoH(context.Background(), upstream, makeDNSQuery("example.com", 1))
+	if err == nil {
+		t.Fatal("expected local connection to fail")
+	}
+	if strings.Contains(err.Error(), "SUPERSECRET") || strings.Contains(err.Error(), "/dns-query") {
+		t.Fatalf("DoH error leaked secret URL: %v", err)
+	}
+}
