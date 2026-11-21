@@ -485,7 +485,7 @@ curl -i http://127.0.0.1:18765/healthz
 
 ```bash
 status_token="$(<"$LUCX_PLUGIN_DATA/status-api.token")"
-curl --fail --silent --show-error -H "Authorization: Bearer $status_token" http://127.0.0.1:18765/status | jq .
+printf 'header = "Authorization: Bearer %s"\n' "$status_token" | curl --config - --fail --silent --show-error http://127.0.0.1:18765/status | jq .
 unset status_token
 ```
 
