@@ -64,14 +64,24 @@ func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 		t.Fatal("dashboard sections must be ordered: DNS listeners, resources, upstream groups")
 	}
 
-	if got := strings.Count(page, `aria-expanded="false"`); got != 5 {
-		t.Fatalf("all five section buttons must start collapsed, got %d collapsed buttons", got)
+	if got := strings.Count(page, `aria-expanded="false"`); got != 6 {
+		t.Fatalf("all six section buttons must start collapsed, got %d collapsed buttons", got)
 	}
-	if got := strings.Count(page, `<section class="panel tab-page`); got != 5 {
+	if got := strings.Count(page, `<section class="panel tab-page`); got != 6 {
 		t.Fatalf("all section panels must start hidden; got %d", got)
 	}
-	if strings.Count(page, `class="tab-button"`) != 5 {
-		t.Fatal("expected five independent collapsible section buttons")
+	if strings.Count(page, `class="tab-button"`) != 6 {
+		t.Fatal("expected six independent collapsible section buttons")
+	}
+	for _, want := range []string{
+		`data-page="hosts"`,
+		`data-page-panel="hosts"`,
+		`id="hosts-rows"`,
+		`id="hosts-save"`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("local hosts editor is missing %q", want)
+		}
 	}
 
 	badHost := req.Clone(req.Context())
