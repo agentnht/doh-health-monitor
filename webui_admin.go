@@ -1103,23 +1103,6 @@ func dnsQTypeName(value uint16) string {
 	return fmt.Sprintf("TYPE%d", value)
 }
 
-func webUIDigResult(domain string, qtype uint16, answer string, elapsed int64, commandErr error) webUITestResult {
-	name := "dig " + domain + " " + dnsQTypeName(qtype)
-	if commandErr != nil {
-		reason := "DNS-запрос завершился ошибкой"
-		if strings.TrimSpace(answer) != "" {
-			reason += ": " + answer
-		} else {
-			reason += ": " + commandErr.Error()
-		}
-		return webUITestResult{Name: name, Status: "NotOK", Reason: reason, Domain: domain, QType: dnsQTypeName(qtype), DurationMS: elapsed}
-	}
-	if answer == "" {
-		return webUITestResult{Name: name, Status: "NotOK", Reason: "dig не получил секцию ANSWER", Domain: domain, QType: dnsQTypeName(qtype), DurationMS: elapsed}
-	}
-	return webUITestResult{Name: name, Status: "OK", Domain: domain, QType: dnsQTypeName(qtype), Answer: answer, DurationMS: elapsed}
-}
-
 func runWebUIXrayPolicyCheck(dataDir string) webUITestResult {
 	root, err := webUIDataRoot(dataDir)
 	if err != nil {
