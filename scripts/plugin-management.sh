@@ -149,12 +149,21 @@ resolve_ssh_tunnel_user() {
 
 parse_web_ui_ready_port() {
   local ready="${1:-}" port
-  if [[ ! "$ready" =~ ^WEB_UI_READY\ port=([0-9]{1,5})$ ]]; then
+  if [[ ! "$ready" =~ ^WEB_UI_READY\ port=([0-9]{1,5})\ token=[A-Za-z0-9_-]{43}$ ]]; then
     return 1
   fi
   port="${BASH_REMATCH[1]}"
   if (( port < 1 || port > 65535 )); then return 1; fi
   printf '%s\n' "$port"
+}
+
+parse_web_ui_ready_token() {
+  local ready="${1:-}" token
+  if [[ ! "$ready" =~ ^WEB_UI_READY\ port=[0-9]{1,5}\ token=([A-Za-z0-9_-]{43})$ ]]; then
+    return 1
+  fi
+  token="${BASH_REMATCH[1]}"
+  printf '%s\n' "$token"
 }
 
 build_ssh_tunnel_command() {
@@ -259,7 +268,7 @@ run_dns_config() {
 }
 
 run_web_ui() {
-  local ready remote_port server_address tunnel_user tunnel_command read_status extra
+  local ready remote_port bootstrap_token server_address tunnel_user tunnel_command read_status extra
   printf 'Запуск отдельного процесса Web UI...\n'
   coproc WEB_UI { LUCX_PLUGIN_DATA="$PLUGIN_DATA_DIR" "$PLUGIN_BIN" web; }
   WEB_CHILD_PID="$WEB_UI_PID"
@@ -271,7 +280,7 @@ run_web_ui() {
     stop_web_ui
     return 1
   fi
-  if ! remote_port="$(parse_web_ui_ready_port "$ready")"; then
+  if ! remote_port="$(parse_web_ui_ready_port "$ready")" || ! bootstrap_token="$(parse_web_ui_ready_token "$ready")"; then
     fail "Web UI вернул некорректный readiness-ответ: $ready"
     stop_web_ui
     return 1
@@ -294,7 +303,7 @@ run_web_ui() {
   printf '\n[OK] Web UI слушает только 127.0.0.1:%s.\n' "$remote_port"
   printf '\nНа Windows откройте отдельный PowerShell и выполните:\n'
   printf '%s\n' "$tunnel_command"
-  printf 'Затем откройте в браузере: http://127.0.0.1:19876/\n'
+  printf 'Затем откройте в браузере: http://127.0.0.1:19876/?token=%s\n' "$bootstrap_token"
   printf 'Если локальный порт 19876 занят, замените его в SSH-команде и URL браузера на один и тот же свободный порт. Удалённый порт %s не меняйте.\n' "$remote_port"
   printf 'Оставьте открытыми эту SSH-сессию и отдельную SSH-сессию туннеля.\n'
   printf 'Нажмите Enter здесь, чтобы остановить Web UI и вернуться в меню.\n'

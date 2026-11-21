@@ -142,7 +142,7 @@ func (l *webUIAdminLogger) String() string {
 var webUILogSecretPattern = regexp.MustCompile("(?i)(Bearer\\s+|apiToken:\\s*|XUI_API_TOKEN=)([^\\s\\\"'<>]+)")
 
 func redactWebUILogLine(line string) string {
-	return webUILogSecretPattern.ReplaceAllString(line, "1[REDACTED]")
+	return webUILogSecretPattern.ReplaceAllString(line, "${1}[REDACTED]")
 }
 
 func webUIDataRoot(dataDir string) (string, error) {
@@ -753,6 +753,9 @@ func saveWebUIGeminiKey(dataDir, key string) error {
 	relative := filepath.Clean(config.GeminiAPI.KeyFile)
 	if filepath.IsAbs(relative) || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
 		return errors.New("gemini_api.key_file must stay inside the plugin data directory")
+	}
+	if reservedGeminiKeyPath(relative) {
+		return errors.New("gemini_api.key_file must not target a managed plugin file")
 	}
 	target := filepath.Join(root, relative)
 	parent := filepath.Dir(target)

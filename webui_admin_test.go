@@ -30,13 +30,13 @@ func newTestWebUIData(t *testing.T) string {
 func newAuthenticatedWebUIRequest(t *testing.T, handler http.Handler, method, path string, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
 	const host = "127.0.0.1:19876"
-	root := httptest.NewRequest(http.MethodGet, "http://"+host+"/", nil)
+	root := httptest.NewRequest(http.MethodGet, "http://"+host+"/?token=test-session", nil)
 	root.Host = host
 	rootRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(rootRecorder, root)
 	cookies := rootRecorder.Result().Cookies()
-	if len(cookies) != 1 {
-		t.Fatal("root response did not issue a session cookie")
+	if rootRecorder.Code != http.StatusSeeOther || len(cookies) != 1 {
+		t.Fatal("valid bootstrap ticket did not issue a session cookie")
 	}
 
 	request := httptest.NewRequest(method, "http://"+host+path, bytes.NewReader(body))
@@ -551,5 +551,33 @@ func TestWebUIDigArgsSelectTransport(t *testing.T) {
 	}
 	if !strings.Contains(tcp, "+tcp") {
 		t.Fatalf("TCP args missing +tcp: %s", tcp)
+	}
+}
+
+
+func TestSaveWebUIGeminiKeyRejectsManagedFileTargets(t *testing.T) {
+	dir := newTestWebUIData(t)
+	configPath := filepath.Join(dir, "config.json")
+	config, err := loadConfigNoCreate(configPath)
+	if err != nil { t.Fatal(err) }
+	config.GeminiAPI.KeyFile = "config.json"
+	if err := writeConfigAtomic(configPath, config); err != nil { t.Fatal(err) }
+	before, err := os.ReadFile(configPath)
+	if err != nil { t.Fatal(err) }
+	if err := saveWebUIGeminiKey(dir, "AAAAAAAAAAAAAAAAAAAAAAAA"); err == nil {
+		t.Fatal("managed config.json target must be rejected")
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil { t.Fatal(err) }
+	if !bytes.Equal(before, after) { t.Fatal("rejected key save modified config.json") }
+}
+
+func TestRedactWebUILogLinePreservesSecretPrefix(t *testing.T) {
+	got := redactWebUILogLine("Authorization: Bearer abc123SECRET")
+	if !strings.Contains(got, "Authorization: Bearer [REDACTED]") {
+		t.Fatalf("secret redaction damaged the prefix: %q", got)
+	}
+	if strings.Contains(got, "abc123SECRET") {
+		t.Fatalf("secret remains in redacted output: %q", got)
 	}
 }

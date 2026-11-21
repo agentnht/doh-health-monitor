@@ -907,6 +907,9 @@ func validateConfig(c Config) error {
 		if c.GeminiAPI.Model == "" || c.GeminiAPI.KeyFile == "" || c.GeminiAPI.IntervalSeconds < 60 {
 			return errors.New("gemini_api requires model, key_file and interval_seconds >= 60")
 		}
+		if reservedGeminiKeyPath(c.GeminiAPI.KeyFile) {
+			return errors.New("gemini_api.key_file must not target a managed plugin file")
+		}
 	}
 	return nil
 }
@@ -927,8 +930,25 @@ func validDNSHostname(host string) bool {
 	return true
 }
 func validListen(s string) bool {
-	h, p, e := net.SplitHostPort(s)
-	return e == nil && h != "" && p != ""
+	host, portText, err := net.SplitHostPort(s)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return false
+	}
+	port, err := strconv.Atoi(portText)
+	return err == nil && port >= 1 && port <= 65535
+}
+
+func reservedGeminiKeyPath(path string) bool {
+	base := strings.ToLower(filepath.Base(filepath.Clean(path)))
+	switch base {
+	case "config.json", "doh-servers.txt", "tst-domen.txt", "local-hosts.txt", "plugin.log", "webui-admin-check.log":
+		return true
+	}
+	return strings.HasSuffix(base, ".bak") || strings.HasSuffix(base, ".tmp")
 }
 func normalizeDomain(s string) string {
 	return strings.Trim(strings.ToLower(strings.TrimSpace(s)), ".")
@@ -1582,6 +1602,21 @@ func sendUpstreamDNS(ctx context.Context, u *UpstreamRuntime, packet []byte) ([]
 	return sendDoH(ctx, u, packet)
 }
 
+func sanitizeDoHTransportError(err error, endpoint string) error {
+	if err == nil {
+		return nil
+	}
+	host := "configured upstream"
+	if parsed, parseErr := url.Parse(endpoint); parseErr == nil && parsed.Hostname() != "" {
+		host = parsed.Hostname()
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return fmt.Errorf("DoH request to %s failed: %w", host, urlErr.Err)
+	}
+	return fmt.Errorf("DoH request to %s failed", host)
+}
+
 func sendDoH(ctx context.Context, u *UpstreamRuntime, packet []byte) ([]byte, error) {
 	do := func() (*http.Response, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.cfg.URL, bytes.NewReader(packet))
@@ -1600,11 +1635,11 @@ func sendDoH(ctx context.Context, u *UpstreamRuntime, packet []byte) ([]byte, er
 			logLine("WARN", "DoH request retry hostname=%s alternate_ip=%s", u.bootstrap.host, alternateIP)
 			resp, e = do()
 		} else {
-			e = fmt.Errorf("DoH request failed: %v; alternate IP retry unavailable: %w", e, alternateErr)
+			e = fmt.Errorf("%v; alternate IP retry unavailable: %w", sanitizeDoHTransportError(e, u.cfg.URL), alternateErr)
 		}
 	}
 	if e != nil {
-		return nil, e
+		return nil, sanitizeDoHTransportError(e, u.cfg.URL)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {

@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -80,7 +81,8 @@ func webUIHandler() http.Handler {
 			http.Error(w, "Web UI session initialization failed", http.StatusInternalServerError)
 		})
 	}
-	return newWebUIHandlerWithDataDir("http://127.0.0.1:18765/status", base64.RawURLEncoding.EncodeToString(token), strings.TrimSpace(os.Getenv("LUCX_PLUGIN_DATA")))
+	value := base64.RawURLEncoding.EncodeToString(token)
+	return newWebUIHandlerWithBootstrap("http://127.0.0.1:18765/status", value, value, strings.TrimSpace(os.Getenv("LUCX_PLUGIN_DATA")))
 }
 
 func newWebUIHandler(statusURL, sessionToken string) http.Handler {
@@ -88,6 +90,12 @@ func newWebUIHandler(statusURL, sessionToken string) http.Handler {
 }
 
 func newWebUIHandlerWithDataDir(statusURL, sessionToken, dataDir string) http.Handler {
+	return newWebUIHandlerWithBootstrap(statusURL, sessionToken, sessionToken, dataDir)
+}
+
+func newWebUIHandlerWithBootstrap(statusURL, sessionToken, bootstrapToken, dataDir string) http.Handler {
+	var bootstrapMu sync.Mutex
+	bootstrapUsed := false
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setWebUISecurityHeaders(w)
 		if !isLoopbackWebHost(r.Host) {
@@ -106,10 +114,30 @@ func newWebUIHandlerWithDataDir(statusURL, sessionToken, dataDir string) http.Ha
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
-			http.SetCookie(w, &http.Cookie{
-				Name: webUISessionCookie, Value: sessionToken, Path: "/",
-				HttpOnly: true, SameSite: http.SameSiteStrictMode,
-			})
+			if !webUIRequestAuthorized(r, sessionToken) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "authentication required", http.StatusUnauthorized)
+					return
+				}
+				provided := r.URL.Query().Get("token")
+				bootstrapMu.Lock()
+				valid := !bootstrapUsed && bootstrapToken != "" &&
+					subtle.ConstantTimeCompare([]byte(provided), []byte(bootstrapToken)) == 1
+				if valid {
+					bootstrapUsed = true
+				}
+				bootstrapMu.Unlock()
+				if !valid {
+					http.Error(w, "authentication required", http.StatusUnauthorized)
+					return
+				}
+				http.SetCookie(w, &http.Cookie{
+					Name: webUISessionCookie, Value: sessionToken, Path: "/",
+					HttpOnly: true, SameSite: http.SameSiteStrictMode,
+				})
+				http.Redirect(w, r, "/", http.StatusSeeOther)
+				return
+			}
 			serveWebUIAsset(w, r, "webui/index.html", "text/html; charset=utf-8")
 		case "/app.js":
 			if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -298,11 +326,17 @@ func runWebUI() error {
 }
 
 func runWebUIWithStatusURL(statusURL string) error {
-	token := make([]byte, 32)
-	if _, err := rand.Read(token); err != nil {
+	sessionBytes := make([]byte, 32)
+	bootstrapBytes := make([]byte, 32)
+	if _, err := rand.Read(sessionBytes); err != nil {
 		return fmt.Errorf("create Web UI session token: %w", err)
 	}
-	handler := newWebUIHandlerWithDataDir(statusURL, base64.RawURLEncoding.EncodeToString(token), strings.TrimSpace(os.Getenv("LUCX_PLUGIN_DATA")))
+	if _, err := rand.Read(bootstrapBytes); err != nil {
+		return fmt.Errorf("create Web UI bootstrap token: %w", err)
+	}
+	sessionToken := base64.RawURLEncoding.EncodeToString(sessionBytes)
+	bootstrapToken := base64.RawURLEncoding.EncodeToString(bootstrapBytes)
+	handler := newWebUIHandlerWithBootstrap(statusURL, sessionToken, bootstrapToken, strings.TrimSpace(os.Getenv("LUCX_PLUGIN_DATA")))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return fmt.Errorf("listen on Web UI loopback: %w", err)
@@ -320,7 +354,7 @@ func runWebUIWithStatusURL(statusURL string) error {
 	}()
 
 	port := listener.Addr().(*net.TCPAddr).Port
-	if _, err := fmt.Fprintf(os.Stdout, "WEB_UI_READY port=%d\n", port); err != nil {
+	if _, err := fmt.Fprintf(os.Stdout, "WEB_UI_READY port=%d token=%s\n", port, bootstrapToken); err != nil {
 		_ = listener.Close()
 		return fmt.Errorf("write Web UI readiness: %w", err)
 	}
