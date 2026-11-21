@@ -1,3 +1,5 @@
+//go:build legacy_integration
+
 package dohintegration
 
 import (

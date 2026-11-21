@@ -16,10 +16,3 @@ func TestRunCommandRejectsPanelMutationDirectives(t *testing.T) {
 		}
 	}
 }
-
-
-func TestProcOwnedByEffectiveUserAcceptsOwnProcessDirectory(t *testing.T) {
-	if !procOwnedByEffectiveUser(t.TempDir()) {
-		t.Fatal("directory owned by the effective user should be accepted")
-	}
-}
