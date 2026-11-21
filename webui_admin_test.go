@@ -30,10 +30,18 @@ func newTestWebUIData(t *testing.T) string {
 func newAuthenticatedWebUIRequest(t *testing.T, handler http.Handler, method, path string, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
 	const host = "127.0.0.1:19876"
+	auth := httptest.NewRequest(http.MethodGet, "http://"+host+"/auth?token=test-session", nil)
+	auth.Host = host
+	authRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(authRecorder, auth)
+	cookies := authRecorder.Result().Cookies()
+	if authRecorder.Code != http.StatusSeeOther || len(cookies) != 1 {
+		t.Fatalf("bootstrap authentication failed: status=%d cookies=%d", authRecorder.Code, len(cookies))
+	}
 	request := httptest.NewRequest(method, "http://"+host+path, bytes.NewReader(body))
 	request.Host = host
 	request.Header.Set("Origin", "http://"+host)
-	request.AddCookie(&http.Cookie{Name: webUISessionCookie, Value: "test-session", HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	request.AddCookie(cookies[0])
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	return recorder
