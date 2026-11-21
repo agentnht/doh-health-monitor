@@ -588,3 +588,31 @@ func TestRedactWebUILogLinePreservesSecretPrefix(t *testing.T) {
 		t.Fatalf("secret remains in redacted output: %q", got)
 	}
 }
+
+
+func TestWebUIDigOverflowResultsKeepOriginalIndexes(t *testing.T) {
+	dir := t.TempDir()
+	fakeDig := filepath.Join(dir, "dig")
+	if err := os.WriteFile(fakeDig, []byte("#!/bin/sh\necho ';; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1'\necho 'example.com. 60 IN A 192.0.2.1'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	checks := make([]Check, 26)
+	for i := range checks {
+		checks[i] = Check{Domain: fmt.Sprintf("d%d.example.com", i), QTypes: []uint16{1, 28}}
+	}
+	results := runWebUIDigTests("127.0.0.1:5355", checks, "udp")
+	if len(results) != 52 {
+		t.Fatalf("result count=%d, want 52", len(results))
+	}
+	for i, result := range results {
+		if result.Name == "" || result.Domain == "" {
+			t.Fatalf("result %d is empty; overflow results must retain original indexes: %+v", i, result)
+		}
+	}
+	for i := webUIAdminMaxDigQueries; i < len(results); i++ {
+		if results[i].Status == "" || !strings.Contains(results[i].Reason, "лимит проверки") {
+			t.Fatalf("overflow result %d is not marked as intentionally skipped: %+v", i, results[i])
+		}
+	}
+}
