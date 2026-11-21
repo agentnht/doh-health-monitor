@@ -1323,6 +1323,7 @@ func TestLocalHostsOptionalAndFamilySpecificAnswers(t *testing.T) {
 	hosts := map[string]LocalHost{
 		"local.example": {IPv4: []string{"192.0.2.10"}, IPv6: []string{"2001:db8::10"}},
 		"v4-only.example": {IPv4: []string{"192.0.2.20"}},
+		"forced-nodata.example": {},
 	}
 	for _, tc := range []struct {
 		name string
@@ -1334,6 +1335,8 @@ func TestLocalHostsOptionalAndFamilySpecificAnswers(t *testing.T) {
 		{"local.example", 28, 1, 0},
 		{"v4-only.example", 1, 1, 0},
 		{"v4-only.example", 28, 0, 1},
+		{"forced-nodata.example", 1, 0, 1},
+		{"forced-nodata.example", 28, 0, 1},
 		{"local.example", 64, 0, 1},
 		{"local.example", 65, 0, 1},
 	} {
