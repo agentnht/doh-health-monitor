@@ -146,7 +146,7 @@ func newWebUIHandlerWithDataDir(statusURL, bootstrapToken, dataDir string) http.
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
-			if !webUIRequestAuthorized(r, sessionToken) {
+			if !webUIRequestAuthorized(r, bootstrapToken) {
 				http.Error(w, "authentication required", http.StatusUnauthorized)
 				return
 			}
