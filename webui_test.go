@@ -181,6 +181,9 @@ func TestWebUIStatusAPIRequiresSessionAndReturnsSanitizedStatus(t *testing.T) {
 	if len(cookies) != 1 || cookies[0].Name != webUISessionCookie || !cookies[0].HttpOnly {
 		t.Fatal("bootstrap authentication did not issue the HttpOnly session cookie")
 	}
+	if cookies[0].Value == "session-test-token" {
+		t.Fatal("one-time bootstrap token must not be reused as the session credential")
+	}
 
 	replayRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/auth?token=session-test-token", nil)
 	replayRequest.Host = "127.0.0.1:19876"
