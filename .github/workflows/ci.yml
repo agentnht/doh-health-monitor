@@ -105,7 +105,7 @@ jobs:
           "$(go env GOPATH)/bin/staticcheck" ./...
       - name: Run govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          go install golang.org/x/vuln/cmd/govulncheck@ef4cb2f7cae47fe3e21fc596455f694951867b29
           "$(go env GOPATH)/bin/govulncheck" ./...
       - name: Build Linux amd64 test package
         env:
