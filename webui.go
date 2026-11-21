@@ -89,6 +89,14 @@ func newWebUIHandler(statusURL, sessionToken string) http.Handler {
 }
 
 func newWebUIHandlerWithDataDir(statusURL, bootstrapToken, dataDir string) http.Handler {
+	sessionBytes := make([]byte, 32)
+	if _, err := rand.Read(sessionBytes); err != nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			setWebUISecurityHeaders(w)
+			http.Error(w, "Web UI session initialization failed", http.StatusInternalServerError)
+		})
+	}
+	sessionToken := base64.RawURLEncoding.EncodeToString(sessionBytes)
 	var bootstrapMu sync.Mutex
 	bootstrapUsed := false
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -122,7 +130,7 @@ func newWebUIHandlerWithDataDir(statusURL, bootstrapToken, dataDir string) http.
 				return
 			}
 			http.SetCookie(w, &http.Cookie{
-				Name: webUISessionCookie, Value: bootstrapToken, Path: "/",
+				Name: webUISessionCookie, Value: sessionToken, Path: "/",
 				HttpOnly: true, SameSite: http.SameSiteStrictMode,
 			})
 			http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -146,7 +154,7 @@ func newWebUIHandlerWithDataDir(statusURL, bootstrapToken, dataDir string) http.
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
-			if !webUIRequestAuthorized(r, bootstrapToken) {
+			if !webUIRequestAuthorized(r, sessionToken) {
 				http.Error(w, "authentication required", http.StatusUnauthorized)
 				return
 			}
