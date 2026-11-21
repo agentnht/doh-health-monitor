@@ -397,18 +397,19 @@ func main() {
 	configPath := filepath.Join(dataDir, "config.json")
 	dohPath := filepath.Join(dataDir, "doh-servers.txt")
 	checksPath := filepath.Join(dataDir, "tst-domen.txt")
-	if err := initializeConfigSourceFiles(dataDir); err != nil {
-		fatal("CONFIG sources initialization failed: %v", err)
-	}
+	localHostsPath := filepath.Join(dataDir, localHostsSourceFile)
 	startupConfigUnlock, err := acquireDNSConfigFileLock(dataDir)
 	if err != nil {
 		fatal("CONFIG file lock failed: %v", err)
+	}
+	if err := initializeConfigSourceFiles(dataDir); err != nil {
+		fatal("CONFIG sources initialization failed: %v", err)
 	}
 	cfg, err := loadConfig(configPath)
 	if err != nil {
 		fatal("CONFIG invalid: %v", err)
 	}
-	sources, err := readConfigSources(dohPath, checksPath)
+	sources, err := readConfigSources(dohPath, checksPath, localHostsPath)
 	if err != nil {
 		fatal("CONFIG sources invalid: %v", err)
 	}
@@ -2787,57 +2788,50 @@ func (r *Runtime) reloadLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
-		old := r.currentSnapshot()
-		cfi, err := os.Stat(r.configPath)
-		if err != nil {
-			r.rejectConfigReload("config-stat:"+err.Error(), "CONFIG reload rejected: cannot stat config.json: %v", err)
-			continue
-		}
-		sources, sourceErr := readConfigSources(r.dohPath, r.checksPath)
-		if sourceErr != nil {
-			rejectedHash := sources.Checksums.Combined
-			if rejectedHash == "" {
-				rejectedHash = "source-read-error:" + sourceErr.Error()
-			}
-			r.rejectConfigReload(rejectedHash, "CONFIG source reload rejected: %v", sourceErr)
-			continue
-		}
-		sourcesChanged := sources.Checksums != r.sourceHashes
-		configChanged := cfi.ModTime().After(old.configMod)
-		if !sourcesChanged && !configChanged {
-			// A source file may have been reverted byte-for-byte to the last
-			// accepted version after a rejected edit. Clear the stale warning.
-			if r.lastRejectedSourceHash != "" {
-				r.lastRejectedSourceHash = ""
-				r.setError("")
-			}
-			continue
-		}
-		// Serialize the read/merge/write transaction with CLI and Web UI config
-		// updates so a delayed source reload cannot overwrite a newer DNS mode.
+
+		// Lock before reading either config.json or its managed source files so
+		// a writer cannot race the read/merge/write transaction.
 		dnsConfigWriteMu.Lock()
 		releaseFileLock, lockErr := acquireDNSConfigFileLock(r.dataDir)
 		if lockErr != nil {
 			dnsConfigWriteMu.Unlock()
-			r.rejectConfigReload("config-lock:"+lockErr.Error(), "CONFIG reload rejected: cannot lock config.json: %v", lockErr)
+			r.rejectConfigReload("config-lock:"+lockErr.Error(), "CONFIG reload rejected: cannot lock config sources: %v", lockErr)
 			continue
 		}
 		unlockConfigWrite := func() {
 			releaseFileLock()
 			dnsConfigWriteMu.Unlock()
 		}
-		old = r.currentSnapshot()
-		cfi, err = os.Stat(r.configPath)
+
+		old := r.currentSnapshot()
+		cfi, err := os.Stat(r.configPath)
 		if err != nil {
 			unlockConfigWrite()
 			r.rejectConfigReload("config-stat:"+err.Error(), "CONFIG reload rejected: cannot stat config.json: %v", err)
 			continue
 		}
-		configChanged = cfi.ModTime().After(old.configMod)
+		sources, sourceErr := readConfigSources(r.dohPath, r.checksPath, filepath.Join(r.dataDir, localHostsSourceFile))
+		if sourceErr != nil {
+			rejectedHash := sources.Checksums.Combined
+			if rejectedHash == "" {
+				rejectedHash = "source-read-error:" + sourceErr.Error()
+			}
+			unlockConfigWrite()
+			r.rejectConfigReload(rejectedHash, "CONFIG source reload rejected: %v", sourceErr)
+			continue
+		}
+		sourcesChanged := sources.Checksums != r.sourceHashes
+		configChanged := cfi.ModTime().After(old.configMod)
 		if !sourcesChanged && !configChanged {
+			// A source file may be reverted byte-for-byte after a rejected edit.
+			if r.lastRejectedSourceHash != "" {
+				r.lastRejectedSourceHash = ""
+				r.setError("")
+			}
 			unlockConfigWrite()
 			continue
 		}
+
 		cfg, err := loadConfigNoCreate(r.configPath)
 		if err != nil {
 			unlockConfigWrite()
@@ -2893,7 +2887,7 @@ func (r *Runtime) reloadLoop(ctx context.Context) {
 		case r.activeDoHTrigger <- struct{}{}:
 		default:
 		}
-		logLine("INFO", "CONFIG reloaded upstreams=%d groups=%d checks=%d sources_sha256=%s", len(cfg.Upstreams), len(cfg.Groups), len(sources.Checks), sources.Checksums.Combined)
+		logLine("INFO", "CONFIG reloaded upstreams=%d groups=%d checks=%d local_hosts=%d sources_sha256=%s", len(cfg.Upstreams), len(cfg.Groups), len(sources.Checks), len(sources.LocalHosts), sources.Checksums.Combined)
 	}
 }
 
