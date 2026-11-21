@@ -694,9 +694,11 @@ func applyConfigSources(base Config, sources ConfigSources) (Config, error) {
 	}
 
 	base.Upstreams = upstreams
-	base.LocalHosts = make(map[string]LocalHost, len(sources.LocalHosts))
-	for host, entry := range sources.LocalHosts {
-		base.LocalHosts[host] = LocalHost{IPv4: append([]string(nil), entry.IPv4...), IPv6: append([]string(nil), entry.IPv6...)}
+	if sources.LocalHosts != nil {
+		base.LocalHosts = make(map[string]LocalHost, len(sources.LocalHosts))
+		for host, entry := range sources.LocalHosts {
+			base.LocalHosts[host] = LocalHost{IPv4: append([]string(nil), entry.IPv4...), IPv6: append([]string(nil), entry.IPv6...)}
+		}
 	}
 	group := base.Groups[groupIndex]
 	group.Upstreams = ordered
