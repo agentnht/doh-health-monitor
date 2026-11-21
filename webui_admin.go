@@ -584,8 +584,13 @@ func saveWebUISources(dataDir string, update webUISourceUpdate) error {
 	default:
 		return errors.New("kind must be doh, checks or hosts")
 	}
-	if len(update.Rows) > webUIAdminMaxRows {
-		return fmt.Errorf("too many rows; maximum is %d", webUIAdminMaxRows)
+	maxRows := webUIAdminMaxRows
+	if update.Kind == "hosts" {
+		// Keep room for the header and user comments in addition to 1000 entries.
+		maxRows = maxLocalHostEntries + webUIAdminMaxRows
+	}
+	if len(update.Rows) > maxRows {
+		return fmt.Errorf("too many rows; maximum is %d", maxRows)
 	}
 	systemRows := 0
 	var output strings.Builder
