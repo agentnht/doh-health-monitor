@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -215,5 +216,57 @@ func TestWriteConfigWithBackupRejectsBackupSymlink(t *testing.T) {
 	}
 	if string(got) != "must stay unchanged" {
 		t.Fatalf("backup symlink target was modified: %q", got)
+	}
+}
+
+func TestDNSConfigFileLockIsInterprocessAndSymlinkSafe(t *testing.T) {
+	dir := t.TempDir()
+	release, err := acquireDNSConfigFileLock(dir)
+	if err != nil {
+		t.Fatalf("acquire config lock: %v", err)
+	}
+	lockPath := filepath.Join(dir, "config.json.lock")
+	info, err := os.Stat(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("lock permissions=%#o, want 0600", info.Mode().Perm())
+	}
+	fd, err := syscall.Open(lockPath, syscall.O_RDWR|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		release()
+		t.Fatal(err)
+	}
+	lockErr := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB)
+	if lockErr == nil {
+		_ = syscall.Flock(fd, syscall.LOCK_UN)
+		_ = syscall.Close(fd)
+		release()
+		t.Fatal("second independent file descriptor acquired an already held lock")
+	}
+	if lockErr != syscall.EWOULDBLOCK && lockErr != syscall.EAGAIN {
+		_ = syscall.Close(fd)
+		release()
+		t.Fatalf("second lock returned unexpected error: %v", lockErr)
+	}
+	release()
+	if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = syscall.Close(fd)
+		t.Fatalf("lock remained held after release: %v", err)
+	}
+	_ = syscall.Flock(fd, syscall.LOCK_UN)
+	_ = syscall.Close(fd)
+
+	symlinkDir := t.TempDir()
+	target := filepath.Join(symlinkDir, "target")
+	if err := os.WriteFile(target, []byte("unchanged"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(symlinkDir, "config.json.lock")); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	if _, err := acquireDNSConfigFileLock(symlinkDir); err == nil {
+		t.Fatal("symlink config lock path should be rejected")
 	}
 }
