@@ -530,6 +530,9 @@
     if (shouldOpen && name === "logs") {
       loadLogs();
     }
+    if (shouldOpen && name === "hosts") {
+      loadSources().catch(error => notice("hosts-note", error.message, false));
+    }
   }
 
   function activatePage(name) {
