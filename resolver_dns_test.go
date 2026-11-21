@@ -148,7 +148,7 @@ func TestMode2ResolverTransportFailureFallsThrough(t *testing.T) {
 	if selected != "good" || dnsRCode(response) != 0 || goodCount.Load() != 1 { t.Fatalf("selected=%q rcode=%d good calls=%d", selected, dnsRCode(response), goodCount.Load()) }
 }
 
-func TestMode2BlackholeIsUncachedNoErrorNodata(t *testing.T) {
+func TestMode2UpstreamFailureReturnsUncachedSERVFAIL(t *testing.T) {
 	query := makeDNSQuery("mode2.example", 1)
 	snapshot := &Snapshot{
 		cfg: Config{DNSMode: "resolver", Cache: CacheConfig{Enabled: true, MaxEntries: 10, MaxBytes: 4096, MaxTTL: 300}, DNSQueryTimeoutSeconds: 2},
@@ -158,10 +158,10 @@ func TestMode2BlackholeIsUncachedNoErrorNodata(t *testing.T) {
 	runtime := &Runtime{cache: map[string]cacheItem{}}
 	runtime.snapshot.Store(snapshot)
 	response := runtime.resolverDNSResponse(query, snapshot)
-	if dnsRCode(response) != 0 || dnsAnswerCount(response) != 0 || binary.BigEndian.Uint16(response[8:10]) != 0 {
-		t.Fatalf("expected NOERROR/NODATA without SOA; rcode=%d answers=%d authority=%d", dnsRCode(response), dnsAnswerCount(response), binary.BigEndian.Uint16(response[8:10]))
+	if dnsRCode(response) != 2 || dnsAnswerCount(response) != 0 || binary.BigEndian.Uint16(response[8:10]) != 0 {
+		t.Fatalf("expected SERVFAIL without answer/authority records; rcode=%d answers=%d authority=%d", dnsRCode(response), dnsAnswerCount(response), binary.BigEndian.Uint16(response[8:10]))
 	}
-	if entries, _ := runtime.cacheStats(); entries != 0 { t.Fatalf("synthetic NODATA was cached: %d entries", entries) }
+	if entries, _ := runtime.cacheStats(); entries != 0 { t.Fatalf("synthetic SERVFAIL was cached: %d entries", entries) }
 }
 
 func TestMode2NODATAAndNXDOMAINRequireSOAForNegativeCache(t *testing.T) {
@@ -793,5 +793,30 @@ func TestMode2SystemResolverQueryRejectsPluginListenerLoop(t *testing.T) {
 	_, err := resolver.query(context.Background(), makeDNSQuery("loop.example", 1))
 	if err == nil || !strings.Contains(err.Error(), "refusing a DNS loop") {
 		t.Fatalf("system resolver error=%v, want plugin listener DNS-loop refusal", err)
+	}
+}
+
+
+func TestMode2ResolverCooldownSkipsKnownFailedUpstream(t *testing.T) {
+	closed, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil { t.Fatal(err) }
+	unusedAddress := closed.LocalAddr().String()
+	_ = closed.Close()
+	goodAddress, goodCount := startMode2TestUDPResolver(t, func(query []byte) []byte {
+		return testAResponse(query, 30)
+	})
+	now := time.Now()
+	runtime := &Runtime{upstreamCooldown: map[string]time.Time{"offline": now.Add(upstreamFailureCooldown)}}
+	snapshot := &Snapshot{
+		cfg: Config{DNSQueryTimeoutSeconds: 3, DoHTimeoutSeconds: 3},
+		resolverUpstreams: []*ResolverRuntime{
+			{cfg: ResolverUpstream{ID: "offline", Type: "udp"}, address: unusedAddress},
+			{cfg: ResolverUpstream{ID: "good", Type: "udp"}, address: goodAddress},
+		},
+	}
+	response, selected, err := runtime.queryResolverUpstreams(context.Background(), snapshot, makeDNSQuery("mode2.example", 1))
+	if err != nil { t.Fatal(err) }
+	if selected != "good" || dnsRCode(response) != 0 || goodCount.Load() != 1 {
+		t.Fatalf("selected=%q rcode=%d good calls=%d", selected, dnsRCode(response), goodCount.Load())
 	}
 }
