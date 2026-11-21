@@ -508,3 +508,11 @@ func TestRejectedConfigReloadKeepsPreviousSnapshot(t *testing.T) {
 		t.Fatal("rejected configuration did not publish an operational error")
 	}
 }
+
+
+func TestParseHealthChecksRejectsTrailingSlashOnOIDCDiscoveryURL(t *testing.T) {
+	input := []byte("accounts.example.com;A;1;https://accounts.example.com/.well-known/openid-configuration/;200;1\n")
+	if _, err := parseHealthChecks(input); err == nil {
+		t.Fatal("OIDC discovery URL with a trailing slash must be rejected during source parsing")
+	}
+}
