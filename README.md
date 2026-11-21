@@ -448,7 +448,7 @@ Checker не изменяет конфигурацию. Он остаётся с
 
 ### Отключённые операции изменения Xray
 
-В этой ветке команды CLI `integrate` и `remove`, а также Web UI mutation endpoint отключены. Прямой CLI-вызов возвращает ошибку; старый Web UI endpoint отвечает HTTP 410 Gone. Причина — унаследованный planner рассчитан на другую модель Xray DNS integration и не распознаёт утверждённую последовательность Geosite `direct` → catch-all `hijack`. Оставлять его доступным для изменения панели небезопасно.
+Команды CLI `integrate` и `remove`, panel API adapter, admin-token minting, Xray planner и диагностический Tunnel lifecycle удалены из исходников плагина. Прямой вызов устаревших CLI-директив отклоняется; Web UI mutation endpoint отвечает HTTP 410 Gone. Xray Geosite DNS rules настраиваются вручную по утверждённой схеме; бинарник плагина выполняет только read-only preflight и не изменяет панель/Xray.
 
 Изменения Xray выполняются только вручную по §4.4. Автоматизация будет отдельной задачей после end-to-end проверки и отдельного проектирования безопасного planner-а.
 
@@ -593,8 +593,8 @@ go vet ./...
 ```
 
 **Автоматические проверки release candidate 2.3.2:**
-- GitHub Actions CI #44938111688: module tidy, shell/JavaScript syntax, management helper tests, DNS checker tests, `go vet ./...`, `go test ./...`, `go test -race ./...`, `go test -tags legacy_integration ./internal/dohintegration`, Linux amd64 package build — PASS.
-- DoH integration workflow #44938111672 — PASS.
+- GitHub Actions CI: module tidy, shell/JavaScript syntax, management helper tests, DNS checker tests, `go vet ./...`, `go test ./...`, `go test -race ./...` и Linux amd64 package build.
+- Устаревшие panel mutation helpers, planner/diagnostics, admin-token minting и SQLite dependency удалены; sidecar содержит только read-only plugin preflight, не меняющий LucX-UI/Xray.
 - Регрессионные тесты охватывают анонимный доступ к Web UI, одноразовый bootstrap token, listener validation, Gemini key path, DoH URL redaction, resolver SERVFAIL/cooldown, ActiveDoH hard-failure failover, EDNS-aware UDP truncation, DNS error packet shape, OIDC URL validation, reload interval, pending restart semantics, status redaction, bootstrap public-IP filtering и symlinked configuration sources.
 - Эти проверки выполнены в GitHub Actions. Новый VPS release smoke test для `v2.3.2` оставлен перед публикацией; тесты на установленном релизном ZIP будут выполнены отдельно.
 

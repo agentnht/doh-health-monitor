@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	"lucx-doh-health-monitor/internal/dohintegration"
+	"lucx-doh-health-monitor/internal/plugincheck"
 )
 
 const (
@@ -1300,13 +1300,13 @@ func runWebUIPluginPreflight(dataDir string) (string, error) {
 		return "", fmt.Errorf("configured HTTP listener: %w", err)
 	}
 	statusURL := "http://" + httpAddress + "/status"
-	if !dohintegration.IsLocalURL(statusURL) {
+	if !plugincheck.IsLocalURL(statusURL) {
 		return "", errors.New("configured status endpoint must use loopback")
 	}
 
 	logger := &webUIAdminLogger{dataDir: root}
 	logger.Printf("Xray policy/plugin check started")
-	err = dohintegration.RunCommand([]string{"check", "--plugin-port", pluginPort, "--plugin-status-url", statusURL}, logger)
+	err = plugincheck.RunCommand([]string{"check", "--plugin-port", pluginPort, "--plugin-status-url", statusURL}, logger)
 	if err != nil {
 		logger.Printf("Xray policy/plugin check failed: %v", err)
 		return logger.String(), err

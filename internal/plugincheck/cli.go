@@ -1,10 +1,9 @@
-package dohintegration
+package plugincheck
 
 import (
 	"flag"
 	"os"
 	"strings"
-	"time"
 )
 
 func RunCommand(args []string, logger Logger) error {
@@ -13,7 +12,7 @@ func RunCommand(args []string, logger Logger) error {
 	}
 	action := strings.ToLower(strings.TrimSpace(args[0]))
 	if action != "check" {
-		return problem("Panel-changing integrate/remove commands are disabled for the approved Geosite DNS design; configure Xray manually and use the read-only check")
+		return problem("Panel integration commands are not part of this plugin; configure Xray manually and use the read-only check")
 	}
 	if os.Geteuid() != 0 {
 		return problem("Run check as root on the LucX-UI VPS")
@@ -39,14 +38,4 @@ func RunCommand(args []string, logger Logger) error {
 		return problem("--plugin-port must be between 1 and 65535")
 	}
 	return checkPluginHealth(opts, logger)
-}
-
-func ValidateOptions(opts Options) error {
-	if opts.Timeout == 0 {
-		opts.Timeout = 15 * time.Second
-	}
-	if opts.Timeout < 0 {
-		return problem("Invalid timeout")
-	}
-	return nil
 }
