@@ -103,7 +103,7 @@ export DOH_STATUS_URL="http://status.test/status"
 export MOCK_STATUS_TOKEN="$(printf '%064d' 0)"
 export LUCX_PLUGIN_DATA="$TMP_DIR/status-data"
 mkdir -p "$LUCX_PLUGIN_DATA"
-printf '%s\\n' "$MOCK_STATUS_TOKEN" > "$LUCX_PLUGIN_DATA/status-api.token"
+printf '%s\n' "$MOCK_STATUS_TOKEN" > "$LUCX_PLUGIN_DATA/status-api.token"
 chmod 0600 "$LUCX_PLUGIN_DATA/status-api.token"
 cat >"$TMP_DIR/status-mode1.json" <<'JSON'
 {"dns_mode":"endpoint_ip","active_doh":{"server_id":"active-test","hostname":"doh.example.net","ipv4":["192.0.2.10"],"ipv6":["2001:db8::10"],"score":6,"check_count":8}}
