@@ -851,7 +851,7 @@ func TestNormalizeConfigKeepsOnlyGoogleProfile(t *testing.T) {
 	}
 }
 
-func TestDNSGatewaySendsArbitraryQNAMEThroughGoogleProfile(t *testing.T) {
+func TestResolverGatewaySendsArbitraryQNAMEThroughConfiguredDoH(t *testing.T) {
 	var gotName string
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		body, err := io.ReadAll(req.Body)
@@ -870,26 +870,24 @@ func TestDNSGatewaySendsArbitraryQNAMEThroughGoogleProfile(t *testing.T) {
 	defer srv.Close()
 
 	query := makeDNSQuery("completely-unrelated.example", 1)
+	const id = "selected-google-doh"
 	upstream := &UpstreamRuntime{
-		cfg:    Upstream{ID: "selected-google-doh", URL: srv.URL},
+		cfg:    Upstream{ID: id, URL: srv.URL},
 		client: srv.Client(),
 	}
 	snapshot := &Snapshot{
-		groups: map[string]Group{
-			"google": {ID: "google", Upstreams: []string{"selected-google-doh"}},
-		},
-		upstreams: map[string]*UpstreamRuntime{"selected-google-doh": upstream},
+		cfg: Config{DNSMode: "resolver", DNSQueryTimeoutSeconds: 3, DoHTimeoutSeconds: 3},
+		resolverUpstreams: []*ResolverRuntime{{
+			cfg: ResolverUpstream{ID: id, Type: "doh", URL: srv.URL},
+			upstream: upstream,
+		}},
 	}
-	rt := &Runtime{
-		active: map[string]string{"google": "selected-google-doh"},
-	}
-	rt.snapshot.Store(snapshot)
 
-	response, selected, err := rt.query(context.Background(), query)
+	response, selected, err := (&Runtime{}).queryResolverUpstreams(context.Background(), snapshot, query)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selected != "selected-google-doh" {
+	if selected != id {
 		t.Fatalf("selected upstream = %q", selected)
 	}
 	if gotName != "completely-unrelated.example" {
