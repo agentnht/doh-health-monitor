@@ -20,8 +20,12 @@ pass() { printf '[OK]   %s\n' "$*"; ok=$((ok + 1)); }
 warning() { printf '[WARN] %s\n' "$*"; warn=$((warn + 1)); }
 error() { printf '[FAIL] %s\n' "$*"; fail=$((fail + 1)); }
 status_api_request() {
-  local output="$1" token_file token
+  local output="$1" token_file token status_port
   if [[ -z "${LUCX_PLUGIN_DATA:-}" ]]; then return 1; fi
+  # Never send a bearer token to an endpoint supplied through an untrusted environment.
+  if [[ ! "$DOH_STATUS_URL" =~ ^http://(127\\.0\\.0\\.1|\\[::1\\]):([0-9]{1,5})/status$ ]]; then return 1; fi
+  status_port="${BASH_REMATCH[2]}"
+  if (( 10#$status_port < 1 || 10#$status_port > 65535 )); then return 1; fi
   token_file="$LUCX_PLUGIN_DATA/status-api.token"
   [[ -f "$token_file" && ! -L "$token_file" ]] || return 1
   IFS= read -r token < "$token_file" || return 1
