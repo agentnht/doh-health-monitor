@@ -26,7 +26,7 @@ status_api_request() {
   [[ -f "$token_file" && ! -L "$token_file" ]] || return 1
   IFS= read -r token < "$token_file" || return 1
   [[ "$token" =~ ^[a-f0-9]{64}$ ]] || return 1
-  curl --fail --silent --show-error --max-time 3 --header "Authorization: Bearer $token" "$DOH_STATUS_URL" -o "$output" 2>/dev/null
+  printf 'header = "Authorization: Bearer %s"\\n' "$token" | curl --config - --fail --silent --show-error --max-time 3 "$DOH_STATUS_URL" -o "$output" 2>/dev/null
 }
 
 if ! command -v jq >/dev/null 2>&1; then
