@@ -2803,26 +2803,46 @@ func (r *Runtime) reloadLoop(ctx context.Context) {
 			}
 			continue
 		}
+		// Serialize the read/merge/write transaction with CLI and Web UI config
+		// updates so a delayed source reload cannot overwrite a newer DNS mode.
+		dnsConfigWriteMu.Lock()
+		old = r.currentSnapshot()
+		cfi, err = os.Stat(r.configPath)
+		if err != nil {
+			dnsConfigWriteMu.Unlock()
+			r.rejectConfigReload("config-stat:"+err.Error(), "CONFIG reload rejected: cannot stat config.json: %v", err)
+			continue
+		}
+		configChanged = cfi.ModTime().After(old.configMod)
+		if !sourcesChanged && !configChanged {
+			dnsConfigWriteMu.Unlock()
+			continue
+		}
 		cfg, err := loadConfigNoCreate(r.configPath)
 		if err != nil {
+			dnsConfigWriteMu.Unlock()
 			r.rejectConfigReload("config-error:"+cfi.ModTime().UTC().Format(time.RFC3339Nano)+":"+err.Error(), "CONFIG reload rejected: %v", err)
 			continue
 		}
 		if cfg.DNSListenUDP != old.cfg.DNSListenUDP || cfg.DNSListenTCP != old.cfg.DNSListenTCP || cfg.HTTPListen != old.cfg.HTTPListen || cfg.DNSMaxConcurrent != old.cfg.DNSMaxConcurrent {
+			dnsConfigWriteMu.Unlock()
 			r.rejectConfigReload("listener-change:"+cfi.ModTime().UTC().Format(time.RFC3339Nano), "CONFIG listener/dns_max_concurrent change requires plugin restart")
 			continue
 		}
 		cfg, err = applyConfigSources(cfg, sources)
 		if err != nil {
+			dnsConfigWriteMu.Unlock()
 			r.rejectConfigReload(sources.Checksums.Combined+":generated:"+err.Error(), "CONFIG generation rejected: %v", err)
 			continue
 		}
 		ns, err := buildSnapshot(cfg, sources.DoHURLs)
 		if err != nil {
+			dnsConfigWriteMu.Unlock()
 			r.rejectConfigReload(sources.Checksums.Combined+":snapshot:"+err.Error(), "CONFIG snapshot rejected: %v", err)
 			continue
 		}
 		if err := writeConfigAtomic(r.configPath, cfg); err != nil {
+			dnsConfigWriteMu.Unlock()
 			r.rejectConfigReload(sources.Checksums.Combined+":write:"+err.Error(), "CONFIG generated file write failed: %v", err)
 			continue
 		}
@@ -2843,6 +2863,7 @@ func (r *Runtime) reloadLoop(ctx context.Context) {
 		r.lastReload = time.Now().UTC()
 		r.mu.Unlock()
 		r.setError("")
+		dnsConfigWriteMu.Unlock()
 		// Run health checks immediately against the newly applied source files.
 		select {
 		case r.healthCheckTrigger <- struct{}{}:
