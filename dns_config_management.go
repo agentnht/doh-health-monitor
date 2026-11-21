@@ -36,6 +36,31 @@ func writeConfigWithBackup(path string, cfg Config) error {
 	return nil
 }
 
+// prepareConfigForRuntime applies the same source-file generation and snapshot
+// construction as the daemon before a management write is allowed.
+func prepareConfigForRuntime(dataDir string, cfg Config) (Config, error) {
+	dohPath, _, err := webUIDataFile(dataDir, "doh-servers.txt", webUIAdminMaxFile)
+	if err != nil {
+		return Config{}, fmt.Errorf("read DoH source for runtime validation: %w", err)
+	}
+	checksPath, _, err := webUIDataFile(dataDir, "tst-domen.txt", webUIAdminMaxFile)
+	if err != nil {
+		return Config{}, fmt.Errorf("read health-check source for runtime validation: %w", err)
+	}
+	sources, err := readConfigSources(dohPath, checksPath)
+	if err != nil {
+		return Config{}, fmt.Errorf("configuration sources are invalid: %w", err)
+	}
+	cfg, err = applyConfigSources(cfg, sources)
+	if err != nil {
+		return Config{}, fmt.Errorf("generated config validation failed: %w", err)
+	}
+	if _, err := buildSnapshot(cfg, sources.DoHURLs); err != nil {
+		return Config{}, fmt.Errorf("runtime snapshot validation failed: %w", err)
+	}
+	return cfg, nil
+}
+
 // saveDNSModeConfig is the single write path used by the CLI and Web UI.
 // It validates the complete resulting config before creating a backup or
 // replacing config.json. The daemon applies the atomic replacement by hot reload.
@@ -74,6 +99,10 @@ func saveDNSModeConfig(dataDir, mode string, resolvers []ResolverUpstream) (Conf
 	cfg = normalizeCacheConfig(cfg)
 	if err := validateConfig(cfg); err != nil {
 		return Config{}, fmt.Errorf("DNS configuration validation failed: %w", err)
+	}
+	cfg, err = prepareConfigForRuntime(root, cfg)
+	if err != nil {
+		return Config{}, err
 	}
 	if err := writeConfigWithBackup(path, cfg); err != nil {
 		return Config{}, err
