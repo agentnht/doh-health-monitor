@@ -118,7 +118,7 @@ func runDNSConfigCLI(args []string) error {
 		fmt.Println(string(encoded))
 		fmt.Print("resolver_upstreams JSON [Enter — оставить]: ")
 		line, readErr := reader.ReadString('\n')
-		if readErr != nil && !errors.Is(readErr, os.ErrClosed) {
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			return fmt.Errorf("read resolver_upstreams: %w", readErr)
 		}
 		if strings.TrimSpace(line) != "" {
