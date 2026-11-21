@@ -171,6 +171,7 @@
       <button class="tab-button" type="button" data-page="config" aria-selected="false" aria-expanded="false">Конфигурация</button>
       <button class="tab-button" type="button" data-page="doh" aria-selected="false" aria-expanded="false">DoH-сервера</button>
       <button class="tab-button" type="button" data-page="domains" aria-selected="false" aria-expanded="false">Домены</button>
+      <button class="tab-button" type="button" data-page="hosts" aria-selected="false" aria-expanded="false">Local hosts</button>
       <button class="tab-button" type="button" data-page="tests" aria-selected="false" aria-expanded="false">Проверка состояния</button>
       <button class="tab-button" type="button" data-page="logs" aria-selected="false" aria-expanded="false">Логи</button>
     </nav>
@@ -240,6 +241,15 @@
         <table class="source-table"><thead><tr><th>Вкл.</th><th>Домен</th><th>QTypes</th><th>Required</th><th>HTTP URL</th><th>HTTP status</th><th>OIDC</th><th></th></tr></thead><tbody id="check-rows"></tbody></table>
       </div>
       <div class="row-actions"><button class="secondary" id="check-add" type="button">+ Добавить домен</button><button id="check-save" type="button">Сохранить список</button><span id="check-note" class="muted" role="status"></span></div>
+    </section>
+
+    <section class="panel tab-page" data-page-panel="hosts" hidden>
+      <h2>Локальные DNS-записи · local-hosts.txt</h2>
+      <p class="muted">Только точные DNS-имена, обслуживаемые локально DNS-плагином. Формат строки: hostname;IPv4[,IPv4...];IPv6[,IPv6...]. Можно указывать несколько адресов каждого семейства. Снятие флажка комментирует строку, а не удаляет её. Изменения проверяются и применяются hot reload (до 30 секунд). Системный /etc/hosts не читается и не изменяется.</p>
+      <div class="source-wrap">
+        <table class="source-table"><thead><tr><th>Вкл.</th><th>Hostname</th><th>IPv4 (через запятую)</th><th>IPv6 (через запятую)</th><th></th></tr></thead><tbody id="hosts-rows"></tbody></table>
+      </div>
+      <div class="row-actions"><button class="secondary" id="hosts-add" type="button">+ Добавить hostname</button><button id="hosts-save" type="button">Сохранить hosts</button><span id="hosts-note" class="muted" role="status"></span></div>
     </section>
 
     <section class="panel tab-page" data-page-panel="logs" hidden>
