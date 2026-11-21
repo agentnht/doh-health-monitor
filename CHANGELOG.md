@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.3.1] - 2026-11-21
+
+### Defaults: DoH providers and health checks
+- Добавлен DoH endpoint Pereval: `pereval;https://free.pereval.top/dns-query`. Он включён во встроенный `defaults/doh-servers.txt` и пример конфигурации.
+- Добавлена обязательная проверка `notebook.google.com`: DNS A/AAAA и HTTPS GET `https://notebook.google.com/` с ожидаемым HTTP 200; `verify_oidc=0`.
+- Обновлены embedded defaults и примеры; регрессионный тест проверяет семь DoH provider rows (включая `system-dns`) и десять health-check записей, а также точные параметры Pereval и Notebook.
+- Изменения defaults применяются автоматически при первой установке/первом создании файлов. Уже существующие пользовательские `doh-servers.txt` и `tst-domen.txt` при обновлении намеренно сохраняются без автоматической перезаписи.
+
+### Version
+- Версия Go-бинарника и `manifest.json` обновлена до `2.3.1`.
+
 ## [2.3.0] - 2026-11-21
 
 ### Local hosts editor

@@ -35,8 +35,8 @@ func TestInitializeConfigSourceFilesCreatesEmbeddedDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sources.Providers) != 6 {
-		t.Fatalf("default providers = %d, want 6 including system-dns", len(sources.Providers))
+	if len(sources.Providers) != 7 {
+		t.Fatalf("default providers = %d, want 7 including system-dns and Pereval", len(sources.Providers))
 	}
 	if !sources.SystemDNSEnabled {
 		t.Fatal("embedded default source must enable system-dns")
@@ -44,11 +44,14 @@ func TestInitializeConfigSourceFilesCreatesEmbeddedDefaults(t *testing.T) {
 	if len(sources.LocalHosts) != 0 || len(sources.Checksums.Hosts) != 64 {
 		t.Fatalf("embedded local hosts source should be empty and hashed: hosts=%+v checksum=%q", sources.LocalHosts, sources.Checksums.Hosts)
 	}
-	if len(sources.Checks) != 9 {
-		t.Fatalf("default checks = %d, want 9", len(sources.Checks))
+	if len(sources.Checks) != 10 {
+		t.Fatalf("default checks = %d, want 10", len(sources.Checks))
 	}
 	if sources.DoHURLs["dagami"] != "https://dns.dagami.ru/dns-query" {
 		t.Fatalf("default Dagami endpoint = %q", sources.DoHURLs["dagami"])
+	}
+	if sources.DoHURLs["pereval"] != "https://free.pereval.top/dns-query" {
+		t.Fatalf("default Pereval endpoint = %q", sources.DoHURLs["pereval"])
 	}
 	wantDomains := []string{
 		"chatgpt.com",
@@ -58,16 +61,19 @@ func TestInitializeConfigSourceFilesCreatesEmbeddedDefaults(t *testing.T) {
 		"grok.com",
 		"www.perplexity.ai",
 		"notebooklm.google.com",
+		"notebook.google.com",
 		"aistudio.google.com",
 		"accounts.google.com",
 	}
 	gotDomains := make([]string, 0, len(sources.Checks))
-	var gemini, accounts *Check
+	var gemini, notebook, accounts *Check
 	for i := range sources.Checks {
 		gotDomains = append(gotDomains, sources.Checks[i].Domain)
 		switch sources.Checks[i].Domain {
 		case "gemini.google.com":
 			gemini = &sources.Checks[i]
+		case "notebook.google.com":
+			notebook = &sources.Checks[i]
 		case "accounts.google.com":
 			accounts = &sources.Checks[i]
 		}
@@ -77,6 +83,9 @@ func TestInitializeConfigSourceFilesCreatesEmbeddedDefaults(t *testing.T) {
 	}
 	if gemini == nil || !gemini.Required || gemini.HTTPURL != "https://gemini.google.com/" || !reflect.DeepEqual(gemini.ExpectedStatus, []int{200}) {
 		t.Errorf("Gemini default check = %+v", gemini)
+	}
+	if notebook == nil || !notebook.Required || notebook.HTTPURL != "https://notebook.google.com/" || !reflect.DeepEqual(notebook.ExpectedStatus, []int{200}) || !reflect.DeepEqual(notebook.QTypes, []uint16{1, 28}) {
+		t.Errorf("Notebook default check = %+v", notebook)
 	}
 	if accounts == nil || !accounts.Required || !accounts.VerifyOIDC || accounts.HTTPURL != "https://accounts.google.com/.well-known/openid-configuration" {
 		t.Errorf("Accounts default check = %+v", accounts)

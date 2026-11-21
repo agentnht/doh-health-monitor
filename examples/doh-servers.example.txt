@@ -1,7 +1,9 @@
 # id;url
 # The provider ID is stable; endpoint hostname can change.
+system-dns;
 geohide-eu;https://eu.geohide.ru/dns-query
 dagami;https://dns.dagami.ru/dns-query
 comss-one;https://dns.comss.one/dns-query
 bezmezhau;https://dns.bezmezhau.com/dns-query
 zapret;https://dns.zapret.moe/dns-query
+pereval;https://free.pereval.top/dns-query

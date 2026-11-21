@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -579,6 +580,7 @@ func TestDefaultConfigUsesSystemDNSFirstAndDoHProviders(t *testing.T) {
 		"comss-one",
 		"bezmezhau",
 		"zapret",
+		"pereval",
 	}
 	c := defaultConfig()
 	got := make([]string, 0, len(c.Upstreams))
@@ -603,20 +605,25 @@ func TestDefaultConfigUsesSystemDNSFirstAndDoHProviders(t *testing.T) {
 	if strings.Join(google.Upstreams, ",") != strings.Join(want, ",") {
 		t.Errorf("Google upstreams = %v, want %v", google.Upstreams, want)
 	}
-	if len(google.Checks) != 9 {
-		t.Fatalf("Google checks = %d, want 9", len(google.Checks))
+	if len(google.Checks) != 10 {
+		t.Fatalf("Google checks = %d, want 10", len(google.Checks))
 	}
-	var geminiCheck, accountsCheck *Check
+	var geminiCheck, notebookCheck, accountsCheck *Check
 	for i := range google.Checks {
 		switch google.Checks[i].Domain {
 		case "gemini.google.com":
 			geminiCheck = &google.Checks[i]
+		case "notebook.google.com":
+			notebookCheck = &google.Checks[i]
 		case "accounts.google.com":
 			accountsCheck = &google.Checks[i]
 		}
 	}
 	if geminiCheck == nil || geminiCheck.HTTPURL != "https://gemini.google.com/" || !geminiCheck.Required {
 		t.Errorf("Gemini check = %+v; want required HTTP check for Gemini homepage", geminiCheck)
+	}
+	if notebookCheck == nil || notebookCheck.HTTPURL != "https://notebook.google.com/" || !notebookCheck.Required || !reflect.DeepEqual(notebookCheck.QTypes, []uint16{1, 28}) || !reflect.DeepEqual(notebookCheck.ExpectedStatus, []int{200}) {
+		t.Errorf("Notebook check = %+v; want required A/AAAA and HTTP 200 check", notebookCheck)
 	}
 	if accountsCheck == nil || accountsCheck.HTTPURL != "https://accounts.google.com/.well-known/openid-configuration" || !accountsCheck.Required || !accountsCheck.VerifyOIDC {
 		t.Errorf("Accounts check = %+v; want required OIDC discovery check", accountsCheck)
@@ -677,6 +684,7 @@ func TestBuildSnapshotIncludesSystemDNSWithoutDoHURL(t *testing.T) {
 		"comss-one": "https://dns.comss.one/dns-query",
 		"bezmezhau": "https://dns.bezmezhau.com/dns-query",
 		"zapret": "https://dns.zapret.moe/dns-query",
+		"pereval": "https://free.pereval.top/dns-query",
 	}
 	snapshot, err := buildSnapshot(c, urls)
 	if err != nil {
@@ -689,7 +697,7 @@ func TestBuildSnapshotIncludesSystemDNSWithoutDoHURL(t *testing.T) {
 	if system.client != nil || system.bootstrap != nil {
 		t.Fatal("system DNS must not use a DoH HTTP client or bootstrap resolver")
 	}
-	for _, id := range []string{"geohide-eu", "dagami", "comss-one", "bezmezhau", "zapret"} {
+	for _, id := range []string{"geohide-eu", "dagami", "comss-one", "bezmezhau", "zapret", "pereval"} {
 		if u := snapshot.upstreams[id]; u == nil || u.client == nil || u.bootstrap == nil {
 			t.Errorf("DoH runtime %s was not built", id)
 		}
@@ -905,7 +913,7 @@ func TestLoadDoHListCreatesProxyProviderDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"geohide-eu", "dagami", "comss-one", "bezmezhau", "zapret"}
+	want := []string{"geohide-eu", "dagami", "comss-one", "bezmezhau", "zapret", "pereval"}
 	if len(urls) != len(want) {
 		t.Fatalf("default DoH URL count = %d, want %d: %#v", len(urls), len(want), urls)
 	}
