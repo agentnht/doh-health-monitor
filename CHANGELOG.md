@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [2.3.0] - 2026-11-21
 
 ### Local hosts editor
 - Добавлен управляемый `local-hosts.txt` и редактор Local hosts в Web UI; редактируются только точные DNS-имена, системный `/etc/hosts` не затрагивается.
@@ -9,12 +9,10 @@
 - Изменение файла выполняется через `local-hosts.txt.bak` с правами `0600`, атомарную замену и общий межпроцессный config lock; daemon применяет валидный новый snapshot через hot reload до 30 секунд.
 - Добавлены регрессионные тесты миграции, source checksum/runtime config generation, API/UI сохранения, backup и отклонения некорректных записей.
 
-## [2.3.0] - 2026-11-20
-
 ### Geosite DNS routing
 - Добавлены два взаимоисключающих режима DNS listener-а: `endpoint_ip` (default) и `resolver`.
 - Geosite matching вынесен на сторону Xray: DNS port 53 направляется в DNS outbound, его `settings.rules` отправляют Geosite HIT через `direct` на plugin listener, а остальные запросы — через `hijack` во встроенный DNS Xray.
-- Добавлен read-only checker утверждённой схемы `geosite:habr direct` → catch-all `hijack`; команды CLI `integrate/remove` и Web UI mutation endpoint отключены, так как унаследованный planner не совместим с этим DNS path.
+- Добавлен read-only checker структуры DNS path: он находит direct rule с непустым `domain` и выводит найденные значения; конкретная Geosite-категория, число/порядок DNS rules и catch-all action не зашиты в проверку. Команды CLI `integrate/remove` и Web UI mutation endpoint отключены, так как унаследованный planner не совместим с этой DNS-моделью.
 - Плагин не включает собственный Geosite matcher и не ведёт динамическую базу пользовательских QNAME.
 
 ### ActiveDoHSelector и endpoint_ip
@@ -42,7 +40,9 @@
 ### Проверки
 - GitHub Actions: `go vet ./...`, `go test ./...`, module tidy, shell/JavaScript syntax и Linux amd64 build.
 - Отдельный DoH integration workflow: Go integration/unit tests, Python compile/unit tests, synthetic SQLite lifecycle и shell syntax.
-- Успешный CI не заменяет runtime-проверку WireGuard/TProxy, встроенной версии Xray, Geosite asset и сетевого namespace на целевом VPS; эти проверки остаются обязательными до снятия Draft.
+- CI #1046: module tidy, shell/JavaScript syntax, management/checker regression tests, `go vet ./...`, `go test ./...` и Linux amd64 package build — PASS; DoH integration #891 — PASS.
+- VPS smoke tests пройдены: read-only Xray preflight, клиентский DNS path для `habr.com`/ `example.com`, ActiveDoH failover, resolver A/AAAA, CLI/Web UI DNS mode save, backup permissions и hot reload. Внутренний Xray matcher trace не заявляется.
+- Runtime-проверки Local hosts UI и SSH tunnel под non-root не проводились и не входят в release acceptance scope.
 
 ## [2.2.1] - 2026-11-17
 
