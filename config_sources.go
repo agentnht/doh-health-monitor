@@ -534,8 +534,8 @@ func parseHealthChecks(data []byte) ([]Check, error) {
 				return nil, fmt.Errorf("line %d: http_url must be HTTPS on the same hostname as domain", lineNumber+1)
 			}
 		}
-		if verifyOIDC && !strings.HasSuffix(strings.TrimRight(httpURL, "/"), "/.well-known/openid-configuration") {
-			return nil, fmt.Errorf("line %d: verify_oidc requires an OIDC discovery URL", lineNumber+1)
+		if verifyOIDC && (parsed.RawQuery != "" || parsed.Fragment != "" || !strings.HasSuffix(parsed.Path, "/.well-known/openid-configuration")) {
+			return nil, fmt.Errorf("line %d: verify_oidc requires an exact OIDC discovery URL without query, fragment or trailing slash", lineNumber+1)
 		}
 		seen[domain] = true
 		checks = append(checks, Check{
