@@ -449,6 +449,10 @@ func saveWebUIConfig(dataDir string, view webUIEditableConfig) (bool, error) {
 	if err := validateConfig(config); err != nil {
 		return false, fmt.Errorf("config validation failed: %w", err)
 	}
+	config, err = prepareConfigForRuntime(root, config)
+	if err != nil {
+		return false, err
+	}
 	configPath := filepath.Join(root, "config.json")
 	if err := writeConfigWithBackup(configPath, config); err != nil {
 		return false, fmt.Errorf("save config.json: %w", err)
