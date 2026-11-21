@@ -426,8 +426,12 @@ func saveWebUIConfig(dataDir string, view webUIEditableConfig) (bool, error) {
 		config.DNSListenTCP != view.DNSListenTCP ||
 		config.HTTPListen != view.HTTPListen ||
 		config.DNSMaxConcurrent != view.DNSMaxConcurrent
-	config.DNSMode = strings.TrimSpace(view.DNSMode)
-	config.ResolverUpstreams = append([]ResolverUpstream(nil), view.ResolverUpstreams...)
+	if strings.TrimSpace(view.DNSMode) != "" {
+		config.DNSMode = strings.TrimSpace(view.DNSMode)
+	}
+	if view.ResolverUpstreams != nil {
+		config.ResolverUpstreams = append([]ResolverUpstream(nil), view.ResolverUpstreams...)
+	}
 	config.DNSListenUDP = strings.TrimSpace(view.DNSListenUDP)
 	config.DNSListenTCP = strings.TrimSpace(view.DNSListenTCP)
 	config.HTTPListen = strings.TrimSpace(view.HTTPListen)
