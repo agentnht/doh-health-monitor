@@ -364,6 +364,13 @@ func main() {
 			}
 			return
 		}
+		if action == "config" {
+			if err := runDNSConfigCLI(os.Args[2:]); err != nil {
+				logLine("ERROR", "CONFIG: %v", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if action == "check" {
 			logger := lucxReadOnlyCheckLogger{}
 			if err := dohintegration.RunCommand(os.Args[1:], logger); err != nil {
@@ -372,7 +379,7 @@ func main() {
 			}
 			return
 		}
-		logLine("ERROR", "CLI supports only read-only check and web; Xray Geosite DNS policy must be configured manually")
+		logLine("ERROR", "CLI supports only read-only check, web and config; Xray Geosite DNS policy must be configured manually")
 		os.Exit(2)
 	}
 	dataDir := strings.TrimSpace(os.Getenv("LUCX_PLUGIN_DATA"))
