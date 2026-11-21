@@ -15,32 +15,33 @@ const activeDoHAnswerTTL = 60 * time.Second
 // activeDoHDNSResponse constructs the default mode-1 answer: the selected DoH
 // endpoint's bootstrap IPs, not the IPs of the requested website.
 func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte {
-	if r.activeDoHSelector == nil || snapshot == nil {
+	name, qtype, questionEnd, err := parseQuestion(query)
+	if err != nil || len(query) < 12 || binary.BigEndian.Uint16(query[4:6]) != 1 {
+		return formerrResponse(query)
+	}
+	// This listener intentionally serves only address records. Unsupported
+	// QTYPEs remain ordinary NODATA and do not depend on ActiveDoH health.
+	if qtype != 1 && qtype != 28 {
 		return emptyNoErrorDNSResponse(query)
+	}
+	if questionEnd < 2 || binary.BigEndian.Uint16(query[questionEnd-2:questionEnd]) != 1 {
+		return emptyNoErrorDNSResponse(query)
+	}
+	if r.activeDoHSelector == nil || snapshot == nil {
+		return servfailResponse(query)
 	}
 	// A DNS request may have captured an old snapshot immediately before reload.
 	// Never serve a selection unless both the request and current runtime snapshot
 	// agree with the configuration generation used to probe that endpoint.
 	current := r.currentSnapshot()
 	if current == nil || current.activeDoHGeneration != snapshot.activeDoHGeneration {
-		return emptyNoErrorDNSResponse(query)
+		return servfailResponse(query)
 	}
 
 	now := time.Now()
 	selection, ok := r.activeDoHSelector.Current(now)
 	if !ok || selection.Candidate.ConfigGeneration != current.activeDoHGeneration {
-		return emptyNoErrorDNSResponse(query)
-	}
-
-	name, qtype, questionEnd, err := parseQuestion(query)
-	if err != nil || len(query) < 12 || binary.BigEndian.Uint16(query[4:6]) != 1 {
-		return formerrResponse(query)
-	}
-	if qtype != 1 && qtype != 28 {
-		return emptyNoErrorDNSResponse(query)
-	}
-	if questionEnd < 2 || binary.BigEndian.Uint16(query[questionEnd-2:questionEnd]) != 1 {
-		return emptyNoErrorDNSResponse(query)
+		return servfailResponse(query)
 	}
 
 	key := fmt.Sprintf("mode1:%d:%s", selection.Generation, cacheKey(query))
@@ -80,7 +81,7 @@ func buildActiveDoHResponse(query []byte, qname string, qtype uint16, questionEn
 	}
 	remaining := selection.FreshUntil.Sub(now)
 	if remaining < time.Second {
-		return emptyNoErrorDNSResponse(query), false
+		return servfailResponse(query), false
 	}
 	ttl := uint32(remaining / time.Second)
 	if ttl > uint32(activeDoHAnswerTTL/time.Second) {

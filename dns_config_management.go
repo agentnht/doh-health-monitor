@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,6 +113,57 @@ func prepareConfigForRuntime(dataDir string, cfg Config) (Config, error) {
 		return Config{}, fmt.Errorf("runtime snapshot validation failed: %w", err)
 	}
 	return cfg, nil
+}
+
+
+func validateChangedListenerBinds(requested, current Config) error {
+	if requested.DNSListenTCP == requested.HTTPListen {
+		return errors.New("dns_listen_tcp and http_listen cannot use the same address and port")
+	}
+	type listener struct {
+		name, network, address string
+	}
+	requestedListeners := []listener{
+		{name: "DNS UDP", network: "udp", address: requested.DNSListenUDP},
+		{name: "DNS TCP", network: "tcp", address: requested.DNSListenTCP},
+		{name: "HTTP", network: "tcp", address: requested.HTTPListen},
+	}
+	currentAddresses := map[string]map[string]bool{
+		"udp": {current.DNSListenUDP: true},
+		"tcp": {current.DNSListenTCP: true, current.HTTPListen: true},
+	}
+	for _, item := range requestedListeners {
+		previous := ""
+		switch item.name {
+		case "DNS UDP":
+			previous = current.DNSListenUDP
+		case "DNS TCP":
+			previous = current.DNSListenTCP
+		case "HTTP":
+			previous = current.HTTPListen
+		}
+		if item.address == previous || currentAddresses[item.network][item.address] {
+			continue // unchanged or currently occupied by a listener moving in this update
+		}
+		if item.network == "udp" {
+			address, err := net.ResolveUDPAddr("udp", item.address)
+			if err != nil {
+				return fmt.Errorf("%s listener address %q is invalid: %w", item.name, item.address, err)
+			}
+			conn, err := net.ListenUDP("udp", address)
+			if err != nil {
+				return fmt.Errorf("%s listener address %q cannot be bound: %w", item.name, item.address, err)
+			}
+			_ = conn.Close()
+		} else {
+			listener, err := net.Listen("tcp", item.address)
+			if err != nil {
+				return fmt.Errorf("%s listener address %q cannot be bound: %w", item.name, item.address, err)
+			}
+			_ = listener.Close()
+		}
+	}
+	return nil
 }
 
 // saveDNSModeConfig is the single write path used by the CLI and Web UI.

@@ -143,8 +143,8 @@ func TestBuildActiveDoHResponseReturnsNoErrorNodataAfterFreshnessExpires(t *test
 		FreshUntil: now,
 	}
 	response, cacheable := buildActiveDoHResponse(query, "geosite.example", qtype, questionEnd, selection, now)
-	if cacheable || dnsRCode(response) != 0 || dnsAnswerCount(response) != 0 {
-		t.Fatalf("expired endpoint should yield uncached NOERROR/NODATA")
+	if cacheable || dnsRCode(response) != 2 || dnsAnswerCount(response) != 0 {
+		t.Fatalf("expired endpoint should yield uncached SERVFAIL")
 	}
 }
 
@@ -209,8 +209,8 @@ func TestActiveDoHResponseRejectsSelectionFromStaleConfigGeneration(t *testing.T
 	runtime.snapshot.Store(currentSnapshot)
 
 	response := runtime.activeDoHDNSResponse(activeDoHTestQuery(1, false), requestSnapshot)
-	if dnsRCode(response) != 0 || dnsAnswerCount(response) != 0 {
-		t.Fatalf("stale config selection leaked into DNS answer: rcode=%d answers=%d", dnsRCode(response), dnsAnswerCount(response))
+	if dnsRCode(response) != 2 || dnsAnswerCount(response) != 0 {
+		t.Fatalf("stale config selection must return SERVFAIL: rcode=%d answers=%d", dnsRCode(response), dnsAnswerCount(response))
 	}
 	runtime.cacheMu.Lock()
 	cacheEntries := len(runtime.cache)
@@ -372,4 +372,38 @@ func TestEndpointIPUnsupportedQTypesReturnNoErrorNodata(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestEndpointIPUnavailableSelectionReturnsSERVFAIL(t *testing.T) {
+	query := activeDoHTestQuery(1, false)
+	snapshot := &Snapshot{
+		cfg: Config{DNSMode: "endpoint_ip", Cache: CacheConfig{Enabled: false}},
+		activeDoHGeneration: 7,
+	}
+	t.Run("missing selector", func(t *testing.T) {
+		runtime := &Runtime{cache: make(map[string]cacheItem)}
+		runtime.snapshot.Store(snapshot)
+		if got := dnsRCode(runtime.activeDoHDNSResponse(query, snapshot)); got != 2 {
+			t.Fatalf("rcode=%d, want SERVFAIL when selector is unavailable", got)
+		}
+	})
+	t.Run("no selected endpoint", func(t *testing.T) {
+		runtime := &Runtime{
+			activeDoHSelector: activedoh.NewSelector(activedoh.DefaultPolicy()),
+			cache: make(map[string]cacheItem),
+		}
+		runtime.snapshot.Store(snapshot)
+		if got := dnsRCode(runtime.activeDoHDNSResponse(query, snapshot)); got != 2 {
+			t.Fatalf("rcode=%d, want SERVFAIL when no current selection exists", got)
+		}
+	})
+	t.Run("unsupported QTYPE remains NODATA", func(t *testing.T) {
+		runtime := &Runtime{cache: make(map[string]cacheItem)}
+		runtime.snapshot.Store(snapshot)
+		response := runtime.activeDoHDNSResponse(activeDoHTestQuery(65, false), snapshot)
+		if dnsRCode(response) != 0 || dnsAnswerCount(response) != 0 {
+			t.Fatalf("unsupported QTYPE should remain NOERROR/NODATA; rcode=%d answers=%d",
+				dnsRCode(response), dnsAnswerCount(response))
+		}
+	})
 }

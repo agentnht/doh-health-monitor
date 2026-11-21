@@ -637,3 +637,43 @@ func TestWebUIHTTPListenerDoesNotPassWhenOnlyPortIsFree(t *testing.T) {
 		t.Fatalf("failure should explain that /healthz is not responding: %+v", result)
 	}
 }
+
+func TestValidateChangedListenerBindsRejectsOccupiedTCPAndUDPAddresses(t *testing.T) {
+	tcpListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcpListener.Close()
+	udpConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpConn.Close()
+
+	current := defaultConfig()
+	requested := current
+	requested.DNSListenTCP = tcpListener.Addr().String()
+	if err := validateChangedListenerBinds(requested, current); err == nil {
+		t.Fatal("occupied DNS/TCP address passed listener preflight")
+	}
+	requested = current
+	requested.DNSListenUDP = udpConn.LocalAddr().String()
+	if err := validateChangedListenerBinds(requested, current); err == nil {
+		t.Fatal("occupied DNS/UDP address passed listener preflight")
+	}
+}
+
+func TestValidateChangedListenerBindsAllowsUnchangedActiveListeners(t *testing.T) {
+	config := defaultConfig()
+	if err := validateChangedListenerBinds(config, config); err != nil {
+		t.Fatalf("unchanged active listener addresses should not be re-bound: %v", err)
+	}
+}
+
+func TestValidateChangedListenerBindsRejectsDuplicateTCPListeners(t *testing.T) {
+	config := defaultConfig()
+	config.HTTPListen = config.DNSListenTCP
+	if err := validateChangedListenerBinds(config, defaultConfig()); err == nil {
+		t.Fatal("DNS/TCP and HTTP must not use the same TCP address")
+	}
+}

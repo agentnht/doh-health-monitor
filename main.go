@@ -550,13 +550,12 @@ func logLine(level, f string, a ...any) {
 }
 func loadConfig(path string) (Config, error) {
 	if _, e := os.Stat(path); errors.Is(e, os.ErrNotExist) {
-		b, _ := json.MarshalIndent(defaultConfig(), "", "  ")
-		if e = os.WriteFile(path, append(b, '\n'), 0600); e != nil {
+		if e = writeConfigAtomic(path, defaultConfig()); e != nil {
 			return Config{}, fmt.Errorf("create default config: %w", e)
 		}
 		logLine("WARN", "CONFIG_TEMPLATE_CREATED path=%s; review Google checks and bootstrap_resolvers", path)
 	}
-	b, e := os.ReadFile(path)
+	b, e := readRegularPluginFileNoFollow(path, 2<<20)
 	if e != nil {
 		return Config{}, e
 	}
