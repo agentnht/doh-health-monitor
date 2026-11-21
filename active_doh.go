@@ -16,14 +16,14 @@ import (
 )
 
 const (
-	activeDoHProbeInterval     = 5 * time.Minute
-	activeDoHProbeTimeout      = 9 * time.Second
-	activeDoHLookupTimeout     = 4 * time.Second
-	activeDoHBootstrapTimeout  = 5 * time.Second
-	activeDoHProbeWorkers      = 6
-	activeDoHMaxServers        = 64
-	activeDoHMaxWebsiteIPs     = 32
-	activeDoHUserAgent         = "LucX-DoH-HealthMonitor/2.3.2"
+	activeDoHProbeInterval    = 5 * time.Minute
+	activeDoHProbeTimeout     = 9 * time.Second
+	activeDoHLookupTimeout    = 4 * time.Second
+	activeDoHBootstrapTimeout = 5 * time.Second
+	activeDoHProbeWorkers     = 6
+	activeDoHMaxServers       = 64
+	activeDoHMaxWebsiteIPs    = 32
+	activeDoHUserAgent        = "LucX-DoH-HealthMonitor/2.3.2"
 )
 
 type activeDoHProbeJob struct {
@@ -204,10 +204,10 @@ func (r *Runtime) activeDoHCandidates(ctx context.Context, snapshot *Snapshot) [
 		}
 
 		candidate := activedoh.Candidate{
-			ServerID: id,
-			URL: upstream.cfg.URL,
-			Hostname: status.Hostname,
-			ResolvedAt: status.ResolvedAt,
+			ServerID:         id,
+			URL:              upstream.cfg.URL,
+			Hostname:         status.Hostname,
+			ResolvedAt:       status.ResolvedAt,
 			ConfigGeneration: snapshot.activeDoHGeneration,
 		}
 		for _, raw := range ips {
@@ -259,8 +259,8 @@ func activeDoHChecks(snapshot *Snapshot) map[string]Check {
 
 func (r *Runtime) probeActiveDoHDomain(ctx context.Context, job activeDoHProbeJob, now time.Time) (result activedoh.ProbeResult) {
 	result = activedoh.ProbeResult{
-		ServerID: job.serverID,
-		Domain: job.domain,
+		ServerID:  job.serverID,
+		Domain:    job.domain,
 		CheckedAt: now,
 	}
 	started := time.Now()
@@ -339,7 +339,7 @@ func (r *Runtime) probeActiveDoHDomain(ctx context.Context, job activeDoHProbeJo
 			// probeActiveDoHIP already rejected redirects outside Google's allowed hosts.
 			accepted = status >= 200 && status < 400
 			if geminiRegionBlocked(body) {
-				lastErr = fmt.Errorf("Gemini regional restriction detected")
+				lastErr = fmt.Errorf("gemini regional restriction detected")
 				continue
 			}
 		}
@@ -557,16 +557,16 @@ func (r *Runtime) activeDoHStatus() *ActiveDoHStatus {
 		return nil
 	}
 	return &ActiveDoHStatus{
-		ServerID: selection.Candidate.ServerID,
-		URL: statusSafeDoHURL(selection.Candidate.URL),
-		Hostname: selection.Candidate.Hostname,
-		IPv4: append([]string(nil), selection.Candidate.IPv4...),
-		IPv6: append([]string(nil), selection.Candidate.IPv6...),
+		ServerID:   selection.Candidate.ServerID,
+		URL:        statusSafeDoHURL(selection.Candidate.URL),
+		Hostname:   selection.Candidate.Hostname,
+		IPv4:       append([]string(nil), selection.Candidate.IPv4...),
+		IPv6:       append([]string(nil), selection.Candidate.IPv6...),
 		ResolvedAt: selection.Candidate.ResolvedAt,
 		SelectedAt: selection.SelectedAt,
 		FreshUntil: selection.FreshUntil,
 		Generation: selection.Generation,
-		Score: selection.Score,
+		Score:      selection.Score,
 		CheckCount: selection.CheckCount,
 	}
 }

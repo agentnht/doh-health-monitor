@@ -33,19 +33,19 @@ const (
 var webUIAdminMu sync.Mutex
 
 type webUIEditableConfig struct {
-	DNSMode                string          `json:"dns_mode"`
-	ResolverUpstreams       []ResolverUpstream `json:"resolver_upstreams"`
-	DNSListenUDP           string          `json:"dns_listen_udp"`
-	DNSListenTCP           string          `json:"dns_listen_tcp"`
-	HTTPListen             string          `json:"http_listen"`
-	ReloadSecs             int             `json:"reload_interval_seconds"`
-	DNSQueryTimeoutSeconds int             `json:"dns_query_timeout_seconds"`
-	DoHTimeoutSeconds      int             `json:"doh_timeout_seconds"`
-	DNSMaxConcurrent       int             `json:"dns_max_concurrent"`
-	Health                 HealthConfig    `json:"health"`
-	Cache                  CacheConfig     `json:"cache"`
-	BootstrapResolvers     []string        `json:"bootstrap_resolvers"`
-	GeminiAPI              GeminiAPIConfig `json:"gemini_api"`
+	DNSMode                string             `json:"dns_mode"`
+	ResolverUpstreams      []ResolverUpstream `json:"resolver_upstreams"`
+	DNSListenUDP           string             `json:"dns_listen_udp"`
+	DNSListenTCP           string             `json:"dns_listen_tcp"`
+	HTTPListen             string             `json:"http_listen"`
+	ReloadSecs             int                `json:"reload_interval_seconds"`
+	DNSQueryTimeoutSeconds int                `json:"dns_query_timeout_seconds"`
+	DoHTimeoutSeconds      int                `json:"doh_timeout_seconds"`
+	DNSMaxConcurrent       int                `json:"dns_max_concurrent"`
+	Health                 HealthConfig       `json:"health"`
+	Cache                  CacheConfig        `json:"cache"`
+	BootstrapResolvers     []string           `json:"bootstrap_resolvers"`
+	GeminiAPI              GeminiAPIConfig    `json:"gemini_api"`
 }
 
 type webUISourceRow struct {
@@ -88,10 +88,10 @@ type webUITestResult struct {
 }
 
 type webUITestSummary struct {
-	Status string            `json:"status"`
-	RunAt  time.Time         `json:"run_at"`
-	Tests  []webUITestResult `json:"tests"`
-	Passed int               `json:"passed"`
+	Status   string            `json:"status"`
+	RunAt    time.Time         `json:"run_at"`
+	Tests    []webUITestResult `json:"tests"`
+	Passed   int               `json:"passed"`
 	Failed   int               `json:"failed"`
 	Warnings int               `json:"warnings"`
 }
@@ -404,7 +404,7 @@ func editableWebUIConfig(config Config) webUIEditableConfig {
 		DoHTimeoutSeconds: config.DoHTimeoutSeconds, DNSMaxConcurrent: config.DNSMaxConcurrent,
 		Health: config.Health, Cache: config.Cache,
 		BootstrapResolvers: append([]string(nil), config.BootstrapResolvers...),
-		GeminiAPI: config.GeminiAPI,
+		GeminiAPI:          config.GeminiAPI,
 	}
 }
 
@@ -529,9 +529,9 @@ func readWebUISources(dataDir string) (webUISourcesResponse, error) {
 		return webUISourcesResponse{}, fmt.Errorf("%s validation failed: %w", localHostsSourceFile, err)
 	}
 	return webUISourcesResponse{
-		DoH: parseWebUISourceRows(dohData, 2, "id;url"),
+		DoH:    parseWebUISourceRows(dohData, 2, "id;url"),
 		Checks: parseWebUISourceRows(checksData, 6, "domain;qtypes"),
-		Hosts: parseWebUISourceRows(hostsData, 3, "hostname;ipv4"),
+		Hosts:  parseWebUISourceRows(hostsData, 3, "hostname;ipv4"),
 	}, nil
 }
 
@@ -735,11 +735,11 @@ func saveWebUIGeminiKey(dataDir, key string) error {
 	defer webUIAdminMu.Unlock()
 	key = strings.TrimSpace(key)
 	if key == "" || len(key) > 8192 || strings.ContainsAny(key, "\r\n\t ") {
-		return errors.New("Gemini API key must be a non-empty single-line value of at most 8192 bytes")
+		return errors.New("gemini API key must be a non-empty single-line value of at most 8192 bytes")
 	}
 	for _, r := range key {
 		if r < 0x21 || r > 0x7e {
-			return errors.New("Gemini API key contains unsupported characters")
+			return errors.New("gemini API key contains unsupported characters")
 		}
 	}
 	root, err := webUIDataRoot(dataDir)
@@ -772,11 +772,11 @@ func saveWebUIGeminiKey(dataDir, key string) error {
 	}
 	relParent, err := filepath.Rel(root, resolvedParent)
 	if err != nil || relParent == ".." || strings.HasPrefix(relParent, ".."+string(os.PathSeparator)) {
-		return errors.New("Gemini key directory escapes plugin data directory")
+		return errors.New("gemini key directory escapes plugin data directory")
 	}
 	if info, err := os.Lstat(target); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			return errors.New("Gemini key target must be a regular non-symlink file")
+			return errors.New("gemini key target must be a regular non-symlink file")
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return errors.New("could not inspect Gemini key target")
@@ -1314,4 +1314,3 @@ func runWebUIPluginPreflight(dataDir string) (string, error) {
 	logger.Printf("Xray policy/plugin check completed successfully")
 	return logger.String(), nil
 }
-

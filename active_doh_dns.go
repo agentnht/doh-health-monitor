@@ -65,7 +65,7 @@ func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte 
 	if cacheable && cacheConfig.Enabled && r.activeDoHSelector.Generation() == selection.Generation &&
 		r.activeDoHConfigMatches(snapshot) {
 		cacheConfig.MaxTTL = int(activeDoHAnswerTTL / time.Second)
-		cacheConfig.MinTTL = 0 // preserve cache entries shorter than the general minimum TTL
+		cacheConfig.MinTTL = 0      // preserve cache entries shorter than the general minimum TTL
 		cacheConfig.NegativeTTL = 0 // synthetic NODATA answers are deliberately not cached
 		r.cachePut(key, response, cacheConfig)
 	}
@@ -179,8 +179,8 @@ func appendMinimalResponseOPT(response, query []byte) []byte {
 	requestFlags := binary.BigEndian.Uint16(raw[7:9])
 	responseFlags := requestFlags & 0x8000 // retain only DNSSEC OK
 	response = append(response,
-		0,       // root owner name
-		0, 41,   // OPT
+		0,     // root owner name
+		0, 41, // OPT
 		byte(payloadSize>>8), byte(payloadSize),
 		0, version, byte(responseFlags>>8), byte(responseFlags),
 		0, 0, // zero-length RDATA: no client COOKIE/ECS reflection

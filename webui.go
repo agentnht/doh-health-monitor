@@ -37,41 +37,41 @@ type webUIProbeStatus struct {
 }
 
 type webUIUpstreamStatus struct {
-	State         string             `json:"state"`
-	SuccessStreak int                `json:"success_streak"`
-	FailureStreak int                `json:"failure_streak"`
-	LastCheck     *time.Time         `json:"last_check,omitempty"`
+	State           string             `json:"state"`
+	SuccessStreak   int                `json:"success_streak"`
+	FailureStreak   int                `json:"failure_streak"`
+	LastCheck       *time.Time         `json:"last_check,omitempty"`
 	CheckDurationMS int64              `json:"check_duration_ms,omitempty"`
-	LastHTTP      int                `json:"last_http_status,omitempty"`
-	Checks        []webUIProbeStatus `json:"checks,omitempty"`
+	LastHTTP        int                `json:"last_http_status,omitempty"`
+	Checks          []webUIProbeStatus `json:"checks,omitempty"`
 }
 
 type webUIGroupStatus struct {
-	ActiveUpstream string                            `json:"active_upstream"`
-	Upstreams      map[string]webUIUpstreamStatus    `json:"upstreams"`
+	ActiveUpstream string                         `json:"active_upstream"`
+	Upstreams      map[string]webUIUpstreamStatus `json:"upstreams"`
 }
 
 type webUIStatus struct {
-	ID            string                     `json:"id"`
-	Version       string                     `json:"version"`
-	StartedAt     time.Time                  `json:"started_at"`
-	UpdatedAt     time.Time                  `json:"updated_at"`
-	DNSUDP        string                     `json:"dns_udp"`
-	DNSTCP        string                     `json:"dns_tcp"`
-	DNSMode       string                     `json:"dns_mode"`
-	HTTP          string                     `json:"http"`
-	Cache         CacheStatus                `json:"cache"`
+	ID            string                      `json:"id"`
+	Version       string                      `json:"version"`
+	StartedAt     time.Time                   `json:"started_at"`
+	UpdatedAt     time.Time                   `json:"updated_at"`
+	DNSUDP        string                      `json:"dns_udp"`
+	DNSTCP        string                      `json:"dns_tcp"`
+	DNSMode       string                      `json:"dns_mode"`
+	HTTP          string                      `json:"http"`
+	Cache         CacheStatus                 `json:"cache"`
 	ActiveDoH     *ActiveDoHStatus            `json:"active_doh,omitempty"`
 	Groups        map[string]webUIGroupStatus `json:"groups"`
-	GeminiAPI     string                     `json:"gemini_api"`
-	Queries       uint64                     `json:"queries"`
-	CacheHits     uint64                     `json:"cache_hits"`
-	Failures      uint64                     `json:"failures"`
-	ActiveUDP     int64                      `json:"active_udp"`
-	UDPQueueDepth int64                      `json:"udp_queue_depth"`
-	UDPDropped    uint64                     `json:"udp_dropped"`
-	ActiveTCP     int64                      `json:"active_tcp"`
-	TCPRejected   uint64                     `json:"tcp_rejected"`
+	GeminiAPI     string                      `json:"gemini_api"`
+	Queries       uint64                      `json:"queries"`
+	CacheHits     uint64                      `json:"cache_hits"`
+	Failures      uint64                      `json:"failures"`
+	ActiveUDP     int64                       `json:"active_udp"`
+	UDPQueueDepth int64                       `json:"udp_queue_depth"`
+	UDPDropped    uint64                      `json:"udp_dropped"`
+	ActiveTCP     int64                       `json:"active_tcp"`
+	TCPRejected   uint64                      `json:"tcp_rejected"`
 }
 
 func webUIHandler() http.Handler {
@@ -372,7 +372,7 @@ func runWebUIWithStatusURL(statusURL string) error {
 	select {
 	case serveErr := <-serveResult:
 		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-			return fmt.Errorf("Web UI HTTP server stopped: %w", serveErr)
+			return fmt.Errorf("web UI HTTP server stopped: %w", serveErr)
 		}
 		return nil
 	case <-controlClosed:
@@ -385,10 +385,10 @@ func runWebUIWithStatusURL(statusURL string) error {
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
 		_ = server.Close()
-		return fmt.Errorf("graceful Web UI shutdown failed: %w", err)
+		return fmt.Errorf("graceful web UI shutdown failed: %w", err)
 	}
 	if serveErr := <-serveResult; serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-		return fmt.Errorf("Web UI HTTP server stopped: %w", serveErr)
+		return fmt.Errorf("web UI HTTP server stopped: %w", serveErr)
 	}
 	logLine("INFO", "WEB_UI stopped cleanly")
 	return nil

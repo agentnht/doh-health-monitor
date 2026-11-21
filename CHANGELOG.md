@@ -15,7 +15,7 @@
 ### DNS reliability and wire correctness
 - При отказе всех upstream-ов режима `resolver` возвращается DNS `SERVFAIL`, а не синтетический `NOERROR/NODATA`; искусственный ответ не попадает в кэш.
 - Resolver upstream failures используют cooldown, чтобы запросы не ожидали последовательные timeout каждого заранее известного упавшего upstream-а.
-- ActiveDoHSelector быстрее переключается после настроенного числа повторных жёстких отказов: `MinimumHold` и `SwitchCooldown` не удерживают заведомо мёртвый endpoint.
+- ActiveDoHSelector переключается на здоровую альтернативу в первом probe cycle при score=0, обходя `MinimumHold` и `SwitchCooldown`; если здоровой альтернативы нет, выбор немедленно отзывается.
 - UDP DNS payload ограничивается размером, объявленным клиентом в EDNS OPT, либо классическим лимитом 512 байт без EDNS. При усечении ответ сохраняет целые DNS questions/resource records, получает флаг `TC` и согласованные section counts.
 - Error DNS packets теперь содержат корректный заголовок и только валидную question section; malformed короткий запрос получает полноценный 12-byte `FORMERR`.
 - Исправлена индексация результатов Web UI dig test при более чем 50 запросах.
@@ -25,6 +25,8 @@
 - `reload_interval_seconds` используется как фактический интервал hot reload; после изменения конфигурации таймер перенастраивается.
 - Изменение listener addresses или `dns_max_concurrent` сохраняется в конфигурации, но runtime использует прежние bound values до перезапуска. Остальные изменения config/source продолжают применяться без блокировки всего reload цикла.
 - Web UI HTTP listener test требует реального ответа `/healthz`; свободный порт больше не считается признаком работающего listener-а.
+- Новые listener addresses проверяются попыткой bind до записи конфигурации; занятый порт отклоняется заранее.
+- CI проверяет `gofmt`, `staticcheck`, `govulncheck`, race detector и coverage; GitHub Actions закреплены по commit SHA. Release assets публикуются без перезаписи существующих файлов.
 - Go CI выполняет `go test -race ./...`; legacy panel/SQLite integration suite удалён вместе с неиспользуемым кодом и зависимостями.
 
 ### Version

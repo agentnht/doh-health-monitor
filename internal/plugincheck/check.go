@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	defaultService = "lucx-plugin-doh-health-monitor"
+	defaultService   = "lucx-plugin-doh-health-monitor"
 	defaultStatusURL = "http://127.0.0.1:18765/status"
 )
 
@@ -31,17 +31,17 @@ func problem(format string, args ...any) error {
 
 // Options contains only the local read-only preflight parameters.
 type Options struct {
-	Timeout time.Duration
+	Timeout            time.Duration
 	Service, StatusURL string
-	Port int
+	Port               int
 }
 
 func DefaultOptions() Options {
 	return Options{
-		Timeout: 15 * time.Second,
-		Service: defaultService,
+		Timeout:   15 * time.Second,
+		Service:   defaultService,
 		StatusURL: defaultStatusURL,
-		Port: 5355,
+		Port:      5355,
 	}
 }
 

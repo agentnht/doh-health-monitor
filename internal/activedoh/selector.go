@@ -13,7 +13,6 @@ const (
 	DefaultEndpointMaxAge = 6 * time.Hour
 	DefaultMinimumHold    = 10 * time.Minute
 	DefaultSwitchCooldown = 10 * time.Minute
-	DefaultFailureCycles  = 2
 )
 
 var controlDomains = [...]string{
@@ -55,7 +54,6 @@ type Policy struct {
 	EndpointMaxAge time.Duration
 	MinimumHold    time.Duration
 	SwitchCooldown time.Duration
-	FailureCycles  int
 }
 
 func DefaultPolicy() Policy {
@@ -63,7 +61,6 @@ func DefaultPolicy() Policy {
 		EndpointMaxAge: DefaultEndpointMaxAge,
 		MinimumHold:    DefaultMinimumHold,
 		SwitchCooldown: DefaultSwitchCooldown,
-		FailureCycles:  DefaultFailureCycles,
 	}
 }
 
@@ -78,14 +75,11 @@ func normalizePolicy(p Policy) Policy {
 	if p.SwitchCooldown <= 0 {
 		p.SwitchCooldown = d.SwitchCooldown
 	}
-	if p.FailureCycles <= 0 {
-		p.FailureCycles = d.FailureCycles
-	}
 	return p
 }
 
 type Selection struct {
-	Candidate Candidate
+	Candidate  Candidate
 	Generation uint64
 	SelectedAt time.Time
 	FreshUntil time.Time
@@ -100,13 +94,12 @@ type Selector struct {
 
 	policy Policy
 
-	current *Selection
+	current    *Selection
 	generation uint64
 
-	activeSince time.Time
-	lastSwitch time.Time
-	activeFailures int // retained for selector state reset compatibility; no grace cycle is applied
-	betterCandidate string
+	activeSince           time.Time
+	lastSwitch            time.Time
+	betterCandidate       string
 	betterCandidateStreak int
 }
 
@@ -246,7 +239,6 @@ func (s *Selector) setCurrent(candidate Candidate, score, checkCount int, now ti
 		s.generation++
 		s.activeSince = now
 		s.lastSwitch = now
-		s.activeFailures = 0
 		s.betterCandidate = ""
 		s.betterCandidateStreak = 0
 	}
@@ -255,11 +247,11 @@ func (s *Selector) setCurrent(candidate Candidate, score, checkCount int, now ti
 		selectedAt = s.current.SelectedAt
 	}
 	selection := Selection{
-		Candidate: cloneCandidate(candidate),
+		Candidate:  cloneCandidate(candidate),
 		Generation: s.generation,
 		SelectedAt: selectedAt,
 		FreshUntil: freshUntil,
-		Score: score,
+		Score:      score,
 		CheckCount: checkCount,
 	}
 	s.current = &selection
@@ -282,7 +274,6 @@ func (s *Selector) clearCurrent() {
 	s.current = nil
 	s.activeSince = time.Time{}
 	s.lastSwitch = time.Time{}
-	s.activeFailures = 0
 	s.betterCandidate = ""
 	s.betterCandidateStreak = 0
 }
