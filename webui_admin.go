@@ -410,6 +410,8 @@ func editableWebUIConfig(config Config) webUIEditableConfig {
 func saveWebUIConfig(dataDir string, view webUIEditableConfig) (bool, error) {
 	webUIAdminMu.Lock()
 	defer webUIAdminMu.Unlock()
+	dnsConfigWriteMu.Lock()
+	defer dnsConfigWriteMu.Unlock()
 	root, err := webUIDataRoot(dataDir)
 	if err != nil {
 		return false, err
@@ -457,6 +459,8 @@ func saveWebUIConfig(dataDir string, view webUIEditableConfig) (bool, error) {
 func resetWebUIConfigSection(dataDir, section string) (bool, error) {
 	webUIAdminMu.Lock()
 	defer webUIAdminMu.Unlock()
+	dnsConfigWriteMu.Lock()
+	defer dnsConfigWriteMu.Unlock()
 	root, err := webUIDataRoot(dataDir)
 	if err != nil {
 		return false, err
@@ -483,7 +487,7 @@ func resetWebUIConfigSection(dataDir, section string) (bool, error) {
 	if err := validateConfig(normalizeCacheConfig(config)); err != nil {
 		return false, fmt.Errorf("default values failed config validation: %w", err)
 	}
-	if err := writeConfigAtomic(filepath.Join(root, "config.json"), config); err != nil {
+	if err := writeConfigWithBackup(filepath.Join(root, "config.json"), config); err != nil {
 		return false, err
 	}
 	return false, nil
