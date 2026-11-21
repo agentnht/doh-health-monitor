@@ -367,6 +367,7 @@ func TestWebUIDigResultClassifiesNODATAAndDNSFailures(t *testing.T) {
 		{name: "servfail", output: ";; ->>HEADER<<- opcode: QUERY, status: SERVFAIL, id: 4\n", want: "SERVFAIL"},
 		{name: "refused", output: ";; ->>HEADER<<- opcode: QUERY, status: REFUSED, id: 5\n", want: "REFUSED"},
 		{name: "timeout", err: context.DeadlineExceeded, timedOut: true, want: "TIMEOUT"},
+		{name: "dig timeout output", output: ";; communications error to 127.0.0.1#5355: timed out\\n", err: errors.New("exit status 9"), want: "TIMEOUT"},
 		{name: "transport", err: errors.New("connection refused"), want: "TRANSPORT_ERROR"},
 	}
 	for _, test := range tests {

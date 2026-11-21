@@ -1050,7 +1050,7 @@ func webUIDigResult(domain string, qtype uint16, transport, output string, elaps
 	if commandErr != nil {
 		result.Status = "TRANSPORT_ERROR"
 		result.Reason = "DNS transport/query failed: " + commandErr.Error()
-		if timedOut {
+		if timedOut || strings.Contains(strings.ToLower(output), "timed out") {
 			result.Status = "TIMEOUT"
 			result.Reason = "DNS request timed out"
 		}
