@@ -9,7 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
+
+// dnsConfigWriteMu serializes CLI, Web UI and daemon-generated config updates.
+var dnsConfigWriteMu sync.Mutex
 
 // writeConfigWithBackup is shared by CLI and Web UI for all config.json writes.
 func writeConfigWithBackup(path string, cfg Config) error {
@@ -36,6 +40,8 @@ func writeConfigWithBackup(path string, cfg Config) error {
 // It validates the complete resulting config before creating a backup or
 // replacing config.json. The daemon applies the atomic replacement by hot reload.
 func saveDNSModeConfig(dataDir, mode string, resolvers []ResolverUpstream) (Config, error) {
+	dnsConfigWriteMu.Lock()
+	defer dnsConfigWriteMu.Unlock()
 	root, err := filepath.Abs(strings.TrimSpace(dataDir))
 	if err != nil || strings.TrimSpace(dataDir) == "" {
 		return Config{}, errors.New("plugin data directory is not configured")
