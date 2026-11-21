@@ -73,8 +73,8 @@ if curl --fail --silent --show-error --max-time 3 "$DOH_STATUS_URL" -o "$status_
         active_ipv6="$(jq -r '(.active_doh.ipv6 // []) | join(", ")' "$status_file")"
         active_score="$(jq -r 'if .active_doh.score != null and .active_doh.check_count != null then "\(.active_doh.score)/\(.active_doh.check_count)" else "unknown" end' "$status_file")"
         pass "Активный DoH server: $active_id ($active_host), score=$active_score"
-        printf '[INFO]   Active endpoint IPv4: %s\\n' "${active_ipv4:-нет}"
-        printf '[INFO]   Active endpoint IPv6: %s\\n' "${active_ipv6:-нет}"
+        printf '[INFO]   Active endpoint IPv4: %s\n' "${active_ipv4:-нет}"
+        printf '[INFO]   Active endpoint IPv6: %s\n' "${active_ipv6:-нет}"
       else
         warning "DNS mode 1 активен, но актуальный DoH endpoint пока не выбран"
       fi
