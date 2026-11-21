@@ -684,6 +684,7 @@ func TestBuildSnapshotIncludesSystemDNSWithoutDoHURL(t *testing.T) {
 		"comss-one": "https://dns.comss.one/dns-query",
 		"bezmezhau": "https://dns.bezmezhau.com/dns-query",
 		"zapret": "https://dns.zapret.moe/dns-query",
+		"pereval": "https://free.pereval.top/dns-query",
 	}
 	snapshot, err := buildSnapshot(c, urls)
 	if err != nil {
@@ -696,7 +697,7 @@ func TestBuildSnapshotIncludesSystemDNSWithoutDoHURL(t *testing.T) {
 	if system.client != nil || system.bootstrap != nil {
 		t.Fatal("system DNS must not use a DoH HTTP client or bootstrap resolver")
 	}
-	for _, id := range []string{"geohide-eu", "dagami", "comss-one", "bezmezhau", "zapret"} {
+	for _, id := range []string{"geohide-eu", "dagami", "comss-one", "bezmezhau", "zapret", "pereval"} {
 		if u := snapshot.upstreams[id]; u == nil || u.client == nil || u.bootstrap == nil {
 			t.Errorf("DoH runtime %s was not built", id)
 		}
