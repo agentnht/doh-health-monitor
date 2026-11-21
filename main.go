@@ -592,9 +592,10 @@ func defaultConfig() Config {
 			{ID: "comss-one", Name: "Comss.one"},
 			{ID: "bezmezhau", Name: "Bezmezhau"},
 			{ID: "zapret", Name: "Zapret"},
+			{ID: "pereval", Name: "Pereval"},
 		},
 		Groups: []Group{
-			{ID: "google", Upstreams: []string{systemDNSUpstreamID, "geohide-eu", "dagami", "comss-one", "bezmezhau", "zapret"}},
+			{ID: "google", Upstreams: []string{systemDNSUpstreamID, "geohide-eu", "dagami", "comss-one", "bezmezhau", "zapret", "pereval"}},
 		},
 		GeminiAPI: GeminiAPIConfig{Enabled: false, RequiredForGroup: false, GroupID: "google", Model: "gemini-3.8-flash", IntervalSeconds: 1800, KeyFile: "gemini_api_key", Prompt: "Reply with exactly OK.", MaxOutputTokens: 8},
 	}
