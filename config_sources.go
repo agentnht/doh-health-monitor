@@ -5,14 +5,14 @@ import (
 	"embed"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"encoding/json"
-	"net"
-	"sort"
+	"fmt"
 	"io/fs"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -370,9 +370,6 @@ func normalizeLocalHostEntry(rawHost string, entry LocalHost) (string, LocalHost
 	}
 	if len(entry.IPv4) > maxLocalHostIPsPerFamily || len(entry.IPv6) > maxLocalHostIPsPerFamily {
 		return "", LocalHost{}, fmt.Errorf("at most %d IPv4 and %d IPv6 addresses are allowed per hostname", maxLocalHostIPsPerFamily, maxLocalHostIPsPerFamily)
-	}
-	if len(entry.IPv4)+len(entry.IPv6) == 0 {
-		return "", LocalHost{}, errors.New("at least one IPv4 or IPv6 address is required")
 	}
 	normalized := LocalHost{}
 	seen4, seen6 := map[string]bool{}, map[string]bool{}
