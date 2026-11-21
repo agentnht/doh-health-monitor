@@ -137,7 +137,7 @@ func TestWebUIHandlerServesOnlyLoopbackRoot(t *testing.T) {
 func TestWebUIStatusAPIRequiresSessionAndReturnsSanitizedStatus(t *testing.T) {
 	statusToken := strings.Repeat("a", 64)
 	dataDir := t.TempDir()
-	if err := os.WriteFile(dataDir+string(os.PathSeparator)+statusAPITokenFile, []byte(statusToken+"\\n"), 0600); err != nil {
+	if err := os.WriteFile(dataDir+string(os.PathSeparator)+statusAPITokenFile, []byte(statusToken), 0600); err != nil {
 		t.Fatal(err)
 	}
 	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
