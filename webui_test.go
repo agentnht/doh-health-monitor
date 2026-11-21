@@ -155,7 +155,7 @@ func TestWebUIStatusAPIRequiresSessionAndReturnsSanitizedStatus(t *testing.T) {
 			"last_error":"SECRET-MUST-NOT-LEAK",
 			"queries":17,
 			"failures":2,
-			"active_doh":{"server_id":"comss-one","url":"https://dns.example/dns-query?token=ACTIVE-DOH-SECRET","hostname":"dns.comss.one","ipv4":["141.133.183.77"],"ipv6":[],"resolved_at":"2026-11-21T04:51:09Z","selected_at":"2026-11-21T08:24:07Z","fresh_until":"2026-11-21T10:51:09Z","generation":2,"score":6,"check_count":8},
+			"active_doh":{"server_id":"comss-one","url":"https://dns.example/dns-query?token=ACTIVE-DOH-SECRET","hostname":"dns.comss.one","ipv4":["141.133.183.77"],"ipv6":[],"resolved_at":"2026-11-21T04:51:09Z","selected_at":"2026-11-21T08:24:07Z","fresh_until":"2026-11-21T10:51:09Z","generation":2,"score":6,"check_count":7},
 			"dns_udp":"127.0.0.1:5355",
 			"dns_tcp":"127.0.0.1:5355",
 			"dns_mode":"resolver",
@@ -203,7 +203,7 @@ func TestWebUIStatusAPIRequiresSessionAndReturnsSanitizedStatus(t *testing.T) {
 	}
 	for _, want := range []string{
 		"\"server_id\":\"comss-one\"", "\"hostname\":\"dns.comss.one\"",
-		"\"generation\":2", "\"score\":6", "\"check_count\":8",
+		"\"generation\":2", "\"score\":6", "\"check_count\":7",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("status response is missing ActiveDoH field %s: %s", want, body)

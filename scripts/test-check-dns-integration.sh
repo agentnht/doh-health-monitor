@@ -108,7 +108,7 @@ mkdir -p "$LUCX_PLUGIN_DATA"
 printf '%s\n' "$MOCK_STATUS_TOKEN" > "$LUCX_PLUGIN_DATA/status-api.token"
 chmod 0600 "$LUCX_PLUGIN_DATA/status-api.token"
 cat >"$TMP_DIR/status-mode1.json" <<'JSON'
-{"dns_mode":"endpoint_ip","active_doh":{"server_id":"active-test","hostname":"doh.example.net","ipv4":["192.0.2.10"],"ipv6":["2001:db8::10"],"score":6,"check_count":8}}
+{"dns_mode":"endpoint_ip","active_doh":{"server_id":"active-test","hostname":"doh.example.net","ipv4":["192.0.2.10"],"ipv6":["2001:db8::10"],"score":6,"check_count":7}}
 JSON
 export MOCK_STATUS_JSON="$TMP_DIR/status-mode1.json"
 
@@ -128,7 +128,7 @@ export DOH_STATUS_URL="http://127.0.0.1:18765/status"
 write_approved_config
 expect_pass "approved Geosite config passes without legacy localhost exception"
 grep -Fq "Текущий DNS mode: endpoint_ip (режим 1)" "$OUTPUT"
-grep -Fq "Активный DoH server: active-test (doh.example.net), score=6/8" "$OUTPUT"
+grep -Fq "Активный DoH server: active-test (doh.example.net), score=6/7" "$OUTPUT"
 grep -Fq "Active endpoint IPv4: 192.0.2.10" "$OUTPUT"
 grep -Fq "Active endpoint IPv6: 2001:db8::10" "$OUTPUT"
 

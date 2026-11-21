@@ -32,8 +32,22 @@ func results(id string, successes int, now time.Time) []ProbeResult {
 
 func TestControlDomainsAreStableAndCopied(t *testing.T) {
 	first := ControlDomains()
-	if len(first) != 8 {
-		t.Fatalf("got %d control domains, want 8", len(first))
+	want := []string{
+		"chatgpt.com",
+		"claude.ai",
+		"gemini.google.com",
+		"elevenlabs.io",
+		"grok.com",
+		"www.perplexity.ai",
+		"aistudio.google.com",
+	}
+	if len(first) != len(want) {
+		t.Fatalf("got %d control domains, want %d", len(first), len(want))
+	}
+	for i := range want {
+		if first[i] != want[i] {
+			t.Fatalf("control domain %d = %q, want %q", i, first[i], want[i])
+		}
 	}
 	first[0] = "mutated.example"
 	if ControlDomains()[0] != "chatgpt.com" {
@@ -54,7 +68,7 @@ func TestInitialSelectionChoosesBestHealthyCandidate(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a selected endpoint")
 	}
-	if selected.Candidate.ServerID != "first" || selected.Score != 6 || selected.CheckCount != 8 {
+	if selected.Candidate.ServerID != "first" || selected.Score != 6 || selected.CheckCount != 7 {
 		t.Fatalf("unexpected selection: %+v", selected)
 	}
 	if selected.Generation != 1 {
@@ -142,7 +156,7 @@ func TestEndpointFreshnessAtExactLimitIsExpired(t *testing.T) {
 	now := time.Now().UTC()
 	s := NewSelector(DefaultPolicy())
 	exactlyExpired := candidate("expired", "192.0.2.1", now.Add(-DefaultEndpointMaxAge))
-	if selected, ok := s.Select([]Candidate{exactlyExpired}, results("expired", 8, now), now); ok {
+	if selected, ok := s.Select([]Candidate{exactlyExpired}, results("expired", 7, now), now); ok {
 		t.Fatalf("endpoint at exact max age must be expired: %+v", selected)
 	}
 }
@@ -151,7 +165,7 @@ func TestStaleBootstrapEndpointIsRejected(t *testing.T) {
 	now := time.Now().UTC()
 	s := NewSelector(DefaultPolicy())
 	stale := candidate("old", "192.0.2.1", now.Add(-DefaultEndpointMaxAge-time.Second))
-	if selected, ok := s.Select([]Candidate{stale}, results("old", 8, now), now); ok {
+	if selected, ok := s.Select([]Candidate{stale}, results("old", 7, now), now); ok {
 		t.Fatalf("stale endpoint selected: %+v", selected)
 	}
 }
@@ -164,7 +178,7 @@ func TestZeroScoreImmediatelyFailsOverToHealthyCandidate(t *testing.T) {
 	s := NewSelector(policy)
 	a := candidate("a", "192.0.2.1", now)
 	b := candidate("b", "192.0.2.2", now)
-	if _, ok := s.Select([]Candidate{a, b}, results("a", 8, now), now); !ok {
+	if _, ok := s.Select([]Candidate{a, b}, results("a", 7, now), now); !ok {
 		t.Fatal("failed to select initial endpoint")
 	}
 	failureAt := now.Add(5 * time.Minute)
@@ -179,7 +193,7 @@ func TestZeroScoreWithoutHealthyAlternativeWithdrawsImmediately(t *testing.T) {
 	now := time.Date(2026, 11, 21, 13, 0, 0, 0, time.UTC)
 	s := NewSelector(DefaultPolicy())
 	a := candidate("a", "192.0.2.1", now)
-	if _, ok := s.Select([]Candidate{a}, results("a", 8, now), now); !ok {
+	if _, ok := s.Select([]Candidate{a}, results("a", 7, now), now); !ok {
 		t.Fatal("failed to select initial endpoint")
 	}
 	failureAt := now.Add(5 * time.Minute)
@@ -222,7 +236,7 @@ func TestCandidateRejectsInvalidURLHostnameAndIP(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			s := NewSelector(DefaultPolicy())
-			if selected, ok := s.Select([]Candidate{tc.candidate}, results("a", 8, now), now); ok {
+			if selected, ok := s.Select([]Candidate{tc.candidate}, results("a", 7, now), now); ok {
 				t.Fatalf("invalid candidate selected: %+v", selected)
 			}
 		})
@@ -233,7 +247,7 @@ func TestSelectionCopiesCandidateAddresses(t *testing.T) {
 	now := time.Now().UTC()
 	s := NewSelector(DefaultPolicy())
 	a := candidate("a", "192.0.2.1", now)
-	selected, ok := s.Select([]Candidate{a}, results("a", 8, now), now)
+	selected, ok := s.Select([]Candidate{a}, results("a", 7, now), now)
 	if !ok {
 		t.Fatal("selection failed")
 	}
@@ -247,9 +261,9 @@ func TestSelectionCopiesCandidateAddresses(t *testing.T) {
 	}
 }
 
-func TestControlDomainScoreDoesNotExceedEight(t *testing.T) {
+func TestControlDomainScoreDoesNotExceedSeven(t *testing.T) {
 	now := time.Now().UTC()
-	probes := results("a", 8, now)
+	probes := results("a", 7, now)
 	for i := 0; i < 20; i++ {
 		probes = append(probes, ProbeResult{
 			ServerID:  "a",
@@ -260,8 +274,8 @@ func TestControlDomainScoreDoesNotExceedEight(t *testing.T) {
 	}
 	s := NewSelector(DefaultPolicy())
 	selected, ok := s.Select([]Candidate{candidate("a", "192.0.2.1", now)}, probes, now)
-	if !ok || selected.Score != 8 {
-		t.Fatalf("score = %+v, want eight control checks", selected)
+	if !ok || selected.Score != 7 {
+		t.Fatalf("score = %+v, want seven control checks", selected)
 	}
 }
 
@@ -271,14 +285,14 @@ func TestConfigGenerationChangeInvalidatesActiveSelection(t *testing.T) {
 
 	firstCandidate := candidate("a", "192.0.2.1", now)
 	firstCandidate.ConfigGeneration = 41
-	first, ok := s.Select([]Candidate{firstCandidate}, results("a", 8, now), now)
+	first, ok := s.Select([]Candidate{firstCandidate}, results("a", 7, now), now)
 	if !ok || first.Generation != 1 {
 		t.Fatalf("unexpected initial selection: %+v", first)
 	}
 
 	updatedCandidate := candidate("a", "192.0.2.1", now.Add(time.Second))
 	updatedCandidate.ConfigGeneration = 42
-	updated, ok := s.Select([]Candidate{updatedCandidate}, results("a", 8, now.Add(time.Second)), now.Add(time.Second))
+	updated, ok := s.Select([]Candidate{updatedCandidate}, results("a", 7, now.Add(time.Second)), now.Add(time.Second))
 	if !ok {
 		t.Fatal("selection should remain available after config reload")
 	}

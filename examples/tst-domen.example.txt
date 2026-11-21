@@ -1,12 +1,11 @@
 # domain;qtypes;required;http_url;expected_status;verify_oidc
-# Eight ActiveDoHSelector control domains, Google Accounts OIDC, and supplemental required checks.
+# Seven ActiveDoHSelector control domains plus required Notebook and Google Accounts checks.
 chatgpt.com;A,AAAA;0;;;0
 claude.ai;A,AAAA;0;;;0
 gemini.google.com;A,AAAA;1;https://gemini.google.com/;200;0
 elevenlabs.io;A,AAAA;0;;;0
 grok.com;A,AAAA;0;;;0
 www.perplexity.ai;A,AAAA;0;;;0
-notebooklm.google.com;A,AAAA;0;;;0
 notebook.google.com;A,AAAA;1;https://notebook.google.com/;200;0
 aistudio.google.com;A,AAAA;0;;;0
 accounts.google.com;A,AAAA;1;https://accounts.google.com/.well-known/openid-configuration;200;1

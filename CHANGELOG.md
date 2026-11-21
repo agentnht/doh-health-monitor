@@ -1,5 +1,10 @@
 ## [2.3.2] - 2026-11-21
 
+### Control domains and first-install defaults
+- `notebooklm.google.com` удалён из фиксированного набора ActiveDoHSelector; теперь selector проверяет семь доменов, а максимальный score/check_count равен 7.
+- Строка `notebooklm.google.com;A,AAAA;0;;;0` удалена из встроенного `defaults/tst-domen.txt` и примера. При первой установке создаётся ровно девять проверок: семь selector-доменов, `notebook.google.com` (A/AAAA + HTTPS 200) и `accounts.google.com` (OIDC).
+- Существующий пользовательский `tst-domen.txt` при обновлении не переписывается. На существующей установке устаревшую строку нужно удалить вручную после резервного копирования файла.
+
 ### Security hardening
 - Web UI больше не выдаёт сессионную cookie любому loopback-клиенту: доступ начинается с одноразового bootstrap-токена, который SSH-меню выводит в URL. Токен сравнивается constant-time, потребляется один раз, затем выполняется redirect без секрета в адресной строке.
 - DNS/HTTP listener validation принимает только loopback IP literal и порты 1–65535; внешний bind и некорректные порты отклоняются до сохранения конфигурации.

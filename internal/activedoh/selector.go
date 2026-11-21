@@ -22,7 +22,6 @@ var controlDomains = [...]string{
 	"elevenlabs.io",
 	"grok.com",
 	"www.perplexity.ai",
-	"notebooklm.google.com",
 	"aistudio.google.com",
 }
 
