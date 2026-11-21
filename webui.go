@@ -57,6 +57,7 @@ type webUIStatus struct {
 	UpdatedAt     time.Time                  `json:"updated_at"`
 	DNSUDP        string                     `json:"dns_udp"`
 	DNSTCP        string                     `json:"dns_tcp"`
+	DNSMode       string                     `json:"dns_mode"`
 	HTTP          string                     `json:"http"`
 	Cache         CacheStatus                `json:"cache"`
 	ActiveDoH     *ActiveDoHStatus            `json:"active_doh,omitempty"`
