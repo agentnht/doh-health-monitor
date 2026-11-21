@@ -1058,7 +1058,7 @@ func testWebUIHTTPListener(address string) webUITestResult {
 	listener, listenErr := net.Listen("tcp", localAddress)
 	if listenErr == nil {
 		_ = listener.Close()
-		return webUITest("HTTP listener", true, "Порт свободен и доступен для запуска HTTP listener; активный endpoint пока не отвечает")
+		return webUITest("HTTP listener", false, "Штатный /healthz endpoint не отвечает; порт свободен, HTTP listener не запущен")
 	}
 	return webUITest("HTTP listener", false, "Порт занят, но штатный /healthz endpoint недоступен")
 }
