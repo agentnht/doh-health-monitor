@@ -85,14 +85,24 @@ write_approved_config
 expect_pass "approved Geosite config passes without legacy localhost exception"
 
 write_approved_config
-jq '(.outbounds[] | select(.tag == "dns-out") | .settings.rules[0].domain) = ["geosite:cn"]' "$CONFIG" >"$TMP_DIR/mutated.json"
+jq '(.outbounds[] | select(.tag == "dns-out") | .settings.rules[0].domain) = ["geosite:cn", "domain:example.org"]' "$CONFIG" >"$TMP_DIR/mutated.json"
 mv "$TMP_DIR/mutated.json" "$CONFIG"
-expect_fail "Geosite direct rule is required"
+expect_pass "arbitrary direct domain values are accepted"
 
 write_approved_config
 jq '(.outbounds[] | select(.tag == "dns-out") | .settings.rules) |= reverse' "$CONFIG" >"$TMP_DIR/mutated.json"
 mv "$TMP_DIR/mutated.json" "$CONFIG"
-expect_fail "catch-all hijack must follow Geosite direct"
+expect_pass "DNS rules may contain any order and additional rules"
+
+write_approved_config
+jq '(.outbounds[] | select(.tag == "dns-out") | .settings.rules[0].action) = "hijack"' "$CONFIG" >"$TMP_DIR/mutated.json"
+mv "$TMP_DIR/mutated.json" "$CONFIG"
+expect_fail "at least one direct rule is required"
+
+write_approved_config
+jq '(.outbounds[] | select(.tag == "dns-out") | .settings.rules[0]) = {"action":"direct"}' "$CONFIG" >"$TMP_DIR/mutated.json"
+mv "$TMP_DIR/mutated.json" "$CONFIG"
+expect_fail "direct rule must contain a non-empty domain array"
 
 write_approved_config
 jq '(.outbounds[] | select(.tag == "dns-out") | .settings.rewriteNetwork) = "tcp"' "$CONFIG" >"$TMP_DIR/mutated.json"
