@@ -232,7 +232,7 @@ func TestWebUIStatusAPIRequiresSessionAndReturnsSanitizedStatus(t *testing.T) {
 }
 
 func TestFetchWebUIStatusRejectsNonLoopbackURL(t *testing.T) {
-	if _, err := fetchWebUIStatus(t.Context(), "http://192.0.2.10:18765/status"); err == nil {
+	if _, err := fetchWebUIStatus(t.Context(), "http://192.0.2.10:18765/status", ""); err == nil {
 		t.Fatal("non-loopback status URL must be rejected")
 	}
 }
