@@ -1518,31 +1518,6 @@ func (r *Runtime) initHealth(s *Snapshot) {
 	}
 }
 func (r *Runtime) currentSnapshot() *Snapshot { return r.snapshot.Load() }
-func (r *Runtime) orderedUpstreams(gid string, s *Snapshot) []string {
-	g, ok := s.groups[gid]
-	if !ok {
-		g = s.groups["google"]
-	}
-	r.mu.RLock()
-	active := r.active[gid]
-	r.mu.RUnlock()
-	out := make([]string, 0, len(g.Upstreams))
-	if active != "" {
-		for _, id := range g.Upstreams {
-			if id == active {
-				out = append(out, id)
-				break
-			}
-		}
-	}
-	for _, id := range g.Upstreams {
-		if id != active {
-			out = append(out, id)
-		}
-	}
-	return out
-}
-
 const upstreamFailureCooldown = 30 * time.Second
 
 func (r *Runtime) upstreamsToAttempt(order []string, now time.Time) []string {
