@@ -680,6 +680,9 @@ func saveWebUISources(dataDir string, update webUISourceUpdate) error {
 }
 
 func writeManagedSourceWithBackup(path string, data []byte) error {
+	if len(data) > webUIAdminMaxFile {
+		return errors.New("managed source exceeds the size limit")
+	}
 	if info, err := os.Lstat(path); err != nil {
 		return fmt.Errorf("inspect managed source: %w", err)
 	} else if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > webUIAdminMaxFile {
