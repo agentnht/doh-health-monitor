@@ -107,6 +107,33 @@
     }
   }
 
+  function renderActiveDoH(active) {
+    const root = $("active-doh");
+    root.replaceChildren();
+    const addMetric = (label, value) => {
+      const row = document.createElement("div");
+      row.className = "metric";
+      const name = document.createElement("span");
+      name.textContent = label;
+      const detail = document.createElement("strong");
+      detail.textContent = value == null || value === "" ? "—" : String(value);
+      row.append(name, detail);
+      root.append(row);
+    };
+    if (!active) {
+      addMetric("Состояние", "Нет актуального выбранного endpoint");
+      return;
+    }
+    addMetric("Server ID", active.server_id);
+    addMetric("Hostname", active.hostname);
+    addMetric("IPv4", (active.ipv4 || []).join(", "));
+    addMetric("IPv6", (active.ipv6 || []).join(", "));
+    addMetric("Score", number(active.score) + "/" + number(active.check_count));
+    addMetric("Generation", number(active.generation));
+    addMetric("Выбран", when(active.selected_at));
+    addMetric("Актуален до", when(active.fresh_until));
+  }
+
   async function loadStatus() {
     $("refresh").disabled = true;
     text("updated", "Загрузка…");
@@ -128,6 +155,7 @@
         : "Выключен");
       text("gemini", status.gemini_api);
       text("updated", when(status.updated_at));
+      renderActiveDoH(status.active_doh);
       renderGroups(status.groups);
       $("error").textContent = "";
     } catch (error) {
@@ -390,8 +418,9 @@
   function renderTests(summary) {
     const root = $("test-results");
     root.replaceChildren();
-    const label = summary.status + " · OK: " + number(summary.passed) + " · NotOK: " + number(summary.failed) +
-      " · " + when(summary.run_at);
+    const label = summary.status + " · OK: " + number(summary.passed) +
+      " · Предупреждения: " + number(summary.warnings) +
+      " · Ошибки: " + number(summary.failed) + " · " + when(summary.run_at);
     text("tests-summary", label);
     for (const test of summary.tests || []) {
       const card = document.createElement("details");
@@ -405,13 +434,14 @@
 
       const state = document.createElement("span");
       const passed = test.status === "OK";
-      state.className = "result-status " + (passed ? "ok" : "bad");
+      const warning = test.status === "NODATA" || test.status === "NXDOMAIN";
+      state.className = "result-status " + (passed ? "ok" : warning ? "warn" : "bad");
       state.textContent = passed ? "OK" : (test.status || "NotOK");
 
       const toggle = document.createElement("span");
       toggle.className = "result-toggle";
       toggle.setAttribute("aria-hidden", "true");
-      toggle.textContent = passed ? "✓" : "›";
+      toggle.textContent = passed ? "✓" : warning ? "!" : "›";
       head.append(name, state, toggle);
       card.append(head);
 
@@ -420,7 +450,8 @@
       if (test.domain) {
         const meta = document.createElement("p");
         meta.className = "muted";
-        meta.textContent = test.domain + " · " + test.qtype + " · " + number(test.duration_ms) + " мс";
+        meta.textContent = test.domain + " · " + test.qtype + " · " +
+          String(test.transport || "DNS").toUpperCase() + " · " + number(test.duration_ms) + " мс";
         content.append(meta);
       } else if (test.duration_ms) {
         const meta = document.createElement("p");

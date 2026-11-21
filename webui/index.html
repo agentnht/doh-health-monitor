@@ -87,6 +87,10 @@
     .result-status { font-size: .75rem; font-weight: 700; white-space: nowrap; }
     .result-status.ok { color: #86efac; }
     .result-status.bad { color: #fca5a5; }
+    .result-status.warn { color: #fbbf24; }
+    .result-status.warn + .result-toggle { color: #fbbf24; }
+    .active-doh-block { border-top: 1px solid #374151; margin-top: .8rem; padding-top: .75rem; }
+    .active-doh-block h3 { margin-bottom: .5rem; }
     .result-toggle { flex: 0 0 1.25rem; text-align: center; font-size: 1rem; font-weight: 800; color: #86efac; }
     .result-status.bad + .result-toggle { color: #fca5a5; }
     .result-details { border-top: 1px solid #374151; padding: .5rem .65rem .6rem; }
@@ -145,6 +149,12 @@
               <div class="metric"><span>Потерянные UDP:</span><strong id="udp-dropped">—</strong></div>
               <div class="metric"><span>DNS-кеш:</span><strong id="cache">—</strong></div>
               <div class="metric"><span>Gemini API:</span><strong id="gemini">—</strong></div>
+            </div>
+            <div class="active-doh-block">
+              <h3>Активный DoH endpoint · ActiveDoHSelector</h3>
+              <div class="metric-list" id="active-doh">
+                <div class="metric"><span>Состояние:</span><strong>Загрузка…</strong></div>
+              </div>
             </div>
           </section>
         </section>
@@ -225,7 +235,7 @@
 
     <section class="panel tab-page" data-page-panel="tests" hidden>
       <h2>Проверка состояния</h2>
-      <p class="muted">Проверяются config.json, файлы списков, реальные DNS-запросы через dig, UDP/HTTP listeners и структура утверждённого Xray Geosite DNS path. Проверка read-only; Geosite asset match и клиентский end-to-end маршрут проверяются отдельно.</p>
+      <p class="muted">Проверяются config.json, файлы списков, реальные DNS-запросы через dig по UDP и TCP к локальным DNS listeners, HTTP listener и структура утверждённого Xray Geosite DNS path. NOERROR/NODATA и NXDOMAIN показываются отдельно от транспортных ошибок. Это read-only диагностика локального плагина; Geosite asset match и клиентский end-to-end маршрут проверяются отдельно.</p>
       <div class="section-actions"><button id="run-tests" type="button">Запустить проверки</button><strong id="tests-summary" class="muted">Проверки ещё не запускались</strong></div>
       <div class="results" id="test-results"></div>
     </section>
