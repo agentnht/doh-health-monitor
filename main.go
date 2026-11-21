@@ -952,7 +952,7 @@ func validListen(s string) bool {
 func reservedGeminiKeyPath(path string) bool {
 	base := strings.ToLower(filepath.Base(filepath.Clean(path)))
 	switch base {
-	case "config.json", "doh-servers.txt", "tst-domen.txt", "local-hosts.txt", "plugin.log", "webui-admin-check.log":
+	case "config.json", "doh-servers.txt", "tst-domen.txt", "local-hosts.txt", "plugin.log", "webui-admin-check.log", "status-api.token":
 		return true
 	}
 	return strings.HasSuffix(base, ".bak") || strings.HasSuffix(base, ".tmp")
@@ -3163,6 +3163,8 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 	out.LastError = r.lastError
 	r.statusMu.RUnlock()
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_ = json.NewEncoder(w).Encode(out)
 }
 
