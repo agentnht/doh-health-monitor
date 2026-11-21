@@ -3009,7 +3009,7 @@ func rotateStatusAPIToken(dataDir string) (string, error) {
 		_ = temp.Close()
 		return "", fmt.Errorf("secure temporary status API token: %w", err)
 	}
-	if _, err := io.WriteString(temp, token+"\\n"); err != nil {
+	if _, err := io.WriteString(temp, token+"\n"); err != nil {
 		_ = temp.Close()
 		return "", fmt.Errorf("write temporary status API token: %w", err)
 	}
