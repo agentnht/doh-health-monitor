@@ -182,6 +182,20 @@
         <div class="field-grid" id="config-general"></div>
       </div>
       <div class="config-block">
+        <h3>DNS mode</h3>
+        <p class="muted">endpoint_ip — текущий режим по умолчанию. resolver — последовательная отправка запросов на настроенные upstream. Изменения применяются hot reload; Xray routing и firewall не изменяются.</p>
+        <label class="field">Режим DNS
+          <select id="config-dns-mode">
+            <option value="endpoint_ip">endpoint_ip</option>
+            <option value="resolver">resolver</option>
+          </select>
+        </label>
+        <label class="field">resolver_upstreams — JSON-массив в порядке приоритета
+          <textarea id="config-resolver-upstreams" rows="9" spellcheck="false"></textarea>
+        </label>
+        <p class="muted">Типы: system; udp/tcp с address (IP или IP:port); doh с HTTPS url и необязательными bootstrap_ips. Пример system: [{"id":"system","name":"System resolver (OS)","type":"system"}].</p>
+      </div>
+      <div class="config-block">
         <div class="result-head"><h3>Health</h3><button class="secondary small" type="button" data-default-section="health">По умолчанию</button></div>
         <div class="field-grid" id="config-health"></div>
       </div>
