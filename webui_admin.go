@@ -946,6 +946,14 @@ func testWebUIHTTPListener(address string) webUITestResult {
 	return webUITest("HTTP listener", false, "Порт занят, но штатный /healthz endpoint недоступен")
 }
 
+func webUIDigArgs(host, port, domain string, qtype uint16, transport string) []string {
+	args := []string{"+time=2", "+tries=1", "+noall", "+comments", "+answer"}
+	if transport == "tcp" {
+		args = append(args, "+tcp")
+	}
+	return append(args, "@"+host, "-p", port, domain, dnsQTypeName(qtype))
+}
+
 func runWebUIDigTests(address string, checks []Check, transport string) []webUITestResult {
 	var queries []struct {
 		domain string
@@ -997,14 +1005,8 @@ func runWebUIDigTests(address string, checks []Check, transport string) []webUIT
 			defer workers.Done()
 			for query := range queue {
 				start := time.Now()
-				name := dnsQTypeName(query.qtype)
-				args := []string{"+time=2", "+tries=1", "+noall", "+comments", "+answer"}
-				if transport == "tcp" {
-					args = append(args, "+tcp")
-				}
-				args = append(args, "@"+host, "-p", port, query.domain, name)
 				ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-				command := exec.CommandContext(ctx, executable, args...)
+				command := exec.CommandContext(ctx, executable, webUIDigArgs(host, port, query.domain, query.qtype, transport)...)
 				output, commandErr := command.CombinedOutput()
 				timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 				cancel()
@@ -1047,7 +1049,8 @@ func digAnswerLines(output string) string {
 
 func webUIDigResult(domain string, qtype uint16, transport, output string, elapsed int64, commandErr error, timedOut bool) webUITestResult {
 	result := webUITestResult{Name: "dig " + domain + " " + dnsQTypeName(qtype), Domain: domain, QType: dnsQTypeName(qtype), DurationMS: elapsed, Transport: transport}
-	if commandErr != nil {
+	rcode := digResponseCode(output)
+	if commandErr != nil && rcode == "" {
 		result.Status = "TRANSPORT_ERROR"
 		result.Reason = "DNS transport/query failed: " + commandErr.Error()
 		if timedOut || strings.Contains(strings.ToLower(output), "timed out") {
@@ -1061,8 +1064,6 @@ func webUIDigResult(domain string, qtype uint16, transport, output string, elaps
 		result.Answer = details
 		return result
 	}
-
-	rcode := digResponseCode(output)
 	answers := digAnswerLines(output)
 	if len(answers) > 2048 {
 		answers = answers[:2048] + "…"

@@ -364,6 +364,7 @@ func TestWebUIDigResultClassifiesNODATAAndDNSFailures(t *testing.T) {
 		{name: "positive", output: ";; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1\nexample.com. 60 IN A 192.0.2.1\n", want: "OK"},
 		{name: "nodata", output: ";; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 2\n", want: "NODATA"},
 		{name: "nxdomain", output: ";; ->>HEADER<<- opcode: QUERY, status: NXDOMAIN, id: 3\n", want: "NXDOMAIN"},
+		{name: "nxdomain with nonzero dig exit", output: ";; ->>HEADER<<- opcode: QUERY, status: NXDOMAIN, id: 33\n", err: errors.New("exit status 9"), want: "NXDOMAIN"},
 		{name: "servfail", output: ";; ->>HEADER<<- opcode: QUERY, status: SERVFAIL, id: 4\n", want: "SERVFAIL"},
 		{name: "refused", output: ";; ->>HEADER<<- opcode: QUERY, status: REFUSED, id: 5\n", want: "REFUSED"},
 		{name: "timeout", err: context.DeadlineExceeded, timedOut: true, want: "TIMEOUT"},
@@ -392,5 +393,16 @@ func TestWebUIDNSListenerCountsNODATAAsAReceivedDNSResponse(t *testing.T) {
 	warning := finalizeWebUITests(webUITestSummary{Tests: []webUITestResult{{Status: "NODATA"}}})
 	if warning.Status != "Warning" || warning.Warnings != 1 || warning.Failed != 0 {
 		t.Fatalf("NODATA summary=%+v, want warning without transport failure", warning)
+	}
+}
+
+func TestWebUIDigArgsSelectTransport(t *testing.T) {
+	udp := strings.Join(webUIDigArgs("127.0.0.1", "5355", "example.com", 1, "udp"), " ")
+	tcp := strings.Join(webUIDigArgs("127.0.0.1", "5355", "example.com", 1, "tcp"), " ")
+	if strings.Contains(udp, "+tcp") {
+		t.Fatalf("UDP args contain +tcp: %s", udp)
+	}
+	if !strings.Contains(tcp, "+tcp") {
+		t.Fatalf("TCP args missing +tcp: %s", tcp)
 	}
 }
