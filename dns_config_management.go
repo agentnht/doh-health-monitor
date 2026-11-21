@@ -10,10 +10,62 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // dnsConfigWriteMu serializes CLI, Web UI and daemon-generated config updates.
 var dnsConfigWriteMu sync.Mutex
+
+// acquireDNSConfigFileLock coordinates independent daemon, CLI and Web UI
+// processes. The lock file is stable and is never renamed with config.json.
+func acquireDNSConfigFileLock(dataDir string) (func(), error) {
+	dataDir = strings.TrimSpace(dataDir)
+	if dataDir == "" {
+		return nil, errors.New("plugin data directory is not configured")
+	}
+	abs, err := filepath.Abs(dataDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve plugin data directory: %w", err)
+	}
+	root, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return nil, fmt.Errorf("resolve plugin data directory: %w", err)
+	}
+	info, err := os.Lstat(root)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, errors.New("plugin data directory must be an existing real directory")
+	}
+	lockPath := filepath.Join(root, "config.json.lock")
+	fd, err := syscall.Open(lockPath, syscall.O_CREAT|syscall.O_RDWR|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("open config lock file: %w", err)
+	}
+	file := os.NewFile(uintptr(fd), lockPath)
+	if file == nil {
+		_ = syscall.Close(fd)
+		return nil, errors.New("open config lock file failed")
+	}
+	fileInfo, err := file.Stat()
+	if err != nil || !fileInfo.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, errors.New("config lock path must be a regular non-symlink file")
+	}
+	if err := file.Chmod(0600); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("secure config lock file: %w", err)
+	}
+	if err := syscall.Flock(fd, syscall.LOCK_EX); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("lock config file: %w", err)
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			_ = syscall.Flock(fd, syscall.LOCK_UN)
+			_ = file.Close()
+		})
+	}, nil
+}
 
 // writeConfigWithBackup is shared by CLI and Web UI for all config.json writes.
 func writeConfigWithBackup(path string, cfg Config) error {
@@ -75,6 +127,11 @@ func saveDNSModeConfig(dataDir, mode string, resolvers []ResolverUpstream) (Conf
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return Config{}, errors.New("plugin data directory must be an existing real directory")
 	}
+	releaseFileLock, err := acquireDNSConfigFileLock(root)
+	if err != nil {
+		return Config{}, err
+	}
+	defer releaseFileLock()
 	path := filepath.Join(root, "config.json")
 	fi, err := os.Lstat(path)
 	if err != nil {
