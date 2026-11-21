@@ -1,6 +1,6 @@
 # DoH DNS Proxy & Health Monitor для LucX-UI
 
-**Версия:** 2.3.1  
+**Версия:** 2.3.2  
 **Платформа:** Linux x86-64 (`amd64`), статический Go-бинарник  
 **Тип:** LucX-UI sidecar, `apiVersion: 1`  
 **Режим Gemini API:** необязательный, управляется параметром `gemini_api.enabled`
@@ -20,10 +20,11 @@ DoH Health Monitor — локальный DNS sidecar для LucX-UI/Xray. В л
 
 ### Что умеет
 
-- UDP и TCP DNS listener по умолчанию на `127.0.0.1:5355`.
+- UDP и TCP DNS listener по умолчанию на `127.0.0.1:5355`; конфигурация принимает только loopback IP literals и валидные порты 1–65535.
+- DNS UDP payload учитывает EDNS buffer size клиента (или 512 байт без EDNS); при нехватке места ответ обрезается по границе RR и получает флаг TC.
 - ActiveDoHSelector: восемь контрольных доменов, A/AAAA DNS probes через кандидатов DoH, затем HTTPS/TLS probes по IP с исходными hostname, SNI, HTTP Host и проверкой сертификата.
 - Отдельный режим `endpoint_ip` с TTL до 60 секунд, ограниченным временем актуальности выбранного endpoint-а.
-- Режим `resolver` с последовательным fallback через system, UDP, TCP и DoH upstream-ы.
+- Режим `resolver` с последовательным fallback через system, UDP, TCP и DoH upstream-ы; упавшие upstream-ы получают cooldown, а отказ всех upstream-ов возвращает DNS SERVFAIL вместо ложного NODATA.
 - Раздельные cache namespace/generation для двух режимов; режим 2 использует positive cache TTL не более 300 секунд и SOA-based negative caching по RFC 2308.
 - Сохранение исходного TTL upstream в первом ответе; ограничения TTL применяются к отдельной копии, помещаемой в кэш.
 - Независимые bootstrap DNS для разрешения hostname DoH endpoint-ов.
@@ -109,14 +110,14 @@ $LUCX_PLUGIN_DATA/gemini_api_key
 
 ## 4. Установка в LucX-UI
 
-1. Для опубликованного релиза скачайте ZIP с соответствующим номером версии. Для релиза `v2.3.1` используйте пакет `doh-health-monitor-v2.3.1.zip` со страницы GitHub Releases.
+1. Для опубликованного релиза скачайте ZIP с соответствующим номером версии. Для релиза `v2.3.2` используйте пакет `doh-health-monitor-v2.3.2.zip` со страницы GitHub Releases.
 2. В LucX-UI откройте менеджер плагинов и установите ZIP.
 3. Запустите плагин из панели.
 4. При первом запуске плагин создаст `config.json`, `doh-servers.txt`, `tst-domen.txt` и `local-hosts.txt`. Уже существующие текстовые файлы не перезаписываются (старый URL-only список DoH автоматически мигрирует в новый формат). Если `local-hosts.txt` отсутствует, старые записи `local_hosts` из `config.json` однократно переносятся в новый файл.
 5. Посмотрите журнал плагина. Нормальный старт содержит строки примерно такого вида:
 
 ```text
-level=INFO START id=doh-health-monitor version=2.3.1 arch=amd64 data=...
+level=INFO START id=doh-health-monitor version=2.3.2 arch=amd64 data=...
 level=INFO CONFIG loaded ... gemini_api=false
 level=INFO EVENT_SOCKET listening ...
 level=INFO READY DNS=127.0.0.1:5355/127.0.0.1:5355 HTTP=127.0.0.1:18765
@@ -147,7 +148,7 @@ dhm
 **Способ 2 — запуск непосредственно из GitHub (сохраняется как альтернативный вариант).**
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/agentnht/doh-health-monitor/main/scripts/plugin-management.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/agentnht/doh-health-monitor/v2.3.2/scripts/plugin-management.sh)
 ```
 
 Этот способ запускает только меню из process substitution; локальный packaged checker рядом с установленным плагином при этом всё равно должен присутствовать. Скрипт не скачивает и не исполняет изменяемый checker от root. Для полноценной проверки используйте установленную копию меню из ZIP.
@@ -170,9 +171,9 @@ Web UI содержит:
 
 Web UI не содержит кнопок изменения Xray-конфигурации. Настройка Geosite DNS выполняется вручную через штатный редактор панели по нормативному design doc.
 
-Каждый Web UI API-запрос требует сессионную cookie; дополнительно проверяются Host/Origin. Интерфейс слушает только loopback и предназначен для доступа через SSH local port forwarding. Ключ Gemini сохраняется в отдельный файл с правами `0600`, его содержимое не возвращается браузеру.
+Доступ к Web UI начинается с одноразового bootstrap-токена, который SSH-меню выводит вместе с локальным URL. Первый запрос атомарно обменивает билет на HttpOnly/SameSite cookie и очищает токен из адресной строки; повторное использование билета отклоняется. Каждый Web UI API-запрос требует сессионную cookie; дополнительно проверяются Host/Origin. Интерфейс слушает только loopback и предназначен для доступа через SSH local port forwarding. Не пересылайте bootstrap URL и не публикуйте вывод SSH-меню. Ключ Gemini сохраняется в отдельный файл с правами `0600`, его содержимое не возвращается браузеру.
 
-При запуске Web UI меню напечатает готовую SSH-команду для Windows PowerShell и локальный URL для браузера. Оставьте открытыми управляющую SSH-сессию и отдельную сессию туннеля. Нажмите Enter в управляющей сессии, чтобы остановить Web UI и вернуться в меню; при закрытии SSH-сессии Web UI также завершается.
+При запуске Web UI меню напечатает готовую SSH-команду для Windows PowerShell и локальный URL с одноразовым bootstrap-токеном. Оставьте открытыми управляющую SSH-сессию и отдельную сессию туннеля. Нажмите Enter в управляющей сессии, чтобы остановить Web UI и вернуться в меню; при закрытии SSH-сессии Web UI также завершается.
 
 Скрипт рассчитан на уже установленный плагин. Он не устанавливает и не обновляет сам плагин, не открывает порты в firewall и не изменяет UFW.
 
@@ -181,7 +182,9 @@ Web UI не содержит кнопок изменения Xray-конфигу
 - Этот ZIP содержит бинарник только `linux/amd64`.
 - `permissions.network` пустой массив: плагину разрешена сеть для DoH и HTTPS health-check. Не устанавливайте `network: ["none"]`.
 - `panelApi` grant не запрашивается и admin credential панели не используется. Плагин не изменяет Xray-конфигурацию; Geosite DNS policy настраивается оператором вручную.
-- Listener-ы по умолчанию привязаны только к `127.0.0.1`.
+- Listener-ы по умолчанию привязаны только к `127.0.0.1`; другие значения допускаются только как IP loopback literal (`127.0.0.1`, `::1` и т.п.), не `0.0.0.0` и не hostname.
+- Bootstrap IP DoH endpoint-ов фильтруются: частные, loopback, link-local, multicast, documentation и прочие non-global адреса не используются.
+- `/status` не раскрывает filesystem path каталога конфигурации, системный список DNS и ошибки чтения resolv.conf; URL выбранного DoH endpoint-а публикуется только как origin без path/query.
 
 ## 5. Конфигурация плагина
 
@@ -193,7 +196,7 @@ Web UI не содержит кнопок изменения Xray-конфигу
 
 ### 5.1.1 Режимы Geosite DNS в линейке 2.3.x
 
-> DNS architecture и management smoke tests введены в `v2.3.0`; обновления списка upstream-ов и health-check по умолчанию для `v2.3.1` перечислены в `CHANGELOG.md`.
+> DNS architecture и management smoke tests введены в `v2.3.0`; defaults обновлены в `v2.3.1`; исправления надёжности DNS, Web UI и локальной security boundary включены в `v2.3.2` и перечислены в `CHANGELOG.md`.
 
 В новой модели `dns_mode` выбирает ровно один способ обработки запросов, пришедших на DNS listener плагина:
 
@@ -589,11 +592,11 @@ go test -race ./...
 go vet ./...
 ```
 
-**Проверки версии 2.3.0 перед публикацией:**
-- GitHub Actions CI #1046: module tidy, shell/JavaScript syntax, management helper tests, DNS checker regression tests, `go vet ./...`, `go test ./...`, Linux amd64 package build — PASS.
-- DoH integration workflow #891 — PASS.
-- VPS smoke tests: read-only Xray preflight; клиентский DNS path для `habr.com` и `example.com`; ActiveDoH failover; resolver mode с A/AAAA и возвратом в `endpoint_ip`; сохранение DNS mode через SSH CLI и Web UI, backup `0600` и hot reload.
-- Эти проверки не утверждают, что выполнены runtime-тесты вкладки Local hosts или SSH tunnel под non-root.
+**Автоматические проверки release candidate 2.3.2:**
+- GitHub Actions CI #44938111688: module tidy, shell/JavaScript syntax, management helper tests, DNS checker tests, `go vet ./...`, `go test ./...`, `go test -race ./...`, `go test -tags legacy_integration ./internal/dohintegration`, Linux amd64 package build — PASS.
+- DoH integration workflow #44938111672 — PASS.
+- Регрессионные тесты охватывают анонимный доступ к Web UI, одноразовый bootstrap token, listener validation, Gemini key path, DoH URL redaction, resolver SERVFAIL/cooldown, ActiveDoH hard-failure failover, EDNS-aware UDP truncation, DNS error packet shape, OIDC URL validation, reload interval, pending restart semantics, status redaction, bootstrap public-IP filtering и symlinked configuration sources.
+- Эти проверки выполнены в GitHub Actions. Новый VPS release smoke test для `v2.3.2` оставлен перед публикацией; тесты на установленном релизном ZIP будут выполнены отдельно.
 
 ## 12. Ограничения текущей реализации
 
