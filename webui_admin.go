@@ -772,11 +772,11 @@ func saveWebUIGeminiKey(dataDir, key string) error {
 	}
 	relParent, err := filepath.Rel(root, resolvedParent)
 	if err != nil || relParent == ".." || strings.HasPrefix(relParent, ".."+string(os.PathSeparator)) {
-		return errors.New("Gemini key directory escapes plugin data directory")
+		return errors.New("gemini key directory escapes plugin data directory")
 	}
 	if info, err := os.Lstat(target); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			return errors.New("Gemini key target must be a regular non-symlink file")
+			return errors.New("gemini key target must be a regular non-symlink file")
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return errors.New("could not inspect Gemini key target")
