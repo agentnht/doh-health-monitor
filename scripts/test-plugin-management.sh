@@ -19,6 +19,9 @@ expected='ssh -o ExitOnForwardFailure=yes -L 19876:127.0.0.1:41237 operator@203.
 [[ "$(build_ssh_tunnel_command 19876 41237 operator 203.0.113.8)" == "$expected" ]] || fail_test "tunnel command format"
 pass "tunnel command uses the selected account"
 [[ "$(parse_web_ui_ready_port 'WEB_UI_READY port=41237')" == "41237" ]] || fail_test "valid readiness line"
+[[ "$(parse_web_ui_ready_port 'WEB_UI_READY port=41237 token=abcdefghijklmnop')" == "41237" ]] || fail_test "token readiness line"
+[[ "$(parse_web_ui_ready_token 'WEB_UI_READY port=41237 token=abcdefghijklmnop')" == "abcdefghijklmnop" ]] || fail_test "bootstrap token extraction"
+if parse_web_ui_ready_token 'WEB_UI_READY port=41237' >/dev/null 2>&1; then fail_test "missing bootstrap token accepted"; fi
 for invalid in "" "WEB_UI_READY port=0" "WEB_UI_READY port=65536" "WEB_UI_READY port=abc" "noise WEB_UI_READY port=19876"; do
   if parse_web_ui_ready_port "$invalid" >/dev/null 2>&1; then fail_test "invalid readiness accepted: $invalid"; fi
 done
