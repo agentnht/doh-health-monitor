@@ -22,7 +22,6 @@ import (
 	"syscall"
 	"time"
 
-	_ "modernc.org/sqlite"
 )
 
 const (
@@ -69,6 +68,15 @@ func normalizeBasePath(value string)(string,error){
 	if len(out)==0{return "/",nil};return "/"+strings.Join(out,"/")+"/",nil
 }
 
+func procOwnedByEffectiveUser(procPath string) bool {
+	info, err := os.Stat(procPath)
+	if err != nil {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && stat.Uid == uint32(os.Geteuid())
+}
+
 func runningPanelContext()(map[string]string,string,error){
 	env:=map[string]string{}
 	for _,k:=range []string{"XUI_PORT","XUI_DB_FOLDER","XUI_DB_TYPE"}{if v,ok:=os.LookupEnv(k);ok{env[k]=v}}
@@ -79,6 +87,7 @@ func runningPanelContext()(map[string]string,string,error){
 	for _,entry:=range entries{
 		if _,err:=strconv.Atoi(entry.Name());err!=nil{continue}
 		root:=filepath.Join("/proc",entry.Name())
+		if !procOwnedByEffectiveUser(root) { continue }
 		exe,err:=os.Readlink(filepath.Join(root,"exe"));if err!=nil{continue}
 		exe=strings.TrimSuffix(exe," (deleted)");if filepath.Base(exe)!="x-ui"{continue}
 		raw,err:=os.ReadFile(filepath.Join(root,"environ"));if err!=nil{continue}
@@ -160,7 +169,7 @@ var tokenLine=regexp.MustCompile("(?m)^apiToken:\\s*(\\S+)\\s*$")
 
 func panelCLI(panelCwd string)(string,error){
 	entries,_:=os.ReadDir("/proc");found:=map[string]bool{}
-	for _,e:=range entries{if _,x:=strconv.Atoi(e.Name());x!=nil{continue};exe,x:=os.Readlink(filepath.Join("/proc",e.Name(),"exe"));if x!=nil{continue};exe=strings.TrimSuffix(exe," (deleted)");if filepath.Base(exe)=="x-ui"{if st,x:=os.Stat(exe);x==nil&&st.Mode().IsRegular()&&st.Mode().Perm()&0o111!=0{found[exe]=true}}}
+	for _,e:=range entries{if _,x:=strconv.Atoi(e.Name());x!=nil{continue};procRoot:=filepath.Join("/proc",e.Name());if !procOwnedByEffectiveUser(procRoot){continue};exe,x:=os.Readlink(filepath.Join(procRoot,"exe"));if x!=nil{continue};exe=strings.TrimSuffix(exe," (deleted)");if filepath.Base(exe)=="x-ui"{if st,x:=os.Stat(exe);x==nil&&st.Mode().IsRegular()&&st.Mode().Perm()&0o111!=0{found[exe]=true}}}
 	if len(found)>1{return "",problem("Multiple LucX-UI executables are running; cannot select a local token provider")}
 	for p:=range found{return p,nil}
 	candidates:=[]string{};if panelCwd!=""{candidates=append(candidates,filepath.Join(panelCwd,"x-ui"))};if p,x:=exec.LookPath("x-ui");x==nil{candidates=append(candidates,p)}
