@@ -203,7 +203,7 @@ func TestWebUIStatusAPIRequiresSessionAndReturnsSanitizedStatus(t *testing.T) {
 	}
 	for _, want := range []string{
 		"\"server_id\":\"comss-one\"", "\"hostname\":\"dns.comss.one\"",
-		"\"generation\":2", "\"score\":6", "\"check_count\":8",
+		"\"generation\":2", "\"score\":6", "\"check_count\":7",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("status response is missing ActiveDoH field %s: %s", want, body)

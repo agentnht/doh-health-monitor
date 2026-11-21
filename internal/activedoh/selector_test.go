@@ -32,8 +32,22 @@ func results(id string, successes int, now time.Time) []ProbeResult {
 
 func TestControlDomainsAreStableAndCopied(t *testing.T) {
 	first := ControlDomains()
-	if len(first) != 7 {
-		t.Fatalf("got %d control domains, want 7", len(first))
+	want := []string{
+		"chatgpt.com",
+		"claude.ai",
+		"gemini.google.com",
+		"elevenlabs.io",
+		"grok.com",
+		"www.perplexity.ai",
+		"aistudio.google.com",
+	}
+	if len(first) != len(want) {
+		t.Fatalf("got %d control domains, want %d", len(first), len(want))
+	}
+	for i := range want {
+		if first[i] != want[i] {
+			t.Fatalf("control domain %d = %q, want %q", i, first[i], want[i])
+		}
 	}
 	first[0] = "mutated.example"
 	if ControlDomains()[0] != "chatgpt.com" {
