@@ -550,11 +550,11 @@ func TestEmbeddedDoHDefaultsParseToApprovedProviderSet(t *testing.T) {
 	}
 	want := map[string]bool{
 		"geohide-eu": true,
-		"dagami": true,
-		"comss-one": true,
-		"bezmezhau": true,
-		"zapret": true,
-		"pereval": true,
+		"dagami":     true,
+		"comss-one":  true,
+		"bezmezhau":  true,
+		"zapret":     true,
+		"pereval":    true,
 	}
 	got := make(map[string]string, len(providers))
 	for _, provider := range providers {

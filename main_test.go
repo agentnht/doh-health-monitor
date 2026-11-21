@@ -1651,8 +1651,8 @@ func TestBootstrapAddressesDoesNotHoldStateLockDuringLookup(t *testing.T) {
 	lookupStarted := make(chan struct{})
 	releaseLookup := make(chan struct{})
 	b := &bootstrapResolver{
-		host: "doh.example",
-		resolvers: []string{"1.1.1.1"},
+		host:       "doh.example",
+		resolvers:  []string{"1.1.1.1"},
 		refreshFor: time.Hour,
 		lookup: func(ctx context.Context, server, host string) ([]net.IP, error) {
 			close(lookupStarted)
@@ -1697,8 +1697,8 @@ func TestBootstrapRefreshGateWaitHonorsContextCancellation(t *testing.T) {
 	lookupStarted := make(chan struct{})
 	releaseLookup := make(chan struct{})
 	b := &bootstrapResolver{
-		host: "doh.example",
-		resolvers: []string{"1.1.1.1"},
+		host:       "doh.example",
+		resolvers:  []string{"1.1.1.1"},
 		refreshFor: time.Hour,
 		lookup: func(ctx context.Context, server, host string) ([]net.IP, error) {
 			close(lookupStarted)
@@ -1747,10 +1747,10 @@ func TestBootstrapSelectionGateWaitHonorsContextCancellation(t *testing.T) {
 	probeStarted := make(chan struct{})
 	releaseProbe := make(chan struct{})
 	b := &bootstrapResolver{
-		host: "doh.example",
-		endpoint: "https://doh.example/dns-query",
-		ips: []string{"8.8.8.8"},
-		refreshed: time.Now(),
+		host:       "doh.example",
+		endpoint:   "https://doh.example/dns-query",
+		ips:        []string{"8.8.8.8"},
+		refreshed:  time.Now(),
 		refreshFor: time.Hour,
 		probe: func(ctx context.Context, endpoint, ip string, timeout time.Duration) (time.Duration, error) {
 			select {

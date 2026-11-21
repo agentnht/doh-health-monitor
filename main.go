@@ -1120,7 +1120,7 @@ func (b *bootstrapResolver) acquireGate(ctx context.Context, gate *chan struct{}
 
 func lookupBootstrapIPs(ctx context.Context, server, host string) ([]net.IP, error) {
 	resolver := &net.Resolver{
-		PreferGo: true,
+		PreferGo:     true,
 		StrictErrors: false,
 		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			return (&net.Dialer{Timeout: 1500 * time.Millisecond}).DialContext(ctx, network, net.JoinHostPort(server, "53"))
