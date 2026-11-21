@@ -3024,9 +3024,6 @@ func rotateStatusAPIToken(dataDir string) (string, error) {
 	if err := os.Rename(tempName, target); err != nil {
 		return "", fmt.Errorf("install status API token: %w", err)
 	}
-	if err := os.Chmod(target, 0600); err != nil {
-		return "", fmt.Errorf("set status API token permissions: %w", err)
-	}
 	return token, nil
 }
 
