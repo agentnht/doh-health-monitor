@@ -1,7 +1,7 @@
 # Утверждённый проект: Geosite DNS routing и режимы DoH
 
 **Дата последнего обновления:** 2026-11-21  
-**Статус:** Draft PR #11. Этот документ — единственный нормативный источник требований для реализации и проверки PR. Конфигурация Xray в §4.4 утверждена как целевая ручная схема. Базовая реализация двух DNS-режимов, ActiveDoHSelector, cache generation и resolver pipeline уже находится в `feature/geosite-dns-routing`. На VPS 2026-11-20 подтверждены локальные проверки listener и Xray config; полный клиентский путь через пользовательский inbound пока не проверен, поскольку такого inbound ещё нет в тестовой конфигурации.  
+**Статус:** Draft PR #11. Этот документ — единственный нормативный источник требований для реализации и проверки PR. Конфигурация Xray в §4.4 утверждена как целевая ручная схема. Базовая реализация двух DNS-режимов, ActiveDoHSelector, cache generation и resolver pipeline находится в `feature/geosite-dns-routing`. На VPS 2026-11-21 выполнены клиентские path-level smoke tests через sing-box → AWG → VPS TProxy для Geosite-направляемого `habr.com` и обычного `example.com`; результаты и границы доказанного приведены в §8. Точный внутренний Xray rule-decision trace не снимался. Текущий оставшийся acceptance этап — smoke test новых CLI/Web UI controls сохранения `dns_mode` и `resolver_upstreams`, а не повтор клиентского DNS path.  
 **База ветки:** `main`, commit `b32d4263dbb43c5162860c0def0e990aac6e6541`.
 
 ## 1. Цель и принятое решение
@@ -470,7 +470,7 @@ Geosite matching расположен на стороне Xray, внутри `dn
 
 Операции CLI `integrate` и `remove` и соответствующий Web UI mutation endpoint в этой ветке отключены. Прямой CLI-вызов отклоняется до обращения к API панели; старый Web UI mutation endpoint отвечает HTTP 410 Gone. Причина: унаследованный planner рассчитывает на другую модель DNS integration (локальный DNS server в `dns.servers` и panel-managed allow exception) и не распознаёт утверждённую последовательность Geosite `direct` → catch-all `hijack`. Не адаптировать этот planner в рамках PR: автоматизация Xray не входит в текущий ручной этап. Структурная проверка утверждённой схемы выполняется read-only checker-ом; сетевой end-to-end тест — отдельно на целевом inbound.
 
-**Read-only правило PR #11:** SSH-меню содержит только проверку и запуск Web UI; Web UI не показывает panel mutation controls. `doh-health-monitor integrate` и `doh-health-monitor remove` отклоняются на уровне CLI; Web UI endpoint для старых клиентов возвращает HTTP 410. `check` выполняет только preflight плагина, а shell checker проверяет утверждённую DNS policy без записи Xray config. Legacy поле `integration` сохраняется в Go config struct только для совместимости чтения старых `config.json`; оно не экспонируется в Web UI, не управляет Xray DNS policy и больше не записывается командами плагина.
+**Read-only правило PR #11:** SSH-меню содержит только проверку и запуск Web UI; Web UI не показывает panel mutation controls. `doh-health-monitor integrate` и `doh-health-monitor remove` отклоняются на уровне CLI; Web UI endpoint для старых клиентов возвращает HTTP 410. `check` выполняет только preflight плагина, а shell checker проверяет структурные инварианты Xray DNS path без записи Xray config: ровно один глобальный port-53 route, UDP rewrite на plugin listener, наличие хотя бы одного `action: direct` с непустым массивом `domain`, порядок port-53 route относительно `geoip:private`, upstream в `dns.servers` и отсутствие plugin listener в `dns.servers`. Конкретная Geosite category, число/порядок DNS rules и catch-all action не фиксируются checker-ом. Checker выводит найденные значения `domain`, текущий DNS mode и активный DoH endpoint режима `endpoint_ip`. Он остаётся структурной проверкой и не доказывает точный внутренний rule-decision Xray. Legacy поле `integration` сохраняется в Go config struct только для совместимости чтения старых `config.json`; оно не экспонируется в Web UI, не управляет Xray DNS policy и больше не записывается командами плагина.
 
 ## 8. Текущий статус реализации и порядок работы
 
@@ -486,7 +486,7 @@ Geosite matching расположен на стороне Xray, внутри `dn
 
 ### Проверки кода и VPS
 
-Для code head `c2274073dfc34842b66fe51f6fb434073180d4b3` успешно завершились оба workflow: CI run `44820944837` и DoH integration run `44820944899`. CI включает module tidy, `go vet ./...`, `go test ./...`, проверку shell/JavaScript syntax, regression tests read-only Geosite DNS checker-а, Linux amd64 build и ZIP artifact packaging. Integration workflow включает Go integration/unit tests, Python compile/unit/synthetic SQLite lifecycle tests и shell syntax. Эти результаты относятся к указанному head; проверен код после отключения Xray mutation entrypoints, удаления устаревшего Web UI operation log API и переименования read-only logger-а. После проверенного code head в ветке выполнялись только документальные синхронизации нормативного design doc; runtime-код после проверенного head не менялся.
+Для текущего code head `ab9540703dfc91ec751604343f78ec54c425e2a7` успешно завершились оба workflow: [CI run #1042](https://github.com/agentnht/doh-health-monitor/actions/runs/44896587537) и [DoH integration run #887](https://github.com/agentnht/doh-health-monitor/actions/runs/44896587542). CI включает module tidy, `go vet ./...`, `go test ./...`, shell/JavaScript syntax, management helper и DNS checker regression tests, Linux amd64 build и ZIP artifact packaging. Integration workflow включает Go integration/unit tests, Python compile/unit/synthetic SQLite lifecycle tests и shell syntax. Оба workflow завершились PASS на одном HEAD.
 
 На VPS 2026-11-20 с DoH Health Monitor 2.3.0 и Xray `26.10.21` подтверждены:
 - сервис плагина и HTTP status endpoint доступны;
@@ -496,26 +496,30 @@ Geosite matching расположен на стороне Xray, внутри `dn
 - DNS outbound с `geosite:habr` и catch-all `hijack` присутствовал в конфигурации;
 - Xray и plugin service использовали один network namespace.
 
-На момент VPS-проверки постоянного клиентского WireGuard/TProxy Tunnel inbound в конфигурации панели не было. Поэтому полный маршрут от пользовательского клиента через inbound до DNS outbound и обратно не подтверждён. Это остаётся отдельным обязательным тестом после появления inbound. Наличие текстов `habr` в файле Geosite и успешный parse config сами по себе не доказывают, что реальная QNAME lookup совпадает с нужной категорией.
+Клиентские path-level smoke tests 2026-11-21 через sing-box → AWG → VPS TProxy выполнены:
+- `habr.com`: на loopback наблюдался запрос/ответ Xray ↔ plugin listener `127.0.0.1:5355`; клиент получил выбранный endpoint bootstrap IP `143.20.64.55`. Это подтверждает прохождение запроса через plugin listener в проверенном сценарии.
+- `example.com`: клиент получил обычные A-записи; обращения к plugin listener не наблюдалось, одновременно фиксировался TLS-трафик VPS → Quad9 `9.9.9.9:443`. Наблюдения согласуются с built-in DNS catch-all, но зашифрованный TLS не позволяет приписать конкретный QNAME этому соединению.
+
+Эти клиентские проверки считаются выполненными и не требуют повтора. Ограничение сохраняется: точный внутренний Xray Geosite matcher/rule-decision trace не снимался, а само наличие строки category в JSON или asset не является таким trace. Позднее read-only состояние на установленном VPS checker подтвердил как **9 OK, 0 WARN, 0 FAIL**; он обнаружил `action: direct` с `domain: ["geosite:category-ai-chat-!cn"]`, но намеренно не оценивает внутреннее решение matcher-а.
 
 ## 9. Что остаётся проверить до снятия Draft
 
-Следующие проверки не считаются завершёнными по одному только факту прохождения CI или успешного `xray run -test`:
+Клиентский DNS path через sing-box → AWG → VPS TProxy для `habr.com` и `example.com` уже проверен и описан в §8. ActiveDoH failover и runtime smoke test самого режима `resolver` на VPS также выполнены; повторять эти тесты не требуется.
 
-1. Полный пользовательский путь: WireGuard/TProxy client inbound → routing TCP/UDP port 53 → `dns-out` → plugin UDP listener → ответ клиенту.
-2. Реальное совпадение тестовых QNAME с `geosite:habr` в активном Geosite asset целевой сборки.
-3. Порядок и фактическая семантика DNS outbound rules в используемой встроенной сборке Xray.
-4. Доступность `127.0.0.1:5355/UDP` из network namespace Xray.
-5. Поведение non-A/AAAA для обеих веток: Geosite `direct` в plugin listener и non-Geosite `hijack` во встроенный DNS.
-6. CNAME chain, EDNS/DO, DNSSEC flags и ответы с OPT на реальных клиентских пакетах. Полноценная DNSSEC validation плагином не реализуется.
-7. Сетевой egress к bootstrap DNS, выбранным DoH endpoint-ам и resolver upstream режима `resolver`.
-8. Отсутствие косвенной DNS-петли через локальные stub resolver, TProxy или NAT.
+**Оставшийся обязательный acceptance этап — проверить новые средства управления DNS mode через CLI и Web UI**, поскольку прежние runtime smoke tests режима resolver выполнялись отдельно от новых control surfaces:
 
-Структурный checker может подтвердить, что JSON содержит ожидаемые rewrite target, Geosite direct, catch-all hijack и port-53 route. Он не должен требовать `xui-dns-allow` или считать его частью схемы; также он не может подтвердить загруженную категорию, активный runtime или фактический клиентский трафик.
+1. Сохранить исходный `config.json` в отдельную датированную копию до теста.
+2. Через SSH menu → пункт 3 переключить `dns_mode` с `endpoint_ip` на `resolver`, оставить существующий `resolver_upstreams` без изменений (Enter), подтвердить запись и проверить создание `config.json.bak` с mode `0600`.
+3. Дождаться daemon hot reload (до 30 секунд) и проверить через `/status`, что `dns_mode=resolver`, `last_reload` обновился, `last_error` пустой. Выполнить A и AAAA запросы к `127.0.0.1:5355` и подтвердить, что в режиме resolver возвращаются адреса исходного домена, а не IP DoH endpoint.
+4. Через Web UI → «Конфигурация» убедиться, что загруженный mode равен `resolver`, переключить только DNS mode обратно на `endpoint_ip`, не менять JSON `resolver_upstreams`, сохранить и дождаться hot reload.
+5. Через `/status` подтвердить `dns_mode=endpoint_ip`, актуальный `active_doh` и отсутствие `last_error`. A query должен вернуть активный bootstrap IP DoH endpoint-а с TTL не более 60 секунд; если у endpoint нет IPv6, AAAA NODATA ожидаем.
+6. Проверить, что `config.json.bak` после Web UI save содержит предыдущий рабочий mode `resolver` и имеет права `0600`. Итоговое состояние оставить `endpoint_ip`; Xray config, routing, firewall и TProxy не менять.
+
+Runtime smoke test вкладки Local hosts и проверка SSH tunnel под non-root/SUDO_USER остаются отдельными follow-up проверками и не являются повторением уже выполненного клиентского DNS path. Полноценная DNSSEC validation плагином не заявляется.
 
 ## 10. Ограничения и границы изменений
 
-- PR #11 остаётся Draft до прохождения клиентского end-to-end теста на целевом runtime и устранения найденных дефектов.
+- PR #11 остаётся Draft до завершения CLI/Web UI management smoke test из §9 и отдельного решения о release gate; клиентские path-level smoke tests уже проведены и не являются оставшимся блокером.
 - Не добавлять внутренний Geosite matcher в плагин: Geosite matching остаётся ответственностью Xray.
 - Не создавать `dns.servers` entry для `127.0.0.1:5355`; plugin listener вызывается через DNS outbound rewrite target.
 - Не создавать `xui-dns-allow`, отдельное routing-исключение для порта 5355 или allow-правило в `freedom.finalRules`: они не являются частью утверждённой схемы.
