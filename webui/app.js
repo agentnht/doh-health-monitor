@@ -203,6 +203,8 @@
 
   function renderConfig(config) {
     configState = config;
+    $("config-dns-mode").value = config.dns_mode || "endpoint_ip";
+    $("config-resolver-upstreams").value = JSON.stringify(config.resolver_upstreams || [], null, 2);
     $("config-general").replaceChildren();
     $("config-health").replaceChildren();
     $("config-cache").replaceChildren();
@@ -269,6 +271,15 @@
       setPath(next, input.dataset.path, value);
     }
     next.bootstrap_resolvers = $("config-bootstrap").value.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+    next.dns_mode = $("config-dns-mode").value;
+    try {
+      next.resolver_upstreams = JSON.parse($("config-resolver-upstreams").value);
+    } catch (error) {
+      throw new Error("resolver_upstreams: некорректный JSON — " + error.message);
+    }
+    if (!Array.isArray(next.resolver_upstreams)) {
+      throw new Error("resolver_upstreams должен быть JSON-массивом");
+    }
     return next;
   }
 
@@ -280,8 +291,8 @@
       const result = await api("/api/v1/config", { method: "POST", body: JSON.stringify(collectConfig()) });
       renderConfig(result.config);
       const message = result.restart_required
-        ? "Сохранено. Изменение listener/dns_max_concurrent вступит в силу после перезапуска плагина."
-        : "Конфигурация сохранена. Новые значения будут применены механизмом reload.";
+        ? "Сохранено с резервной копией config.json.bak. Изменение listener/dns_max_concurrent вступит в силу после перезапуска плагина."
+        : "Конфигурация сохранена с резервной копией config.json.bak. Новые значения будут применены hot reload (до 30 секунд).";
       notice("config-note", message, true);
     } catch (error) {
       notice("config-note", error.message, false);
