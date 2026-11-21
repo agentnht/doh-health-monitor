@@ -95,12 +95,14 @@ done
 config="$(cat)"
 [[ "$config" == "header = \"Authorization: Bearer ${MOCK_STATUS_TOKEN:-}\"" ]]
 [[ -n "$out" && -n "${MOCK_STATUS_JSON:-}" ]]
+: > "${MOCK_CURL_CALLED:?}"
 cp "$MOCK_STATUS_JSON" "$out"
 MOCK
 chmod +x "$TMP_DIR/mock-bin/curl"
 export PATH="$TMP_DIR/mock-bin:$PATH"
 export DOH_STATUS_URL="http://127.0.0.1:18765/status"
 export MOCK_STATUS_TOKEN="$(printf '%064d' 0)"
+export MOCK_CURL_CALLED="$TMP_DIR/mock-curl-called"
 export LUCX_PLUGIN_DATA="$TMP_DIR/status-data"
 mkdir -p "$LUCX_PLUGIN_DATA"
 printf '%s\n' "$MOCK_STATUS_TOKEN" > "$LUCX_PLUGIN_DATA/status-api.token"
@@ -109,6 +111,17 @@ cat >"$TMP_DIR/status-mode1.json" <<'JSON'
 {"dns_mode":"endpoint_ip","active_doh":{"server_id":"active-test","hostname":"doh.example.net","ipv4":["192.0.2.10"],"ipv6":["2001:db8::10"],"score":6,"check_count":8}}
 JSON
 export MOCK_STATUS_JSON="$TMP_DIR/status-mode1.json"
+
+# A caller-controlled external status URL must never receive the bearer token.
+write_approved_config
+rm -f "$MOCK_CURL_CALLED"
+export DOH_STATUS_URL="http://status.attacker.example:18765/status"
+expect_pass "non-loopback status URL is never called with the bearer token"
+if [[ -e "$MOCK_CURL_CALLED" ]]; then
+  printf '[FAIL] bearer token was sent to a non-loopback status URL\\n' >&2
+  exit 1
+fi
+export DOH_STATUS_URL="http://127.0.0.1:18765/status"
 
 # There is geoip:private, but no xui-dns-allow, no finalRules localhost
 # exception and no 127.0.0.1:5355 entry in dns.servers: this is intentional.
