@@ -41,6 +41,9 @@ func TestInitializeConfigSourceFilesCreatesEmbeddedDefaults(t *testing.T) {
 	if !sources.SystemDNSEnabled {
 		t.Fatal("embedded default source must enable system-dns")
 	}
+	if len(sources.LocalHosts) != 0 || len(sources.Checksums.Hosts) != 64 {
+		t.Fatalf("embedded local hosts source should be empty and hashed: hosts=%+v checksum=%q", sources.LocalHosts, sources.Checksums.Hosts)
+	}
 	if len(sources.Checks) != 9 {
 		t.Fatalf("default checks = %d, want 9", len(sources.Checks))
 	}
@@ -174,6 +177,35 @@ func TestParseLocalHostsFileValidatesExactHostAndAddressFamilies(t *testing.T) {
 		if _, err := parseLocalHostsFile([]byte(raw)); err == nil {
 			t.Errorf("invalid local-hosts row unexpectedly accepted: %q", raw)
 		}
+	}
+}
+
+func TestReadConfigSourcesLoadsManagedLocalHostsFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := initializeConfigSourceFiles(dir); err != nil {
+		t.Fatal(err)
+	}
+	hostsPath := filepath.Join(dir, localHostsSourceFile)
+	data := []byte(localHostsSourceHeader + "\nservice.example;192.0.2.55;2001:db8::55\n")
+	if err := os.WriteFile(hostsPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	sources, err := readConfigSources(filepath.Join(dir, "doh-servers.txt"), filepath.Join(dir, "tst-domen.txt"))
+	if err != nil {
+		t.Fatalf("read managed config sources: %v", err)
+	}
+	entry, ok := sources.LocalHosts["service.example"]
+	if !ok || !reflect.DeepEqual(entry.IPv4, []string{"192.0.2.55"}) || !reflect.DeepEqual(entry.IPv6, []string{"2001:db8::55"}) {
+		t.Fatalf("managed local hosts not loaded into sources: %+v", sources.LocalHosts)
+	}
+	if sources.Checksums.Hosts != configSourceChecksums(nil, nil, data).Hosts {
+		t.Fatalf("local hosts checksum does not match file contents: %s", sources.Checksums.Hosts)
+	}
+	if err := os.WriteFile(hostsPath, []byte("invalid host row\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readConfigSources(filepath.Join(dir, "doh-servers.txt"), filepath.Join(dir, "tst-domen.txt")); err == nil {
+		t.Fatal("invalid managed local hosts source was accepted")
 	}
 }
 
