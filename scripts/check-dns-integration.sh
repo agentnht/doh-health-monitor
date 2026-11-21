@@ -58,6 +58,39 @@ if [[ "${DOH_SKIP_PLUGIN_HEALTH_CHECK:-0}" != "1" ]]; then
   rm -f "$status_file"
 fi
 
+# Report the plugin's effective DNS mode and active endpoint from its read-only status API.
+status_file="$(mktemp)"
+if curl --fail --silent --show-error --max-time 3 "$DOH_STATUS_URL" -o "$status_file" 2>/dev/null &&
+   jq -e . "$status_file" >/dev/null 2>&1; then
+  dns_mode="$(jq -r '.dns_mode // "unknown"' "$status_file")"
+  case "$dns_mode" in
+    endpoint_ip)
+      pass "Текущий DNS mode: endpoint_ip (режим 1)"
+      active_id="$(jq -r '.active_doh.server_id // empty' "$status_file")"
+      if [[ -n "$active_id" ]]; then
+        active_host="$(jq -r '.active_doh.hostname // "unknown"' "$status_file")"
+        active_ipv4="$(jq -r '(.active_doh.ipv4 // []) | join(", ")' "$status_file")"
+        active_ipv6="$(jq -r '(.active_doh.ipv6 // []) | join(", ")' "$status_file")"
+        active_score="$(jq -r 'if .active_doh.score != null and .active_doh.check_count != null then "\(.active_doh.score)/\(.active_doh.check_count)" else "unknown" end' "$status_file")"
+        pass "Активный DoH server: $active_id ($active_host), score=$active_score"
+        printf '[INFO]   Active endpoint IPv4: %s\\n' "${active_ipv4:-нет}"
+        printf '[INFO]   Active endpoint IPv6: %s\\n' "${active_ipv6:-нет}"
+      else
+        warning "DNS mode 1 активен, но актуальный DoH endpoint пока не выбран"
+      fi
+      ;;
+    resolver)
+      pass "Текущий DNS mode: resolver (режим 2)"
+      ;;
+    *)
+      warning "Текущий DNS mode не распознан: $dns_mode"
+      ;;
+  esac
+else
+  warning "Не удалось получить DNS mode и active DoH server из Status API"
+fi
+rm -f "$status_file"
+
 if [[ ! -r "$XRAY_CONFIG" ]]; then
   error "Не найден доступный для чтения Xray config: $XRAY_CONFIG"
 else
