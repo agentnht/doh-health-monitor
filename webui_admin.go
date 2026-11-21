@@ -704,12 +704,9 @@ func writeManagedSourceWithBackup(path string, data []byte) error {
 	if len(data) > webUIAdminMaxFile {
 		return errors.New("managed source exceeds the size limit")
 	}
-	if info, err := os.Lstat(path); err != nil {
-		return fmt.Errorf("inspect managed source: %w", err)
-	} else if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > webUIAdminMaxFile {
-		return errors.New("managed source must be a regular non-symlink file within the size limit")
-	}
-	original, err := os.ReadFile(path)
+	// Read through the shared bounded O_NOFOLLOW helper. The opened file
+	// descriptor itself is verified as regular, so there is no Lstat/read TOCTOU gap.
+	original, err := readRegularPluginFileNoFollow(path, webUIAdminMaxFile)
 	if err != nil {
 		return fmt.Errorf("read managed source for backup: %w", err)
 	}
