@@ -99,7 +99,7 @@ cp "$MOCK_STATUS_JSON" "$out"
 MOCK
 chmod +x "$TMP_DIR/mock-bin/curl"
 export PATH="$TMP_DIR/mock-bin:$PATH"
-export DOH_STATUS_URL="http://status.test/status"
+export DOH_STATUS_URL="http://127.0.0.1:18765/status"
 export MOCK_STATUS_TOKEN="$(printf '%064d' 0)"
 export LUCX_PLUGIN_DATA="$TMP_DIR/status-data"
 mkdir -p "$LUCX_PLUGIN_DATA"
