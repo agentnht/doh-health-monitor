@@ -416,6 +416,11 @@ func saveWebUIConfig(dataDir string, view webUIEditableConfig) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	releaseFileLock, err := acquireDNSConfigFileLock(root)
+	if err != nil {
+		return false, err
+	}
+	defer releaseFileLock()
 	path, _, err := webUIDataFile(dataDir, "config.json", webUIAdminMaxFile)
 	if err != nil {
 		return false, err
@@ -469,6 +474,11 @@ func resetWebUIConfigSection(dataDir, section string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	releaseFileLock, err := acquireDNSConfigFileLock(root)
+	if err != nil {
+		return false, err
+	}
+	defer releaseFileLock()
 	path, _, err := webUIDataFile(dataDir, "config.json", webUIAdminMaxFile)
 	if err != nil {
 		return false, err
