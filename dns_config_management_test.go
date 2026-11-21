@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -27,7 +28,7 @@ func TestSaveDNSModeConfigBacksUpAndPreservesResolverOrder(t *testing.T) {
 		t.Fatalf("saved config mode/upstreams = %q/%d", got.DNSMode, len(got.ResolverUpstreams))
 	}
 	for i := range resolvers {
-		if got.ResolverUpstreams[i] != resolvers[i] {
+		if !reflect.DeepEqual(got.ResolverUpstreams[i], resolvers[i]) {
 			t.Fatalf("resolver order/config at %d = %+v, want %+v", i, got.ResolverUpstreams[i], resolvers[i])
 		}
 	}
