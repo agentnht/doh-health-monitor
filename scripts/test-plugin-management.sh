@@ -23,6 +23,10 @@ for invalid in "" "WEB_UI_READY port=0" "WEB_UI_READY port=65536" "WEB_UI_READY 
   if parse_web_ui_ready_port "$invalid" >/dev/null 2>&1; then fail_test "invalid readiness accepted: $invalid"; fi
 done
 pass "readiness protocol and port range validated"
+menu_output="$(show_menu)"
+grep -Fq '3) Переключить DNS mode / настроить resolver upstreams' <<<"$menu_output" || fail_test "DNS mode menu entry"
+grep -Fq '3) run_dns_config' "$SCRIPT_DIR/plugin-management.sh" || fail_test "DNS mode menu dispatch"
+pass "DNS mode menu entry is connected to the CLI action"
 export SERVER_ADDRESS=203.0.113.8
 [[ "$(resolve_server_address)" == "203.0.113.8" ]] || fail_test "server address override"
 pass "explicit server address override"
