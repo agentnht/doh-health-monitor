@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -27,22 +28,31 @@ func newTestWebUIData(t *testing.T) string {
 	return dir
 }
 
+var webUITestSessionCookies sync.Map
+
 func newAuthenticatedWebUIRequest(t *testing.T, handler http.Handler, method, path string, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
 	const host = "127.0.0.1:19876"
-	root := httptest.NewRequest(http.MethodGet, "http://"+host+"/?token=test-session", nil)
-	root.Host = host
-	rootRecorder := httptest.NewRecorder()
-	handler.ServeHTTP(rootRecorder, root)
-	cookies := rootRecorder.Result().Cookies()
-	if rootRecorder.Code != http.StatusSeeOther || len(cookies) != 1 {
-		t.Fatal("valid bootstrap ticket did not issue a session cookie")
+	const bootstrapToken = "test-session"
+	cookieValue, ok := webUITestSessionCookies.Load(bootstrapToken)
+	if !ok {
+		root := httptest.NewRequest(http.MethodGet, "http://"+host+"/?token="+bootstrapToken, nil)
+		root.Host = host
+		rootRecorder := httptest.NewRecorder()
+		handler.ServeHTTP(rootRecorder, root)
+		cookies := rootRecorder.Result().Cookies()
+		if rootRecorder.Code != http.StatusSeeOther || len(cookies) != 1 {
+			t.Fatalf("valid bootstrap ticket exchange returned status=%d cookies=%d", rootRecorder.Code, len(cookies))
+		}
+		cookieValue = cookies[0]
+		webUITestSessionCookies.Store(bootstrapToken, cookieValue)
 	}
+	cookie := cookieValue.(*http.Cookie)
 
 	request := httptest.NewRequest(method, "http://"+host+path, bytes.NewReader(body))
 	request.Host = host
 	request.Header.Set("Origin", "http://"+host)
-	request.AddCookie(cookies[0])
+	request.AddCookie(cookie)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	return recorder
@@ -419,11 +429,8 @@ func TestWebUIAdminCheckLogPersistsAndRedactsCredentials(t *testing.T) {
 }
 
 func TestWebUIPageHasManagementTabsButNoPanelMutationActions(t *testing.T) {
-	handler := webUIHandler()
-	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:19876/", nil)
-	request.Host = "127.0.0.1:19876"
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
+	handler := newWebUIHandlerWithDataDir("http://127.0.0.1:18765/status", "test-session", "")
+	recorder := newAuthenticatedWebUIRequest(t, handler, http.MethodGet, "/", nil)
 	page := recorder.Body.String()
 
 	for _, label := range []string{"Конфигурация", "DoH-сервера", "Домены", "Проверка состояния", "Логи", "Geosite DNS"} {
