@@ -13,7 +13,8 @@ import (
 	"syscall"
 )
 
-// dnsConfigWriteMu serializes CLI, Web UI and daemon-generated config updates.
+// dnsConfigWriteMu serializes config updates within one process; the stable
+// config.json.lock file coordinates independent daemon, CLI and Web UI processes.
 var dnsConfigWriteMu sync.Mutex
 
 // acquireDNSConfigFileLock coordinates independent daemon, CLI and Web UI
