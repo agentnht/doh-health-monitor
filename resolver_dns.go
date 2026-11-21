@@ -45,7 +45,7 @@ func (r *Runtime) resolverDNSResponse(query []byte, snapshot *Snapshot) []byte {
 	cancel()
 	if queryErr != nil {
 		r.failures.Add(1)
-		return emptyNoErrorDNSResponse(query)
+		return servfailResponse(query)
 	}
 
 	maxTTL := mode2MaxCacheTTL
@@ -75,8 +75,32 @@ func (r *Runtime) queryResolverUpstreams(ctx context.Context, snapshot *Snapshot
 		return nil, "", errors.New("mode-2 resolver list is empty")
 	}
 
-	failures := make([]string, 0, len(snapshot.resolverUpstreams))
+	resolverByID := make(map[string]*ResolverRuntime, len(snapshot.resolverUpstreams))
+	order := make([]string, 0, len(snapshot.resolverUpstreams))
 	for _, resolver := range snapshot.resolverUpstreams {
+		if resolver == nil {
+			continue
+		}
+		id := strings.TrimSpace(resolver.cfg.ID)
+		if id == "" {
+			continue
+		}
+		if _, exists := resolverByID[id]; exists {
+			continue
+		}
+		resolverByID[id] = resolver
+		order = append(order, id)
+	}
+	if len(order) == 0 {
+		return nil, "", errors.New("mode-2 resolver list has no usable upstreams")
+	}
+
+	// Reuse the shared upstream cooldown. If all resolvers are cooling down,
+	// upstreamsToAttempt probes only the resolver whose cooldown expires first.
+	attemptOrder := r.upstreamsToAttempt(order, time.Now())
+	failures := make([]string, 0, len(attemptOrder))
+	for _, id := range attemptOrder {
+		resolver := resolverByID[id]
 		if resolver == nil {
 			continue
 		}
@@ -112,11 +136,13 @@ func (r *Runtime) queryResolverUpstreams(ctx context.Context, snapshot *Snapshot
 				if dnsTruncated(response) {
 					err = errors.New("upstream response remains truncated after transport retry")
 				} else {
-					return response, resolver.cfg.ID, nil
+					r.markUpstreamSuccess(id)
+					return response, id, nil
 				}
 			}
 		}
-		failures = append(failures, resolver.cfg.ID+": "+err.Error())
+		r.markUpstreamFailure(id, time.Now())
+		failures = append(failures, id+": "+err.Error())
 	}
 	return nil, "", fmt.Errorf("all mode-2 resolver upstreams failed: %s", strings.Join(failures, "; "))
 }

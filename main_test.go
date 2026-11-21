@@ -1424,3 +1424,82 @@ func containsString(values []string, want string) bool {
 	for _, value := range values { if value == want { return true } }
 	return false
 }
+
+
+func TestErrorResponsePreservesOnlyQuestionAndValidHeader(t *testing.T) {
+	query := makeDNSQuery("example.com", 1)
+	questionEnd := len(query)
+	query = append(query, 0, 0, 41, 4, 208, 0, 0, 0, 0, 0, 0)
+	binary.BigEndian.PutUint16(query[10:12], 1)
+
+	response := servfailResponse(query)
+	if len(response) != questionEnd {
+		t.Fatalf("response length=%d, want question-only length=%d", len(response), questionEnd)
+	}
+	if dnsRCode(response) != 2 || binary.BigEndian.Uint16(response[4:6]) != 1 ||
+		binary.BigEndian.Uint16(response[6:8]) != 0 || binary.BigEndian.Uint16(response[8:10]) != 0 ||
+		binary.BigEndian.Uint16(response[10:12]) != 0 {
+		t.Fatalf("malformed SERVFAIL header: rcode=%d counts=%d/%d/%d/%d", dnsRCode(response),
+			binary.BigEndian.Uint16(response[4:6]), binary.BigEndian.Uint16(response[6:8]),
+			binary.BigEndian.Uint16(response[8:10]), binary.BigEndian.Uint16(response[10:12]))
+	}
+	if _, _, end, err := parseQuestion(response); err != nil || end != questionEnd {
+		t.Fatalf("question in error response is invalid: end=%d err=%v", end, err)
+	}
+
+	short := formerrResponse([]byte{0x12, 0x34, 0x01})
+	if len(short) != 12 || binary.BigEndian.Uint16(short[:2]) != 0x1234 || dnsRCode(short) != 1 {
+		t.Fatalf("short query response=%v, want 12-byte FORMERR with transaction ID", short)
+	}
+}
+
+func largeTXTResponse(query []byte, recordLengths ...int) []byte {
+	response := append([]byte(nil), query[:12]...)
+	binary.BigEndian.PutUint16(response[2:4], 0x8180)
+	binary.BigEndian.PutUint16(response[6:8], 0)
+	binary.BigEndian.PutUint16(response[8:10], 0)
+	binary.BigEndian.PutUint16(response[10:12], 0)
+	_, _, questionEnd, _ := parseQuestion(query)
+	response = append(response, query[12:questionEnd]...)
+	answerCount := uint16(0)
+	for _, dataLength := range recordLengths {
+		if dataLength <= 0 { continue }
+		response = append(response, 0xc0, 0x0c, 0, 16, 0, 1, 0, 0, 0, 60)
+		response = append(response, byte(dataLength>>8), byte(dataLength))
+		response = append(response, make([]byte, dataLength)...)
+		answerCount++
+	}
+	binary.BigEndian.PutUint16(response[6:8], answerCount)
+	return response
+}
+
+func TestDNSUDPResponseLimitUsesEDNSAndTruncatesAtRecordBoundaries(t *testing.T) {
+	plainQuery := makeDNSQuery("large.example", 16)
+	if got := dnsUDPResponseLimit(plainQuery); got != 512 {
+		t.Fatalf("non-EDNS UDP limit=%d, want 512", got)
+	}
+	plainResponse := largeTXTResponse(plainQuery, 600)
+	plain := truncateDNSResponse(plainResponse, dnsUDPResponseLimit(plainQuery))
+	if len(plain) > 512 || !dnsTruncated(plain) || binary.BigEndian.Uint16(plain[6:8]) != 0 {
+		t.Fatalf("non-EDNS response not cleanly truncated: len=%d TC=%t AN=%d", len(plain), dnsTruncated(plain), binary.BigEndian.Uint16(plain[6:8]))
+	}
+	if _, _, end, err := parseQuestion(plain); err != nil || end != len(plain) {
+		t.Fatalf("truncated response contains malformed/partial question: end=%d len=%d err=%v", end, len(plain), err)
+	}
+
+	ednsQuery := append([]byte(nil), plainQuery...)
+	ednsQuery = append(ednsQuery, 0, 0, 41, 4, 208, 0, 0, 0, 0, 0, 0)
+	binary.BigEndian.PutUint16(ednsQuery[10:12], 1)
+	if got := dnsUDPResponseLimit(ednsQuery); got != 1232 {
+		t.Fatalf("EDNS UDP limit=%d, want 1232", got)
+	}
+	ednsResponse := largeTXTResponse(ednsQuery, 700, 700)
+	edns := truncateDNSResponse(ednsResponse, dnsUDPResponseLimit(ednsQuery))
+	if len(edns) > 1232 || !dnsTruncated(edns) || binary.BigEndian.Uint16(edns[6:8]) != 1 {
+		t.Fatalf("EDNS response not truncated at a complete RR boundary: len=%d TC=%t AN=%d", len(edns), dnsTruncated(edns), binary.BigEndian.Uint16(edns[6:8]))
+	}
+	rrs, err := dnsRRsInSection(edns, 0)
+	if err != nil || len(rrs) != 1 || rrs[0].end > len(edns) {
+		t.Fatalf("truncated EDNS answer is malformed: records=%+v err=%v", rrs, err)
+	}
+}

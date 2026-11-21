@@ -1693,9 +1693,7 @@ func (r *Runtime) serveUDPWithHandler(ctx context.Context, c *net.UDPConn, handl
 					r.activeUDP.Add(1)
 					resp := handle(job.packet)
 					r.activeUDP.Add(-1)
-					if len(resp) > 4096 {
-						resp = resp[:4096]
-					}
+					resp = truncateDNSResponse(resp, dnsUDPResponseLimit(job.packet))
 					_, _ = c.WriteToUDP(resp, job.addr)
 				}
 			}
@@ -3250,19 +3248,173 @@ func dnsAnswerCount(p []byte) int {
 }
 func formerrResponse(q []byte) []byte  { return errorResponse(q, 1) }
 func servfailResponse(q []byte) []byte { return errorResponse(q, 2) }
+
+func dnsUDPResponseLimit(query []byte) int {
+	const defaultLimit = 512
+	if len(query) < 12 {
+		return defaultLimit
+	}
+	offset := 12
+	questions := int(binary.BigEndian.Uint16(query[4:6]))
+	for i := 0; i < questions; i++ {
+		_, end, err := decodeName(query, offset)
+		if err != nil || end+4 > len(query) {
+			return defaultLimit
+		}
+		offset = end + 4
+	}
+	counts := []int{
+		int(binary.BigEndian.Uint16(query[6:8])),
+		int(binary.BigEndian.Uint16(query[8:10])),
+		int(binary.BigEndian.Uint16(query[10:12])),
+	}
+	limit := defaultLimit
+	for section, count := range counts {
+		for i := 0; i < count; i++ {
+			_, nameEnd, err := decodeName(query, offset)
+			if err != nil || nameEnd+10 > len(query) {
+				return defaultLimit
+			}
+			typeCode := binary.BigEndian.Uint16(query[nameEnd : nameEnd+2])
+			class := binary.BigEndian.Uint16(query[nameEnd+2 : nameEnd+4])
+			rdataLength := int(binary.BigEndian.Uint16(query[nameEnd+8 : nameEnd+10]))
+			offset = nameEnd + 10 + rdataLength
+			if offset > len(query) {
+				return defaultLimit
+			}
+			if section == 2 && typeCode == 41 {
+				limit = int(class)
+			}
+		}
+	}
+	if limit < defaultLimit {
+		limit = defaultLimit
+	}
+	if limit > maxDNSMessage {
+		limit = maxDNSMessage
+	}
+	return limit
+}
+
+// truncateDNSResponse preserves complete questions and resource records. If
+// any data is omitted or malformed, it sets TC and rewrites all section counts.
+func truncateDNSResponse(response []byte, limit int) []byte {
+	if len(response) <= limit || len(response) < 12 {
+		return response
+	}
+	if limit < 12 {
+		limit = 12
+	}
+	minimal := func() []byte {
+		out := append([]byte(nil), response[:12]...)
+		flags := binary.BigEndian.Uint16(out[2:4]) | 0x8200
+		binary.BigEndian.PutUint16(out[2:4], flags)
+		for i := 4; i < 12; i += 2 {
+			binary.BigEndian.PutUint16(out[i:i+2], 0)
+		}
+		return out
+	}
+
+	questionCount := int(binary.BigEndian.Uint16(response[4:6]))
+	offset := 12
+	for i := 0; i < questionCount; i++ {
+		_, end, err := decodeName(response, offset)
+		if err != nil || end+4 > len(response) {
+			return minimal()
+		}
+		offset = end + 4
+	}
+	if offset > limit {
+		return minimal()
+	}
+	out := append([]byte(nil), response[:offset]...)
+	counts := [3]uint16{}
+	truncated := false
+	sectionCounts := []int{
+		int(binary.BigEndian.Uint16(response[6:8])),
+		int(binary.BigEndian.Uint16(response[8:10])),
+		int(binary.BigEndian.Uint16(response[10:12])),
+	}
+	for section, count := range sectionCounts {
+		for i := 0; i < count; i++ {
+			start := offset
+			_, nameEnd, err := decodeName(response, offset)
+			if err != nil || nameEnd+10 > len(response) {
+				truncated = true
+				break
+			}
+			rdataLength := int(binary.BigEndian.Uint16(response[nameEnd+8 : nameEnd+10]))
+			offset = nameEnd + 10 + rdataLength
+			if offset > len(response) {
+				truncated = true
+				break
+			}
+			if len(out)+(offset-start) > limit {
+				truncated = true
+				offset = start
+				break
+			}
+			out = append(out, response[start:offset]...)
+			counts[section]++
+		}
+		if truncated {
+			break
+		}
+	}
+	if offset < len(response) {
+		truncated = true
+	}
+	binary.BigEndian.PutUint16(out[4:6], uint16(questionCount))
+	binary.BigEndian.PutUint16(out[6:8], counts[0])
+	binary.BigEndian.PutUint16(out[8:10], counts[1])
+	binary.BigEndian.PutUint16(out[10:12], counts[2])
+	if truncated {
+		flags := binary.BigEndian.Uint16(out[2:4]) | 0x0200
+		binary.BigEndian.PutUint16(out[2:4], flags)
+	}
+	return out
+}
+
 func errorResponse(q []byte, rcode uint16) []byte {
-	if len(q) < 12 {
-		return []byte{}
+	// Always return a complete DNS header, preserving the transaction ID
+	// whenever the request contains it.
+	response := make([]byte, 12)
+	if len(q) >= 2 {
+		copy(response[:2], q[:2])
 	}
-	p := append([]byte(nil), q...)
-	flags := binary.BigEndian.Uint16(p[2:4])
-	flags = (flags | 0x8000) &^ 0x0200
-	flags = (flags &^ 0x000f) | rcode
-	binary.BigEndian.PutUint16(p[2:4], flags)
-	for i := 4; i < 12; i += 2 {
-		binary.BigEndian.PutUint16(p[i:i+2], 0)
+	flags := uint16(0)
+	if len(q) >= 4 {
+		flags = binary.BigEndian.Uint16(q[2:4])
 	}
-	return p
+	flags = (flags | 0x8000) &^ (0x0200 | 0x0400 | 0x0080 | 0x0020 | 0x000f)
+	flags |= rcode & 0x000f
+	binary.BigEndian.PutUint16(response[2:4], flags)
+
+	// Echo only a complete, parseable question section. Never leave request
+	// EDNS or other records attached to a response whose counts are zero.
+	questionCount := 0
+	if len(q) >= 12 {
+		requested := int(binary.BigEndian.Uint16(q[4:6]))
+		offset := 12
+		valid := true
+		for i := 0; i < requested; i++ {
+			_, end, err := decodeName(q, offset)
+			if err != nil || end+4 > len(q) {
+				valid = false
+				break
+			}
+			offset = end + 4
+		}
+		if valid {
+			response = append(response, q[12:offset]...)
+			questionCount = requested
+		}
+	}
+	binary.BigEndian.PutUint16(response[4:6], uint16(questionCount))
+	binary.BigEndian.PutUint16(response[6:8], 0)
+	binary.BigEndian.PutUint16(response[8:10], 0)
+	binary.BigEndian.PutUint16(response[10:12], 0)
+	return response
 }
 func parseARecords(p []byte) ([]string, error) {
 	if len(p) < 12 {

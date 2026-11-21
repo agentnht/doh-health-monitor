@@ -516,6 +516,7 @@ func parseHealthChecks(data []byte) ([]Check, error) {
 			return nil, fmt.Errorf("line %d: required: %w", lineNumber+1, err)
 		}
 		httpURL := strings.TrimSpace(fields[3])
+		var parsedURL *url.URL
 		expected, err := parseExpectedHTTPStatuses(fields[4])
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", lineNumber+1, err)
@@ -529,13 +530,14 @@ func parseHealthChecks(data []byte) ([]Check, error) {
 				return nil, fmt.Errorf("line %d: expected_status and verify_oidc require http_url", lineNumber+1)
 			}
 		} else {
-			parsed, parseErr := url.Parse(httpURL)
-			if parseErr != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Hostname(), domain) || parsed.User != nil || parsed.Fragment != "" {
+			var parseErr error
+			parsedURL, parseErr = url.Parse(httpURL)
+			if parseErr != nil || parsedURL.Scheme != "https" || !strings.EqualFold(parsedURL.Hostname(), domain) || parsedURL.User != nil || parsedURL.Fragment != "" {
 				return nil, fmt.Errorf("line %d: http_url must be HTTPS on the same hostname as domain", lineNumber+1)
 			}
 		}
-		if verifyOIDC && !strings.HasSuffix(strings.TrimRight(httpURL, "/"), "/.well-known/openid-configuration") {
-			return nil, fmt.Errorf("line %d: verify_oidc requires an OIDC discovery URL", lineNumber+1)
+		if verifyOIDC && (parsedURL == nil || parsedURL.RawQuery != "" || parsedURL.Fragment != "" || !strings.HasSuffix(parsedURL.Path, "/.well-known/openid-configuration")) {
+			return nil, fmt.Errorf("line %d: verify_oidc requires an exact OIDC discovery URL without query, fragment or trailing slash", lineNumber+1)
 		}
 		seen[domain] = true
 		checks = append(checks, Check{

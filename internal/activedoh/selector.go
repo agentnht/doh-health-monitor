@@ -182,7 +182,7 @@ func (s *Selector) Select(candidates []Candidate, results []ProbeResult, now tim
 	if bestID == "" || bestScore == 0 {
 		s.betterCandidate = ""
 		s.betterCandidateStreak = 0
-		if s.activeFailures >= s.policy.FailureCycles && s.canSwitch(now) {
+		if s.activeFailures >= s.policy.FailureCycles {
 			s.clearCurrent()
 			return Selection{}, false
 		}
@@ -206,7 +206,7 @@ func (s *Selector) Select(candidates []Candidate, results []ProbeResult, now tim
 
 	repeatedFailure := currentScore == 0 && s.activeFailures >= s.policy.FailureCycles
 	repeatedImprovement := s.betterCandidateStreak >= 2
-	if (repeatedFailure || repeatedImprovement) && s.canSwitch(now) {
+	if repeatedFailure || (repeatedImprovement && s.canSwitch(now)) {
 		return s.setCurrent(eligible[bestID], bestScore, len(controlDomains), now), true
 	}
 
