@@ -25,17 +25,17 @@ func TestCheckPluginHealthUsesReadOnlyLocalProbes(t *testing.T) {
 	requests := 0
 	status := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
-		if r.Method != http.MethodGet {
-			t.Errorf("status method=%s, want GET", r.Method)
+		if r.Method != http.MethodGet || r.URL.Path != "/healthz" {
+			t.Errorf("health request=%s %s, want GET /healthz", r.Method, r.URL.Path)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte("{\"version\":\"test\"}"))
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("ok\n"))
 	}))
 	defer status.Close()
 
 	opts := DefaultOptions()
 	opts.Service = "test.service"
-	opts.StatusURL = status.URL
+	opts.StatusURL = status.URL + "/healthz"
 	if err := checkPluginHealth(opts, nil); err != nil {
 		t.Fatalf("read-only plugin check failed: %v", err)
 	}
@@ -46,8 +46,16 @@ func TestCheckPluginHealthUsesReadOnlyLocalProbes(t *testing.T) {
 
 func TestCheckPluginHealthRejectsNonLoopbackStatusURL(t *testing.T) {
 	opts := DefaultOptions()
-	opts.StatusURL = "http://192.0.2.10:18765/status"
+	opts.StatusURL = "http://192.0.2.10:18765/healthz"
 	if err := checkPluginHealth(opts, nil); err == nil {
 		t.Fatal("non-loopback status URL must be rejected")
+	}
+}
+
+func TestCheckPluginHealthRejectsDetailedStatusURL(t *testing.T) {
+	opts := DefaultOptions()
+	opts.StatusURL = "http://127.0.0.1:18765/status"
+	if err := checkPluginHealth(opts, nil); err == nil {
+		t.Fatal("detailed /status endpoint must not be used as unauthenticated health probe")
 	}
 }

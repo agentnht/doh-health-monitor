@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
@@ -34,6 +35,7 @@ import (
 const (
 	pluginID                  = "doh-health-monitor"
 	pluginVersion             = "2.3.2"
+	statusAPITokenFile        = "status-api.token"
 	systemDNSUpstreamID       = "system-dns"
 	systemResolvConfPath      = "/etc/resolv.conf"
 	systemDNSPerServerTimeout = 2 * time.Second
@@ -329,6 +331,7 @@ type Runtime struct {
 	healthCheckTrigger     chan struct{}
 	activeDoHTrigger       chan struct{}
 	activeDoHSelector      *activedoh.Selector
+	statusToken            string
 	snapshot               atomic.Pointer[Snapshot]
 	mu                     sync.RWMutex
 	health                 map[string]map[string]HealthEntry
@@ -395,6 +398,10 @@ func main() {
 		fatal("create data dir: %v", err)
 	}
 	_ = os.Chmod(dataDir, 0700)
+	statusToken, err := rotateStatusAPIToken(dataDir)
+	if err != nil {
+		fatal("STATUS API token initialization failed: %v", err)
+	}
 	logLine("INFO", "START id=%s version=%s arch=%s data=%s", envOr("LUCX_PLUGIN_ID", pluginID), envOr("LUCX_PLUGIN_VERSION", pluginVersion), runtime.GOARCH, dataDir)
 
 	configPath := filepath.Join(dataDir, "config.json")
@@ -436,6 +443,7 @@ func main() {
 		healthCheckTrigger: make(chan struct{}, 1),
 		activeDoHTrigger:   make(chan struct{}, 1),
 		activeDoHSelector:  activedoh.NewSelector(activedoh.DefaultPolicy()),
+		statusToken:        statusToken,
 		health:             map[string]map[string]HealthEntry{}, active: map[string]string{},
 		cache: map[string]cacheItem{}, lastGemini: map[string]time.Time{},
 		dnsSem: make(chan struct{}, cfg.DNSMaxConcurrent),
@@ -459,10 +467,7 @@ func main() {
 		fatal("DNS TCP listen %s: %v", cfg.DNSListenTCP, err)
 	}
 	httpMux := http.NewServeMux()
-	httpMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok\n"))
-	})
+	httpMux.HandleFunc("/healthz", rt.handleHealthz)
 	httpMux.HandleFunc("/status", rt.handleStatus)
 	httpSrv := &http.Server{Addr: cfg.HTTPListen, Handler: httpMux, ReadHeaderTimeout: 3 * time.Second}
 	httpLn, err := net.Listen("tcp", cfg.HTTPListen)
@@ -947,7 +952,7 @@ func validListen(s string) bool {
 func reservedGeminiKeyPath(path string) bool {
 	base := strings.ToLower(filepath.Base(filepath.Clean(path)))
 	switch base {
-	case "config.json", "doh-servers.txt", "tst-domen.txt", "local-hosts.txt", "plugin.log", "webui-admin-check.log":
+	case "config.json", "doh-servers.txt", "tst-domen.txt", "local-hosts.txt", "plugin.log", "webui-admin-check.log", "status-api.token":
 		return true
 	}
 	return strings.HasSuffix(base, ".bak") || strings.HasSuffix(base, ".tmp")
@@ -2984,6 +2989,92 @@ func readRegularPluginFileNoFollow(path string, maxBytes int64) ([]byte, error) 
 	return data, nil
 }
 
+func rotateStatusAPIToken(dataDir string) (string, error) {
+	root, err := webUIDataRoot(dataDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve plugin data directory: %w", err)
+	}
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate status API token: %w", err)
+	}
+	token := fmt.Sprintf("%x", raw)
+	temp, err := os.CreateTemp(root, ".status-api-token-*")
+	if err != nil {
+		return "", fmt.Errorf("create temporary status API token: %w", err)
+	}
+	tempName := temp.Name()
+	defer os.Remove(tempName)
+	if err := temp.Chmod(0600); err != nil {
+		_ = temp.Close()
+		return "", fmt.Errorf("secure temporary status API token: %w", err)
+	}
+	if _, err := io.WriteString(temp, token+"\n"); err != nil {
+		_ = temp.Close()
+		return "", fmt.Errorf("write temporary status API token: %w", err)
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return "", fmt.Errorf("sync temporary status API token: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return "", fmt.Errorf("close temporary status API token: %w", err)
+	}
+	target := filepath.Join(root, statusAPITokenFile)
+	if err := os.Rename(tempName, target); err != nil {
+		return "", fmt.Errorf("install status API token: %w", err)
+	}
+	return token, nil
+}
+
+func readStatusAPIToken(dataDir string) (string, error) {
+	root, err := webUIDataRoot(dataDir)
+	if err != nil {
+		return "", err
+	}
+	data, err := readRegularPluginFileNoFollow(filepath.Join(root, statusAPITokenFile), 128)
+	if err != nil {
+		return "", fmt.Errorf("read status API token: %w", err)
+	}
+	token := strings.TrimSpace(string(data))
+	if len(token) != 64 {
+		return "", errors.New("status API token has an invalid length")
+	}
+	for _, r := range token {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return "", errors.New("status API token has an invalid format")
+		}
+	}
+	return token, nil
+}
+
+func (r *Runtime) authorizeStatusRequest(req *http.Request) bool {
+	if r == nil || r.statusToken == "" || req == nil {
+		return false
+	}
+	const prefix = "Bearer "
+	header := req.Header.Get("Authorization")
+	if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
+		return false
+	}
+	provided := strings.TrimSpace(header[len(prefix):])
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(r.statusToken)) == 1
+}
+
+func (r *Runtime) handleHealthz(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet && req.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	if req.Method != http.MethodHead {
+		_, _ = io.WriteString(w, "ok\n")
+	}
+}
+
 func loadConfigNoCreate(path string) (Config, error) {
 	b, e := readRegularPluginFileNoFollow(path, 2<<20)
 	if e != nil {
@@ -3008,6 +3099,11 @@ func loadConfigNoCreate(path string) (Config, error) {
 }
 func (r *Runtime) setError(s string) { r.statusMu.Lock(); r.lastError = s; r.statusMu.Unlock() }
 func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
+	if !r.authorizeStatusRequest(req) {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="doh-status"`)
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
 	if req.Method != http.MethodGet && req.Method != http.MethodHead {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -3048,9 +3144,8 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 			out.DoHBootstrap[uid] = upstream.bootstrap.status()
 		}
 	}
-	// /status is intentionally readable by local diagnostic clients without an
-	// authentication exchange. Do not expose filesystem paths or host resolver
-	// details through this endpoint.
+	// /status contains detailed diagnostics and requires the private bearer token.
+	// Keep filesystem paths and host resolver details out of the response as well.
 	out.Config = ""
 	out.SystemDNSServers = nil
 	out.SystemDNSError = ""
@@ -3064,6 +3159,8 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 	out.LastError = r.lastError
 	r.statusMu.RUnlock()
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_ = json.NewEncoder(w).Encode(out)
 }
 

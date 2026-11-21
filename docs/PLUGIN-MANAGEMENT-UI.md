@@ -116,3 +116,8 @@ CI covers JavaScript syntax, shell syntax and SSH menu helper tests. Go tests co
 - Plugin/admin log source selection, bounded tail reads and secret redaction.
 - DNS status classification for NODATA/NXDOMAIN/server failures versus transport errors.
 - Separate UDP/TCP listener diagnostics and read-only Xray checker integration.
+
+
+## Daemon status API boundary
+
+The daemon's unauthenticated `GET /healthz` endpoint returns only `ok` for LucX-UI health checks. Detailed `GET /status` requires a bearer token stored in the private `$LUCX_PLUGIN_DATA/status-api.token` file (mode `0600`; data directory mode `0700`). The Web UI backend reads this token locally and does not expose it to the browser. The management menu's read-only checker uses the protected status endpoint; the plugin preflight uses only `/healthz`.

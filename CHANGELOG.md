@@ -6,8 +6,8 @@
 - Gemini API key нельзя сохранить поверх `config.json`, файлов источников, логов, backup или временных файлов.
 - Ошибки DoH транспортов больше не раскрывают URL path/query и endpoint credentials; URL выбранного endpoint-а в `/status` ограничен origin.
 - Исправлена маска секретов в Web UI logs; префикс `Authorization: Bearer` сохраняется, значение заменяется на `[REDACTED]`.
-- Чтение `config.json`, DoH/health/local-hosts sources и исходной копии перед backup выполняется без перехода по symlink, с проверкой типа и ограничением размера.
-- Неаутентифицированный loopback `/status` больше не раскрывает полный config path, список системных DNS и ошибки чтения resolver config.
+- Чтение `config.json`, DoH/health/local-hosts sources и файлов перед backup выполняется через bounded `O_NOFOLLOW` reader; сам открытый descriptor проверяется как regular file, устраняя гонку `Lstat` → `ReadFile`.
+- Подробный loopback `/status` требует случайный bearer-токен из `$LUCX_PLUGIN_DATA/status-api.token` (0600); неаутентифицированный `/healthz` возвращает только `ok`. Web UI backend аутентифицируется к `/status` локальным токеном, не раскрывая его браузеру.
 - Bootstrap IP DoH endpoint-ов фильтруются по глобальной публичной адресации; частные, loopback, link-local, multicast и зарезервированные IP не пробуются.
 - Удалён неиспользуемый Go panel-integration subsystem: выдача admin-токенов, panel API mutation, Xray planner и диагностический Tunnel lifecycle больше не входят в исходники sidecar. Оставлен только read-only preflight службы/listener/status.
 - Полностью удалена Go-зависимость SQLite (`modernc.org/sqlite`) и её транзитивные зависимости; в sidecar больше нет SQLite driver, `database/sql` panel adapter или build-tagged legacy пути.

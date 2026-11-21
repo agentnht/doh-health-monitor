@@ -19,6 +19,19 @@ fail=0
 pass() { printf '[OK]   %s\n' "$*"; ok=$((ok + 1)); }
 warning() { printf '[WARN] %s\n' "$*"; warn=$((warn + 1)); }
 error() { printf '[FAIL] %s\n' "$*"; fail=$((fail + 1)); }
+status_api_request() {
+  local output="$1" token_file token status_port
+  if [[ -z "${LUCX_PLUGIN_DATA:-}" ]]; then return 1; fi
+  # Never send a bearer token to an endpoint supplied through an untrusted environment.
+  if [[ ! "$DOH_STATUS_URL" =~ ^http://(127\.0\.0\.1|\[::1\]):([0-9]{1,5})/status$ ]]; then return 1; fi
+  status_port="${BASH_REMATCH[2]}"
+  if (( 10#$status_port < 1 || 10#$status_port > 65535 )); then return 1; fi
+  token_file="$LUCX_PLUGIN_DATA/status-api.token"
+  [[ -f "$token_file" && ! -L "$token_file" ]] || return 1
+  IFS= read -r token < "$token_file" || return 1
+  [[ "$token" =~ ^[a-f0-9]{64}$ ]] || return 1
+  printf 'header = "Authorization: Bearer %s"\n' "$token" | curl --config - --fail --silent --show-error --max-time 3 "$DOH_STATUS_URL" -o "$output" 2>/dev/null
+}
 
 if ! command -v jq >/dev/null 2>&1; then
   error "jq не установлен; проверка JSON невозможна"
@@ -48,7 +61,7 @@ if [[ "${DOH_SKIP_PLUGIN_HEALTH_CHECK:-0}" != "1" ]]; then
   fi
 
   status_file="$(mktemp)"
-  if curl --fail --silent --show-error --max-time 3 "$DOH_STATUS_URL" -o "$status_file" 2>/dev/null &&
+  if status_api_request "$status_file" &&
      jq -e . "$status_file" >/dev/null 2>&1; then
     version="$(jq -r '.version // "unknown"' "$status_file")"
     pass "Status API отвечает корректным JSON (version: $version)"
@@ -60,7 +73,7 @@ fi
 
 # Report the plugin's effective DNS mode and active endpoint from its read-only status API.
 status_file="$(mktemp)"
-if curl --fail --silent --show-error --max-time 3 "$DOH_STATUS_URL" -o "$status_file" 2>/dev/null &&
+if status_api_request "$status_file" &&
    jq -e . "$status_file" >/dev/null 2>&1; then
   dns_mode="$(jq -r '.dns_mode // "unknown"' "$status_file")"
   case "$dns_mode" in

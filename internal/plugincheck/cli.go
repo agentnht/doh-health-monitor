@@ -23,7 +23,7 @@ func RunCommand(args []string, logger Logger) error {
 	fs.SetOutput(os.Stderr)
 	fs.DurationVar(&opts.Timeout, "timeout", opts.Timeout, "Local preflight timeout")
 	fs.StringVar(&opts.Service, "plugin-service", opts.Service, "DoH Health Monitor systemd service")
-	fs.StringVar(&opts.StatusURL, "plugin-status-url", opts.StatusURL, "Plugin status endpoint (loopback only)")
+	fs.StringVar(&opts.StatusURL, "plugin-status-url", opts.StatusURL, "Minimal plugin health endpoint (loopback only)")
 	fs.IntVar(&opts.Port, "plugin-port", opts.Port, "Plugin DNS listener port")
 	if err := fs.Parse(args[1:]); err != nil {
 		return problem("Invalid check arguments")
