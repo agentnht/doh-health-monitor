@@ -79,10 +79,42 @@ expect_fail() {
   fi
 }
 
+# Stub only the status API request so mode reporting is deterministic in CI.
+mkdir -p "$TMP_DIR/mock-bin"
+cat >"$TMP_DIR/mock-bin/curl" <<'MOCK'
+#!/usr/bin/env bash
+set -e
+out=""
+while (($#)); do
+  if [[ "$1" == "-o" ]]; then out="$2"; shift 2; else shift; fi
+done
+[[ -n "$out" && -n "${MOCK_STATUS_JSON:-}" ]]
+cp "$MOCK_STATUS_JSON" "$out"
+MOCK
+chmod +x "$TMP_DIR/mock-bin/curl"
+export PATH="$TMP_DIR/mock-bin:$PATH"
+export DOH_STATUS_URL="http://status.test/status"
+cat >"$TMP_DIR/status-mode1.json" <<'JSON'
+{"dns_mode":"endpoint_ip","active_doh":{"server_id":"active-test","hostname":"doh.example.net","ipv4":["192.0.2.10"],"ipv6":["2001:db8::10"],"score":6,"check_count":8}}
+JSON
+export MOCK_STATUS_JSON="$TMP_DIR/status-mode1.json"
+
 # There is geoip:private, but no xui-dns-allow, no finalRules localhost
 # exception and no 127.0.0.1:5355 entry in dns.servers: this is intentional.
 write_approved_config
 expect_pass "approved Geosite config passes without legacy localhost exception"
+grep -Fq "Текущий DNS mode: endpoint_ip (режим 1)" "$OUTPUT"
+grep -Fq "Активный DoH server: active-test (doh.example.net), score=6/8" "$OUTPUT"
+grep -Fq "Active endpoint IPv4: 192.0.2.10" "$OUTPUT"
+grep -Fq "Active endpoint IPv6: 2001:db8::10" "$OUTPUT"
+
+cat >"$TMP_DIR/status-mode2.json" <<'JSON'
+{"dns_mode":"resolver"}
+JSON
+export MOCK_STATUS_JSON="$TMP_DIR/status-mode2.json"
+expect_pass "resolver mode status is reported"
+grep -Fq "Текущий DNS mode: resolver (режим 2)" "$OUTPUT"
+export MOCK_STATUS_JSON="$TMP_DIR/status-mode1.json"
 
 write_approved_config
 jq '(.outbounds[] | select(.tag == "dns-out") | .settings.rules[0].domain) = ["geosite:cn", "domain:example.org"]' "$CONFIG" >"$TMP_DIR/mutated.json"
