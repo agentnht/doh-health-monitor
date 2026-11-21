@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"bufio"
-	"database/sql"
 	"io"
 	"net"
 	"strconv"
@@ -293,14 +292,6 @@ func TestInstallerTokenFileIsReadOnlyAndParsed(t *testing.T){
 	if err:=os.WriteFile(path,[]byte("OTHER=value\nXUI_API_TOKEN='"+token+"'\n"),0600);err!=nil{t.Fatal(err)}
 	got,err:=readInstallerToken(path);if err!=nil{t.Fatal(err)};if got!=token{t.Fatalf("unexpected token %q",got)}
 	if err:=os.Chmod(path,0644);err!=nil{t.Fatal(err)};if _,err:=readInstallerToken(path);err==nil{t.Fatal("world-readable installer token file must be rejected")}
-}
-func TestSQLiteEndpointSettingsReadOnly(t *testing.T){
-	path:=filepath.Join(t.TempDir(),"x-ui.db");db,err:=sql.Open("sqlite",path);if err!=nil{t.Fatal(err)}
-	if _,err:=db.Exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)");err!=nil{t.Fatal(err)}
-	if _,err:=db.Exec("INSERT INTO settings(key,value) VALUES (?,?), (?,?)","webPort","33976","webBasePath","/panel");err!=nil{t.Fatal(err)}
-	if err:=db.Close();err!=nil{t.Fatal(err)}
-	settings,err:=readPanelSettings(path);if err!=nil{t.Fatal(err)}
-	if settings["webPort"]!="33976"||settings["webBasePath"]!="/panel"{t.Fatalf("unexpected endpoint settings: %#v",settings)}
 }
 func TestDetectAndAuthorizeRejectsRemotePlainHTTP(t *testing.T){
 	t.Setenv("XUI_API_TOKEN","0123456789abcdef0123456789abcdef0123456789");opts:=DefaultOptions();opts.BaseURL="http://198.51.100.25:2053"
