@@ -684,3 +684,34 @@ func TestValidateChangedListenerBindsRejectsDuplicateTCPListeners(t *testing.T) 
 		t.Fatal("DNS/TCP and HTTP must not use the same TCP address")
 	}
 }
+
+func TestWriteManagedSourceWithBackupRejectsSymlinkSource(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	path := filepath.Join(dir, localHostsSourceFile)
+	original := []byte("sensitive target data\n")
+	if err := os.WriteFile(target, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeManagedSourceWithBackup(path, []byte("new managed data\n")); err == nil {
+		t.Fatal("managed source symlink must be rejected before backup or replacement")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("symlink target was modified: %q", got)
+	}
+	if _, err := os.Lstat(path + ".bak"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("backup should not have been created for a symlink source: %v", err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("managed symlink path changed unexpectedly: info=%v err=%v", info, err)
+	}
+}
