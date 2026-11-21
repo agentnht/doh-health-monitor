@@ -1138,8 +1138,8 @@ func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string
 		if len(b.ips) > 0 {
 			return append([]string(nil), b.ips...), nil
 		}
-		if len(b.fallback) > 0 {
-			return append([]string(nil), b.fallback...), nil
+		if fallback := filterPublicDoHIPs(b.fallback); len(fallback) > 0 {
+			return fallback, nil
 		}
 	}
 	b.lastAttempt = time.Now()
@@ -1160,7 +1160,7 @@ func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string
 		if len(found) > 0 {
 			for _, ip := range found {
 				v := ip.String()
-				if net.ParseIP(v) != nil && !seen[v] {
+				if isPublicDoHIP(ip) && !seen[v] {
 					seen[v] = true
 					ips = append(ips, v)
 				}
@@ -1191,8 +1191,8 @@ func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string
 	if len(b.ips) > 0 {
 		return append([]string(nil), b.ips...), fmt.Errorf("DNS refresh failed; using cached IPs: %w", err)
 	}
-	if len(b.fallback) > 0 {
-		return append([]string(nil), b.fallback...), fmt.Errorf("DNS lookup failed; using configured bootstrap_ips: %w", err)
+	if fallback := filterPublicDoHIPs(b.fallback); len(fallback) > 0 {
+		return fallback, fmt.Errorf("DNS lookup failed; using configured public bootstrap_ips: %w", err)
 	}
 	return nil, err
 }
@@ -1218,7 +1218,8 @@ func (b *bootstrapResolver) bestIP(ctx context.Context, force bool, timeout time
 		return "", resolveErr
 	}
 	b.mu.Lock()
-	usingFallback := len(b.ips) == 0 && len(b.fallback) > 0 && (resolveErr != nil || b.refreshed.IsZero())
+	fallback := filterPublicDoHIPs(b.fallback)
+	usingFallback := len(b.ips) == 0 && len(fallback) > 0 && (resolveErr != nil || b.refreshed.IsZero())
 	source := "dns"
 	if usingFallback {
 		source = "configured_fallback"
@@ -1233,13 +1234,13 @@ func (b *bootstrapResolver) bestIP(ctx context.Context, force bool, timeout time
 		probes[i].Source = source
 	}
 
-	if probeErr != nil && len(b.fallback) > 0 && !usingFallback {
-		fallbackIP, fallbackLatency, fallbackProbes, fallbackErr := b.fastestIPDetailed(ctx, b.fallback, timeout)
+	if probeErr != nil && len(fallback) > 0 && !usingFallback {
+		fallbackIP, fallbackLatency, fallbackProbes, fallbackErr := b.fastestIPDetailed(ctx, fallback, timeout)
 		for i := range fallbackProbes {
 			fallbackProbes[i].Source = "configured_fallback"
 		}
 		probes = append(probes, fallbackProbes...)
-		for _, fallbackCandidate := range b.fallback {
+		for _, fallbackCandidate := range fallback {
 			allCandidates = appendUniqueString(allCandidates, fallbackCandidate)
 		}
 		if fallbackErr == nil {
@@ -1284,13 +1285,14 @@ func (b *bootstrapResolver) bestIP(ctx context.Context, force bool, timeout time
 
 func (b *bootstrapResolver) selectAlternateIP(ctx context.Context, currentIP string, timeout time.Duration) (string, error) {
 	ips, resolveErr := b.addresses(ctx, false)
-	candidates := make([]string, 0, len(ips)+len(b.fallback))
+	fallback := filterPublicDoHIPs(b.fallback)
+	candidates := make([]string, 0, len(ips)+len(fallback))
 	for _, ip := range ips {
 		if ip != currentIP {
 			candidates = appendUniqueString(candidates, ip)
 		}
 	}
-	for _, ip := range b.fallback {
+	for _, ip := range fallback {
 		if ip != currentIP {
 			candidates = appendUniqueString(candidates, ip)
 		}
@@ -3014,7 +3016,7 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 	out := Status{
 		ID: envOr("LUCX_PLUGIN_ID", pluginID), Version: envOr("LUCX_PLUGIN_VERSION", pluginVersion),
 		StartedAt: startedAt, UpdatedAt: time.Now().UTC(), DNSUDP: s.cfg.DNSListenUDP,
-		DNSTCP: s.cfg.DNSListenTCP, DNSMode: s.cfg.DNSMode, HTTP: s.cfg.HTTPListen, Config: r.configPath,
+		DNSTCP: s.cfg.DNSListenTCP, DNSMode: s.cfg.DNSMode, HTTP: s.cfg.HTTPListen,
 		Cache: CacheStatus{Enabled: s.cfg.Cache.Enabled, Entries: cacheEntries, MaxEntries: s.cfg.Cache.MaxEntries, Bytes: cacheBytes, MaxBytes: s.cfg.Cache.MaxBytes},
 		Groups: map[string]GroupStatus{}, DoHBootstrap: map[string]DoHBootstrapStatus{},
 		ActiveDoH: r.activeDoHStatus(),
@@ -3043,11 +3045,12 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 			out.DoHBootstrap[uid] = upstream.bootstrap.status()
 		}
 	}
-	if servers, err := readSystemDNSServers(systemResolvConfPath); err != nil {
-		out.SystemDNSError = err.Error()
-	} else {
-		out.SystemDNSServers = servers
-	}
+	// /status is intentionally readable by local diagnostic clients without an
+	// authentication exchange. Do not expose filesystem paths or host resolver
+	// details through this endpoint.
+	out.Config = ""
+	out.SystemDNSServers = nil
+	out.SystemDNSError = ""
 	if s.cfg.GeminiAPI.Enabled {
 		out.GeminiAPI = "enabled"
 	}
