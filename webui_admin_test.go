@@ -72,6 +72,8 @@ func TestWebUIConfigAPIUpdatesValidatedSettingsAndDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	view.Health.TimeoutSeconds = 9
+	view.DNSMode = "resolver"
+	view.ResolverUpstreams = []ResolverUpstream{{ID: "primary", Name: "Primary", Type: "udp", Address: "9.9.9.9"}}
 	body, err := json.Marshal(view)
 	if err != nil {
 		t.Fatal(err)
@@ -86,6 +88,12 @@ func TestWebUIConfigAPIUpdatesValidatedSettingsAndDefaults(t *testing.T) {
 	}
 	if config.Health.TimeoutSeconds != 9 {
 		t.Fatalf("saved health timeout=%d, want 9", config.Health.TimeoutSeconds)
+	}
+	if config.DNSMode != "resolver" || len(config.ResolverUpstreams) != 1 || config.ResolverUpstreams[0].ID != "primary" {
+		t.Fatalf("DNS mode/upstreams not saved through Web UI: mode=%s upstreams=%+v", config.DNSMode, config.ResolverUpstreams)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.json.bak")); err != nil {
+		t.Fatalf("Web UI config save did not create backup: %v", err)
 	}
 
 	reset := newAuthenticatedWebUIRequest(t, handler, http.MethodPost, "/api/v1/config/defaults", []byte(`{"section":"health"}`))
