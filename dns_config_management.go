@@ -112,10 +112,10 @@ func runDNSConfigCLI(args []string) error {
 
 	var resolvers []ResolverUpstream
 	if cfg.DNSMode == "resolver" {
-		encoded, _ := json.MarshalIndent(cfg.ResolverUpstreams, "", "  ")
-		fmt.Println("Текущий resolver_upstreams (JSON). Вставьте новый JSON-массив")
-		fmt.Println("или нажмите Enter, чтобы оставить текущий порядок и параметры:")
+		encoded, _ := json.Marshal(cfg.ResolverUpstreams)
+		fmt.Println("Текущий resolver_upstreams (JSON, одна строка):")
 		fmt.Println(string(encoded))
+		fmt.Println("Вставьте новый JSON-массив одной строкой или нажмите Enter, чтобы оставить текущий порядок и параметры.")
 		fmt.Print("resolver_upstreams JSON [Enter — оставить]: ")
 		line, readErr := reader.ReadString('\n')
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
