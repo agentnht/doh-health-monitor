@@ -44,6 +44,7 @@ const (
 	maxUDPWorkers        = 64
 	udpQueueCapacity     = 128
 	maxTCPConnections    = 128
+	maxResolverUpstreams = 64
 	tcpIdleTimeout       = 30 * time.Second
 	tcpWriteTimeout      = 10 * time.Second
 )
@@ -688,6 +689,9 @@ func normalizeResolverAddress(raw string) (string, error) {
 }
 
 func validateResolverUpstreams(upstreams []ResolverUpstream) error {
+	if len(upstreams) > maxResolverUpstreams {
+		return fmt.Errorf("resolver_upstreams supports at most %d entries", maxResolverUpstreams)
+	}
 	ids := make(map[string]bool, len(upstreams))
 	systemCount := 0
 	for i, resolver := range upstreams {
