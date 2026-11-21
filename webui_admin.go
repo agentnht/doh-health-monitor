@@ -33,6 +33,8 @@ const (
 var webUIAdminMu sync.Mutex
 
 type webUIEditableConfig struct {
+	DNSMode                string          `json:"dns_mode"`
+	ResolverUpstreams       []ResolverUpstream `json:"resolver_upstreams"`
 	DNSListenUDP           string          `json:"dns_listen_udp"`
 	DNSListenTCP           string          `json:"dns_listen_tcp"`
 	HTTPListen             string          `json:"http_listen"`
@@ -395,6 +397,7 @@ func readWebUIConfig(dataDir string) (webUIEditableConfig, error) {
 
 func editableWebUIConfig(config Config) webUIEditableConfig {
 	return webUIEditableConfig{
+		DNSMode: config.DNSMode, ResolverUpstreams: append([]ResolverUpstream(nil), config.ResolverUpstreams...),
 		DNSListenUDP: config.DNSListenUDP, DNSListenTCP: config.DNSListenTCP, HTTPListen: config.HTTPListen,
 		ReloadSecs: config.ReloadSecs, DNSQueryTimeoutSeconds: config.DNSQueryTimeoutSeconds,
 		DoHTimeoutSeconds: config.DoHTimeoutSeconds, DNSMaxConcurrent: config.DNSMaxConcurrent,
@@ -423,6 +426,8 @@ func saveWebUIConfig(dataDir string, view webUIEditableConfig) (bool, error) {
 		config.DNSListenTCP != view.DNSListenTCP ||
 		config.HTTPListen != view.HTTPListen ||
 		config.DNSMaxConcurrent != view.DNSMaxConcurrent
+	config.DNSMode = strings.TrimSpace(view.DNSMode)
+	config.ResolverUpstreams = append([]ResolverUpstream(nil), view.ResolverUpstreams...)
 	config.DNSListenUDP = strings.TrimSpace(view.DNSListenUDP)
 	config.DNSListenTCP = strings.TrimSpace(view.DNSListenTCP)
 	config.HTTPListen = strings.TrimSpace(view.HTTPListen)
@@ -438,8 +443,22 @@ func saveWebUIConfig(dataDir string, view webUIEditableConfig) (bool, error) {
 	if err := validateConfig(config); err != nil {
 		return false, fmt.Errorf("config validation failed: %w", err)
 	}
-	if err := writeConfigAtomic(filepath.Join(root, "config.json"), config); err != nil {
-		return false, fmt.Errorf("save config.json: %w", err)
+	configPath := filepath.Join(root, "config.json")
+	original, err := os.ReadFile(configPath)
+	if err != nil {
+		return false, fmt.Errorf("read current config.json for backup: %w", err)
+	}
+	backupPath := configPath + ".bak"
+	if backupInfo, statErr := os.Lstat(backupPath); statErr == nil && backupInfo.Mode()&os.ModeSymlink != 0 {
+		return false, errors.New("refusing to replace a symlink at config.json.bak")
+	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return false, fmt.Errorf("inspect config backup: %w", statErr)
+	}
+	if err := writeAtomicFile(backupPath, original, 0600); err != nil {
+		return false, fmt.Errorf("create config.json.bak: %w", err)
+	}
+	if err := writeConfigAtomic(configPath, config); err != nil {
+		return false, fmt.Errorf("save config.json (backup retained): %w", err)
 	}
 	return restartRequired, nil
 }
