@@ -1143,16 +1143,16 @@ func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string
 		return ips, nil
 	}
 	if !force && time.Since(b.lastAttempt) < time.Minute {
-		ips := append([]string(nil), b.ips...)
-		fallback := filterPublicDoHIPs(b.fallback)
-		b.mu.Unlock()
-		if len(ips) > 0 {
+		if len(b.ips) > 0 {
+			ips := append([]string(nil), b.ips...)
+			b.mu.Unlock()
 			return ips, nil
 		}
-		if len(fallback) > 0 {
+		if fallback := filterPublicDoHIPs(b.fallback); len(fallback) > 0 {
+			b.mu.Unlock()
 			return fallback, nil
 		}
-		return nil, errors.New("bootstrap DNS retry is cooling down")
+		// With neither cached nor configured fallback addresses, retry DNS now.
 	}
 
 	b.lastAttempt = time.Now()
