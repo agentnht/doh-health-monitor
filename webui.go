@@ -256,7 +256,7 @@ func fetchWebUIStatus(ctx context.Context, statusURL string) (webUIStatus, error
 	}
 	out := webUIStatus{
 		ID: raw.ID, Version: raw.Version, StartedAt: raw.StartedAt, UpdatedAt: raw.UpdatedAt,
-		DNSUDP: raw.DNSUDP, DNSTCP: raw.DNSTCP, HTTP: raw.HTTP, Cache: raw.Cache, ActiveDoH: raw.ActiveDoH,
+		DNSUDP: raw.DNSUDP, DNSTCP: raw.DNSTCP, DNSMode: raw.DNSMode, HTTP: raw.HTTP, Cache: raw.Cache, ActiveDoH: raw.ActiveDoH,
 		Groups: map[string]webUIGroupStatus{}, GeminiAPI: raw.GeminiAPI,
 		Queries: raw.Queries, CacheHits: raw.CacheHits, Failures: raw.Failures,
 		ActiveUDP: raw.ActiveUDP, UDPQueueDepth: raw.UDPQueueDepth, UDPDropped: raw.UDPDropped,
