@@ -1625,3 +1625,17 @@ func TestStatusSafeDoHURLRemovesEndpointCredentials(t *testing.T) {
 		t.Fatalf("status URL leaked private endpoint data: %q", got)
 	}
 }
+
+
+func TestLoadConfigNoCreateRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real-config.json")
+	link := filepath.Join(dir, "config.json")
+	config, err := json.Marshal(defaultConfig())
+	if err != nil { t.Fatal(err) }
+	if err := os.WriteFile(target, config, 0600); err != nil { t.Fatal(err) }
+	if err := os.Symlink(target, link); err != nil { t.Fatal(err) }
+	if _, err := loadConfigNoCreate(link); err == nil {
+		t.Fatal("config loader must reject symlinked config files")
+	}
+}
