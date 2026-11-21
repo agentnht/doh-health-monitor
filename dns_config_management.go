@@ -81,6 +81,23 @@ func saveDNSModeConfig(dataDir, mode string, resolvers []ResolverUpstream) (Conf
 	return cfg, nil
 }
 
+func parseResolverUpstreamsJSON(raw string) ([]ResolverUpstream, error) {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var resolvers []ResolverUpstream
+	if err := decoder.Decode(&resolvers); err != nil {
+		return nil, fmt.Errorf("invalid resolver_upstreams JSON: %w", err)
+	}
+	if resolvers == nil {
+		return nil, errors.New("resolver_upstreams must be a JSON array, not null")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, errors.New("resolver_upstreams must contain exactly one JSON value")
+	}
+	return resolvers, nil
+}
+
 func runDNSConfigCLI(args []string) error {
 	if len(args) != 0 {
 		return errors.New("usage: doh-health-monitor config")
@@ -128,9 +145,11 @@ func runDNSConfigCLI(args []string) error {
 			return fmt.Errorf("read resolver_upstreams: %w", readErr)
 		}
 		if strings.TrimSpace(line) != "" {
-			if err := json.Unmarshal([]byte(line), &resolvers); err != nil {
-				return fmt.Errorf("invalid resolver_upstreams JSON: %w", err)
+			parsed, err := parseResolverUpstreamsJSON(line)
+			if err != nil {
+				return err
 			}
+			resolvers = parsed
 		} else {
 			resolvers = cfg.ResolverUpstreams
 		}
