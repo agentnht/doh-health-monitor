@@ -1,7 +1,7 @@
 # Утверждённый проект: Geosite DNS routing и режимы DoH
 
 **Дата последнего обновления:** 2026-11-21  
-**Статус:** Draft PR #11. Этот документ — единственный нормативный источник требований для реализации и проверки PR. Конфигурация Xray в §4.4 утверждена как целевая ручная схема. Базовая реализация двух DNS-режимов, ActiveDoHSelector, cache generation и resolver pipeline находится в `feature/geosite-dns-routing`. На VPS 2026-11-21 выполнены клиентские path-level smoke tests через sing-box → AWG → VPS TProxy для Geosite-направляемого `habr.com` и обычного `example.com`; результаты и границы доказанного приведены в §8. Точный внутренний Xray rule-decision trace не снимался. Текущий оставшийся acceptance этап — smoke test новых CLI/Web UI controls сохранения `dns_mode` и `resolver_upstreams`, а не повтор клиентского DNS path.  
+**Статус:** release acceptance версии 2.3.0 завершён; PR #11 подготовлен к слиянию. Этот документ — нормативный источник архитектуры и проверок. Конфигурация Xray в §4.4 описывает целевую ручную схему. На VPS 2026-11-21 выполнены клиентские path-level smoke tests через sing-box → AWG → VPS TProxy для Geosite-направляемого `habr.com` и обычного `example.com`, ActiveDoH failover, resolver mode и CLI/Web UI DNS mode management. Точный внутренний Xray rule-decision trace не снимался. Runtime-проверки вкладки Local hosts и SSH tunnel под non-root исключены из согласованного release acceptance scope.  
 **База ветки:** `main`, commit `b32d4263dbb43c5162860c0def0e990aac6e6541`.
 
 ## 1. Цель и принятое решение
@@ -530,10 +530,9 @@ Geosite matching расположен на стороне Xray, внутри `dn
 
 **Ограничение покрытия:** фактический resolver list на VPS содержал только системный upstream. Runtime добавление новых UDP/TCP/DoH resolver entries через controls не выполнялось; валидация этих типов и порядка покрыта CI/regression tests. Это не блокирует проверку сохранения текущего списка и переключения режима.
 
-Оставшиеся отдельные follow-ups:
-- runtime smoke test вкладки Local hosts;
-- runtime SSH tunnel под non-root/SUDO_USER (root tunnel проверен);
-- точный внутренний Xray Geosite matcher/rule-decision trace не снимался, хотя клиентские path-level smoke tests выполнены.
+**Границы проверок:** фактический resolver list на VPS содержал только системный upstream. Runtime добавление новых UDP/TCP/DoH resolver entries через controls не выполнялось; валидация этих типов и порядка покрыта CI/regression tests. Точный внутренний Xray Geosite matcher/rule-decision trace не снимался; клиентские path-level smoke tests подтверждают наблюдаемое разделение DNS path, но не раскрывают внутреннее решение matcher-а.
+
+Runtime-проверки вкладки Local hosts и SSH tunnel под non-root/SUDO_USER не проводились и сознательно исключены из release acceptance scope.
 
 Полноценная DNSSEC validation плагином не заявляется.
 
@@ -546,8 +545,8 @@ Geosite matching расположен на стороне Xray, внутри `dn
 - Не менять фактическую конфигурацию панели автоматически; ручная конфигурация §4.4 является целевой.
 - Не считать read-only структурную проверку доказательством end-to-end работы, корректности Geosite asset или поведения конкретной встроенной сборки.
 - Не привязывать архитектуру к номеру версии панели/Xray; проверять фактический формат и поведение целевого runtime.
-- Версия 2.3.0 находится в feature branch как release candidate; официальный tag/release не создавать до отдельного release gate.
+- После слияния PR отдельным шагом публикуется официальный tag/release `v2.3.0`.
 
 ---
 
-**Текущее резюме:** в PR #11 реализована базовая архитектура Geosite DNS routing: разделённые режимы `endpoint_ip` и `resolver`, ActiveDoHSelector по восьми контрольным доменам с HTTPS/TLS probes, два DNS response pipeline, независимые cache namespace/generation, fallback и TTL/negative-cache policy. `Blackhole` — `NOERROR`/NODATA без SOA и без кэширования; plugin DNS listener отвечает только на A/AAAA. Успешный CI подтверждает тесты кода на зафиксированном head, но не заменяет целевые runtime-проверки. На VPS уже выполнены read-only Xray preflight, path-level client smoke tests для `habr.com`/`example.com`, ActiveDoH failover, resolver-mode A/AAAA и rollback, а также CLI/Web UI management smoke test из §9. Runtime-проверки Local hosts и non-root SSH tunnel сознательно не входят в согласованный release acceptance scope.
+**Текущее резюме:** в PR #11 реализована базовая архитектура Geosite DNS routing: разделённые режимы `endpoint_ip` и `resolver`, ActiveDoHSelector по восьми контрольным доменам с HTTPS/TLS probes, два DNS response pipeline, независимые cache namespace/generation, fallback и TTL/negative-cache policy. `Blackhole` — `NOERROR`/NODATA без SOA и без кэширования; plugin DNS listener отвечает только на A/AAAA. Успешный CI подтверждает тесты кода на зафиксированном head, но не заменяет целевые runtime-проверки. На VPS уже выполнены read-only Xray preflight, path-level client smoke tests для `habr.com`/`example.com`, ActiveDoH failover, resolver-mode A/AAAA и rollback, а также CLI/Web UI management smoke test из §9. Runtime-проверки Local hosts и non-root SSH tunnel сознательно исключены из release acceptance scope и не являются блокерами публикации.
