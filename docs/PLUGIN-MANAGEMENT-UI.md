@@ -44,7 +44,7 @@ The generated tunnel command uses this account preference:
 
 The account is validated before it is inserted into the printed command. The server address can be explicitly supplied with `SERVER_ADDRESS`; otherwise the menu uses the SSH connection metadata or asks the operator. The local browser port defaults to `19876`; the server-side port is dynamically assigned by Go and must not be substituted.
 
-The readiness protocol is a single line, `WEB_UI_READY port=<number>`. The shell validates the line and port range before printing the command. The Go process listens on `127.0.0.1` only. Closing the menu's control pipe or sending a termination signal shuts down the temporary Web UI without stopping the DNS daemon.
+The readiness protocol is a single line, `WEB_UI_READY port=<number> token=<one-time-token>`. The shell validates the port and token before printing the SSH command and one-time browser URL. The token is exchanged once at `/auth`; only then does the browser receive the HttpOnly session cookie. A plain `GET /` never creates a session. The Go process listens on `127.0.0.1` only. Closing the menu's control pipe or sending a termination signal shuts down the temporary Web UI without stopping the DNS daemon.
 
 ## On-demand Web UI
 
@@ -55,7 +55,7 @@ The Web UI is compiled into the Go plugin binary and is not started with the DNS
 - The SSH menu owns a control pipe; EOF or a termination signal triggers graceful HTTP shutdown.
 - The DNS daemon and its listeners are not restarted when the Web UI stops.
 
-The browser is opened at the forwarded local URL, normally `http://127.0.0.1:19876/`.
+The browser is opened at the one-time authentication URL printed by the SSH menu, normally under `http://127.0.0.1:19876/auth?token=…`. After the token is used, Firefox is redirected to `/` and the session cookie gates all `/api/v1/*` endpoints.
 
 ## Dashboard and pages
 
