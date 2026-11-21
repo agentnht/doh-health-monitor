@@ -878,7 +878,7 @@ func TestResolverGatewaySendsArbitraryQNAMEThroughConfiguredDoH(t *testing.T) {
 	snapshot := &Snapshot{
 		cfg: Config{DNSMode: "resolver", DNSQueryTimeoutSeconds: 3, DoHTimeoutSeconds: 3},
 		resolverUpstreams: []*ResolverRuntime{{
-			cfg: ResolverUpstream{ID: id, Type: "doh", URL: srv.URL},
+			cfg:      ResolverUpstream{ID: id, Type: "doh", URL: srv.URL},
 			upstream: upstream,
 		}},
 	}
