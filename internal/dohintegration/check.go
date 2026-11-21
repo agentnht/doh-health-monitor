@@ -15,8 +15,6 @@ import (
 )
 
 const (
-	pluginID = "doh-health-monitor"
-	defaultAuthFile = "/var/lib/doh-health-monitor-panel-auth/panel-api-auth.json"
 	defaultService = "lucx-plugin-doh-health-monitor"
 	defaultStatusURL = "http://127.0.0.1:18765/status"
 )
@@ -31,30 +29,20 @@ func problem(format string, args ...any) error {
 	return &Error{Message: fmt.Sprintf(format, args...)}
 }
 
-// Options is shared with opt-in legacy integration tests. Production uses
-// only the local read-only check fields below.
+// Options contains only the local read-only preflight parameters.
 type Options struct {
-	BaseURL, PanelDB, AuthFile string
 	Timeout time.Duration
 	Service, StatusURL string
 	Port int
-	AllowInsecureHTTP bool
-	TLSMode, TLSName string
 }
 
 func DefaultOptions() Options {
 	return Options{
-		AuthFile: defaultAuthFile,
 		Timeout: 15 * time.Second,
 		Service: defaultService,
 		StatusURL: defaultStatusURL,
 		Port: 5355,
-		TLSMode: "auto",
 	}
-}
-
-type Endpoint struct {
-	BaseURL, HostHeader, ServerName, VerifyIP string
 }
 
 func IsLocalURL(raw string) bool {
