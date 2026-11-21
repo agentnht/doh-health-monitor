@@ -1559,9 +1559,10 @@ func TestFilterPublicDoHIPsRejectsNonPublicAddresses(t *testing.T) {
 func TestHandleStatusDoesNotExposePrivatePathsOrSystemDNS(t *testing.T) {
 	cfg := defaultConfig()
 	snapshot := &Snapshot{cfg: cfg, groups: map[string]Group{}, upstreams: map[string]*UpstreamRuntime{}}
-	r := &Runtime{configPath: "/root/private/plugin/config.json", cache: map[string]cacheItem{}}
+	r := &Runtime{configPath: "/root/private/plugin/config.json", cache: map[string]cacheItem{}, statusToken: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
 	r.snapshot.Store(snapshot)
 	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:18765/status", nil)
+	request.Header.Set("Authorization", "Bearer "+r.statusToken)
 	recorder := httptest.NewRecorder()
 	r.handleStatus(recorder, request)
 	if recorder.Code != http.StatusOK {
@@ -1580,6 +1581,86 @@ func TestHandleStatusDoesNotExposePrivatePathsOrSystemDNS(t *testing.T) {
 	}
 	if payload["config"] != "" {
 		t.Fatalf("config field should be empty for unauthenticated status: %#v", payload["config"])
+	}
+}
+
+func TestHandleStatusRequiresBearerToken(t *testing.T) {
+	r := &Runtime{statusToken: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
+	r.snapshot.Store(&Snapshot{cfg: defaultConfig(), groups: map[string]Group{}, upstreams: map[string]*UpstreamRuntime{}})
+	for _, authorization := range []string{"", "Bearer wrong-token", "Basic "+r.statusToken} {
+		request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:18765/status", nil)
+		if authorization != "" {
+			request.Header.Set("Authorization", authorization)
+		}
+		recorder := httptest.NewRecorder()
+		r.handleStatus(recorder, request)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Errorf("authorization %q returned HTTP %d, want 401", authorization, recorder.Code)
+		}
+		if strings.Contains(recorder.Body.String(), "dns_mode") || strings.Contains(recorder.Body.String(), "system_dns") {
+			t.Errorf("unauthenticated response exposed status details: %s", recorder.Body.String())
+		}
+	}
+}
+
+func TestHealthzIsUnauthenticatedAndContainsNoRuntimeDetails(t *testing.T) {
+	r := &Runtime{}
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:18765/healthz", nil)
+	recorder := httptest.NewRecorder()
+	r.handleHealthz(recorder, request)
+	if recorder.Code != http.StatusOK || strings.TrimSpace(recorder.Body.String()) != "ok" {
+		t.Fatalf("health response = %d %q, want 200 ok", recorder.Code, recorder.Body.String())
+	}
+	for _, forbidden := range []string{"dns_mode", "upstream", "config", "token"} {
+		if strings.Contains(recorder.Body.String(), forbidden) {
+			t.Fatalf("health response exposed %q: %s", forbidden, recorder.Body.String())
+		}
+	}
+}
+
+func TestRotateAndReadStatusAPITokenUsesPrivateNoFollowFile(t *testing.T) {
+	dir := t.TempDir()
+	token, err := rotateStatusAPIToken(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := readStatusAPIToken(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != token || len(got) != 64 {
+		t.Fatalf("status token = %q, expected freshly generated 64-char token", got)
+	}
+	info, err := os.Stat(filepath.Join(dir, statusAPITokenFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("status token permissions = %o, want 600", info.Mode().Perm())
+	}
+	if _, err := rotateStatusAPIToken(dir); err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := readStatusAPIToken(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated == token {
+		t.Fatal("status API token was not rotated")
+	}
+}
+
+func TestReadStatusAPITokenRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte(strings.Repeat("a", 64)+"\\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, statusAPITokenFile)); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	if _, err := readStatusAPIToken(dir); err == nil {
+		t.Fatal("status API token reader followed a symlink")
 	}
 }
 
