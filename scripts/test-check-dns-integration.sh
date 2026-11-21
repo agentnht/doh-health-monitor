@@ -85,16 +85,16 @@ cat >"$TMP_DIR/mock-bin/curl" <<'MOCK'
 #!/usr/bin/env bash
 set -e
 out=""
-auth=""
 while (($#)); do
   case "$1" in
     -o) out="$2"; shift 2 ;;
-    --header|-H) auth="$2"; shift 2 ;;
+    --config) [[ "$2" == "-" ]]; shift 2 ;;
     *) shift ;;
   esac
 done
+config="$(cat)"
+[[ "$config" == "header = \"Authorization: Bearer ${MOCK_STATUS_TOKEN:-}\"" ]]
 [[ -n "$out" && -n "${MOCK_STATUS_JSON:-}" ]]
-[[ "$auth" == "Authorization: Bearer ${MOCK_STATUS_TOKEN:-}" ]]
 cp "$MOCK_STATUS_JSON" "$out"
 MOCK
 chmod +x "$TMP_DIR/mock-bin/curl"
