@@ -795,6 +795,7 @@ manage_panel_api_autostart() {
     printf '%s\n' '  4) Включить автозапуск при загрузке VPS'
     printf '%s\n' '  5) Отключить автозапуск'
     printf '%s\n' '  6) Статус плагина и автозапуска'
+    printf '%s\n' '  7) Настроить webDomain (Host) для API панели'
     printf '%s\n' '  0) Назад'
     printf 'Выберите действие: '
     if ! IFS= read -r choice </dev/tty; then
@@ -808,6 +809,7 @@ manage_panel_api_autostart() {
       4) install_panel_api_autostart || printf '[WARN] Не удалось включить API-автозапуск.\n' >&2 ;;
       5) disable_panel_api_autostart || printf '[WARN] Не удалось отключить API-автозапуск.\n' >&2 ;;
       6) panel_api_show_status || printf '[WARN] Не удалось получить состояние через API.\n' >&2 ;;
+      7) configure_panel_api_host || printf '[WARN] Не удалось настроить Host для API панели.\n' >&2 ;;
       0) return 0 ;;
       *) printf 'Неизвестный пункт меню.\n' ;;
     esac
