@@ -24,6 +24,16 @@ const (
 var serviceNamePattern = regexp.MustCompile("^[A-Za-z0-9_.@-]+$")
 var listenerPIDPattern = regexp.MustCompile(`pid=(\d+)`)
 
+type Error struct {
+	Message string
+}
+
+func (e *Error) Error() string { return e.Message }
+
+func problem(format string, args ...any) error {
+	return &Error{Message: fmt.Sprintf(format, args...)}
+}
+
 // Options contains only the local read-only preflight parameters.
 type Options struct {
 	Timeout            time.Duration
