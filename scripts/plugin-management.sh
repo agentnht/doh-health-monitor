@@ -359,6 +359,12 @@ pid_file_running_for_plugin() {
   [[ -n "$expected" && "$actual" == "$expected" ]]
 }
 
+panel_cli() {
+  local panel_dir
+  panel_dir="$(dirname -- "$PANEL_CLI")"
+  (cd -- "$panel_dir" && exec "$PANEL_CLI" "$@")
+}
+
 extract_panel_setting() {
   local key="$1" output="$2"
   sed -n "s/^${key}:[[:space:]]*//p" <<<"$output" | tail -n 1 | tr -d '\r'
@@ -372,11 +378,11 @@ panel_api_discover() {
     fail "Не найден CLI панели: $PANEL_CLI"
     return 1
   }
-  settings="$("$PANEL_CLI" setting -show=true 2>/dev/null)" || {
+  settings="$(panel_cli setting -show=true 2>/dev/null)" || {
     fail "Не удалось прочитать настройки LucX-UI через локальный CLI."
     return 1
   }
-  listen_output="$("$PANEL_CLI" setting -getListen=true 2>/dev/null)" || {
+  listen_output="$(panel_cli setting -getListen=true 2>/dev/null)" || {
     fail "Не удалось прочитать адрес прослушивания LucX-UI."
     return 1
   }
@@ -484,7 +490,7 @@ panel_api_begin() {
 
   # The panel CLI rotates only this reserved token name. Plaintext is held in
   # memory and a short-lived root-only curl config; it is never written to disk.
-  token_output="$("$PANEL_CLI" setting -getApiToken=true \
+  token_output="$(panel_cli setting -getApiToken=true \
     -tokenName="$PANEL_API_TOKEN_NAME" -tokenScope=admin 2>&1)" || {
     fail "Не удалось выпустить временный admin API token через CLI панели."
     panel_api_finish
@@ -539,7 +545,7 @@ panel_api_finish() {
     # If the API could not revoke the one-shot token, rotate the reserved slot
     # locally. This invalidates the token held by the temporary curl config.
     if (( PANEL_API_TOKEN_ACTIVE == 1 )) && [[ -n "$PANEL_CLI" && -x "$PANEL_CLI" ]]; then
-      "$PANEL_CLI" setting -getApiToken=true \
+      panel_cli setting -getApiToken=true \
         -tokenName="$PANEL_API_TOKEN_NAME" -tokenScope=admin >/dev/null 2>&1 || true
     fi
   fi
