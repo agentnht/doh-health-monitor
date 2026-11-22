@@ -17,13 +17,12 @@ func TestProbeDaemonHealth(t *testing.T) {
 		}))
 		defer server.Close()
 
-		_, address, err := net.SplitHostPort(server.Listener.Addr().String())
+		host, port, err := net.SplitHostPort(server.Listener.Addr().String())
 		if err != nil {
 			t.Fatal(err)
 		}
-		host, _, _ := net.SplitHostPort(server.Listener.Addr().String())
 		client := &http.Client{Timeout: daemonHealthTimeout}
-		if err := probeDaemonHealth(client, net.JoinHostPort(host, address)); err != nil {
+		if err := probeDaemonHealth(client, net.JoinHostPort(host, port)); err != nil {
 			t.Fatalf("healthy endpoint rejected: %v", err)
 		}
 	})
