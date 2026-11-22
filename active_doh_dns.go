@@ -19,8 +19,9 @@ func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte 
 	if err != nil || len(query) < 12 || binary.BigEndian.Uint16(query[4:6]) != 1 {
 		return formerrResponse(query)
 	}
-	// This listener intentionally serves only address records. Unsupported
-	// QTYPEs remain ordinary NODATA and do not depend on ActiveDoH health.
+	// The Geosite listener currently handles address lookups only. Forward the
+	// original A/AAAA query to the selected DoH endpoint; do not synthesize the
+	// endpoint's bootstrap address as the answer for the requested name.
 	if qtype != 1 && qtype != 28 {
 		return emptyNoErrorDNSResponse(query)
 	}
@@ -30,16 +31,12 @@ func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte 
 	if r.activeDoHSelector == nil || snapshot == nil {
 		return servfailResponse(query)
 	}
-	// A DNS request may have captured an old snapshot immediately before reload.
-	// Never serve a selection unless both the request and current runtime snapshot
-	// agree with the configuration generation used to probe that endpoint.
+
 	current := r.currentSnapshot()
 	if current == nil || current.activeDoHGeneration != snapshot.activeDoHGeneration {
 		return servfailResponse(query)
 	}
-
-	now := time.Now()
-	selection, ok := r.activeDoHSelector.Current(now)
+	selection, ok := r.activeDoHSelector.Current(time.Now())
 	if !ok || selection.Candidate.ConfigGeneration != current.activeDoHGeneration {
 		return servfailResponse(query)
 	}
@@ -50,31 +47,59 @@ func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte 
 		if cached, found := r.cacheGet(key, packetID(query)); found {
 			r.cacheHits.Add(1)
 			if !r.activeDoHConfigMatches(snapshot) ||
-				selection.Candidate.ConfigGeneration != snapshot.activeDoHGeneration {
-				return emptyNoErrorDNSResponse(query)
+				selection.Candidate.ConfigGeneration != snapshot.activeDoHGeneration ||
+				r.activeDoHSelector.Generation() != selection.Generation {
+				return servfailResponse(query)
 			}
 			return cached
 		}
 	}
 
-	response, cacheable := buildActiveDoHResponse(query, name, qtype, questionEnd, selection, now)
+	totalTimeout := 15 * time.Second
+	if snapshot.cfg.DNSQueryTimeoutSeconds > 0 {
+		totalTimeout = time.Duration(snapshot.cfg.DNSQueryTimeoutSeconds) * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), totalTimeout)
+	dohTimeout := 10 * time.Second
+	if snapshot.cfg.DoHTimeoutSeconds > 0 {
+		dohTimeout = time.Duration(snapshot.cfg.DoHTimeoutSeconds) * time.Second
+	}
+	if totalTimeout < dohTimeout {
+		dohTimeout = totalTimeout
+	}
+	response, queryErr := sendActiveDoH(ctx, selection.Candidate, query, dohTimeout)
+	cancel()
+	if queryErr != nil {
+		r.failures.Add(1)
+		return servfailResponse(query)
+	}
+
+	// Do not return a response obtained from an endpoint after a concurrent
+	// configuration reload or selector switch invalidated that selection.
 	if !r.activeDoHConfigMatches(snapshot) ||
-		selection.Candidate.ConfigGeneration != snapshot.activeDoHGeneration {
-		return emptyNoErrorDNSResponse(query)
+		selection.Candidate.ConfigGeneration != snapshot.activeDoHGeneration ||
+		r.activeDoHSelector.Generation() != selection.Generation {
+		return servfailResponse(query)
 	}
-	if cacheable && cacheConfig.Enabled && r.activeDoHSelector.Generation() == selection.Generation &&
-		r.activeDoHConfigMatches(snapshot) {
-		cacheConfig.MaxTTL = int(activeDoHAnswerTTL / time.Second)
-		cacheConfig.MinTTL = 0      // preserve cache entries shorter than the general minimum TTL
-		cacheConfig.NegativeTTL = 0 // synthetic NODATA answers are deliberately not cached
-		r.cachePut(key, response, cacheConfig)
+
+	if cacheConfig.Enabled {
+		cacheResponse := append([]byte(nil), response...)
+		maxTTL := mode2MaxCacheTTL
+		if cacheConfig.MaxTTL > 0 && time.Duration(cacheConfig.MaxTTL)*time.Second < maxTTL {
+			maxTTL = time.Duration(cacheConfig.MaxTTL) * time.Second
+		}
+		cacheable := prepareMode2ResponseForCache(cacheResponse, uint32(maxTTL/time.Second))
+		if cacheable && r.activeDoHSelector.Generation() == selection.Generation &&
+			r.activeDoHConfigMatches(snapshot) {
+			cacheConfig.MinTTL = 0
+			cacheConfig.MaxTTL = int(maxTTL / time.Second)
+			r.cachePut(key, cacheResponse, cacheConfig)
+		}
 	}
+	_ = name // retained for parity with request parsing and useful debugger context
 	return response
 }
 
-// buildActiveDoHResponse returns (response, cacheable). Unsupported QTYPEs,
-// missing address families and stale selections produce NOERROR with an empty
-// Answer section. These synthetic empty answers are never cached.
 func buildActiveDoHResponse(query []byte, qname string, qtype uint16, questionEnd int, selection activedoh.Selection, now time.Time) ([]byte, bool) {
 	if len(query) < 12 || questionEnd < 12 || questionEnd > len(query) {
 		return formerrResponse(query), false
