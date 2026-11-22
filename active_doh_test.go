@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -216,9 +217,9 @@ func TestRunActiveDoHSelectionUnavailableAndCanceledStates(t *testing.T) {
 
 func TestRunActiveDoHSelectionWithProbeSelectsHealthyCandidate(t *testing.T) {
 	runtime, _ := activeDoHTestFixture()
-	probeCalls := 0
+	var probeCalls atomic.Int32
 	probe := func(_ context.Context, job activeDoHProbeJob, now time.Time) activedoh.ProbeResult {
-		probeCalls++
+		probeCalls.Add(1)
 		return activedoh.ProbeResult{
 			ServerID: job.serverID, Domain: job.domain, Success: true, CheckedAt: now,
 		}
@@ -226,8 +227,8 @@ func TestRunActiveDoHSelectionWithProbeSelectsHealthyCandidate(t *testing.T) {
 	if !runtime.runActiveDoHSelectionWithProbe(context.Background(), probe) {
 		t.Fatal("all successful control probes should produce a healthy selection")
 	}
-	if want := len(activedoh.ControlDomains()); probeCalls != want {
-		t.Fatalf("probe calls=%d, want one for each of %d control domains", probeCalls, want)
+	if want := int32(len(activedoh.ControlDomains())); probeCalls.Load() != want {
+		t.Fatalf("probe calls=%d, want one for each of %d control domains", probeCalls.Load(), want)
 	}
 	selection, ok := runtime.activeDoHSelector.Current(time.Now())
 	if !ok || selection.Candidate.ServerID != "primary" || selection.Score != len(activedoh.ControlDomains()) {
