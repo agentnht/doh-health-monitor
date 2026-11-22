@@ -435,7 +435,7 @@ panel_api_discover() {
   else
     PANEL_API_HOST_HEADER=""
     if [[ -s "$PLUGIN_DATA_DIR/panel-api-host" ]]; then
-      IFS= read -r PANEL_API_HOST_HEADER < "$PLUGIN_DATA_DIR/panel-api-host" || true
+      PANEL_API_HOST_HEADER="$(head -c 254 "$PLUGIN_DATA_DIR/panel-api-host")"
     fi
   fi
   if [[ -n "$PANEL_API_HOST_HEADER" ]] && ! panel_api_host_valid "$PANEL_API_HOST_HEADER"; then
@@ -447,7 +447,8 @@ panel_api_discover() {
 
 panel_api_host_valid() {
   local host="$1"
-  [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ && "$host" != *..* ]]
+  (( ${#host} >= 1 && ${#host} <= 253 )) &&
+    [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$ ]]
 }
 
 panel_api_token_from_output() {
