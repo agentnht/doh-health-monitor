@@ -616,12 +616,12 @@ panel_api_action() {
     *) fail "Недопустимое действие API."; return 1 ;;
   esac
   panel_api_begin || return 1
-  if ! remove_legacy_standalone_autostart; then
+  if ! state_before="$(panel_api_read_plugin_state)"; then
+    fail "Не удалось определить текущее состояние плагина через API. Если у панели включён webDomain, настройте Host override в пункте 7."
     panel_api_finish
     return 1
   fi
-  if ! state_before="$(panel_api_read_plugin_state)"; then
-    fail "Не удалось определить текущее состояние плагина через API."
+  if ! remove_legacy_standalone_autostart; then
     panel_api_finish
     return 1
   fi
