@@ -1,6 +1,6 @@
 # DoH DNS Proxy & Health Monitor для LucX-UI
 
-**Версия:** 2.3.6  
+**Версия:** 2.3.7  
 **Платформа:** Linux x86-64 (`amd64`), статический Go-бинарник  
 **Тип:** LucX-UI sidecar, `apiVersion: 1`  
 **Режим Gemini API:** необязательный, управляется параметром `gemini_api.enabled`
@@ -11,7 +11,7 @@ DoH Health Monitor — локальный DNS sidecar для LucX-UI/Xray. В л
 
 Плагин поддерживает два взаимоисключающих режима обработки A/AAAA запросов:
 
-- **`endpoint_ip` (режим по умолчанию):** ActiveDoHSelector выбирает один доступный DoH endpoint по семи контрольным доменам. Для DNS-запроса плагин возвращает bootstrap IP выбранного DoH endpoint-а, а не IP запрошенного сайта. Это режим для схемы, где дальнейшее назначение трафика определяет Xray.
+- **`endpoint_ip` (режим по умолчанию):** ActiveDoHSelector выбирает здоровый DoH endpoint по семи контрольным доменам. Плагин отправляет исходный DNS-запрос выбранному endpoint-у и возвращает полноценный ответ для запрошенного домена (A/AAAA, включая CNAME и DNSSEC/EDNS-данные ответа). Соединение закрепляется за bootstrap IP endpoint-а, при этом сохраняются исходное имя хоста, TLS SNI, проверка сертификата и HTTP Host. Это режим для Xray Geosite DNS path.
 - **`resolver`:** плагин разрешает исходное имя запроса через независимый упорядоченный список `resolver_upstreams`. По умолчанию используется системный resolver ОС сервера; можно настроить UDP, TCP и DoH upstream-ы.
 
 Обычная DNS-ветка listener-а принимает A и AAAA. Для точно совпавшего имени из управляемого `local-hosts.txt` плагин возвращает настроенные локальные A/AAAA; HTTPS/SVCB и остальные неподдерживаемые QTYPE получают `NOERROR`/NODATA без SOA и без кэширования. CNAME RR в составе ответа upstream на A/AAAA сохраняются.
@@ -134,7 +134,7 @@ gh attestation verify doh-health-monitor-v2.3.6.zip \
 5. Посмотрите журнал плагина. Нормальный старт содержит строки примерно такого вида:
 
 ```text
-level=INFO START id=doh-health-monitor version=2.3.6 arch=amd64 data=...
+level=INFO START id=doh-health-monitor version=2.3.7 arch=amd64 data=...
 level=INFO CONFIG loaded ... gemini_api=false
 level=INFO EVENT_SOCKET listening ...
 level=INFO READY DNS=127.0.0.1:5355/127.0.0.1:5355 HTTP=127.0.0.1:18765
