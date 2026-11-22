@@ -17,6 +17,7 @@ import (
 
 const (
 	activeDoHProbeInterval    = 5 * time.Minute
+	activeDoHRetryBase        = 15 * time.Second
 	activeDoHProbeTimeout     = 9 * time.Second
 	activeDoHLookupTimeout    = 4 * time.Second
 	activeDoHBootstrapTimeout = 5 * time.Second
@@ -47,10 +48,30 @@ type ActiveDoHStatus struct {
 	CheckCount int       `json:"check_count"`
 }
 
+// activeDoHRetryDelay returns the wait before re-probing after a withdrawn
+// selection: 15s, 30s, 60s, ... capped at the regular probe interval.
+func activeDoHRetryDelay(consecutiveFailures int) time.Duration {
+	delay := activeDoHRetryBase
+	for i := 1; i < consecutiveFailures && delay < activeDoHProbeInterval; i++ {
+		delay *= 2
+	}
+	if delay > activeDoHProbeInterval {
+		delay = activeDoHProbeInterval
+	}
+	return delay
+}
+
 func (r *Runtime) activeDoHLoop(ctx context.Context) {
+	failures := 0
 	for {
-		r.runActiveDoHSelection(ctx)
-		timer := time.NewTimer(activeDoHProbeInterval)
+		wait := activeDoHProbeInterval
+		if r.runActiveDoHSelection(ctx) {
+			failures = 0
+		} else {
+			failures++
+			wait = activeDoHRetryDelay(failures)
+		}
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -67,24 +88,27 @@ func (r *Runtime) activeDoHLoop(ctx context.Context) {
 	}
 }
 
-func (r *Runtime) runActiveDoHSelection(parent context.Context) {
+// runActiveDoHSelection reports whether the cycle ended with a healthy selection
+// (or was skipped/discarded). A false result means the selection was withdrawn
+// and the caller should retry sooner than the regular probe interval.
+func (r *Runtime) runActiveDoHSelection(parent context.Context) bool {
 	if r.activeDoHSelector == nil {
-		return
+		return true
 	}
 	ctx, cancel := context.WithTimeout(parent, 2*activeDoHProbeInterval)
 	defer cancel()
 
 	s := r.currentSnapshot()
 	if s == nil {
-		return
+		return true
 	}
 	candidates := r.activeDoHCandidates(ctx, s)
 	if ctx.Err() != nil {
-		return
+		return true
 	}
 	if !r.activeDoHConfigMatches(s) {
 		logLine("INFO", "ACTIVE_DOH selection cycle discarded: configuration changed during bootstrap lookup")
-		return
+		return true
 	}
 	// Capture the selection timestamp after bootstrap lookups: a successful lookup may
 	// have refreshed ResolvedAt during candidate collection, so it must not appear future-dated.
@@ -96,7 +120,7 @@ func (r *Runtime) runActiveDoHSelection(parent context.Context) {
 			r.clearActiveDoHCache()
 		}
 		logLine("WARN", "ACTIVE_DOH no fresh bootstrap endpoints are eligible")
-		return
+		return false
 	}
 
 	checks := activeDoHChecks(s)
@@ -141,7 +165,7 @@ sendJobs:
 	wg.Wait()
 	close(resultsCh)
 	if ctx.Err() != nil {
-		return
+		return true
 	}
 
 	results := make([]activedoh.ProbeResult, 0, jobCount)
@@ -154,7 +178,7 @@ sendJobs:
 	}
 	if !r.activeDoHConfigMatches(s) {
 		logLine("INFO", "ACTIVE_DOH selection cycle discarded: configuration changed during probes")
-		return
+		return true
 	}
 	previousGeneration := r.activeDoHSelector.Generation()
 	selected, ok := r.activeDoHSelector.Select(candidates, results, now)
@@ -163,12 +187,13 @@ sendJobs:
 	}
 	if !ok {
 		logLine("WARN", "ACTIVE_DOH no healthy endpoint selected candidates=%d successful_checks=%d", len(candidates), successes)
-		return
+		return false
 	}
 	logLine("INFO", "ACTIVE_DOH selected server=%s score=%d/%d ipv4=%d ipv6=%d generation=%d freshness_until=%s",
 		selected.Candidate.ServerID, selected.Score, selected.CheckCount,
 		len(selected.Candidate.IPv4), len(selected.Candidate.IPv6), selected.Generation,
 		selected.FreshUntil.UTC().Format(time.RFC3339))
+	return true
 }
 
 func (r *Runtime) activeDoHCandidates(ctx context.Context, snapshot *Snapshot) []activedoh.Candidate {

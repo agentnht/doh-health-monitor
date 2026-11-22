@@ -126,22 +126,31 @@ func (r *Runtime) queryResolverUpstreams(ctx context.Context, snapshot *Snapshot
 		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
 		response, err := queryMode2Upstream(attemptCtx, resolver, query)
 		cancel()
+		// A SERVFAIL/REFUSED/truncated answer is specific to this QNAME (lame
+		// delegation, broken DNSSEC, attacker-controlled zone). It must let this
+		// one query fall through to the next upstream, but it must NOT put the
+		// upstream into cooldown, otherwise any external domain can force all
+		// subsequent traffic onto the fallback resolver. Only transport errors
+		// and timeouts prove the upstream itself is unavailable.
+		softFailure := false
 		if err == nil {
 			switch dnsRCode(response) {
 			case 2:
-				err = errors.New("upstream returned SERVFAIL")
+				err, softFailure = errors.New("upstream returned SERVFAIL"), true
 			case 5:
-				err = errors.New("upstream returned REFUSED")
+				err, softFailure = errors.New("upstream returned REFUSED"), true
 			default:
 				if dnsTruncated(response) {
-					err = errors.New("upstream response remains truncated after transport retry")
+					err, softFailure = errors.New("upstream response remains truncated after transport retry"), true
 				} else {
 					r.markUpstreamSuccess(id)
 					return response, id, nil
 				}
 			}
 		}
-		r.markUpstreamFailure(id, time.Now())
+		if !softFailure {
+			r.markUpstreamFailure(id, time.Now())
+		}
 		failures = append(failures, id+": "+err.Error())
 	}
 	return nil, "", fmt.Errorf("all mode-2 resolver upstreams failed: %s", strings.Join(failures, "; "))
