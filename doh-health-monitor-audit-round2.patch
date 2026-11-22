@@ -1,0 +1,861 @@
+diff --git a/README.md b/README.md
+index 22d6626..8f0fa9f 100644
+--- a/README.md
++++ b/README.md
+@@ -273,12 +273,12 @@ Web UI не содержит кнопок изменения Xray-конфигу
+ | `dns_listen_udp` | UDP DNS listener | `127.0.0.1:5355` |
+ | `dns_listen_tcp` | TCP DNS listener | `127.0.0.1:5355` |
+ | `http_listen` | HTTP status listener | `127.0.0.1:18765` |
+-| `reload_interval_seconds` | Устаревший параметр старого hot reload; сохранён для совместимости | Новые текстовые источники проверяются каждые 30 секунд |
++| `reload_interval_seconds` | Интервал hot reload: проверка `config.json` и текстовых источников (1–300 с) | 5 секунд; при недопустимом значении используется 30 секунд |
+ | `dns_query_timeout_seconds` | Общий таймаут DNS-запроса | 15 секунд, диапазон 1–120 |
+ | `doh_timeout_seconds` | Таймаут одного DoH запроса | 10 секунд, диапазон 1–60 |
+ | `dns_max_concurrent` | Лимит одновременных DNS запросов | 256, диапазон 1–4096 |
+ 
+-**Перезапуск самого плагина требуется**, если меняются `dns_listen_udp`, `dns_listen_tcp`, `http_listen` или `dns_max_concurrent`. Остальные параметры `config.json` и оба текстовых источника применяются автоматической перезагрузкой; `doh-servers.txt` и `tst-domen.txt` проверяются каждые 30 секунд. При изменении `http_listen` также измените `health.target` в manifest и переустановите плагин, иначе probe панели продолжит обращаться к прежнему адресу.
++**Перезапуск самого плагина требуется**, если меняются `dns_listen_udp`, `dns_listen_tcp`, `http_listen` или `dns_max_concurrent`. Остальные параметры `config.json` и оба текстовых источника применяются автоматической перезагрузкой; `doh-servers.txt` и `tst-domen.txt` проверяются с интервалом `reload_interval_seconds` (по умолчанию 5 секунд). При изменении `http_listen` также измените `health.target` в manifest и переустановите плагин, иначе probe панели продолжит обращаться к прежнему адресу.
+ 
+ ### 5.1.2 Локальные DNS-переопределения `local-hosts.txt`
+ 
+@@ -296,7 +296,7 @@ printer.home.arpa;192.0.2.20,192.0.2.21;
+ 
+ При первом запуске, если `local-hosts.txt` ещё нет, существующий `local_hosts` из старого `config.json` переносится в новый файл. Если файл уже существует, он является единственным источником истины; содержимое `config.json` будет синхронизировано при загрузке/перезагрузке конфигурации.
+ 
+-Web UI создаёт `local-hosts.txt.bak` с правами `0600` перед атомарной заменой. Демон проверяет хэш файла вместе с остальными источниками каждые 30 секунд. Некорректное содержимое отвергается целиком: последний рабочий runtime snapshot остаётся активным, а причина отображается в status/log.
++Web UI создаёт `local-hosts.txt.bak` с правами `0600` перед атомарной заменой. Демон проверяет хэш файла вместе с остальными источниками с интервалом `reload_interval_seconds` (по умолчанию 5 секунд). Некорректное содержимое отвергается целиком: последний рабочий runtime snapshot остаётся активным, а причина отображается в status/log.
+ 
+ ### 5.2 Health-check и ActiveDoHSelector
+ 
+@@ -388,9 +388,9 @@ accounts.google.com;A,AAAA;1;https://accounts.google.com/.well-known/openid-conf
+ 
+ Встроенные шаблоны `defaults/doh-servers.txt` и `defaults/tst-domen.txt` упакованы в бинарник. При первой установке они создают в `$LUCX_PLUGIN_DATA` список DoH upstream-ов (включая `pereval;https://free.pereval.top/dns-query`) и `tst-domen.txt` с девятью проверками: семь selector control domains, обязательной A/AAAA + HTTPS-проверкой `notebook.google.com` (HTTP 200) и OIDC-проверкой `accounts.google.com`. Домен `notebooklm.google.com` больше не входит ни в selector, ни во встроенный health-check. Если файл уже существует, его пользовательское содержимое сохраняется: обновление плагина не добавляет и не удаляет строки автоматически. На уже установленной системе удалите устаревшую строку `notebooklm.google.com;A,AAAA;0;;;0` вручную после резервного копирования `tst-domen.txt`; остальные строки будут сохранены. Повреждённый существующий файл автоматически не заменяется шаблоном.
+ 
+-При запуске и затем каждые 30 секунд плагин рассчитывает SHA-256 обоих файлов. Хэши хранятся только в оперативной памяти процесса — отдельного checksum-файла нет. При изменении содержимого плагин проверяет оба файла, формирует новые `upstreams`, `groups[].upstreams` и `groups[].checks`, атомарно записывает сгенерированный `config.json` и применяет новый runtime-снимок без остановки DNS-процесса.
++При запуске и затем с интервалом `reload_interval_seconds` (по умолчанию 5 секунд) плагин рассчитывает SHA-256 обоих файлов. Хэши хранятся только в оперативной памяти процесса — отдельного checksum-файла нет. При изменении содержимого плагин проверяет оба файла, формирует новые `upstreams`, `groups[].upstreams` и `groups[].checks`, атомарно записывает сгенерированный `config.json` и применяет новый runtime-снимок без остановки DNS-процесса.
+ 
+-Если любой файл имеет неверный формат или новая конфигурация не проходит проверку, она целиком отклоняется. Пользовательские файлы не перезаписываются, а DNS продолжает работать на последнем успешно применённом снимке. Одинаковая ошибка журнала не повторяется каждые 30 секунд; новая попытка выполняется после следующего изменения файлов или исправления конфигурации.
++Если любой файл имеет неверный формат или новая конфигурация не проходит проверку, она целиком отклоняется. Пользовательские файлы не перезаписываются, а DNS продолжает работать на последнем успешно применённом снимке. Одинаковая ошибка журнала не повторяется на каждом цикле проверки; новая попытка выполняется после следующего изменения файлов или исправления конфигурации.
+ 
+ Остальные настройки `config.json` не генерируются из текстовых файлов и сохраняются при каждом обновлении. Ручное редактирование управляемых полей `upstreams`, `groups[].upstreams` и `groups[].checks` не рекомендуется: при следующей генерации их содержимое будет заменено источниками `doh-servers.txt` и `tst-domen.txt`.
+ 
+@@ -543,7 +543,7 @@ dig +tcp @127.0.0.1 -p 5355 example.com A +time=5 +tries=1
+ ### 7.7 Проверка изменения настроек
+ 
+ - Измените URL в строке `doh-servers.txt`, не меняя стабильный ID; добавление и удаление провайдеров также выполняются только через этот файл.
+-- Измените строку или параметр в `tst-domen.txt`; в течение 30 секунд после проверки источников в журнале должна появиться `CONFIG reloaded`.
++- Измените строку или параметр в `tst-domen.txt`; в течение интервала `reload_interval_seconds` в журнале должна появиться `CONFIG reloaded`.
+ - Если один из текстовых файлов ошибочный, плагин отклонит всю новую конфигурацию, сохранит предыдущий runtime и запишет ошибку один раз для данного содержимого.
+ 
+ ## 8. Журналы и диагностика
+@@ -670,7 +670,7 @@ blocked.example.com;;
+ 2. Добавьте hostname, IPv4/IPv6 либо отключите или удалите строку.
+ 3. Нажмите **Сохранить hosts**. Backend проверит каждую запись и весь файл до записи.
+ 4. Перед атомарной заменой создаётся `local-hosts.txt.bak` с правами `0600`. Lock `config.json.lock` сериализует сохранение с daemon reload и другими config writes.
+-5. Валидные изменения применяются автоматически в течение 30 секунд. При ошибке новый runtime snapshot отклоняется, предыдущая рабочая конфигурация продолжает обслуживать DNS.
++5. Валидные изменения применяются автоматически в течение `reload_interval_seconds` (по умолчанию 5 секунд). При ошибке новый runtime snapshot отклоняется, предыдущая рабочая конфигурация продолжает обслуживать DNS.
+ 
+ ### DNS-поведение
+ 
+diff --git a/active_doh.go b/active_doh.go
+index 09387df..9fc0365 100644
+--- a/active_doh.go
++++ b/active_doh.go
+@@ -17,6 +17,7 @@ import (
+ 
+ const (
+ 	activeDoHProbeInterval    = 5 * time.Minute
++	activeDoHRetryBase        = 15 * time.Second
+ 	activeDoHProbeTimeout     = 9 * time.Second
+ 	activeDoHLookupTimeout    = 4 * time.Second
+ 	activeDoHBootstrapTimeout = 5 * time.Second
+@@ -47,10 +48,30 @@ type ActiveDoHStatus struct {
+ 	CheckCount int       `json:"check_count"`
+ }
+ 
++// activeDoHRetryDelay returns the wait before re-probing after a withdrawn
++// selection: 15s, 30s, 60s, ... capped at the regular probe interval.
++func activeDoHRetryDelay(consecutiveFailures int) time.Duration {
++	delay := activeDoHRetryBase
++	for i := 1; i < consecutiveFailures && delay < activeDoHProbeInterval; i++ {
++		delay *= 2
++	}
++	if delay > activeDoHProbeInterval {
++		delay = activeDoHProbeInterval
++	}
++	return delay
++}
++
+ func (r *Runtime) activeDoHLoop(ctx context.Context) {
++	failures := 0
+ 	for {
+-		r.runActiveDoHSelection(ctx)
+-		timer := time.NewTimer(activeDoHProbeInterval)
++		wait := activeDoHProbeInterval
++		if r.runActiveDoHSelection(ctx) {
++			failures = 0
++		} else {
++			failures++
++			wait = activeDoHRetryDelay(failures)
++		}
++		timer := time.NewTimer(wait)
+ 		select {
+ 		case <-ctx.Done():
+ 			timer.Stop()
+@@ -67,24 +88,27 @@ func (r *Runtime) activeDoHLoop(ctx context.Context) {
+ 	}
+ }
+ 
+-func (r *Runtime) runActiveDoHSelection(parent context.Context) {
++// runActiveDoHSelection reports whether the cycle ended with a healthy selection
++// (or was skipped/discarded). A false result means the selection was withdrawn
++// and the caller should retry sooner than the regular probe interval.
++func (r *Runtime) runActiveDoHSelection(parent context.Context) bool {
+ 	if r.activeDoHSelector == nil {
+-		return
++		return true
+ 	}
+ 	ctx, cancel := context.WithTimeout(parent, 2*activeDoHProbeInterval)
+ 	defer cancel()
+ 
+ 	s := r.currentSnapshot()
+ 	if s == nil {
+-		return
++		return true
+ 	}
+ 	candidates := r.activeDoHCandidates(ctx, s)
+ 	if ctx.Err() != nil {
+-		return
++		return true
+ 	}
+ 	if !r.activeDoHConfigMatches(s) {
+ 		logLine("INFO", "ACTIVE_DOH selection cycle discarded: configuration changed during bootstrap lookup")
+-		return
++		return true
+ 	}
+ 	// Capture the selection timestamp after bootstrap lookups: a successful lookup may
+ 	// have refreshed ResolvedAt during candidate collection, so it must not appear future-dated.
+@@ -96,7 +120,7 @@ func (r *Runtime) runActiveDoHSelection(parent context.Context) {
+ 			r.clearActiveDoHCache()
+ 		}
+ 		logLine("WARN", "ACTIVE_DOH no fresh bootstrap endpoints are eligible")
+-		return
++		return false
+ 	}
+ 
+ 	checks := activeDoHChecks(s)
+@@ -141,7 +165,7 @@ sendJobs:
+ 	wg.Wait()
+ 	close(resultsCh)
+ 	if ctx.Err() != nil {
+-		return
++		return true
+ 	}
+ 
+ 	results := make([]activedoh.ProbeResult, 0, jobCount)
+@@ -154,7 +178,7 @@ sendJobs:
+ 	}
+ 	if !r.activeDoHConfigMatches(s) {
+ 		logLine("INFO", "ACTIVE_DOH selection cycle discarded: configuration changed during probes")
+-		return
++		return true
+ 	}
+ 	previousGeneration := r.activeDoHSelector.Generation()
+ 	selected, ok := r.activeDoHSelector.Select(candidates, results, now)
+@@ -163,12 +187,13 @@ sendJobs:
+ 	}
+ 	if !ok {
+ 		logLine("WARN", "ACTIVE_DOH no healthy endpoint selected candidates=%d successful_checks=%d", len(candidates), successes)
+-		return
++		return false
+ 	}
+ 	logLine("INFO", "ACTIVE_DOH selected server=%s score=%d/%d ipv4=%d ipv6=%d generation=%d freshness_until=%s",
+ 		selected.Candidate.ServerID, selected.Score, selected.CheckCount,
+ 		len(selected.Candidate.IPv4), len(selected.Candidate.IPv6), selected.Generation,
+ 		selected.FreshUntil.UTC().Format(time.RFC3339))
++	return true
+ }
+ 
+ func (r *Runtime) activeDoHCandidates(ctx context.Context, snapshot *Snapshot) []activedoh.Candidate {
+diff --git a/audit_regression_test.go b/audit_regression_test.go
+new file mode 100644
+index 0000000..91800f8
+--- /dev/null
++++ b/audit_regression_test.go
+@@ -0,0 +1,242 @@
++package main
++
++import (
++	"context"
++	"encoding/binary"
++	"net"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++)
++
++// ---- helpers -------------------------------------------------------------
++
++type scriptedDNS struct {
++	conn *net.UDPConn
++	hits atomic.Int64
++}
++
++func startScriptedDNS(t *testing.T, rcodeFor func(name string) uint16) *scriptedDNS {
++	t.Helper()
++	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
++	if err != nil {
++		t.Fatal(err)
++	}
++	server := &scriptedDNS{conn: conn}
++	go func() {
++		buf := make([]byte, 4096)
++		for {
++			n, addr, err := conn.ReadFromUDP(buf)
++			if err != nil {
++				return
++			}
++			server.hits.Add(1)
++			query := append([]byte(nil), buf[:n]...)
++			name, _, end, parseErr := parseQuestion(query)
++			if parseErr != nil {
++				continue
++			}
++			response := append([]byte(nil), query[:end]...)
++			binary.BigEndian.PutUint16(response[2:4], 0x8180|rcodeFor(name))
++			binary.BigEndian.PutUint16(response[4:6], 1)
++			for i := 6; i < 12; i += 2 {
++				binary.BigEndian.PutUint16(response[i:i+2], 0)
++			}
++			_, _ = conn.WriteToUDP(response, addr)
++		}
++	}()
++	t.Cleanup(func() { _ = conn.Close() })
++	return server
++}
++
++func answerRecords(count int, withOPT bool) []byte {
++	query := makeDNSQuery("example.com", 1)
++	_, _, end, _ := parseQuestion(query)
++	response := append([]byte(nil), query[:end]...)
++	binary.BigEndian.PutUint16(response[2:4], 0x8180)
++	binary.BigEndian.PutUint16(response[4:6], 1)
++	binary.BigEndian.PutUint16(response[6:8], uint16(count))
++	if withOPT {
++		binary.BigEndian.PutUint16(response[10:12], 1)
++	}
++	for i := 0; i < count; i++ {
++		response = append(response, 0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 10, 0, byte(i>>8), byte(i))
++	}
++	if withOPT {
++		response = append(response, 0, 0, 41, 0x10, 0, 0, 0, 0, 0, 0, 0)
++	}
++	return response
++}
++
++// walk returns the AN/AR counts and whether the sections consume the packet exactly.
++func walk(p []byte) (an, ar int, exact bool) {
++	_, end, err := decodeName(p, 12)
++	if err != nil {
++		return
++	}
++	offset := end + 4
++	counts := []int{int(binary.BigEndian.Uint16(p[6:8])), int(binary.BigEndian.Uint16(p[8:10])), int(binary.BigEndian.Uint16(p[10:12]))}
++	for section, count := range counts {
++		for i := 0; i < count; i++ {
++			_, nameEnd, err := decodeName(p, offset)
++			if err != nil || nameEnd+10 > len(p) {
++				return
++			}
++			offset = nameEnd + 10 + int(binary.BigEndian.Uint16(p[nameEnd+8:nameEnd+10]))
++			if section == 0 {
++				an++
++			}
++			if section == 2 {
++				ar++
++			}
++		}
++	}
++	return an, ar, offset == len(p)
++}
++
++// ---- N1: SERVFAIL for one name must not trigger upstream cooldown --------
++
++func TestRegressionSoftFailureDoesNotStartCooldown(t *testing.T) {
++	primary := startScriptedDNS(t, func(name string) uint16 {
++		if name == "bad.example" {
++			return 2
++		}
++		return 0
++	})
++	secondary := startScriptedDNS(t, func(string) uint16 { return 0 })
++	runtime := &Runtime{}
++	snapshot := &Snapshot{cfg: Config{DNSQueryTimeoutSeconds: 3}, resolverUpstreams: []*ResolverRuntime{
++		{cfg: ResolverUpstream{ID: "primary", Type: "udp"}, address: primary.conn.LocalAddr().String()},
++		{cfg: ResolverUpstream{ID: "secondary", Type: "udp"}, address: secondary.conn.LocalAddr().String()},
++	}}
++	ask := func(name string) string {
++		_, id, err := runtime.queryResolverUpstreams(context.Background(), snapshot, makeDNSQuery(name, 1))
++		if err != nil {
++			t.Fatalf("%s: %v", name, err)
++		}
++		return id
++	}
++	if id := ask("bad.example"); id != "secondary" {
++		t.Fatalf("bad.example must fall through to the secondary for this query, got %s", id)
++	}
++	for _, name := range []string{"good1.example", "good2.example", "good3.example"} {
++		if id := ask(name); id != "primary" {
++			t.Fatalf("%s served by %s: one SERVFAIL must not demote the primary", name, id)
++		}
++	}
++	if len(runtime.upstreamCooldown) != 0 {
++		t.Fatalf("cooldown map must stay empty after soft failures: %v", runtime.upstreamCooldown)
++	}
++}
++
++// ---- N2: quick retry after a withdrawn selection --------------------------
++
++func TestRegressionActiveDoHRetryDelayBackoff(t *testing.T) {
++	want := []time.Duration{15 * time.Second, 30 * time.Second, 60 * time.Second, 120 * time.Second, 240 * time.Second,
++		activeDoHProbeInterval, activeDoHProbeInterval}
++	for i, expected := range want {
++		if got := activeDoHRetryDelay(i + 1); got != expected {
++			t.Fatalf("failure %d: delay %s, want %s", i+1, got, expected)
++		}
++	}
++	if activeDoHRetryDelay(1000) != activeDoHProbeInterval {
++		t.Fatal("delay must stay capped at the regular probe interval")
++	}
++}
++
++// ---- N3: honest error for non-public-only endpoints -----------------------
++
++func TestRegressionNonPublicOnlyEndpointReportsReason(t *testing.T) {
++	resolver := &bootstrapResolver{host: "doh.corp.internal", resolvers: []string{"10.0.0.2"}, refreshFor: time.Hour,
++		lookup: func(context.Context, string, string) ([]net.IP, error) { return []net.IP{net.ParseIP("10.0.0.5")}, nil }}
++	ips, err := resolver.addresses(context.Background(), false)
++	if len(ips) != 0 || err == nil || !strings.Contains(err.Error(), "non-public") {
++		t.Fatalf("ips=%v err=%v", ips, err)
++	}
++}
++
++// ---- N4: never answer responses, NOTIMP for other opcodes -----------------
++
++func TestRegressionHandleDNSDropsResponsesAndRejectsOpcodes(t *testing.T) {
++	runtime := &Runtime{dnsSem: make(chan struct{}, 4)}
++	runtime.snapshot.Store(&Snapshot{cfg: Config{DNSMode: "resolver", DNSQueryTimeoutSeconds: 1}})
++	query := makeDNSQuery("example.com", 1)
++	flags := binary.BigEndian.Uint16(query[2:4])
++
++	asResponse := append([]byte(nil), query...)
++	binary.BigEndian.PutUint16(asResponse[2:4], flags|0x8000)
++	if out := runtime.handleDNS(asResponse); len(out) != 0 {
++		t.Fatalf("a QR=1 packet must be dropped, got %d bytes", len(out))
++	}
++	update := append([]byte(nil), query...)
++	binary.BigEndian.PutUint16(update[2:4], (flags&^0x7800)|(5<<11))
++	if out := runtime.handleDNS(update); dnsRCode(out) != 4 {
++		t.Fatalf("opcode UPDATE must return NOTIMP(4), rcode=%d", dnsRCode(out))
++	}
++}
++
++func TestRegressionUDPNeverSendsDatagramForResponsePackets(t *testing.T) {
++	runtime := &Runtime{dnsSem: make(chan struct{}, 4)}
++	runtime.snapshot.Store(&Snapshot{cfg: Config{DNSMode: "resolver", DNSQueryTimeoutSeconds: 1, DNSMaxConcurrent: 4}})
++	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
++	if err != nil {
++		t.Fatal(err)
++	}
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	go runtime.serveUDP(ctx, conn)
++	client, _ := net.DialUDP("udp", nil, conn.LocalAddr().(*net.UDPAddr))
++	defer client.Close()
++
++	query := makeDNSQuery("example.com", 1)
++	binary.BigEndian.PutUint16(query[2:4], binary.BigEndian.Uint16(query[2:4])|0x8000)
++	_, _ = client.Write(query)
++	_ = client.SetReadDeadline(time.Now().Add(400 * time.Millisecond))
++	buf := make([]byte, 512)
++	if n, err := client.Read(buf); err == nil {
++		t.Fatalf("received %d bytes in reply to a QR=1 packet", n)
++	}
++	// a normal query must still be answered (SERVFAIL: no resolvers configured)
++	_, _ = client.Write(makeDNSQuery("example.com", 1))
++	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
++	n, err := client.Read(buf)
++	if err != nil || n < 12 || dnsRCode(buf[:n]) != 2 {
++		t.Fatalf("normal query: n=%d err=%v", n, err)
++	}
++}
++
++// ---- N5: OPT survives truncation -------------------------------------------
++
++func TestRegressionTruncationKeepsOPT(t *testing.T) {
++	full := answerRecords(100, true)
++	out := truncateDNSResponse(full, 512)
++	an, ar, exact := walk(out)
++	if len(out) > 512 || !dnsTruncated(out) || !exact || ar != 1 || an == 0 || an >= 100 {
++		t.Fatalf("len=%d TC=%v exact=%v AN=%d AR=%d", len(out), dnsTruncated(out), exact, an, ar)
++	}
++	untouched := truncateDNSResponse(full, 4096)
++	if _, ar, exact := walk(untouched); dnsTruncated(untouched) || !exact || ar != 1 {
++		t.Fatal("a response that fits must be returned unchanged")
++	}
++	noOPT := truncateDNSResponse(answerRecords(100, false), 512)
++	if _, ar, exact := walk(noOPT); !exact || ar != 0 || !dnsTruncated(noOPT) {
++		t.Fatal("no OPT must be invented when the original had none")
++	}
++}
++
++// ---- item 17: loop protection on the legacy system-DNS path -----------------
++
++func TestRegressionLegacySystemDNSKnowsListenerAddresses(t *testing.T) {
++	cfg := defaultConfig()
++	cfg.Upstreams = cfg.Upstreams[:1]
++	cfg.Groups[0].Upstreams = []string{cfg.Upstreams[0].ID}
++	snapshot, err := buildSnapshot(cfg, map[string]string{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	system := snapshot.upstreams[cfg.Upstreams[0].ID].systemDNS
++	if system == nil || len(system.listenerAddresses) == 0 {
++		t.Fatalf("legacy system DNS runtime has no listener addresses: %+v", system)
++	}
++}
+diff --git a/docs/PLUGIN-MANAGEMENT-UI.md b/docs/PLUGIN-MANAGEMENT-UI.md
+index 27d3447..95c055c 100644
+--- a/docs/PLUGIN-MANAGEMENT-UI.md
++++ b/docs/PLUGIN-MANAGEMENT-UI.md
+@@ -102,7 +102,7 @@ Current API surface:
+ 
+ The legacy `POST /api/v1/integration` endpoint accepts only the read-only `check` action. Attempts to request `integrate` or `remove` return HTTP 410 Gone. The obsolete `/api/v1/integration/logs` route is not exposed.
+ 
+-The UI does not provide arbitrary file paths, arbitrary shell commands, or Xray mutation operations. File names are allowlisted, request bodies and row counts are bounded, and configuration/source files are validated before an atomic write. Config writes create or replace `config.json.bak` with mode 0600 before atomically replacing `config.json`. Local hosts writes create or replace `local-hosts.txt.bak` with mode 0600 before atomically replacing `local-hosts.txt`. A stable `config.json.lock` file (mode 0600, advisory `flock`) serializes daemon, CLI and Web UI writes across separate processes, including managed source-file updates; the daemon uses the same lock for startup and hot-reload source-read/merge/write transactions. DNS mode/upstream and local-host source changes are applied by the daemon's existing hot-reload loop (up to 30 seconds); listener and concurrency changes continue to require a plugin restart. The UI reports the saved configuration and whether a restart is required; the dashboard's DNS mode shows what the running daemon has loaded.
++The UI does not provide arbitrary file paths, arbitrary shell commands, or Xray mutation operations. File names are allowlisted, request bodies and row counts are bounded, and configuration/source files are validated before an atomic write. Config writes create or replace `config.json.bak` with mode 0600 before atomically replacing `config.json`. Local hosts writes create or replace `local-hosts.txt.bak` with mode 0600 before atomically replacing `local-hosts.txt`. A stable `config.json.lock` file (mode 0600, advisory `flock`) serializes daemon, CLI and Web UI writes across separate processes, including managed source-file updates; the daemon uses the same lock for startup and hot-reload source-read/merge/write transactions. DNS mode/upstream and local-host source changes are applied by the daemon's existing hot-reload loop (within `reload_interval_seconds`, 5 seconds by default); listener and concurrency changes continue to require a plugin restart. The UI reports the saved configuration and whether a restart is required; the dashboard's DNS mode shows what the running daemon has loaded.
+ 
+ ## Regression coverage
+ 
+diff --git a/main.go b/main.go
+index 649b7a3..379a861 100644
+--- a/main.go
++++ b/main.go
+@@ -1033,7 +1033,7 @@ func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
+ 		if u.Type == "system" {
+ 			s.upstreams[u.ID] = &UpstreamRuntime{
+ 				cfg:       u,
+-				systemDNS: &systemDNSResolver{resolvConfPath: systemResolvConfPath},
++				systemDNS: &systemDNSResolver{resolvConfPath: systemResolvConfPath, listenerAddresses: []string{c.DNSListenUDP, c.DNSListenTCP}},
+ 			}
+ 			continue
+ 		}
+@@ -1192,6 +1192,9 @@ func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string
+ 				resolvedBy = server
+ 				break
+ 			}
++			if err == nil {
++				err = errors.New("DoH endpoint resolved only to non-public addresses (private, CGNAT, loopback, link-local and reserved ranges are rejected)")
++			}
+ 		}
+ 		lookupErr = err
+ 		if ctx.Err() != nil {
+@@ -1472,6 +1475,16 @@ func (r *Runtime) initHealth(s *Snapshot) {
+ 	for uid := range s.upstreams {
+ 		validUpstreams[uid] = struct{}{}
+ 	}
++	// Mode-2 resolver IDs share the cooldown map; do not discard their state on reload.
++	cooldownIDs := make(map[string]struct{}, len(validUpstreams)+len(s.resolverUpstreams))
++	for uid := range validUpstreams {
++		cooldownIDs[uid] = struct{}{}
++	}
++	for _, resolver := range s.resolverUpstreams {
++		if resolver != nil {
++			cooldownIDs[strings.TrimSpace(resolver.cfg.ID)] = struct{}{}
++		}
++	}
+ 	for gid, g := range s.groups {
+ 		valid := make(map[string]struct{}, len(g.Upstreams))
+ 		for _, uid := range g.Upstreams {
+@@ -1516,7 +1529,7 @@ func (r *Runtime) initHealth(s *Snapshot) {
+ 	}
+ 	if r.upstreamCooldown != nil {
+ 		for uid := range r.upstreamCooldown {
+-			if _, ok := validUpstreams[uid]; !ok {
++			if _, ok := cooldownIDs[uid]; !ok {
+ 				delete(r.upstreamCooldown, uid)
+ 			}
+ 		}
+@@ -1670,6 +1683,9 @@ func (r *Runtime) serveUDPWithHandler(ctx context.Context, c *net.UDPConn, handl
+ 					r.activeUDP.Add(1)
+ 					resp := handle(job.packet)
+ 					r.activeUDP.Add(-1)
++					if len(resp) == 0 {
++						continue // dropped on purpose (e.g. QR=1 packet)
++					}
+ 					resp = truncateDNSResponse(resp, dnsUDPResponseLimit(job.packet))
+ 					_, _ = c.WriteToUDP(resp, job.addr)
+ 				}
+@@ -1709,7 +1725,9 @@ func (r *Runtime) serveUDPWithHandler(ctx context.Context, c *net.UDPConn, handl
+ 		default:
+ 			r.udpQueueDepth.Add(-1)
+ 			r.udpDropped.Add(1)
+-			_, _ = c.WriteToUDP(servfailResponse(q), addr)
++			if !dnsIsResponse(q) {
++				_, _ = c.WriteToUDP(servfailResponse(q), addr)
++			}
+ 		}
+ 	}
+ }
+@@ -1789,7 +1807,7 @@ func (r *Runtime) handleTCPConn(ctx context.Context, c net.Conn) {
+ 			return
+ 		}
+ 		resp := r.handleDNS(q)
+-		if len(resp) > maxDNSMessage {
++		if len(resp) == 0 || len(resp) > maxDNSMessage {
+ 			return
+ 		}
+ 		_ = c.SetWriteDeadline(time.Now().Add(tcpWriteTimeout))
+@@ -1802,7 +1820,18 @@ func (r *Runtime) handleTCPConn(ctx context.Context, c net.Conn) {
+ 		}
+ 	}
+ }
++
++// dnsIsResponse reports whether the QR bit is set. A server must never answer
++// a response packet (two such peers could ping-pong error replies forever).
++func dnsIsResponse(packet []byte) bool { return len(packet) >= 3 && packet[2]&0x80 != 0 }
++
+ func (r *Runtime) handleDNS(packet []byte) []byte {
++	if dnsIsResponse(packet) {
++		return nil
++	}
++	if len(packet) >= 12 && (packet[2]>>3)&0x0f != 0 {
++		return errorResponse(packet, 4) // NOTIMP: only opcode QUERY is served
++	}
+ 	select {
+ 	case r.dnsSem <- struct{}{}:
+ 		defer func() { <-r.dnsSem }()
+@@ -3458,6 +3487,13 @@ func truncateDNSResponse(response []byte, limit int) []byte {
+ 	out := append([]byte(nil), response[:offset]...)
+ 	counts := [3]uint16{}
+ 	truncated := false
++	optRaw := findOPTRecord(response)
++	optKept := false
++	// Reserve room for OPT so that filling the packet with answers cannot crowd it out.
++	optReserve := 0
++	if optRaw != nil && len(out)+len(optRaw) <= limit {
++		optReserve = len(optRaw)
++	}
+ 	sectionCounts := []int{
+ 		int(binary.BigEndian.Uint16(response[6:8])),
+ 		int(binary.BigEndian.Uint16(response[8:10])),
+@@ -3477,13 +3513,20 @@ func truncateDNSResponse(response []byte, limit int) []byte {
+ 				truncated = true
+ 				break
+ 			}
+-			if len(out)+(offset-start) > limit {
++			recordLimit := limit - optReserve
++			if section == 2 && binary.BigEndian.Uint16(response[nameEnd:nameEnd+2]) == 41 {
++				recordLimit = limit
++			}
++			if len(out)+(offset-start) > recordLimit {
+ 				truncated = true
+ 				offset = start
+ 				break
+ 			}
+ 			out = append(out, response[start:offset]...)
+ 			counts[section]++
++			if section == 2 && binary.BigEndian.Uint16(response[nameEnd:nameEnd+2]) == 41 {
++				optKept = true
++			}
+ 		}
+ 		if truncated {
+ 			break
+@@ -3492,6 +3535,11 @@ func truncateDNSResponse(response []byte, limit int) []byte {
+ 	if offset < len(response) {
+ 		truncated = true
+ 	}
++	// RFC 6891: a truncated reply should still carry OPT so the client keeps EDNS.
++	if truncated && optRaw != nil && !optKept && len(out)+len(optRaw) <= limit {
++		out = append(out, optRaw...)
++		counts[2]++
++	}
+ 	binary.BigEndian.PutUint16(out[4:6], uint16(questionCount))
+ 	binary.BigEndian.PutUint16(out[6:8], counts[0])
+ 	binary.BigEndian.PutUint16(out[8:10], counts[1])
+@@ -3656,3 +3704,38 @@ func decrementTTLs(p []byte, elapsed uint32) {
+ 		binary.BigEndian.PutUint32(p[o:o+4], v)
+ 	}
+ }
++
++// findOPTRecord returns a copy of the first root-owned OPT record in the
++// Additional section, or nil. Parsing is tolerant: any inconsistency yields nil.
++func findOPTRecord(response []byte) []byte {
++	if len(response) < 12 {
++		return nil
++	}
++	offset := 12
++	for i := 0; i < int(binary.BigEndian.Uint16(response[4:6])); i++ {
++		_, end, err := decodeName(response, offset)
++		if err != nil || end+4 > len(response) {
++			return nil
++		}
++		offset = end + 4
++	}
++	counts := []int{int(binary.BigEndian.Uint16(response[6:8])), int(binary.BigEndian.Uint16(response[8:10])), int(binary.BigEndian.Uint16(response[10:12]))}
++	for section, count := range counts {
++		for i := 0; i < count; i++ {
++			start := offset
++			_, nameEnd, err := decodeName(response, offset)
++			if err != nil || nameEnd+10 > len(response) {
++				return nil
++			}
++			next := nameEnd + 10 + int(binary.BigEndian.Uint16(response[nameEnd+8:nameEnd+10]))
++			if next > len(response) {
++				return nil
++			}
++			if section == 2 && nameEnd == start+1 && response[start] == 0 && binary.BigEndian.Uint16(response[nameEnd:nameEnd+2]) == 41 {
++				return append([]byte(nil), response[start:next]...)
++			}
++			offset = next
++		}
++	}
++	return nil
++}
+diff --git a/resolver_dns.go b/resolver_dns.go
+index ac69953..81c14ce 100644
+--- a/resolver_dns.go
++++ b/resolver_dns.go
+@@ -126,22 +126,31 @@ func (r *Runtime) queryResolverUpstreams(ctx context.Context, snapshot *Snapshot
+ 		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
+ 		response, err := queryMode2Upstream(attemptCtx, resolver, query)
+ 		cancel()
++		// A SERVFAIL/REFUSED/truncated answer is specific to this QNAME (lame
++		// delegation, broken DNSSEC, attacker-controlled zone). It must let this
++		// one query fall through to the next upstream, but it must NOT put the
++		// upstream into cooldown, otherwise any external domain can force all
++		// subsequent traffic onto the fallback resolver. Only transport errors
++		// and timeouts prove the upstream itself is unavailable.
++		softFailure := false
+ 		if err == nil {
+ 			switch dnsRCode(response) {
+ 			case 2:
+-				err = errors.New("upstream returned SERVFAIL")
++				err, softFailure = errors.New("upstream returned SERVFAIL"), true
+ 			case 5:
+-				err = errors.New("upstream returned REFUSED")
++				err, softFailure = errors.New("upstream returned REFUSED"), true
+ 			default:
+ 				if dnsTruncated(response) {
+-					err = errors.New("upstream response remains truncated after transport retry")
++					err, softFailure = errors.New("upstream response remains truncated after transport retry"), true
+ 				} else {
+ 					r.markUpstreamSuccess(id)
+ 					return response, id, nil
+ 				}
+ 			}
+ 		}
+-		r.markUpstreamFailure(id, time.Now())
++		if !softFailure {
++			r.markUpstreamFailure(id, time.Now())
++		}
+ 		failures = append(failures, id+": "+err.Error())
+ 	}
+ 	return nil, "", fmt.Errorf("all mode-2 resolver upstreams failed: %s", strings.Join(failures, "; "))
+diff --git a/scripts/activedoh_failover_audit.go.txt b/scripts/activedoh_failover_audit.go.txt
+deleted file mode 100644
+index cb977c6..0000000
+--- a/scripts/activedoh_failover_audit.go.txt
++++ /dev/null
+@@ -1,35 +0,0 @@
+-package activedoh
+-
+-import (
+-	"testing"
+-	"time"
+-)
+-
+-func TestAuditFailoverLatency(t *testing.T) {
+-	s := NewSelector(DefaultPolicy())
+-	t0 := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+-	cand := func(id, host string) Candidate {
+-		return Candidate{ServerID: id, URL: "https://" + host + "/dns-query", Hostname: host, IPv4: []string{"8.8.8.8"}, ResolvedAt: t0}
+-	}
+-	cands := []Candidate{cand("a", "a.example"), cand("b", "b.example")}
+-	res := func(now time.Time, aOK, bOK bool) []ProbeResult {
+-		var out []ProbeResult
+-		for _, d := range ControlDomains() {
+-			out = append(out, ProbeResult{ServerID: "a", Domain: d, Success: aOK, CheckedAt: now})
+-			out = append(out, ProbeResult{ServerID: "b", Domain: d, Success: bOK, CheckedAt: now})
+-		}
+-		return out
+-	}
+-	now := t0
+-	sel, _ := s.Select(cands, res(now, true, true), now)
+-	t.Logf("t=0: selected %s", sel.Candidate.ServerID)
+-	// endpoint "a" dies right after; probe cycles every 5 min (activeDoHProbeInterval)
+-	for i := 1; i <= 6; i++ {
+-		now = t0.Add(time.Duration(i) * 5 * time.Minute)
+-		sel, ok := s.Select(cands, res(now, false, true), now)
+-		t.Logf("cycle %d (t=+%dmin): a=0/8 b=8/8 -> selected=%s ok=%v", i, i*5, sel.Candidate.ServerID, ok)
+-		if sel.Candidate.ServerID == "b" {
+-			break
+-		}
+-	}
+-}
+diff --git a/scripts/audit_repro.go.txt b/scripts/audit_repro.go.txt
+deleted file mode 100644
+index 2125d58..0000000
+--- a/scripts/audit_repro.go.txt
++++ /dev/null
+@@ -1,137 +0,0 @@
+-package main
+-
+-import (
+-	"context"
+-	"encoding/binary"
+-	"fmt"
+-	"net"
+-	"net/http"
+-	"net/http/httptest"
+-	"os"
+-	"path/filepath"
+-	"strings"
+-	"testing"
+-	"time"
+-	"encoding/json"
+-)
+-
+-func TestAudit_RedactReplacementLiteral(t *testing.T) {
+-	out := redactWebUILogLine("Authorization: Bearer abc123SECRET and apiToken: zzz999")
+-	t.Logf("REDACT OUTPUT: %q", out)
+-}
+-
+-func TestAudit_DigOverflowEmptyResults(t *testing.T) {
+-	dir := t.TempDir()
+-	fake := filepath.Join(dir, "dig")
+-	os.WriteFile(fake, []byte("#!/bin/sh\necho ';; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1'\necho 'example. 60 IN A 1.2.3.4'\n"), 0755)
+-	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+-	var checks []Check
+-	for i := 0; i < 26; i++ {
+-		checks = append(checks, Check{Domain: fmt.Sprintf("d%d.example.com", i), QTypes: []uint16{1, 28}})
+-	}
+-	res := runWebUIDigTests("127.0.0.1:5355", checks, "udp")
+-	empty := 0
+-	for _, r := range res {
+-		if r.Status == "" && r.Name == "" {
+-			empty++
+-		}
+-	}
+-	sum := finalizeWebUITests(webUITestSummary{Tests: res})
+-	t.Logf("queries=%d results=%d empty_results=%d summary_status=%s failed=%d", 52, len(res), empty, sum.Status, sum.Failed)
+-}
+-
+-func TestAudit_ValidListenAcceptsNonLoopbackAndBadPort(t *testing.T) {
+-	for _, tc := range []struct{ u, tcp, h string }{
+-		{"0.0.0.0:53", "0.0.0.0:53", "0.0.0.0:18765"},
+-		{"127.0.0.1:99999", "127.0.0.1:5355", "127.0.0.1:18765"},
+-		{"127.0.0.1:5355", "localhost:abc", "127.0.0.1:18765"},
+-	} {
+-		c := defaultConfig()
+-		c.DNSListenUDP, c.DNSListenTCP, c.HTTPListen = tc.u, tc.tcp, tc.h
+-		t.Logf("validateConfig(udp=%s tcp=%s http=%s) => %v", tc.u, tc.tcp, tc.h, validateConfig(c))
+-	}
+-}
+-
+-func TestAudit_ErrorResponseShape(t *testing.T) {
+-	q := makeDNSQuery("example.com", 1)
+-	q = append(q, 0, 0, 41, 16, 0, 0, 0, 0, 0, 0, 0) // fake OPT
+-	binary.BigEndian.PutUint16(q[10:12], 1)
+-	r := servfailResponse(q)
+-	t.Logf("query len=%d resp len=%d QD=%d AN=%d NS=%d AR=%d rcode=%d (bytes after header remain: %d)",
+-		len(q), len(r), binary.BigEndian.Uint16(r[4:6]), binary.BigEndian.Uint16(r[6:8]),
+-		binary.BigEndian.Uint16(r[8:10]), binary.BigEndian.Uint16(r[10:12]), dnsRCode(r), len(r)-12)
+-	short := formerrResponse([]byte{1, 2, 3})
+-	t.Logf("formerr for 3-byte packet => len=%d", len(short))
+-}
+-
+-func TestAudit_UDPTruncationNoTC(t *testing.T) {
+-	r := &Runtime{}
+-	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+-	if err != nil {
+-		t.Fatal(err)
+-	}
+-	ctx, cancel := context.WithCancel(context.Background())
+-	defer cancel()
+-	go r.serveUDPWithHandler(ctx, conn, func(q []byte) []byte {
+-		resp := make([]byte, 6000)
+-		copy(resp, q[:2])
+-		binary.BigEndian.PutUint16(resp[2:4], 0x8180)
+-		return resp
+-	})
+-	c, _ := net.DialUDP("udp", nil, conn.LocalAddr().(*net.UDPAddr))
+-	c.Write(makeDNSQuery("example.com", 1))
+-	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+-	buf := make([]byte, 65535)
+-	n, err := c.Read(buf)
+-	t.Logf("handler returned 6000 bytes; client received n=%d err=%v TC-bit=%v", n, err, dnsTruncated(buf[:n]))
+-}
+-
+-func TestAudit_OIDCTrailingSlashInconsistency(t *testing.T) {
+-	line := "example.com;A;1;https://example.com/.well-known/openid-configuration/;200;1\n"
+-	_, perr := parseHealthChecks([]byte(line))
+-	verr := verifyOIDCIssuer([]byte(`{"issuer":"https://example.com"}`), "https://example.com/.well-known/openid-configuration/")
+-	t.Logf("parseHealthChecks err=%v | verifyOIDCIssuer err=%v", perr, verr)
+-}
+-
+-func TestAudit_URLErrorLeaksQuerySecret(t *testing.T) {
+-	u := &UpstreamRuntime{cfg: Upstream{ID: "x", URL: "https://127.0.0.1:1/dns-query?token=SUPERSECRET"}, client: &http.Client{Timeout: time.Second}}
+-	_, err := sendDoH(context.Background(), u, makeDNSQuery("example.com", 1))
+-	t.Logf("sendDoH error: %v | contains secret=%v", err, strings.Contains(fmt.Sprint(err), "SUPERSECRET"))
+-}
+-
+-func TestAudit_GeminiKeyFileOverwritesConfig(t *testing.T) {
+-	dir := t.TempDir()
+-	cfg := defaultConfig()
+-	cfg.GeminiAPI.KeyFile = "config.json"
+-	b, _ := json.MarshalIndent(cfg, "", "  ")
+-	os.WriteFile(filepath.Join(dir, "config.json"), b, 0600)
+-	err := saveWebUIGeminiKey(dir, "AAAAAAAAAAAAAAAAAAAAAAAA")
+-	after, _ := os.ReadFile(filepath.Join(dir, "config.json"))
+-	_, lerr := loadConfigNoCreate(filepath.Join(dir, "config.json"))
+-	t.Logf("saveWebUIGeminiKey err=%v | config.json now=%q | loadConfigNoCreate err=%v", err, strings.TrimSpace(string(after)), lerr)
+-}
+-
+-func TestAudit_SessionCookieGivenToAnyLoopbackClient(t *testing.T) {
+-	h := newWebUIHandlerWithDataDir("http://127.0.0.1:1/status", "SECRET-SESSION-TOKEN", t.TempDir())
+-	req := httptest.NewRequest("GET", "/", nil)
+-	req.Host = "127.0.0.1:40000"
+-	rec := httptest.NewRecorder()
+-	h.ServeHTTP(rec, req)
+-	cookies := rec.Result().Cookies()
+-	t.Logf("GET / without any credentials -> status=%d, Set-Cookie present=%v", rec.Code, len(cookies) > 0)
+-	req2 := httptest.NewRequest("GET", "/api/v1/logs", nil)
+-	req2.Host = "127.0.0.1:40000"
+-	for _, c := range cookies {
+-		req2.AddCookie(c)
+-	}
+-	rec2 := httptest.NewRecorder()
+-	h.ServeHTTP(rec2, req2)
+-	t.Logf("GET /api/v1/logs with that cookie -> status=%d (401 would mean protected)", rec2.Code)
+-}
+-
+-func TestAudit_ResolverFailureReturnsNODATA(t *testing.T) {
+-	r := &Runtime{}
+-	s := &Snapshot{cfg: Config{DNSMode: "resolver", DNSQueryTimeoutSeconds: 1}}
+-	resp := r.resolverDNSResponse(makeDNSQuery("example.com", 1), s)
+-	t.Logf("all-upstreams-failed => rcode=%d answers=%d (SERVFAIL would be rcode 2)", dnsRCode(resp), dnsAnswerCount(resp))
+-}
+diff --git a/webui/index.html b/webui/index.html
+index ca3041a..640dd90 100644
+--- a/webui/index.html
++++ b/webui/index.html
+@@ -245,7 +245,7 @@
+ 
+     <section class="panel tab-page" data-page-panel="hosts" hidden>
+       <h2>Локальные DNS-записи · local-hosts.txt</h2>
+-      <p class="muted">Только точные DNS-имена, обслуживаемые локально DNS-плагином. Формат строки: hostname;IPv4[,IPv4...];IPv6[,IPv6...]. Можно указывать несколько адресов каждого семейства. Пустое поле семейства возвращает для него NODATA; если пусты оба поля, A и AAAA этого имени тоже вернут NODATA. Снятие флажка комментирует строку, а не удаляет её. Изменения проверяются и применяются hot reload (до 30 секунд). Системный /etc/hosts не читается и не изменяется.</p>
++      <p class="muted">Только точные DNS-имена, обслуживаемые локально DNS-плагином. Формат строки: hostname;IPv4[,IPv4...];IPv6[,IPv6...]. Можно указывать несколько адресов каждого семейства. Пустое поле семейства возвращает для него NODATA; если пусты оба поля, A и AAAA этого имени тоже вернут NODATA. Снятие флажка комментирует строку, а не удаляет её. Изменения проверяются и применяются hot reload (в пределах reload_interval_seconds, по умолчанию 5 секунд). Системный /etc/hosts не читается и не изменяется.</p>
+       <div class="source-wrap">
+         <table class="source-table"><thead><tr><th>Вкл.</th><th>Hostname</th><th>IPv4 (через запятую)</th><th>IPv6 (через запятую)</th><th></th></tr></thead><tbody id="hosts-rows"></tbody></table>
+       </div>
