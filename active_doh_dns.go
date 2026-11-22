@@ -3,14 +3,11 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
-	"net"
 	"strings"
 	"time"
 
 	"lucx-doh-health-monitor/internal/activedoh"
 )
-
-const activeDoHAnswerTTL = 60 * time.Second
 
 // activeDoHDNSResponse constructs the default mode-1 answer: the selected DoH
 // endpoint's bootstrap IPs, not the IPs of the requested website.
@@ -97,74 +94,6 @@ func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte 
 		}
 	}
 	return response
-}
-
-func buildActiveDoHResponse(query []byte, qname string, qtype uint16, questionEnd int, selection activedoh.Selection, now time.Time) ([]byte, bool) {
-	if len(query) < 12 || questionEnd < 12 || questionEnd > len(query) {
-		return formerrResponse(query), false
-	}
-	remaining := selection.FreshUntil.Sub(now)
-	if remaining < time.Second {
-		return servfailResponse(query), false
-	}
-	ttl := uint32(remaining / time.Second)
-	if ttl > uint32(activeDoHAnswerTTL/time.Second) {
-		ttl = uint32(activeDoHAnswerTTL / time.Second)
-	}
-	if ttl == 0 {
-		return emptyNoErrorDNSResponse(query), false
-	}
-
-	rawIPs := selection.Candidate.IPv4
-	wantIPv4 := qtype == 1
-	if qtype == 28 {
-		rawIPs = selection.Candidate.IPv6
-	} else if qtype != 1 {
-		return emptyNoErrorDNSResponse(query), false
-	}
-
-	ips := make([]net.IP, 0, len(rawIPs))
-	seen := make(map[string]struct{}, len(rawIPs))
-	for _, raw := range rawIPs {
-		ip := net.ParseIP(strings.TrimSpace(raw))
-		if ip == nil {
-			continue
-		}
-		if wantIPv4 {
-			ip = ip.To4()
-		} else if ip.To4() == nil {
-			ip = ip.To16()
-		} else {
-			ip = nil
-		}
-		if ip == nil {
-			continue
-		}
-		value := ip.String()
-		if _, exists := seen[value]; exists {
-			continue
-		}
-		seen[value] = struct{}{}
-		ips = append(ips, ip)
-	}
-	if len(ips) == 0 {
-		return emptyNoErrorDNSResponse(query), false
-	}
-
-	response := newDNSResponseHeader(query)
-	response = append(response, query[12:questionEnd]...)
-	for _, ip := range ips {
-		response = append(response, 0xc0, 0x0c) // owner name points to QNAME
-		response = append(response, byte(qtype>>8), byte(qtype), 0, 1)
-		var ttlBytes [4]byte
-		binary.BigEndian.PutUint32(ttlBytes[:], ttl)
-		response = append(response, ttlBytes[:]...)
-		response = append(response, byte(len(ip)>>8), byte(len(ip)))
-		response = append(response, ip...)
-	}
-	binary.BigEndian.PutUint16(response[6:8], uint16(len(ips)))
-	response = appendMinimalResponseOPT(response, query)
-	return response, true
 }
 
 func emptyNoErrorDNSResponse(query []byte) []byte {
