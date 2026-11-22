@@ -240,6 +240,7 @@ func TestRegressionLegacySystemDNSKnowsListenerAddresses(t *testing.T) {
 		t.Fatalf("legacy system DNS runtime has no listener addresses: %+v", system)
 	}
 }
+
 // ---- N6: mode-2 resolver cooldown survives a configuration reload --------
 
 func TestRegressionMode2CooldownSurvivesReload(t *testing.T) {
