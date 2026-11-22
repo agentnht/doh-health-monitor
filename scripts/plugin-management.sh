@@ -4,6 +4,7 @@ set -Eeuo pipefail
 
 readonly PLUGIN_ID="doh-health-monitor"
 readonly PLUGIN_BIN_NAME="doh-health-monitor"
+readonly PANEL_SERVICE_NAME="lucx-plugin-doh-health-monitor"
 readonly DHM_SYMLINK_PATH="/usr/local/bin/dhm"
 
 MANAGEMENT_SCRIPT_PATH=""
@@ -203,10 +204,60 @@ resolve_server_address() {
   printf '%s\n' "$address"
 }
 
+detect_plugin_service() {
+  local panel_load="" standalone_load="" panel_active=0 standalone_active=0
+
+  if ! command -v systemctl >/dev/null 2>&1; then
+    # Let the Go checker report the missing preflight tool with its usual message.
+    printf '%s\n' "$PANEL_SERVICE_NAME"
+    return 0
+  fi
+
+  panel_load="$(systemctl show --property=LoadState --value "$PANEL_SERVICE_NAME" 2>/dev/null || true)"
+  standalone_load="$(systemctl show --property=LoadState --value "$SYSTEMD_SERVICE_NAME" 2>/dev/null || true)"
+
+  if systemctl is-active --quiet "$PANEL_SERVICE_NAME"; then
+    panel_active=1
+  fi
+  if systemctl is-active --quiet "$SYSTEMD_SERVICE_NAME"; then
+    standalone_active=1
+  fi
+
+  if (( panel_active == 1 && standalone_active == 1 )); then
+    fail "Одновременно активны panel и standalone службы DoH Health Monitor. Оставьте только одного владельца процесса и повторите проверку."
+    return 1
+  fi
+  if (( standalone_active == 1 )); then
+    printf '%s\n' "$SYSTEMD_SERVICE_NAME"
+    return 0
+  fi
+  if (( panel_active == 1 )); then
+    printf '%s\n' "$PANEL_SERVICE_NAME"
+    return 0
+  fi
+
+  # If neither unit is running, use the only installed unit so the Go checker
+  # can report that it is inactive. Do not guess when both managers are installed.
+  if [[ "$standalone_load" == "loaded" && "$panel_load" == "loaded" ]]; then
+    fail "Обе службы DoH Health Monitor установлены, но ни одна не активна. Запустите выбранный менеджер процесса или удалите неиспользуемый unit."
+    return 1
+  elif [[ "$standalone_load" == "loaded" ]]; then
+    printf '%s\n' "$SYSTEMD_SERVICE_NAME"
+  else
+    # Preserve the panel-mode diagnostic when its service is the only loaded
+    # one or neither unit has been installed.
+    printf '%s\n' "$PANEL_SERVICE_NAME"
+  fi
+}
+
 run_check() {
-  local checker_file="" package_scripts_dir="" rc
+  local checker_file="" package_scripts_dir="" rc plugin_service
   printf 'Проверка состояния плагина через Go read-only command...\n'
-  if ! "$PLUGIN_BIN" check; then
+  if ! plugin_service="$(detect_plugin_service)"; then
+    return 1
+  fi
+  printf '[INFO] Используется служба плагина: %s\n' "$plugin_service"
+  if ! "$PLUGIN_BIN" check --plugin-service "$plugin_service"; then
     fail "Go-проверка плагина завершилась с ошибкой."
     return 1
   fi
@@ -261,7 +312,7 @@ StartLimitBurst=5
 [Service]
 Type=simple
 User=root
-WorkingDirectory=$(systemd_quote "$root_dir")
+WorkingDirectory=$root_dir
 Environment=$(systemd_quote "LUCX_PLUGIN_ID=$PLUGIN_ID")
 Environment=$(systemd_quote "LUCX_PLUGIN_VERSION=$version")
 Environment=$(systemd_quote "LUCX_PLUGIN_DATA=$data_dir")

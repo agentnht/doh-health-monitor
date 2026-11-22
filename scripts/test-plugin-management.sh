@@ -30,8 +30,66 @@ grep -Fq '3) Переключить DNS mode / настроить resolver upstr
 grep -Fq '3) run_dns_config' "$SCRIPT_DIR/plugin-management.sh" || fail_test "DNS mode menu dispatch"
 pass "DNS mode menu entry is connected to the CLI action"
 
+# Simulate systemd unit states so the menu selects the active process manager.
+MOCK_PANEL_LOAD="loaded"
+MOCK_STANDALONE_LOAD="loaded"
+MOCK_PANEL_ACTIVE="inactive"
+MOCK_STANDALONE_ACTIVE="active"
+systemctl() {
+  local command="${1:-}" service
+  service="${@: -1}"
+  case "$command" in
+    show)
+      case "$service" in
+        "$PANEL_SERVICE_NAME") printf '%s\n' "$MOCK_PANEL_LOAD" ;;
+        "$SYSTEMD_SERVICE_NAME") printf '%s\n' "$MOCK_STANDALONE_LOAD" ;;
+        *) return 1 ;;
+      esac
+      ;;
+    is-active)
+      case "$service" in
+        "$PANEL_SERVICE_NAME") [[ "$MOCK_PANEL_ACTIVE" == "active" ]] ;;
+        "$SYSTEMD_SERVICE_NAME") [[ "$MOCK_STANDALONE_ACTIVE" == "active" ]] ;;
+        *) return 1 ;;
+      esac
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+[[ "$(detect_plugin_service)" == "$SYSTEMD_SERVICE_NAME" ]] || fail_test "standalone active service detection"
+pass "read-only check detects active standalone systemd service"
+
+MOCK_PANEL_ACTIVE="active"
+MOCK_STANDALONE_ACTIVE="inactive"
+[[ "$(detect_plugin_service)" == "$PANEL_SERVICE_NAME" ]] || fail_test "panel active service detection"
+pass "read-only check preserves panel-managed service detection"
+
+MOCK_PANEL_ACTIVE="active"
+MOCK_STANDALONE_ACTIVE="active"
+if detect_plugin_service >/dev/null 2>&1; then fail_test "both active managers accepted"; fi
+pass "read-only check rejects two simultaneously active managers"
+
+MOCK_PANEL_LOAD="not-found"
+MOCK_STANDALONE_LOAD="loaded"
+MOCK_PANEL_ACTIVE="inactive"
+MOCK_STANDALONE_ACTIVE="inactive"
+[[ "$(detect_plugin_service)" == "$SYSTEMD_SERVICE_NAME" ]] || fail_test "standalone inactive unit detection"
+pass "read-only check identifies an installed but inactive standalone unit"
+
+MOCK_PANEL_LOAD="loaded"
+MOCK_STANDALONE_LOAD="loaded"
+if detect_plugin_service >/dev/null 2>&1; then fail_test "two inactive installed managers accepted"; fi
+pass "read-only check rejects ambiguous inactive manager configuration"
+
+MOCK_PANEL_LOAD="not-found"
+MOCK_STANDALONE_LOAD="not-found"
+[[ "$(detect_plugin_service)" == "$PANEL_SERVICE_NAME" ]] || fail_test "legacy panel diagnostic fallback"
+pass "read-only check retains the panel diagnostic when no standalone unit is installed"
+
 unit="$(render_systemd_service /opt/doh-health-monitor/bin/doh-health-monitor /opt/doh-health-monitor /opt/doh-health-monitor/data 2.3.5)"
 grep -Fq 'Type=simple' <<<"$unit" || fail_test "systemd service type"
+grep -Fqx 'WorkingDirectory=/opt/doh-health-monitor' <<<"$unit" || fail_test "systemd working directory must be absolute and unquoted"
 grep -Fq 'Restart=on-failure' <<<"$unit" || fail_test "systemd failure restart policy"
 grep -Fq 'RestartSec=5s' <<<"$unit" || fail_test "systemd restart delay"
 grep -Fq 'LUCX_PLUGIN_DATA=/opt/doh-health-monitor/data' <<<"$unit" || fail_test "systemd data directory"
