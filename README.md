@@ -1,6 +1,6 @@
 # DoH DNS Proxy & Health Monitor для LucX-UI
 
-**Версия:** 2.3.6  
+**Версия:** 2.3.7  
 **Платформа:** Linux x86-64 (`amd64`), статический Go-бинарник  
 **Тип:** LucX-UI sidecar, `apiVersion: 1`  
 **Режим Gemini API:** необязательный, управляется параметром `gemini_api.enabled`
@@ -11,7 +11,7 @@ DoH Health Monitor — локальный DNS sidecar для LucX-UI/Xray. В л
 
 Плагин поддерживает два взаимоисключающих режима обработки A/AAAA запросов:
 
-- **`endpoint_ip` (режим по умолчанию):** ActiveDoHSelector выбирает один доступный DoH endpoint по семи контрольным доменам. Для DNS-запроса плагин возвращает bootstrap IP выбранного DoH endpoint-а, а не IP запрошенного сайта. Это режим для схемы, где дальнейшее назначение трафика определяет Xray.
+- **`endpoint_ip` (режим по умолчанию):** ActiveDoHSelector выбирает здоровый DoH endpoint по семи контрольным доменам. Плагин отправляет исходный DNS-запрос выбранному endpoint-у и возвращает полноценный ответ для запрошенного домена (A/AAAA, включая CNAME и DNSSEC/EDNS-данные ответа). Соединение закрепляется за bootstrap IP endpoint-а, при этом сохраняются исходное имя хоста, TLS SNI, проверка сертификата и HTTP Host. Это режим для Xray Geosite DNS path.
 - **`resolver`:** плагин разрешает исходное имя запроса через независимый упорядоченный список `resolver_upstreams`. По умолчанию используется системный resolver ОС сервера; можно настроить UDP, TCP и DoH upstream-ы.
 
 Обычная DNS-ветка listener-а принимает A и AAAA. Для точно совпавшего имени из управляемого `local-hosts.txt` плагин возвращает настроенные локальные A/AAAA; HTTPS/SVCB и остальные неподдерживаемые QTYPE получают `NOERROR`/NODATA без SOA и без кэширования. CNAME RR в составе ответа upstream на A/AAAA сохраняются.
@@ -23,7 +23,7 @@ DoH Health Monitor — локальный DNS sidecar для LucX-UI/Xray. В л
 - UDP и TCP DNS listener по умолчанию на `127.0.0.1:5355`; конфигурация принимает только loopback IP literals и валидные порты 1–65535.
 - DNS UDP payload учитывает EDNS buffer size клиента (или 512 байт без EDNS); при нехватке места ответ обрезается по границе RR и получает флаг TC.
 - ActiveDoHSelector: семь контрольных доменов, A/AAAA DNS probes через кандидатов DoH, затем HTTPS/TLS probes по IP с исходными hostname, SNI, HTTP Host и проверкой сертификата.
-- Отдельный режим `endpoint_ip` с TTL до 60 секунд, ограниченным временем актуальности выбранного endpoint-а.
+- Режим `endpoint_ip` пересылает исходный A/AAAA DNS-запрос через выбранный ActiveDoH endpoint; соединение закреплено за его bootstrap IP, а hostname/SNI/сертификат сохраняются. Ответ содержит реальные DNS-записи запрошенного домена; TTL исходного ответа сохраняется, кэш ограничивается настройками cache (по умолчанию максимум 300 секунд).
 - Режим `resolver` с последовательным fallback через system, UDP, TCP и DoH upstream-ы; упавшие upstream-ы получают cooldown, а отказ всех upstream-ов возвращает DNS SERVFAIL вместо ложного NODATA.
 - Раздельные cache namespace/generation для двух режимов; режим 2 использует positive cache TTL не более 300 секунд и SOA-based negative caching по RFC 2308.
 - Сохранение исходного TTL upstream в первом ответе; ограничения TTL применяются к отдельной копии, помещаемой в кэш.
@@ -42,7 +42,7 @@ Geosite matching находится в правилах внутри Xray DNS ou
 - Не загружает и не разбирает Geosite assets, не поддерживает собственный matcher и не ведёт динамическую QNAME database.
 - Не определяет по одному DNS-пакету, какое правило Xray совпало; разделение потоков должно произойти до передачи пакета listener-у.
 - Не обслуживает отдельные QTYPE HTTPS/SVCB, MX, TXT и другие типы; для них listener возвращает NODATA.
-- Не выполняет полноценную DNSSEC validation и не устанавливает AD в синтетических ответах.
+- Плагин не выполняет самостоятельную DNSSEC validation; DO/CD и DNSSEC-данные передаются через DoH, а AD определяется ответом выбранного resolver-а. Локальные hosts-ответы не устанавливают AD.
 - Не меняет Xray DNS policy при обычном запуске daemon. Geosite rules настраиваются вручную; автоматические CLI/Web UI операции изменения Xray отключены в линейке 2.3.x, поскольку прежний planner не соответствует этой схеме.
 - Не отключает проверку TLS-сертификатов и hostname.
 
@@ -71,7 +71,7 @@ WireGuard / TProxy client
  endpoint_ip OR resolver
 ```
 
-В `endpoint_ip` плагин возвращает IP выбранного DoH сервера для A/AAAA запроса. В `resolver` он возвращает результат разрешения исходного QNAME через `resolver_upstreams`. Это независимые режимы: при ошибке одного режима нельзя переключаться в другой.
+В `endpoint_ip` плагин пересылает исходный A/AAAA запрос выбранному здоровому DoH серверу и возвращает DNS-ответ исходного QNAME. Bootstrap IP нужен только для подключения к DoH endpoint; он не подменяет адрес запрошенного домена. В `resolver` исходный QNAME разрешается через отдельный список `resolver_upstreams`. Это независимые режимы: при ошибке одного режима нельзя переключаться в другой.
 
 `rewriteNetwork: udp` в DNS outbound определяет транспорт локального участка Xray → plugin listener. Для текущей схемы используется UDP; это не описание внешнего транспорта WireGuard.
 
@@ -114,11 +114,11 @@ $LUCX_PLUGIN_DATA/gemini_api_key
 
 Для каждого релиза публикуются ZIP, файл SHA-256 и GitHub artifact attestation (Sigstore). Проверяйте **оба** свойства: checksum подтверждает целостность скачанного файла, attestation — репозиторий и workflow, которые его собрали.
 
-Для релиза `v2.3.6` после скачивания обоих файлов выполните:
+Для релиза `v2.3.7` после скачивания обоих файлов выполните:
 
 ```bash
-sha256sum -c doh-health-monitor-v2.3.6.zip.sha256
-gh attestation verify doh-health-monitor-v2.3.6.zip \
+sha256sum -c doh-health-monitor-v2.3.7.zip.sha256
+gh attestation verify doh-health-monitor-v2.3.7.zip \
   --repo agentnht/doh-health-monitor \
   --signer-workflow agentnht/doh-health-monitor/.github/workflows/release.yml
 ```
@@ -127,14 +127,14 @@ gh attestation verify doh-health-monitor-v2.3.6.zip \
 
 ## 4. Установка в LucX-UI
 
-1. Для опубликованного релиза скачайте ZIP с соответствующим номером версии. Для релиза `v2.3.6` используйте пакет `doh-health-monitor-v2.3.6.zip` со страницы GitHub Releases.
+1. Для опубликованного релиза скачайте ZIP с соответствующим номером версии. Для релиза `v2.3.7` используйте пакет `doh-health-monitor-v2.3.7.zip` со страницы GitHub Releases.
 2. В LucX-UI откройте менеджер плагинов и установите ZIP.
 3. Запустите плагин из панели.
 4. При первом запуске плагин создаст `config.json`, `doh-servers.txt`, `tst-domen.txt` и `local-hosts.txt`. Уже существующие текстовые файлы не перезаписываются (старый URL-only список DoH автоматически мигрирует в новый формат). Если `local-hosts.txt` отсутствует, старые записи `local_hosts` из `config.json` однократно переносятся в новый файл.
 5. Посмотрите журнал плагина. Нормальный старт содержит строки примерно такого вида:
 
 ```text
-level=INFO START id=doh-health-monitor version=2.3.6 arch=amd64 data=...
+level=INFO START id=doh-health-monitor version=2.3.7 arch=amd64 data=...
 level=INFO CONFIG loaded ... gemini_api=false
 level=INFO EVENT_SOCKET listening ...
 level=INFO READY DNS=127.0.0.1:5355/127.0.0.1:5355 HTTP=127.0.0.1:18765
@@ -167,7 +167,7 @@ dhm
 Не запускайте management script непосредственно через `curl | bash` или process substitution: такой путь не позволяет проверить целостность исполняемого файла до запуска. Для установки/обновления скачивайте опубликованный release ZIP и checksum, проверяйте архив и только затем устанавливайте его через штатный менеджер LucX-UI:
 
 ```bash
-version=2.3.6
+version=2.3.7
 asset="doh-health-monitor-v${version}.zip"
 base="https://github.com/agentnht/doh-health-monitor/releases/download/v${version}"
 curl -fSLO "$base/$asset"
@@ -279,7 +279,7 @@ Web UI по-прежнему запускается отдельно из SSH-м
 
 | Значение | Поведение |
 |---|---|
-| `endpoint_ip` (default) | ActiveDoHSelector выбирает один DoH endpoint по семи контрольным доменам. На A/AAAA запрос плагин отвечает IP самого выбранного DoH endpoint-а, а не IP запрошенного сайта. |
+| `endpoint_ip` (default) | ActiveDoHSelector выбирает здоровый DoH endpoint по семи контрольным доменам. Исходный A/AAAA запрос отправляется этому endpoint-у; клиент получает DNS-ответ запрошенного домена. Bootstrap IP используется только для соединения с DoH. |
 | `resolver` | Плагин разрешает исходное QNAME через список `resolver_upstreams` в заданном порядке. Это обычный DNS resolve запрошенного имени. |
 
 Пример настройки режима 2:
@@ -314,7 +314,7 @@ Web UI по-прежнему запускается отдельно из SSH-м
 
 `bootstrap_resolvers` — отдельная настройка для bootstrap hostname-ов DoH endpoint-ов. Она не является списком пользовательских DNS upstream-ов режима 2 и не подменяет `resolver_upstreams`.
 
-**QTYPE и TTL:** listener плагина обслуживает A и AAAA. Другие типы DNS-запросов получают NOERROR/NODATA без SOA и без кэширования. CNAME RR, пришедшие в составе ответа на A/AAAA от upstream-а, сохраняются. В режиме `endpoint_ip` TTL ответа не превышает 60 секунд и дополнительно ограничивается остатком freshness выбранного endpoint-а. В режиме `resolver` положительный cache TTL ограничен 300 секундами; NXDOMAIN/NODATA кэшируется только при наличии SOA и с TTL по RFC 2308, ограниченным сверху 300 секундами. Первый ответ клиенту сохраняет upstream TTL, а cap применяется к отдельной копии для кэша.
+**QTYPE и TTL:** listener плагина обслуживает A и AAAA. Другие типы DNS-запросов получают NOERROR/NODATA без SOA и без кэширования. CNAME RR, пришедшие в составе ответа на A/AAAA от upstream-а, сохраняются. В режиме `endpoint_ip` первый ответ сохраняет TTL, полученный от выбранного DoH; отдельная копия для кэша ограничивается 300 секундами и временем жизни записи. Смена выбранного endpoint-а очищает кэш. В режиме `resolver` положительный cache TTL ограничен 300 секундами; NXDOMAIN/NODATA кэшируется только при наличии SOA и с TTL по RFC 2308, ограниченным сверху 300 секундами. Первый ответ клиенту сохраняет upstream TTL, а cap применяется к отдельной копии для кэша.
 
 #### Listener-ы и общие параметры
 
@@ -384,7 +384,7 @@ Selector использует freshness, score, failure grace cycles, minimum ho
 ```
 
 - `enabled`, `max_entries` и `max_bytes` управляют общим RAM-кэшем.
-- В режиме `endpoint_ip` синтетические A/AAAA ответы имеют TTL не более 60 секунд и дополнительно ограничиваются остатком freshness выбранного DoH endpoint-а. Synthetic NODATA не кэшируется.
+- В режиме `endpoint_ip` первый ответ сохраняет upstream TTL; TTL отдельной кэш-копии ограничивается 300 секундами. Кэш привязан к generation выбранного endpoint-а и очищается при переключении.
 - В режиме `resolver` положительный cache TTL ограничен сверху 300 секундами; исходный TTL первого ответа upstream не изменяется.
 - Для NXDOMAIN и NODATA с SOA negative TTL равен `min(SOA RR TTL, SOA.MINIMUM)`, с верхней границей 300 секунд. Это включает NODATA после CNAME chain: CNAME RR сохраняются, но срок negative-кэша конечного QNAME определяется SOA.
 - Отрицательные ответы без пригодной SOA, TTL=0, SERVFAIL/REFUSED и синтетический NODATA при исчерпании upstream-ов не кэшируются. `negative_ttl_seconds` не используется как fallback TTL в режиме `resolver`.
@@ -529,7 +529,7 @@ Checker не изменяет конфигурацию. Он остаётся с
 
 Изменения Xray выполняются только вручную по §4.4. Автоматизация будет отдельной задачей после end-to-end проверки и отдельного проектирования безопасного planner-а.
 
-Для режима `endpoint_ip` плагин возвращает bootstrap IP выбранного DoH endpoint-а. Для режима `resolver` плагин разрешает исходный QNAME через отдельный `resolver_upstreams`. В обоих случаях эта логика применяется только к запросам, которые Xray направил через Geosite `direct` на локальный listener плагина.
+Для режима `endpoint_ip` плагин отправляет исходный DNS-запрос выбранному здоровому DoH endpoint-у и возвращает ответ для исходного QNAME. Bootstrap IP используется только для установления соединения с DoH; TLS SNI, проверка сертификата и HTTP Host используют hostname endpoint-а. Для режима `resolver` плагин разрешает исходный QNAME через отдельный `resolver_upstreams`. В обоих случаях эта логика применяется только к запросам, которые Xray направил через Geosite `direct` на локальный listener плагина.
 
 Подробные ограничения QTYPE, cache/TTL, DNS loop checks и результаты приёмочных проверок описаны в design doc §4.4 и §9.
 
@@ -582,7 +582,7 @@ dig @127.0.0.1 -p 5355 example.com AAAA +time=5 +tries=1
 dig @127.0.0.1 -p 5355 google.com HTTPS +time=5 +tries=1
 ```
 
-В режиме `endpoint_ip` ответ содержит IP выбранного DoH endpoint-а. В режиме `resolver` возвращается адрес исходного QNAME через выбранный `resolver_upstreams`. Запросы HTTPS/SVCB и другие QTYPE вне A/AAAA возвращают `NOERROR`/NODATA.
+В режиме `endpoint_ip` ответ содержит DNS-записи исходного QNAME, полученные от выбранного DoH endpoint-а. В режиме `resolver` исходный QNAME разрешается через выбранный `resolver_upstreams`. Запросы HTTPS/SVCB и другие QTYPE вне A/AAAA возвращают `NOERROR`/NODATA.
 
 ### 7.4 Проверка TCP DNS
 
@@ -671,7 +671,7 @@ go test -race ./...
 go vet ./...
 ```
 
-**Автоматические проверки версии 2.3.6:**
+**Автоматические проверки версии 2.3.7:**
 - GitHub Actions CI: module tidy, shell/JavaScript syntax, management helper tests, DNS checker tests, `go vet ./...`, `go test -coverprofile=coverage.out ./...`, критический coverage gate (>60%), `go test -race ./...`, `staticcheck`, `govulncheck` и Linux amd64 package build.
 - Go sidecar не содержит встроенного panel mutation adapter или Xray planner; DNS-процессом управляет LucX-UI Plugin Manager. Root SSH-скрипт отдельно обращается к штатному Panel API, получая короткоживущий admin Bearer token через локальный CLI панели; токен удаляется или ротируется после операции. SQLite dependency в Go sidecar отсутствует.
 - Регрессионные тесты охватывают анонимный доступ к Web UI, одноразовый bootstrap token, listener validation, Gemini key path, DoH URL redaction, resolver SERVFAIL/cooldown, ActiveDoH hard-failure failover, EDNS-aware UDP truncation, DNS error packet shape, OIDC URL validation, reload interval, pending restart semantics, status redaction, bootstrap public-IP filtering, symlinked configuration sources, PID/lock lifecycle, stale PID recovery и HTTP health probe.
@@ -684,7 +684,7 @@ go vet ./...
 - HTTP health-check закрепляет запрос на один A IP, полученный через проверяемый DoH. Это диагностическая проба, а не полное эмулирование браузера.
 - Плагин не гарантирует доступность всех URL/функций Google по проверке нескольких контрольных точек.
 - Поля `domains` и `fake_dns` старых конфигураций больше не участвуют в выборе upstream; FakeDNS настраивается отдельно в Xray.
-- Переключение ActiveDoH endpoint-а в режиме `endpoint_ip` не требует перезапуска Xray; уже выданные DNS-ответы нельзя отозвать, поэтому их TTL ограничен 60 секундами.
+- Переключение ActiveDoH endpoint-а в режиме `endpoint_ip` не требует перезапуска Xray; кэш плагина очищается при смене endpoint-а. Уже выданные клиентам DNS-ответы остаются действительными до истечения их upstream TTL.
 - В режиме `resolver` системный resolver читает `/etc/resolv.conf`; защита от прямого совпадения с plugin listener не покрывает произвольные stub/TProxy/NAT цепочки.
 - Перед внедрением Geosite DNS rules проверьте их на конкретной версии embedded Xray и в namespace панели.
 - Перед применением объединённых Xray JSON fragments всегда проверьте их на конкретной версии Xray-core и сохраните предыдущий конфиг.
