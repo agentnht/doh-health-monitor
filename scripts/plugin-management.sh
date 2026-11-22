@@ -261,7 +261,7 @@ StartLimitBurst=5
 [Service]
 Type=simple
 User=root
-WorkingDirectory=$(systemd_quote "$root_dir")
+WorkingDirectory=$root_dir
 Environment=$(systemd_quote "LUCX_PLUGIN_ID=$PLUGIN_ID")
 Environment=$(systemd_quote "LUCX_PLUGIN_VERSION=$version")
 Environment=$(systemd_quote "LUCX_PLUGIN_DATA=$data_dir")
