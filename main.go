@@ -531,13 +531,13 @@ func main() {
 	go func() { defer wg.Done(); rt.monitorLoop(ctx) }()
 	go func() { defer wg.Done(); rt.activeDoHLoop(ctx) }()
 	go func() { defer wg.Done(); rt.reloadLoop(ctx) }()
+	sigc := make(chan os.Signal, 2)
+	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
 	if err := processLock.WritePID(); err != nil {
 		fatal("DAEMON PID file failed: %v", err)
 	}
 	logLine("INFO", "READY DNS=%s/%s HTTP=%s pid=%d", cfg.DNSListenUDP, cfg.DNSListenTCP, cfg.HTTPListen, os.Getpid())
 
-	sigc := make(chan os.Signal, 2)
-	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
 	sig := <-sigc
 	logLine("INFO", "STOP signal=%s received", sig)
 	cancel()
