@@ -387,7 +387,19 @@ func main() {
 			}
 			return
 		}
-		logLine("ERROR", "CLI supports only read-only check, web and config; Xray Geosite DNS policy must be configured manually")
+		if action == "healthcheck" {
+			if len(os.Args) != 2 {
+				logLine("ERROR", "HEALTHCHECK does not accept additional arguments")
+				os.Exit(2)
+			}
+			if err := runHealthCheckCLI(); err != nil {
+				logLine("ERROR", "HEALTHCHECK: %v", err)
+				os.Exit(1)
+			}
+			logLine("INFO", "HEALTHCHECK ok")
+			return
+		}
+		logLine("ERROR", "CLI supports only read-only check, healthcheck, web and config; Xray Geosite DNS policy must be configured manually")
 		os.Exit(2)
 	}
 	dataDir := strings.TrimSpace(os.Getenv("LUCX_PLUGIN_DATA"))
@@ -398,6 +410,12 @@ func main() {
 		fatal("create data dir: %v", err)
 	}
 	_ = os.Chmod(dataDir, 0700)
+	processLock, err := acquireProcessGuard(dataDir)
+	if err != nil {
+		fatal("DAEMON instance lock failed: %v", err)
+	}
+	defer processLock.Release()
+
 	statusToken, err := rotateStatusAPIToken(dataDir)
 	if err != nil {
 		fatal("STATUS API token initialization failed: %v", err)
@@ -513,10 +531,13 @@ func main() {
 	go func() { defer wg.Done(); rt.monitorLoop(ctx) }()
 	go func() { defer wg.Done(); rt.activeDoHLoop(ctx) }()
 	go func() { defer wg.Done(); rt.reloadLoop(ctx) }()
-	logLine("INFO", "READY DNS=%s/%s HTTP=%s", cfg.DNSListenUDP, cfg.DNSListenTCP, cfg.HTTPListen)
-
 	sigc := make(chan os.Signal, 2)
 	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
+	if err := processLock.WritePID(); err != nil {
+		fatal("DAEMON PID file failed: %v", err)
+	}
+	logLine("INFO", "READY DNS=%s/%s HTTP=%s pid=%d", cfg.DNSListenUDP, cfg.DNSListenTCP, cfg.HTTPListen, os.Getpid())
+
 	sig := <-sigc
 	logLine("INFO", "STOP signal=%s received", sig)
 	cancel()

@@ -85,6 +85,8 @@ resolve_plugin_paths() {
 
   PLUGIN_DATA_DIR="$data_dir"
   PLUGIN_BIN="$(dirname "$data_dir")/bin/$PLUGIN_BIN_NAME"
+  PLUGIN_ROOT_DIR="$(cd -- "$(dirname -- "$PLUGIN_BIN")/.." && pwd -P)"
+  PLUGIN_VERSION="$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$PLUGIN_ROOT_DIR/manifest.json" 2>/dev/null | head -n 1)"
 
   if [[ ! -x "$PLUGIN_BIN" || ! -f "$PLUGIN_BIN" ]]; then
     fail "Не найден исполняемый файл плагина: $PLUGIN_BIN"
@@ -231,6 +233,252 @@ run_check() {
   return "$rc"
 }
 
+
+readonly SYSTEMD_SERVICE_NAME="doh-health-monitor.service"
+readonly SYSTEMD_TIMER_NAME="doh-health-monitor-healthcheck.timer"
+readonly SYSTEMD_HEALTHCHECK_SERVICE="doh-health-monitor-healthcheck.service"
+readonly SYSTEMD_HEALTHCHECK_PATH="/usr/local/libexec/doh-health-monitor-healthcheck"
+readonly SYSTEMD_UNIT_DIR="/etc/systemd/system"
+
+systemd_quote() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//%/%%}"
+  printf '"%s"' "$value"
+}
+
+render_systemd_service() {
+  local binary="$1" root_dir="$2" data_dir="$3" version="$4"
+  cat <<EOF
+[Unit]
+Description=DoH Health Monitor standalone DNS sidecar
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$(systemd_quote "$root_dir")
+Environment=$(systemd_quote "LUCX_PLUGIN_ID=$PLUGIN_ID")
+Environment=$(systemd_quote "LUCX_PLUGIN_VERSION=$version")
+Environment=$(systemd_quote "LUCX_PLUGIN_DATA=$data_dir")
+ExecStart=$(systemd_quote "$binary")
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+render_systemd_healthcheck() {
+  local binary="$1" data_dir="$2"
+  printf '#!/usr/bin/env bash\nset -Eeuo pipefail\n'
+  printf 'PLUGIN_BIN=%q\n' "$binary"
+  printf 'PLUGIN_DATA_DIR=%q\n' "$data_dir"
+  cat <<'EOF'
+SERVICE="doh-health-monitor.service"
+STATE="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+
+case "$STATE" in
+  active)
+    if ! LUCX_PLUGIN_DATA="$PLUGIN_DATA_DIR" "$PLUGIN_BIN" healthcheck >/dev/null 2>&1; then
+      logger -t doh-health-monitor "health endpoint failed; restarting systemd service"
+      systemctl restart "$SERVICE"
+    fi
+    ;;
+  failed)
+    # A PID owned by the panel means the standalone unit must not start a
+    # second copy or fight the panel's process supervisor.
+    PID_FILE="$PLUGIN_DATA_DIR/doh-health-monitor.pid"
+    if [[ -s "$PID_FILE" ]]; then
+      PID="$(cat "$PID_FILE" 2>/dev/null || true)"
+      if [[ "$PID" =~ ^[1-9][0-9]*$ ]] && kill -0 "$PID" 2>/dev/null; then
+        RUNNING_EXE="$(readlink -f "/proc/$PID/exe" 2>/dev/null || true)"
+        EXPECTED_EXE="$(readlink -f "$PLUGIN_BIN" 2>/dev/null || true)"
+        if [[ -n "$EXPECTED_EXE" && "$RUNNING_EXE" == "$EXPECTED_EXE" ]]; then
+          logger -t doh-health-monitor "another supervisor owns the running daemon; leaving it untouched"
+          exit 0
+        fi
+      fi
+    fi
+    systemctl reset-failed "$SERVICE"
+    systemctl start "$SERVICE"
+    ;;
+  *)
+    # An explicit systemctl stop leaves the service inactive. Do not undo
+    # that operator action from the periodic health timer.
+    exit 0
+    ;;
+esac
+EOF
+}
+
+systemd_require_available() {
+  command -v systemctl >/dev/null 2>&1 || {
+    fail "systemctl не найден; автозапуск доступен только на systemd-хосте."
+    return 1
+  }
+  [[ -d /run/systemd/system ]] || {
+    fail "systemd не запущен как системный init; unit нельзя безопасно активировать."
+    return 1
+  }
+}
+
+pid_file_running_for_plugin() {
+  local pid_file="$PLUGIN_DATA_DIR/doh-health-monitor.pid" pid actual expected
+  [[ -s "$pid_file" ]] || return 1
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  actual="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+  expected="$(readlink -f "$PLUGIN_BIN" 2>/dev/null || true)"
+  [[ -n "$expected" && "$actual" == "$expected" ]]
+}
+
+install_systemd_autostart() {
+  local unit_tmp health_tmp health_service_tmp timer_tmp
+  systemd_require_available || return 1
+  [[ -x "$PLUGIN_BIN" && -f "$PLUGIN_BIN" ]] || {
+    fail "Не найден исполняемый файл плагина: $PLUGIN_BIN"
+    return 1
+  }
+  [[ ! -L "$PLUGIN_DATA_DIR" ]] || {
+    fail "Каталог данных не должен быть symlink: $PLUGIN_DATA_DIR"
+    return 1
+  }
+  if ! install -d -m 0700 "$PLUGIN_DATA_DIR" || ! chmod 0700 "$PLUGIN_DATA_DIR"; then
+    fail "Не удалось создать защищённый каталог данных: $PLUGIN_DATA_DIR"
+    return 1
+  fi
+  [[ "$PLUGIN_VERSION" =~ ^[0-9A-Za-z.+-]+$ ]] || {
+    fail "Не удалось безопасно прочитать версию плагина из manifest.json."
+    return 1
+  }
+
+  if ! systemctl is-active --quiet "$SYSTEMD_SERVICE_NAME"; then
+    if pid_file_running_for_plugin || LUCX_PLUGIN_DATA="$PLUGIN_DATA_DIR" "$PLUGIN_BIN" healthcheck >/dev/null 2>&1; then
+      fail "Обнаружен уже работающий экземпляр плагина. Сначала остановите его в LucX-UI; затем включите systemd-автозапуск. Два менеджера не должны одновременно управлять одним экземпляром."
+      return 1
+    fi
+  fi
+
+  install -d -m 0755 "$SYSTEMD_UNIT_DIR" /usr/local/libexec
+  unit_tmp="$(mktemp)" || return 1
+  health_tmp="$(mktemp)" || { rm -f "$unit_tmp"; return 1; }
+  health_service_tmp="$(mktemp)" || { rm -f "$unit_tmp" "$health_tmp"; return 1; }
+  timer_tmp="$(mktemp)" || { rm -f "$unit_tmp" "$health_tmp" "$health_service_tmp"; return 1; }
+
+  render_systemd_service "$PLUGIN_BIN" "$PLUGIN_ROOT_DIR" "$PLUGIN_DATA_DIR" "$PLUGIN_VERSION" > "$unit_tmp"
+  render_systemd_healthcheck "$PLUGIN_BIN" "$PLUGIN_DATA_DIR" > "$health_tmp"
+  cat > "$health_service_tmp" <<'EOF'
+[Unit]
+Description=DoH Health Monitor periodic health check
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/doh-health-monitor-healthcheck
+EOF
+  cat > "$timer_tmp" <<'EOF'
+[Unit]
+Description=Check DoH Health Monitor every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=doh-health-monitor-healthcheck.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  if ! install -m 0644 "$unit_tmp" "$SYSTEMD_UNIT_DIR/$SYSTEMD_SERVICE_NAME" ||
+     ! install -m 0644 "$health_service_tmp" "$SYSTEMD_UNIT_DIR/$SYSTEMD_HEALTHCHECK_SERVICE" ||
+     ! install -m 0644 "$timer_tmp" "$SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER_NAME" ||
+     ! install -m 0755 "$health_tmp" "$SYSTEMD_HEALTHCHECK_PATH"; then
+    rm -f "$unit_tmp" "$health_tmp" "$health_service_tmp" "$timer_tmp"
+    fail "Не удалось установить systemd unit-файлы."
+    return 1
+  fi
+  rm -f "$unit_tmp" "$health_tmp" "$health_service_tmp" "$timer_tmp"
+
+  systemctl daemon-reload
+  if ! systemctl enable "$SYSTEMD_SERVICE_NAME"; then
+    fail "Не удалось включить systemd service."
+    return 1
+  fi
+  if ! systemctl enable --now "$SYSTEMD_TIMER_NAME"; then
+    fail "Не удалось включить периодическую health-проверку."
+    return 1
+  fi
+  if systemctl is-active --quiet "$SYSTEMD_SERVICE_NAME"; then
+    if ! systemctl restart "$SYSTEMD_SERVICE_NAME"; then
+      fail "Не удалось перезапустить systemd service."
+      return 1
+    fi
+  elif ! systemctl start "$SYSTEMD_SERVICE_NAME"; then
+    printf '[WARN] Автозапуск установлен, но демон пока не стартовал. Timer попробует восстановить failed-сервис при следующей проверке.\n' >&2
+    systemctl --no-pager --full status "$SYSTEMD_SERVICE_NAME" || true
+    return 1
+  fi
+
+  printf '[OK] systemd-автозапуск включён: %s; health-check — раз в минуту.\n' "$SYSTEMD_SERVICE_NAME"
+  printf 'PID-файл: %s/doh-health-monitor.pid\n' "$PLUGIN_DATA_DIR"
+}
+
+disable_systemd_autostart() {
+  systemd_require_available || return 1
+  systemctl disable --now "$SYSTEMD_TIMER_NAME" >/dev/null 2>&1 || true
+  systemctl disable --now "$SYSTEMD_SERVICE_NAME" >/dev/null 2>&1 || true
+  rm -f -- "$SYSTEMD_UNIT_DIR/$SYSTEMD_SERVICE_NAME" \
+    "$SYSTEMD_UNIT_DIR/$SYSTEMD_HEALTHCHECK_SERVICE" \
+    "$SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER_NAME" \
+    "$SYSTEMD_HEALTHCHECK_PATH"
+  systemctl daemon-reload
+  systemctl reset-failed "$SYSTEMD_SERVICE_NAME" "$SYSTEMD_HEALTHCHECK_SERVICE" >/dev/null 2>&1 || true
+  printf '[OK] systemd-автозапуск отключён и unit-файлы удалены.\n'
+}
+
+show_systemd_autostart_status() {
+  systemctl --no-pager --full status "$SYSTEMD_SERVICE_NAME" || true
+  printf '\n'
+  systemctl --no-pager --full status "$SYSTEMD_TIMER_NAME" || true
+  printf '\nПоследние записи журнала:\n'
+  journalctl -u "$SYSTEMD_SERVICE_NAME" -n 40 --no-pager || true
+}
+
+manage_systemd_autostart() {
+  local choice
+  while true; do
+    printf '\nSystemd — автозапуск DoH Health Monitor\n'
+    printf '%s\n' '  1) Установить и включить автозапуск'
+    printf '%s\n' '  2) Отключить и удалить автозапуск'
+    printf '%s\n' '  3) Статус и журнал'
+    printf '%s\n' '  0) Назад'
+    printf 'Выберите действие: '
+    if ! IFS= read -r choice </dev/tty; then
+      printf '\nУправляющий терминал закрыт.\n'
+      return 1
+    fi
+    case "$choice" in
+      1) install_systemd_autostart || printf '[WARN] Не удалось включить systemd-автозапуск.\n' >&2 ;;
+      2) disable_systemd_autostart || printf '[WARN] Не удалось отключить systemd-автозапуск.\n' >&2 ;;
+      3) show_systemd_autostart_status ;;
+      0) return 0 ;;
+      *) printf 'Неизвестный пункт меню.\n' ;;
+    esac
+  done
+}
+
 close_pipe_fd() {
   local fd="$1"
   if [[ "$fd" =~ ^[0-9]+$ ]]; then
@@ -338,6 +586,7 @@ show_menu() {
   printf '%s\n' '  1) Проверить plugin и утверждённый Xray Geosite DNS path (read-only)'
   printf '%s\n' '  2) Запустить Web UI через SSH-туннель'
   printf '%s\n' '  3) Переключить DNS mode / настроить resolver upstreams'
+  printf '%s\n' '  4) Настроить systemd-автозапуск'
   printf '%s\n' '  0) Выход'
   printf '%s\n' '  Примечание: Xray DNS policy задаётся вручную по doc/GEOSITE-DNS-ROUTING-DESIGN.md.'
   printf 'Выберите действие: '
@@ -363,6 +612,7 @@ main() {
       1) run_check || printf '[WARN] Диагностика завершилась с ошибками.\n' >&2 ;;
       2) run_web_ui || printf '[WARN] Не удалось запустить Web UI.\n' >&2 ;;
       3) run_dns_config || printf '[WARN] DNS-конфигурация не изменена.\n' >&2 ;;
+      4) manage_systemd_autostart || printf '[WARN] Управление systemd-автозапуском завершилось с ошибкой.\n' >&2 ;;
       0) printf 'Выход.\n'; break ;;
       *) printf 'Неизвестный пункт меню.\n' ;;
     esac

@@ -1,3 +1,10 @@
+## [Unreleased]
+
+### Daemon lifecycle
+- Добавлен опциональный standalone systemd service и ежеминутный health-check timer через scripts/plugin-management.sh; аварийные выходы перезапускаются, а штатная остановка не приводит к повторному старту.
+- Добавлена межпроцессная flock-блокировка и PID-файл в $LUCX_PLUGIN_DATA; PID публикуется после успешного bind listener-ов и удаляется при штатном завершении.
+- Добавлен read-only CLI healthcheck для проверки реального /healthz без изменения конфигурации.
+
 ## [2.3.4] - 2026-11-22
 
 ### CI и надёжность ActiveDoH
