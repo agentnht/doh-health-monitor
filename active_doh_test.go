@@ -36,9 +36,9 @@ func activeDoHTestFixture() (*Runtime, *Snapshot) {
 }
 
 func TestActiveDoHLoopBackoffAndRecoveryCadence(t *testing.T) {
-	// Simulate five consecutive failed selection cycles, recovery, and one
+	// Simulate six consecutive failed selection cycles, recovery, and one
 	// subsequent failure. The last failure must restart at the 15s base delay.
-	outcomes := []bool{false, false, false, false, false, true, false}
+	outcomes := []bool{false, false, false, false, false, false, true, false}
 	var cycle int
 	var waits []time.Duration
 	var logs bytes.Buffer
@@ -69,6 +69,7 @@ func TestActiveDoHLoopBackoffAndRecoveryCadence(t *testing.T) {
 		60 * time.Second,
 		120 * time.Second,
 		240 * time.Second,
+		activeDoHProbeInterval, // the sixth failure is capped at the normal interval
 		activeDoHProbeInterval, // healthy selection restores the normal cadence
 		15 * time.Second,       // a later failure starts a fresh backoff sequence
 	}
@@ -82,12 +83,14 @@ func TestActiveDoHLoopBackoffAndRecoveryCadence(t *testing.T) {
 	}
 
 	logOutput := logs.String()
-	for i, delay := range want {
-		if i == 5 {
+	retryFailures := []int{1, 2, 3, 4, 5, 6, 0, 1}
+	for i, failures := range retryFailures {
+		if failures == 0 {
 			continue // the recovery message records the regular cadence instead
 		}
-		if !strings.Contains(logOutput, fmt.Sprintf("retry scheduled failures=%d delay=%s", map[int]int{0: 1, 1: 2, 2: 3, 3: 4, 4: 5, 6: 1}[i], delay)) {
-			t.Errorf("retry log does not contain delay %s: %s", delay, logOutput)
+		entry := fmt.Sprintf("retry scheduled failures=%d delay=%s", failures, want[i])
+		if !strings.Contains(logOutput, entry) {
+			t.Errorf("retry log does not contain %q: %s", entry, logOutput)
 		}
 	}
 	if !strings.Contains(logOutput, "selection recovered; regular probe cadence restored interval=5m0s") {
