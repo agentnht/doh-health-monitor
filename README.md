@@ -71,7 +71,7 @@ WireGuard / TProxy client
  endpoint_ip OR resolver
 ```
 
-В `endpoint_ip` плагин возвращает IP выбранного DoH сервера для A/AAAA запроса. В `resolver` он возвращает результат разрешения исходного QNAME через `resolver_upstreams`. Это независимые режимы: при ошибке одного режима нельзя переключаться в другой.
+В `endpoint_ip` плагин пересылает исходный A/AAAA запрос выбранному здоровому DoH серверу и возвращает DNS-ответ исходного QNAME. Bootstrap IP нужен только для подключения к DoH endpoint; он не подменяет адрес запрошенного домена. В `resolver` исходный QNAME разрешается через отдельный список `resolver_upstreams`. Это независимые режимы: при ошибке одного режима нельзя переключаться в другой.
 
 `rewriteNetwork: udp` в DNS outbound определяет транспорт локального участка Xray → plugin listener. Для текущей схемы используется UDP; это не описание внешнего транспорта WireGuard.
 
@@ -279,7 +279,7 @@ Web UI по-прежнему запускается отдельно из SSH-м
 
 | Значение | Поведение |
 |---|---|
-| `endpoint_ip` (default) | ActiveDoHSelector выбирает один DoH endpoint по семи контрольным доменам. На A/AAAA запрос плагин отвечает IP самого выбранного DoH endpoint-а, а не IP запрошенного сайта. |
+| `endpoint_ip` (default) | ActiveDoHSelector выбирает здоровый DoH endpoint по семи контрольным доменам. Исходный A/AAAA запрос отправляется этому endpoint-у; клиент получает DNS-ответ запрошенного домена. Bootstrap IP используется только для соединения с DoH. |
 | `resolver` | Плагин разрешает исходное QNAME через список `resolver_upstreams` в заданном порядке. Это обычный DNS resolve запрошенного имени. |
 
 Пример настройки режима 2:
@@ -314,7 +314,7 @@ Web UI по-прежнему запускается отдельно из SSH-м
 
 `bootstrap_resolvers` — отдельная настройка для bootstrap hostname-ов DoH endpoint-ов. Она не является списком пользовательских DNS upstream-ов режима 2 и не подменяет `resolver_upstreams`.
 
-**QTYPE и TTL:** listener плагина обслуживает A и AAAA. Другие типы DNS-запросов получают NOERROR/NODATA без SOA и без кэширования. CNAME RR, пришедшие в составе ответа на A/AAAA от upstream-а, сохраняются. В режиме `endpoint_ip` TTL ответа не превышает 60 секунд и дополнительно ограничивается остатком freshness выбранного endpoint-а. В режиме `resolver` положительный cache TTL ограничен 300 секундами; NXDOMAIN/NODATA кэшируется только при наличии SOA и с TTL по RFC 2308, ограниченным сверху 300 секундами. Первый ответ клиенту сохраняет upstream TTL, а cap применяется к отдельной копии для кэша.
+**QTYPE и TTL:** listener плагина обслуживает A и AAAA. Другие типы DNS-запросов получают NOERROR/NODATA без SOA и без кэширования. CNAME RR, пришедшие в составе ответа на A/AAAA от upstream-а, сохраняются. В режиме `endpoint_ip` первый ответ сохраняет TTL, полученный от выбранного DoH; отдельная копия для кэша ограничивается 300 секундами и временем жизни записи. Смена выбранного endpoint-а очищает кэш. В режиме `resolver` положительный cache TTL ограничен 300 секундами; NXDOMAIN/NODATA кэшируется только при наличии SOA и с TTL по RFC 2308, ограниченным сверху 300 секундами. Первый ответ клиенту сохраняет upstream TTL, а cap применяется к отдельной копии для кэша.
 
 #### Listener-ы и общие параметры
 
@@ -384,7 +384,7 @@ Selector использует freshness, score, failure grace cycles, minimum ho
 ```
 
 - `enabled`, `max_entries` и `max_bytes` управляют общим RAM-кэшем.
-- В режиме `endpoint_ip` синтетические A/AAAA ответы имеют TTL не более 60 секунд и дополнительно ограничиваются остатком freshness выбранного DoH endpoint-а. Synthetic NODATA не кэшируется.
+- В режиме `endpoint_ip` первый ответ сохраняет upstream TTL; TTL отдельной кэш-копии ограничивается 300 секундами. Кэш привязан к generation выбранного endpoint-а и очищается при переключении.
 - В режиме `resolver` положительный cache TTL ограничен сверху 300 секундами; исходный TTL первого ответа upstream не изменяется.
 - Для NXDOMAIN и NODATA с SOA negative TTL равен `min(SOA RR TTL, SOA.MINIMUM)`, с верхней границей 300 секунд. Это включает NODATA после CNAME chain: CNAME RR сохраняются, но срок negative-кэша конечного QNAME определяется SOA.
 - Отрицательные ответы без пригодной SOA, TTL=0, SERVFAIL/REFUSED и синтетический NODATA при исчерпании upstream-ов не кэшируются. `negative_ttl_seconds` не используется как fallback TTL в режиме `resolver`.
@@ -582,7 +582,7 @@ dig @127.0.0.1 -p 5355 example.com AAAA +time=5 +tries=1
 dig @127.0.0.1 -p 5355 google.com HTTPS +time=5 +tries=1
 ```
 
-В режиме `endpoint_ip` ответ содержит IP выбранного DoH endpoint-а. В режиме `resolver` возвращается адрес исходного QNAME через выбранный `resolver_upstreams`. Запросы HTTPS/SVCB и другие QTYPE вне A/AAAA возвращают `NOERROR`/NODATA.
+В режиме `endpoint_ip` ответ содержит DNS-записи исходного QNAME, полученные от выбранного DoH endpoint-а. В режиме `resolver` исходный QNAME разрешается через выбранный `resolver_upstreams`. Запросы HTTPS/SVCB и другие QTYPE вне A/AAAA возвращают `NOERROR`/NODATA.
 
 ### 7.4 Проверка TCP DNS
 
@@ -684,7 +684,7 @@ go vet ./...
 - HTTP health-check закрепляет запрос на один A IP, полученный через проверяемый DoH. Это диагностическая проба, а не полное эмулирование браузера.
 - Плагин не гарантирует доступность всех URL/функций Google по проверке нескольких контрольных точек.
 - Поля `domains` и `fake_dns` старых конфигураций больше не участвуют в выборе upstream; FakeDNS настраивается отдельно в Xray.
-- Переключение ActiveDoH endpoint-а в режиме `endpoint_ip` не требует перезапуска Xray; уже выданные DNS-ответы нельзя отозвать, поэтому их TTL ограничен 60 секундами.
+- Переключение ActiveDoH endpoint-а в режиме `endpoint_ip` не требует перезапуска Xray; кэш плагина очищается при смене endpoint-а. Уже выданные клиентам DNS-ответы остаются действительными до истечения их upstream TTL.
 - В режиме `resolver` системный resolver читает `/etc/resolv.conf`; защита от прямого совпадения с plugin listener не покрывает произвольные stub/TProxy/NAT цепочки.
 - Перед внедрением Geosite DNS rules проверьте их на конкретной версии embedded Xray и в namespace панели.
 - Перед применением объединённых Xray JSON fragments всегда проверьте их на конкретной версии Xray-core и сохраните предыдущий конфиг.
