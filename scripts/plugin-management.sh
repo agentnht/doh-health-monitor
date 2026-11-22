@@ -448,7 +448,7 @@ panel_api_discover() {
 panel_api_host_valid() {
   local host="$1"
   (( ${#host} >= 1 && ${#host} <= 253 )) &&
-    [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$ ]]
+    [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$ ]]
 }
 
 panel_api_token_from_output() {
