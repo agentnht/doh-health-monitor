@@ -2543,7 +2543,7 @@ func (r *Runtime) httpProbe(ctx context.Context, u *UpstreamRuntime, ch Check) (
 	if e != nil {
 		return 0, e
 	}
-	req.Header.Set("User-Agent", "LucX-DoH-HealthMonitor/2.3.6")
+	req.Header.Set("User-Agent", "LucX-DoH-HealthMonitor/2.3.7")
 	resp, e := client.Do(req)
 	if e != nil {
 		return 0, e
