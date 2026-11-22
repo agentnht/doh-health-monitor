@@ -28,8 +28,14 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           manifest=$(jq -r .version manifest.json)
           source=$(sed -n 's/.*pluginVersion *= *"\([^"]*\)".*/\1/p' main.go)
+          probe_agent=$(sed -n 's/.*activeDoHUserAgent *= *"LucX-DoH-HealthMonitor\/\([^"]*\)".*/\1/p' active_doh.go)
+          readme=$(sed -n 's/^\*\*Версия:\*\* \([0-9.]*\).*/\1/p' README.md)
+          menu=$(sed -n 's/.*DoH Health Monitor \([0-9.]*\) — управление.*/\1/p' scripts/plugin-management.sh)
           [ "$manifest" = "$version" ] || { echo "manifest.json=$manifest, tag=$version"; exit 1; }
           [ "$source" = "$version" ] || { echo "main.go=$source, tag=$version"; exit 1; }
+          [ "$probe_agent" = "$version" ] || { echo "active_doh.go User-Agent=$probe_agent, tag=$version"; exit 1; }
+          [ "$readme" = "$version" ] || { echo "README version=$readme, tag=$version"; exit 1; }
+          [ "$menu" = "$version" ] || { echo "plugin-management.sh version=$menu, tag=$version"; exit 1; }
           grep -q "^## \[$version\]" CHANGELOG.md || { echo "CHANGELOG.md has no [$version]"; exit 1; }
 
       - run: go vet ./...
