@@ -61,30 +61,54 @@ func activeDoHRetryDelay(consecutiveFailures int) time.Duration {
 	return delay
 }
 
+type activeDoHWaitFunc func(context.Context, time.Duration, <-chan struct{}) bool
+type activeDoHSelectFunc func(context.Context) bool
+type activeDoHLogFunc func(string, string, ...any)
+
 func (r *Runtime) activeDoHLoop(ctx context.Context) {
+	runActiveDoHLoop(ctx, r.activeDoHTrigger, r.runActiveDoHSelection, waitForActiveDoH, logLine)
+}
+
+// runActiveDoHLoop owns retry state. Keeping the wait and selection functions
+// injectable makes the outage/recovery cadence deterministic in tests.
+func runActiveDoHLoop(ctx context.Context, trigger <-chan struct{}, selectCycle activeDoHSelectFunc, wait activeDoHWaitFunc, logf activeDoHLogFunc) {
 	failures := 0
 	for {
-		wait := activeDoHProbeInterval
-		if r.runActiveDoHSelection(ctx) {
+		delay := activeDoHProbeInterval
+		if selectCycle(ctx) {
+			if failures > 0 && logf != nil {
+				logf("INFO", "ACTIVE_DOH selection recovered; regular probe cadence restored interval=%s", activeDoHProbeInterval)
+			}
 			failures = 0
 		} else {
 			failures++
-			wait = activeDoHRetryDelay(failures)
-		}
-		timer := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return
-		case <-r.activeDoHTrigger:
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
+			delay = activeDoHRetryDelay(failures)
+			if logf != nil {
+				logf("WARN", "ACTIVE_DOH selection withdrawn; retry scheduled failures=%d delay=%s", failures, delay)
 			}
-		case <-timer.C:
 		}
+		if !wait(ctx, delay, trigger) {
+			return
+		}
+	}
+}
+
+func waitForActiveDoH(ctx context.Context, delay time.Duration, trigger <-chan struct{}) bool {
+	timer := time.NewTimer(delay)
+	select {
+	case <-ctx.Done():
+		timer.Stop()
+		return false
+	case <-trigger:
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		return true
+	case <-timer.C:
+		return true
 	}
 }
 
@@ -92,6 +116,13 @@ func (r *Runtime) activeDoHLoop(ctx context.Context) {
 // (or was skipped/discarded). A false result means the selection was withdrawn
 // and the caller should retry sooner than the regular probe interval.
 func (r *Runtime) runActiveDoHSelection(parent context.Context) bool {
+	return r.runActiveDoHSelectionWithProbe(parent, r.probeActiveDoHDomain)
+}
+
+func (r *Runtime) runActiveDoHSelectionWithProbe(parent context.Context, probeActive func(context.Context, activeDoHProbeJob, time.Time) activedoh.ProbeResult) bool {
+	if probeActive == nil {
+		probeActive = r.probeActiveDoHDomain
+	}
 	if r.activeDoHSelector == nil {
 		return true
 	}
@@ -138,7 +169,7 @@ func (r *Runtime) runActiveDoHSelection(parent context.Context) bool {
 			defer wg.Done()
 			for job := range jobs {
 				probeCtx, probeCancel := context.WithTimeout(ctx, activeDoHProbeTimeout)
-				result := r.probeActiveDoHDomain(probeCtx, job, now)
+				result := probeActive(probeCtx, job, now)
 				probeCancel()
 				resultsCh <- result
 			}
