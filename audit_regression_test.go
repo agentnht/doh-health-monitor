@@ -240,3 +240,30 @@ func TestRegressionLegacySystemDNSKnowsListenerAddresses(t *testing.T) {
 		t.Fatalf("legacy system DNS runtime has no listener addresses: %+v", system)
 	}
 }
+// ---- N6: mode-2 resolver cooldown survives a configuration reload --------
+
+func TestRegressionMode2CooldownSurvivesReload(t *testing.T) {
+	const resolverID = "mode2-primary"
+	now := time.Now()
+	first := &Snapshot{resolverUpstreams: []*ResolverRuntime{
+		{cfg: ResolverUpstream{ID: resolverID, Type: "udp"}},
+	}}
+	runtime := &Runtime{}
+	runtime.initHealth(first)
+	runtime.markUpstreamFailure(resolverID, now)
+	until := now.Add(upstreamFailureCooldown)
+
+	reloaded := &Snapshot{resolverUpstreams: []*ResolverRuntime{
+		{cfg: ResolverUpstream{ID: resolverID, Type: "udp"}},
+	}}
+	runtime.initHealth(reloaded)
+	if got, ok := runtime.upstreamCooldown[resolverID]; !ok || !got.Equal(until) {
+		t.Fatalf("mode-2 cooldown after reload = %v, present=%v; want %v", got, ok, until)
+	}
+
+	// A resolver removed from the new configuration must no longer retain state.
+	runtime.initHealth(&Snapshot{})
+	if _, ok := runtime.upstreamCooldown[resolverID]; ok {
+		t.Fatal("removed mode-2 resolver cooldown was not pruned")
+	}
+}
