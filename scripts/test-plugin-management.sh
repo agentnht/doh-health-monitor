@@ -104,11 +104,18 @@ if panel_api_json_success '{"success":false,"msg":"denied"}'; then fail_test "AP
 [[ "$(panel_api_json_running '{"success":true,"obj":{"running":true}}')" == "running" ]] || fail_test "running status parser"
 [[ "$(panel_api_json_running '{"success":true,"obj":{"running":false}}')" == "stopped" ]] || fail_test "stopped status parser"
 [[ "$(panel_api_token_id_from_response '{"success":true,"obj":[{"id":7,"name":"doh-health-monitor-plugin-management","scope":"admin"}]}')" == "7" ]] || fail_test "one-shot token ID parser"
-pass "panel API response, status and token parsers handle valid and rejected responses"
+panel_api_host_valid "panel.example.com" || fail_test "valid panel webDomain rejected"
+panel_api_host_valid "192.0.2.10" || fail_test "valid IPv4 Host rejected"
+if panel_api_host_valid "-panel.example.com" || panel_api_host_valid "panel..example.com" || panel_api_host_valid "panel.example.com/path"; then
+  fail_test "invalid panel webDomain accepted"
+fi
+pass "panel API response, status, token and webDomain parsers handle valid and rejected input"
 
 grep -Fq '4) Управление через LucX-UI API и автозапуск' <<<"$menu_output" || fail_test "panel API menu entry"
 grep -Fq '4) manage_panel_api_autostart' "$SCRIPT_DIR/plugin-management.sh" || fail_test "panel API menu dispatch"
-pass "panel API lifecycle and autostart submenu is reachable from plugin-management menu"
+grep -Fq '7) Настроить webDomain (Host) для API панели' "$SCRIPT_DIR/plugin-management.sh" || fail_test "panel webDomain submenu entry"
+grep -Fq '7) configure_panel_api_host' "$SCRIPT_DIR/plugin-management.sh" || fail_test "panel webDomain submenu dispatch"
+pass "panel API lifecycle, autostart and webDomain configuration are reachable from plugin-management menu"
 
 export SERVER_ADDRESS=203.0.113.8
 [[ "$(resolve_server_address)" == "203.0.113.8" ]] || fail_test "server address override"
