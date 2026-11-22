@@ -8,10 +8,10 @@
 - При первом lifecycle-действии или включении API-автозапуска удаляются старые standalone systemd service/timer от v2.3.5, чтобы избежать двух менеджеров одного DNS-процесса. Отключение нового автозапуска не останавливает уже работающий daemon.
 - Исправлена безопасная работа CLI панели из её собственного рабочего каталога и добавлены проверки статусов, JSON-ответов, token ID, Host override и systemd unit.
 
-### Исправления systemd и диагностики
-- Исправлена генерация `WorkingDirectory` в standalone systemd unit: абсолютный путь записывается без кавычек, которые systemd ошибочно воспринимал как часть пути.
-- Пункт 1 SSH-меню автоматически определяет активную службу DoH Health Monitor и проверяет правильный unit в panel или standalone systemd режиме.
-- Добавлены регрессионные тесты для генерации unit и выбора process manager, включая защиту от неоднозначного состояния, когда оба менеджера установлены, но остановлены.
+### Диагностика и миграция
+- Пункт 1 SSH-меню автоматически определяет активную службу DoH Health Monitor и проверяет правильный unit в panel или legacy standalone systemd режиме.
+- Добавлена безопасная миграция со старых standalone service/timer, исключающая одновременное управление одним процессом через два менеджера.
+- Добавлены регрессионные тесты для выбора process manager, обработки Host override и ответов LucX-UI API.
 
 ### Проверки
 - PR #34 и post-merge CI для main прошли: module tidy, gofmt, shell/JavaScript syntax, plugin-management и DNS checker tests, `go vet`, Go tests с critical-path coverage gate, race detector, staticcheck, govulncheck и Linux amd64 package build.
