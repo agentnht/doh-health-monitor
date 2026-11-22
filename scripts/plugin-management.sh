@@ -358,7 +358,7 @@ install_systemd_autostart() {
   if ! install -d -m 0700 "$PLUGIN_DATA_DIR" || ! chmod 0700 "$PLUGIN_DATA_DIR"; then
     fail "Не удалось создать защищённый каталог данных: $PLUGIN_DATA_DIR"
     return 1
-  }
+  fi
   [[ "$PLUGIN_VERSION" =~ ^[0-9A-Za-z.+-]+$ ]] || {
     fail "Не удалось безопасно прочитать версию плагина из manifest.json."
     return 1
