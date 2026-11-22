@@ -167,7 +167,7 @@ func (s *Selector) Select(candidates []Candidate, results []ProbeResult, now tim
 		// A zero score is a hard failure, not an ordinary anti-flap improvement.
 		// Never keep returning an endpoint that failed every health probe while a
 		// healthy alternative exists. If no candidate is healthy, withdraw it so
-		// endpoint_ip answers SERVFAIL instead of a stale bootstrap address.
+		// endpoint_ip answers SERVFAIL instead of querying a stale DoH endpoint.
 		s.betterCandidate = ""
 		s.betterCandidateStreak = 0
 		if bestID != "" && bestScore > 0 && bestID != currentID {
