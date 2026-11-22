@@ -98,9 +98,10 @@ $LUCX_PLUGIN_DATA/
 ├── config.json       # генерируемая рабочая конфигурация + прочие настройки
 ├── doh-servers.txt   # ID провайдера и URL DoH, одна запись на строку
 ├── tst-domen.txt     # DNS/HTTP health-check настройки, одна проверка на строку
-├── local-hosts.txt   # точные DNS-переопределения, одна запись на hostname
-└── panel-api-host    # необязательный webDomain Host override для panel API (0600)
+└── local-hosts.txt   # точные DNS-переопределения, одна запись на hostname
 ```
+
+При настройке `webDomain` для доступа к panel API SSH-меню дополнительно создаёт необязательный файл `panel-api-host` с правами `0600`.
 Если `gemini_api.enabled` включён, дополнительно создайте:
 
 ```text
