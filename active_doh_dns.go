@@ -9,8 +9,8 @@ import (
 	"lucx-doh-health-monitor/internal/activedoh"
 )
 
-// activeDoHDNSResponse constructs the default mode-1 answer: the selected DoH
-// endpoint's bootstrap IPs, not the IPs of the requested website.
+// activeDoHDNSResponse forwards the original A/AAAA query through the healthy
+// DoH endpoint selected by ActiveDoHSelector and returns its DNS response.
 func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte {
 	_, qtype, questionEnd, err := parseQuestion(query)
 	if err != nil || len(query) < 12 || binary.BigEndian.Uint16(query[4:6]) != 1 {
