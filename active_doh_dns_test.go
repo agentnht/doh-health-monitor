@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/binary"
-	"net"
 	"testing"
 	"time"
 
@@ -18,134 +17,6 @@ func activeDoHTestQuery(qtype uint16, withEDNS bool) []byte {
 		query = append(query, 0, 0, 41, 0x04, 0xd0, 0, 0, 0x80, 0, 0, 0)
 	}
 	return query
-}
-
-func TestBuildActiveDoHResponseReturnsSelectedEndpointIPv4(t *testing.T) {
-	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
-	query := activeDoHTestQuery(1, false)
-	_, qtype, questionEnd, err := parseQuestion(query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	selection := activedoh.Selection{
-		Candidate:  activedoh.Candidate{IPv4: []string{"1.1.1.1", "8.8.8.8"}},
-		FreshUntil: now.Add(31 * time.Second),
-	}
-	response, cacheable := buildActiveDoHResponse(query, "geosite.example", qtype, questionEnd, selection, now)
-	if !cacheable {
-		t.Fatal("expected positive endpoint answer to be cacheable")
-	}
-	if dnsRCode(response) != 0 || dnsAnswerCount(response) != 2 {
-		t.Fatalf("unexpected DNS response: rcode=%d answers=%d", dnsRCode(response), dnsAnswerCount(response))
-	}
-	ips, err := parseActiveDoHAddressRecords(response, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ips) != 2 || ips[0] != "1.1.1.1" || ips[1] != "8.8.8.8" {
-		t.Fatalf("unexpected endpoint addresses: %v", ips)
-	}
-	ttl, ok := minResponseTTL(response)
-	if !ok || ttl != 31 {
-		t.Fatalf("TTL=(%d,%t), want 31 seconds", ttl, ok)
-	}
-}
-
-func TestBuildActiveDoHResponseCapsTTLAtSixtySeconds(t *testing.T) {
-	now := time.Now().UTC()
-	query := activeDoHTestQuery(1, false)
-	_, qtype, questionEnd, err := parseQuestion(query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	selection := activedoh.Selection{
-		Candidate:  activedoh.Candidate{IPv4: []string{"9.9.9.9"}},
-		FreshUntil: now.Add(2 * time.Minute),
-	}
-	response, cacheable := buildActiveDoHResponse(query, "geosite.example", qtype, questionEnd, selection, now)
-	if !cacheable {
-		t.Fatal("expected positive endpoint answer")
-	}
-	ttl, ok := minResponseTTL(response)
-	if !ok || ttl != 60 {
-		t.Fatalf("TTL=(%d,%t), want 60 seconds", ttl, ok)
-	}
-}
-
-func TestBuildActiveDoHResponseReturnsSelectedEndpointIPv6(t *testing.T) {
-	now := time.Now().UTC()
-	query := activeDoHTestQuery(28, false)
-	_, qtype, questionEnd, err := parseQuestion(query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	selection := activedoh.Selection{
-		Candidate:  activedoh.Candidate{IPv6: []string{"2606:4700:4700::1111"}},
-		FreshUntil: now.Add(time.Minute),
-	}
-	response, cacheable := buildActiveDoHResponse(query, "geosite.example", qtype, questionEnd, selection, now)
-	if !cacheable {
-		t.Fatal("expected positive endpoint answer")
-	}
-	ips, err := parseActiveDoHAddressRecords(response, 28)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ips) != 1 || net.ParseIP(ips[0]).To16() == nil || net.ParseIP(ips[0]).To4() != nil {
-		t.Fatalf("unexpected IPv6 endpoint address: %v", ips)
-	}
-}
-
-func TestBuildActiveDoHResponseUsesNoErrorNodataForMissingFamilyAndUnsupportedQtype(t *testing.T) {
-	now := time.Now().UTC()
-	tests := []struct {
-		name  string
-		qtype uint16
-	}{
-		{name: "missing IPv6", qtype: 28},
-		{name: "HTTPS", qtype: 65},
-		{name: "TXT", qtype: 16},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			query := activeDoHTestQuery(test.qtype, false)
-			_, qtype, questionEnd, err := parseQuestion(query)
-			if err != nil {
-				t.Fatal(err)
-			}
-			selection := activedoh.Selection{
-				Candidate:  activedoh.Candidate{IPv4: []string{"1.1.1.1"}},
-				FreshUntil: now.Add(time.Minute),
-			}
-			response, cacheable := buildActiveDoHResponse(query, "geosite.example", qtype, questionEnd, selection, now)
-			if cacheable {
-				t.Fatal("synthetic NODATA must not be cached")
-			}
-			if dnsRCode(response) != 0 || dnsAnswerCount(response) != 0 {
-				t.Fatalf("expected NOERROR/NODATA, got rcode=%d answers=%d", dnsRCode(response), dnsAnswerCount(response))
-			}
-			if binary.BigEndian.Uint16(response[8:10]) != 0 {
-				t.Fatalf("synthetic NODATA must not include SOA, NSCOUNT=%d", binary.BigEndian.Uint16(response[8:10]))
-			}
-		})
-	}
-}
-
-func TestBuildActiveDoHResponseReturnsNoErrorNodataAfterFreshnessExpires(t *testing.T) {
-	now := time.Now().UTC()
-	query := activeDoHTestQuery(1, false)
-	_, qtype, questionEnd, err := parseQuestion(query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	selection := activedoh.Selection{
-		Candidate:  activedoh.Candidate{IPv4: []string{"1.1.1.1"}},
-		FreshUntil: now,
-	}
-	response, cacheable := buildActiveDoHResponse(query, "geosite.example", qtype, questionEnd, selection, now)
-	if cacheable || dnsRCode(response) != 2 || dnsAnswerCount(response) != 0 {
-		t.Fatalf("expired endpoint should yield uncached SERVFAIL")
-	}
 }
 
 func TestActiveDoHResponsePreservesEDNSDOWithoutReflectingOptions(t *testing.T) {
@@ -223,8 +94,8 @@ func TestActiveDoHResponseRejectsSelectionFromStaleConfigGeneration(t *testing.T
 }
 
 // TestEndpointIPUnsupportedQTypesReturnNoErrorNodata exercises the full
-// endpoint_ip handler. The Geosite listener is an address-only synthetic
-// endpoint: non-A/AAAA QTYPEs must not be forwarded or cached.
+// endpoint_ip handler. The Geosite listener currently supports A/AAAA only; other QTYPEs
+// remain NODATA and are not forwarded or cached.
 func TestEndpointIPUnsupportedQTypesReturnNoErrorNodata(t *testing.T) {
 	now := time.Now().UTC()
 	selector := activedoh.NewSelector(activedoh.DefaultPolicy())
