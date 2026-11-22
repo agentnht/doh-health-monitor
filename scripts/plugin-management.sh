@@ -248,143 +248,6 @@ systemd_quote() {
   printf '"%s"' "$value"
 }
 
-stop_web_ui() {
-  if [[ -n "$WEB_WRITE_FD" ]]; then
-    close_pipe_fd "$WEB_WRITE_FD"
-    WEB_WRITE_FD=""
-  fi
-  if [[ -n "$WEB_CHILD_PID" ]]; then
-    local rc=0
-    if wait "$WEB_CHILD_PID"; then
-      rc=0
-    else
-      rc=$?
-    fi
-    if (( rc != 0 )); then
-      printf '[WARN] Процесс Web UI завершился с кодом %d.\n' "$rc" >&2
-    fi
-    WEB_CHILD_PID=""
-  fi
-  if [[ -n "$WEB_READ_FD" ]]; then
-    close_pipe_fd "$WEB_READ_FD"
-    WEB_READ_FD=""
-  fi
-}
-
-run_dns_config() {
-  printf '\nНастройка DNS mode плагина...\n'
-  printf 'Будет изменён только config.json; Xray routing, firewall и TProxy не затрагиваются.\n'
-  LUCX_PLUGIN_DATA="$PLUGIN_DATA_DIR" "$PLUGIN_BIN" config
-}
-
-run_web_ui() {
-  local ready remote_port bootstrap_token server_address tunnel_user tunnel_command read_status extra
-  printf 'Запуск отдельного процесса Web UI...\n'
-  coproc WEB_UI { LUCX_PLUGIN_DATA="$PLUGIN_DATA_DIR" "$PLUGIN_BIN" web; }
-  WEB_CHILD_PID="$WEB_UI_PID"
-  WEB_READ_FD="${WEB_UI[0]}"
-  WEB_WRITE_FD="${WEB_UI[1]}"
-
-  if ! IFS= read -r -t 10 ready <&"$WEB_READ_FD"; then
-    fail "Web UI не сообщил о готовности за 10 секунд или завершился при запуске."
-    stop_web_ui
-    return 1
-  fi
-  if ! remote_port="$(parse_web_ui_ready_port "$ready")" || ! bootstrap_token="$(parse_web_ui_ready_token "$ready")"; then
-    fail "Web UI вернул некорректный readiness-ответ: $ready"
-    stop_web_ui
-    return 1
-  fi
-  if ! server_address="$(resolve_server_address)"; then
-    stop_web_ui
-    fail "Не удалось получить адрес SSH-сервера для команды туннеля."
-    return 1
-  fi
-  if ! tunnel_user="$(resolve_ssh_tunnel_user)"; then
-    stop_web_ui
-    return 1
-  fi
-  if ! tunnel_command="$(build_ssh_tunnel_command 19876 "$remote_port" "$tunnel_user" "$server_address")"; then
-    stop_web_ui
-    fail "Не удалось сформировать безопасную SSH-команду туннеля."
-    return 1
-  fi
-
-  printf '\n[OK] Web UI слушает только 127.0.0.1:%s.\n' "$remote_port"
-  printf '\nНа Windows откройте отдельный PowerShell и выполните:\n'
-  printf '%s\n' "$tunnel_command"
-  printf 'Затем откройте в браузере: http://127.0.0.1:19876/?token=%s\n' "$bootstrap_token"
-  printf 'Если локальный порт 19876 занят, замените его в SSH-команде и URL браузера на один и тот же свободный порт. Удалённый порт %s не меняйте.\n' "$remote_port"
-  printf 'Оставьте открытыми эту SSH-сессию и отдельную SSH-сессию туннеля.\n'
-  printf 'Нажмите Enter здесь, чтобы остановить Web UI и вернуться в меню.\n'
-
-  while true; do
-    if IFS= read -r -t 1 extra <&"$WEB_READ_FD"; then
-      printf '[WARN] Неожиданный дополнительный вывод Web UI; останавливаю процесс.\n' >&2
-      break
-    else
-      read_status=$?
-      if (( read_status != 142 )); then
-        printf '[WARN] Процесс Web UI завершился до команды остановки.\n' >&2
-        break
-      fi
-    fi
-    if IFS= read -r -t 0.1 _ </dev/tty; then
-      break
-    else
-      read_status=$?
-      if (( read_status != 142 )); then
-        printf '\nУправляющий терминал закрыт; останавливаю Web UI.\n'
-        break
-      fi
-    fi
-  done
-  stop_web_ui
-  printf 'Web UI остановлен.\n'
-}
-
-show_menu() {
-  printf '\nDoH Health Monitor 2.3.4 — управление\n'
-  printf '%s\n' '  1) Проверить plugin и утверждённый Xray Geosite DNS path (read-only)'
-  printf '%s\n' '  2) Запустить Web UI через SSH-туннель'
-  printf '%s\n' '  3) Переключить DNS mode / настроить resolver upstreams'
-  printf '%s\n' '  4) Настроить systemd-автозапуск'
-  printf '%s\n' '  0) Выход'
-  printf '%s\n' '  Примечание: Xray DNS policy задаётся вручную по doc/GEOSITE-DNS-ROUTING-DESIGN.md.'
-  printf 'Выберите действие: '
-}
-
-main() {
-  require_root
-  resolve_plugin_paths || exit 1
-  ensure_dhm_symlink
-  trap 'stop_web_ui; exit 130' INT
-  trap 'stop_web_ui; exit 129' HUP
-  trap 'stop_web_ui; exit 143' TERM
-
-  while true; do
-    local choice
-    show_menu
-    if ! IFS= read -r choice </dev/tty; then
-      printf '\nЗавершение: управляющий терминал закрыт.\n'
-      break
-    fi
-
-    case "$choice" in
-      1) run_check || printf '[WARN] Диагностика завершилась с ошибками.\n' >&2 ;;
-      2) run_web_ui || printf '[WARN] Не удалось запустить Web UI.\n' >&2 ;;
-      3) run_dns_config || printf '[WARN] DNS-конфигурация не изменена.\n' >&2 ;;
-      4) manage_systemd_autostart || printf '[WARN] Управление systemd-автозапуском завершилось с ошибкой.\n' >&2 ;;
-      0) printf 'Выход.\n'; break ;;
-      *) printf 'Неизвестный пункт меню.\n' ;;
-    esac
-  done
-}
-
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  main "$@"
-fi
-
 render_systemd_service() {
   local binary="$1" root_dir="$2" data_dir="$3" version="$4"
   cat <<EOF
@@ -545,10 +408,19 @@ EOF
   rm -f "$unit_tmp" "$health_tmp" "$health_service_tmp" "$timer_tmp"
 
   systemctl daemon-reload
-  systemctl enable "$SYSTEMD_SERVICE_NAME"
-  systemctl enable --now "$SYSTEMD_TIMER_NAME"
+  if ! systemctl enable "$SYSTEMD_SERVICE_NAME"; then
+    fail "Не удалось включить systemd service."
+    return 1
+  fi
+  if ! systemctl enable --now "$SYSTEMD_TIMER_NAME"; then
+    fail "Не удалось включить периодическую health-проверку."
+    return 1
+  fi
   if systemctl is-active --quiet "$SYSTEMD_SERVICE_NAME"; then
-    systemctl restart "$SYSTEMD_SERVICE_NAME"
+    if ! systemctl restart "$SYSTEMD_SERVICE_NAME"; then
+      fail "Не удалось перезапустить systemd service."
+      return 1
+    fi
   elif ! systemctl start "$SYSTEMD_SERVICE_NAME"; then
     printf '[WARN] Автозапуск установлен, но демон пока не стартовал. Timer попробует восстановить failed-сервис при следующей проверке.\n' >&2
     systemctl --no-pager --full status "$SYSTEMD_SERVICE_NAME" || true
@@ -710,6 +582,7 @@ show_menu() {
   printf '%s\n' '  1) Проверить plugin и утверждённый Xray Geosite DNS path (read-only)'
   printf '%s\n' '  2) Запустить Web UI через SSH-туннель'
   printf '%s\n' '  3) Переключить DNS mode / настроить resolver upstreams'
+  printf '%s\n' '  4) Настроить systemd-автозапуск'
   printf '%s\n' '  0) Выход'
   printf '%s\n' '  Примечание: Xray DNS policy задаётся вручную по doc/GEOSITE-DNS-ROUTING-DESIGN.md.'
   printf 'Выберите действие: '
@@ -735,6 +608,7 @@ main() {
       1) run_check || printf '[WARN] Диагностика завершилась с ошибками.\n' >&2 ;;
       2) run_web_ui || printf '[WARN] Не удалось запустить Web UI.\n' >&2 ;;
       3) run_dns_config || printf '[WARN] DNS-конфигурация не изменена.\n' >&2 ;;
+      4) manage_systemd_autostart || printf '[WARN] Управление systemd-автозапуском завершилось с ошибкой.\n' >&2 ;;
       0) printf 'Выход.\n'; break ;;
       *) printf 'Неизвестный пункт меню.\n' ;;
     esac
