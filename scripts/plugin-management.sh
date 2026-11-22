@@ -86,7 +86,7 @@ resolve_plugin_paths() {
   PLUGIN_DATA_DIR="$data_dir"
   PLUGIN_BIN="$(dirname "$data_dir")/bin/$PLUGIN_BIN_NAME"
   PLUGIN_ROOT_DIR="$(cd -- "$(dirname -- "$PLUGIN_BIN")/.." && pwd -P)"
-  PLUGIN_VERSION="$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:"\([^"]*\)".*/\1/p' "$PLUGIN_ROOT_DIR/manifest.json" 2>/dev/null | head -n 1)"
+  PLUGIN_VERSION="$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$PLUGIN_ROOT_DIR/manifest.json" 2>/dev/null | head -n 1)"
 
   if [[ ! -x "$PLUGIN_BIN" || ! -f "$PLUGIN_BIN" ]]; then
     fail "Не найден исполняемый файл плагина: $PLUGIN_BIN"
