@@ -10,6 +10,11 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -31,6 +36,7 @@ jobs:
       - run: go test ./...
 
       - name: Build package
+        id: package
         env:
           CGO_ENABLED: "0"
           GOOS: linux
@@ -46,6 +52,12 @@ jobs:
           unzip -Z1 "$id-v$version.zip" | grep -Fx "scripts/plugin-management.sh"
           unzip -Z1 "$id-v$version.zip" | grep -Fx "scripts/check-dns-integration.sh"
           sha256sum "$id-v$version.zip" > "$id-v$version.zip.sha256"
+          echo "zip_path=$id-v$version.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Attest release package provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.package.outputs.zip_path }}
 
       - name: Extract release notes
         run: |

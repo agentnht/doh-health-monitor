@@ -1,6 +1,6 @@
 # DoH DNS Proxy & Health Monitor для LucX-UI
 
-**Версия:** 2.3.2  
+**Версия:** 2.3.3  
 **Платформа:** Linux x86-64 (`amd64`), статический Go-бинарник  
 **Тип:** LucX-UI sidecar, `apiVersion: 1`  
 **Режим Gemini API:** необязательный, управляется параметром `gemini_api.enabled`
@@ -107,6 +107,21 @@ $LUCX_PLUGIN_DATA/gemini_api_key
 ```
 
 Вся изменяемая информация хранится только в `LUCX_PLUGIN_DATA`. Плагин не должен писать в каталог бинарника, `/etc`, `/tmp` или другие места.
+
+### Проверка происхождения релизного ZIP
+
+Для каждого релиза публикуются ZIP, файл SHA-256 и GitHub artifact attestation (Sigstore). Проверяйте **оба** свойства: checksum подтверждает целостность скачанного файла, attestation — репозиторий и workflow, которые его собрали.
+
+Для релиза `v2.3.3` после скачивания обоих файлов выполните:
+
+```bash
+sha256sum -c doh-health-monitor-v2.3.3.zip.sha256
+gh attestation verify doh-health-monitor-v2.3.3.zip \
+  --repo agentnht/doh-health-monitor \
+  --signer-workflow agentnht/doh-health-monitor/.github/workflows/release.yml
+```
+
+Для проверки нужен GitHub CLI с поддержкой `gh attestation verify`. Не запускайте архив, если любая из проверок завершилась ошибкой. Attestation подтверждает происхождение и целостность артефакта, но сама по себе не является гарантией безопасности программы.
 
 ## 4. Установка в LucX-UI
 

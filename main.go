@@ -34,7 +34,7 @@ import (
 
 const (
 	pluginID                  = "doh-health-monitor"
-	pluginVersion             = "2.3.2"
+	pluginVersion             = "2.3.3"
 	statusAPITokenFile        = "status-api.token"
 	systemDNSUpstreamID       = "system-dns"
 	systemResolvConfPath      = "/etc/resolv.conf"
