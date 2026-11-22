@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
 )
 
 const activeDoHMaxCacheTTL = 300 * time.Second
