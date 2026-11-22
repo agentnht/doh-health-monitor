@@ -1,5 +1,7 @@
 package main
 
+const activeDoHMaxCacheTTL = 300 * time.Second
+
 import (
 	"context"
 	"encoding/binary"
@@ -88,7 +90,7 @@ func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte 
 
 	if cacheConfig.Enabled {
 		cacheResponse := append([]byte(nil), response...)
-		maxTTL := mode2MaxCacheTTL
+		maxTTL := activeDoHMaxCacheTTL
 		if cacheConfig.MaxTTL > 0 && time.Duration(cacheConfig.MaxTTL)*time.Second < maxTTL {
 			maxTTL = time.Duration(cacheConfig.MaxTTL) * time.Second
 		}
