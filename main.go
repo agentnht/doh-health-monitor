@@ -34,7 +34,7 @@ import (
 
 const (
 	pluginID                  = "doh-health-monitor"
-	pluginVersion             = "2.3.6"
+	pluginVersion             = "2.3.7"
 	statusAPITokenFile        = "status-api.token"
 	systemDNSUpstreamID       = "system-dns"
 	systemResolvConfPath      = "/etc/resolv.conf"
@@ -1027,8 +1027,9 @@ func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
 		Upstreams  []Upstream
 		DoHURLs    map[string]string
 		Bootstrap  []string
+		Cache      CacheConfig
 		LocalHosts map[string]LocalHost
-	}{c.DNSMode, c.Upstreams, dohURLs, c.BootstrapResolvers, c.LocalHosts})
+	}{c.DNSMode, c.Upstreams, dohURLs, c.BootstrapResolvers, c.Cache, c.LocalHosts})
 	for host, entry := range c.LocalHosts {
 		s.localHosts[normalizeDomain(host)] = entry
 	}
