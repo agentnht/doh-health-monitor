@@ -479,7 +479,14 @@ panel_api_begin() {
   command -v python3 >/dev/null 2>&1 || { fail "python3 не найден; нужен стандартный JSON/IP parser."; return 1; }
   command -v flock >/dev/null 2>&1 || { fail "flock не найден."; return 1; }
   install -d -m 0755 /run/lock || return 1
-  exec {PANEL_API_LOCK_FD}>"$PANEL_API_LOCK_PATH" || return 1
+  local previous_umask
+  previous_umask="$(umask)"
+  umask 077
+  if ! exec {PANEL_API_LOCK_FD}>"$PANEL_API_LOCK_PATH"; then
+    umask "$previous_umask"
+    return 1
+  fi
+  umask "$previous_umask"
   chmod 0600 "$PANEL_API_LOCK_PATH" || return 1
   flock -x "$PANEL_API_LOCK_FD" || return 1
 
@@ -631,6 +638,7 @@ panel_api_show_status() {
 }
 
 remove_legacy_standalone_autostart() {
+  command -v systemctl >/dev/null 2>&1 || return 0
   systemctl disable --now "$SYSTEMD_TIMER_NAME" >/dev/null 2>&1 || true
   systemctl disable --now "$SYSTEMD_SERVICE_NAME" >/dev/null 2>&1 || true
   if systemctl is-active --quiet "$SYSTEMD_TIMER_NAME" ||
