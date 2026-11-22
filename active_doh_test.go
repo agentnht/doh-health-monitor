@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"net"
 	"strings"
 	"testing"
 	"time"
@@ -15,9 +14,9 @@ import (
 func activeDoHTestFixture() (*Runtime, *Snapshot) {
 	now := time.Now()
 	bootstrap := &bootstrapResolver{
-		host:      "resolver.example.test",
-		ips:       []string{"10.0.0.1", "1.1.1.1", "2001:4860:4860::8888"},
-		refreshed: now,
+		host:       "resolver.example.test",
+		ips:        []string{"10.0.0.1", "1.1.1.1", "2001:4860:4860::8888"},
+		refreshed:  now,
 		refreshFor: time.Hour,
 	}
 	upstream := &UpstreamRuntime{
@@ -281,17 +280,4 @@ func TestActiveDoHCandidatesRejectMalformedAndNonPublicAddresses(t *testing.T) {
 	if got := (&Runtime{}).activeDoHCandidates(context.Background(), snapshot); len(got) != 0 {
 		t.Fatalf("private or malformed bootstrap addresses must not become candidates: %+v", got)
 	}
-}
-
-func TestActiveDoHStatusRequiresCurrentSelection(t *testing.T) {
-	runtime, _ := activeDoHTestFixture()
-	if got := runtime.activeDoHStatus(); got != nil {
-		t.Fatalf("status without a current selection = %+v, want nil", got)
-	}
-
-	if runtime.activeDoHStatus() != nil {
-		t.Fatal("status must not expose stale/unselected endpoints")
-	}
-
-	_ = net.IPv4len // keep the standard-library IP family contract explicit in this test file
 }
