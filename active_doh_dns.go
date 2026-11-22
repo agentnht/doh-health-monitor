@@ -15,7 +15,7 @@ const activeDoHAnswerTTL = 60 * time.Second
 // activeDoHDNSResponse constructs the default mode-1 answer: the selected DoH
 // endpoint's bootstrap IPs, not the IPs of the requested website.
 func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte {
-	name, qtype, questionEnd, err := parseQuestion(query)
+	_, qtype, questionEnd, err := parseQuestion(query)
 	if err != nil || len(query) < 12 || binary.BigEndian.Uint16(query[4:6]) != 1 {
 		return formerrResponse(query)
 	}
@@ -96,7 +96,6 @@ func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte 
 			r.cachePut(key, cacheResponse, cacheConfig)
 		}
 	}
-	_ = name // retained for parity with request parsing and useful debugger context
 	return response
 }
 
