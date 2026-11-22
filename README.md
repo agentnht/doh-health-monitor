@@ -657,7 +657,7 @@ go vet ./...
 - GitHub Actions CI: module tidy, shell/JavaScript syntax, management helper tests, DNS checker tests, `go vet ./...`, `go test -coverprofile=coverage.out ./...`, критический coverage gate (>60%), `go test -race ./...`, `staticcheck`, `govulncheck` и Linux amd64 package build.
 - Устаревшие panel mutation helpers, planner/diagnostics, admin-token minting и SQLite dependency удалены; sidecar содержит только read-only plugin preflight, не меняющий LucX-UI/Xray.
 - Регрессионные тесты охватывают анонимный доступ к Web UI, одноразовый bootstrap token, listener validation, Gemini key path, DoH URL redaction, resolver SERVFAIL/cooldown, ActiveDoH hard-failure failover, EDNS-aware UDP truncation, DNS error packet shape, OIDC URL validation, reload interval, pending restart semantics, status redaction, bootstrap public-IP filtering, symlinked configuration sources, PID/lock lifecycle, stale PID recovery и HTTP health probe.
-- CI для PR #31 и post-merge `main` должен завершиться успешно до публикации. Установочный smoke test опубликованного ZIP и фактическая проверка standalone systemd на VPS не выполнялись; конфигурация VPS и Xray в рамках подготовки версии не изменялась.
+- PR #31 и post-merge CI `main` (commit `657b36d`) прошли успешно: shell/Go tests, critical coverage gate, race detector, staticcheck, govulncheck и Linux amd64 build. Установочный smoke test опубликованного ZIP и фактическая проверка standalone systemd на VPS не выполнялись; конфигурация VPS и Xray в рамках подготовки версии не изменялась.
 
 ## 12. Ограничения текущей реализации
 
