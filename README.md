@@ -98,7 +98,8 @@ $LUCX_PLUGIN_DATA/
 ├── config.json       # генерируемая рабочая конфигурация + прочие настройки
 ├── doh-servers.txt   # ID провайдера и URL DoH, одна запись на строку
 ├── tst-domen.txt     # DNS/HTTP health-check настройки, одна проверка на строку
-└── local-hosts.txt   # точные DNS-переопределения, одна запись на hostname
+├── local-hosts.txt   # точные DNS-переопределения, одна запись на hostname
+└── panel-api-host    # необязательный webDomain Host override для panel API (0600)
 ```
 Если `gemini_api.enabled` включён, дополнительно создайте:
 
@@ -671,9 +672,9 @@ go vet ./...
 
 **Автоматические проверки версии 2.3.6:**
 - GitHub Actions CI: module tidy, shell/JavaScript syntax, management helper tests, DNS checker tests, `go vet ./...`, `go test -coverprofile=coverage.out ./...`, критический coverage gate (>60%), `go test -race ./...`, `staticcheck`, `govulncheck` и Linux amd64 package build.
-- Устаревшие panel mutation helpers, planner/diagnostics, admin-token minting и SQLite dependency удалены; sidecar содержит только read-only plugin preflight, не меняющий LucX-UI/Xray.
+- Go sidecar не содержит встроенного panel mutation adapter или Xray planner; DNS-процессом управляет LucX-UI Plugin Manager. Root SSH-скрипт отдельно обращается к штатному Panel API, получая короткоживущий admin Bearer token через локальный CLI панели; токен удаляется или ротируется после операции. SQLite dependency в Go sidecar отсутствует.
 - Регрессионные тесты охватывают анонимный доступ к Web UI, одноразовый bootstrap token, listener validation, Gemini key path, DoH URL redaction, resolver SERVFAIL/cooldown, ActiveDoH hard-failure failover, EDNS-aware UDP truncation, DNS error packet shape, OIDC URL validation, reload interval, pending restart semantics, status redaction, bootstrap public-IP filtering, symlinked configuration sources, PID/lock lifecycle, stale PID recovery и HTTP health probe.
-- PR #31 и post-merge CI `main` (commit `657b36d`) прошли успешно: shell/Go tests, critical coverage gate, race detector, staticcheck, govulncheck и Linux amd64 build. Установочный smoke test опубликованного ZIP и фактическая проверка standalone systemd на VPS не выполнялись; конфигурация VPS и Xray в рамках подготовки версии не изменялась.
+- Для PR #34 (CI run `45016223795`) и post-merge `main` (CI run `45016353102`, commit `7da0a87`) успешно прошли shell/Go tests, critical coverage gate, race detector, staticcheck, govulncheck и Linux amd64 package build. Реальный API smoke test на VPS и установка опубликованного ZIP в рамках подготовки релиза не выполнялись.
 
 ## 12. Ограничения текущей реализации
 
