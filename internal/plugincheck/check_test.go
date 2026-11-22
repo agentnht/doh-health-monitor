@@ -1,7 +1,6 @@
 package plugincheck
 
 import (
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -132,9 +131,6 @@ func TestExecutablePathRequiresAbsoluteExecutable(t *testing.T) {
 	}
 	if _, err := executablePath("ss", filepath.Join(filepath.Dir(path), "missing")); err == nil {
 		t.Fatal("missing executable path must be rejected")
-	}
-	if _, err := strconv.Atoi(fmt.Sprint(12345)); err != nil {
-		t.Fatal(err)
 	}
 }
 
