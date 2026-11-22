@@ -1,12 +1,17 @@
 ## [Unreleased]
 
-## [2.3.7] - 2026-11-22
+## [2.4.0] - 2026-11-23
 
-### DNS forwarding in endpoint_ip
-- Изменена семантика режима по умолчанию: ActiveDoHSelector по-прежнему выбирает здоровый DoH endpoint, но DNS-запрос A/AAAA теперь отправляется этому endpoint-у без подмены QNAME-ответа bootstrap IP-адресами DoH-сервера.
-- DoH-соединение закрепляется за проверенным bootstrap IP; URL hostname сохраняется для TLS SNI, проверки сертификата и HTTP Host. При транспортной/HTTP ошибке перебираются остальные bootstrap IP выбранного endpoint-а. Ошибка живого DNS-запроса также запускает внеочередной цикл проверки ActiveDoHSelector.
-- Возвращается исходный DNS-ответ DoH, включая CNAME, отрицательные ответы и EDNS-данные. Кэш режима привязан к поколению выбранного endpoint-а; при смене endpoint-а кэш очищается.
+### Сквозное DNS-forwarding через ActiveDoH
+- В режиме `endpoint_ip` исходный DNS-запрос A/AAAA передаётся выбранному здоровому DoH endpoint-у. Bootstrap IP используется только для подключения к DoH-серверу и больше не подменяет DNS-ответ запрошенного домена.
+- TCP-соединение закрепляется за bootstrap IP, при этом сохраняются hostname endpoint-а, TLS SNI, проверка сертификата и HTTP Host. При транспортной, HTTP-ошибке или некорректном DNS-ответе перебираются остальные bootstrap IP выбранного endpoint-а.
+- Клиент получает исходный DNS-ответ upstream-а, включая CNAME, отрицательные ответы и EDNS/DNSSEC-данные. TTL исходного ответа сохраняется в первом ответе; ограничения применяются к копии в кэше. Кэш привязан к поколению конфигурации и выбранного endpoint-а и инвалидируется при переключении.
+- Ошибка живого DNS-запроса инициирует внеочередную проверку ActiveDoHSelector, не меняя его политику health scoring и выбора endpoint-а.
 
+### Проверки
+- Добавлены unit-тесты пересылки исходного DNS-пакета, сохранения CNAME/адресного ответа и retry по нескольким bootstrap IP.
+- CI PR #36 (run `45058053887`) успешно выполнил module tidy, gofmt, shell/JavaScript checks, DNS integration tests, `go vet`, Go tests и critical-path coverage gate, race detector, staticcheck, govulncheck и Linux amd64 build.
+- Ручная проверка пользовательского маршрута через DNS роутера: Gemini, AI Studio и Notebook открылись; AI Studio и Notebook потребовали дополнительной проверки безопасности аккаунта Google.
 
 ## [2.3.6] - 2026-11-22
 
@@ -26,8 +31,6 @@
 ### Проверки
 - PR #34 и post-merge CI для main прошли: module tidy, gofmt, shell/JavaScript syntax, plugin-management и DNS checker tests, `go vet`, Go tests с critical-path coverage gate, race detector, staticcheck, govulncheck и Linux amd64 package build.
 - Проверки CI не заменяют live smoke test панели на пользовательском VPS; такой тест не заявляется как выполненный.
-
-## [Unreleased]
 
 ## [2.3.5] - 2026-11-22
 

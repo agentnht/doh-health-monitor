@@ -1,6 +1,6 @@
 # DoH DNS Proxy & Health Monitor для LucX-UI
 
-**Версия:** 2.3.7  
+**Версия:** 2.4.0  
 **Платформа:** Linux x86-64 (`amd64`), статический Go-бинарник  
 **Тип:** LucX-UI sidecar, `apiVersion: 1`  
 **Режим Gemini API:** необязательный, управляется параметром `gemini_api.enabled`
@@ -114,11 +114,11 @@ $LUCX_PLUGIN_DATA/gemini_api_key
 
 Для каждого релиза публикуются ZIP, файл SHA-256 и GitHub artifact attestation (Sigstore). Проверяйте **оба** свойства: checksum подтверждает целостность скачанного файла, attestation — репозиторий и workflow, которые его собрали.
 
-Для релиза `v2.3.7` после скачивания обоих файлов выполните:
+Для релиза `v2.4.0` после скачивания обоих файлов выполните:
 
 ```bash
-sha256sum -c doh-health-monitor-v2.3.7.zip.sha256
-gh attestation verify doh-health-monitor-v2.3.7.zip \
+sha256sum -c doh-health-monitor-v2.4.0.zip.sha256
+gh attestation verify doh-health-monitor-v2.4.0.zip \
   --repo agentnht/doh-health-monitor \
   --signer-workflow agentnht/doh-health-monitor/.github/workflows/release.yml
 ```
@@ -127,14 +127,14 @@ gh attestation verify doh-health-monitor-v2.3.7.zip \
 
 ## 4. Установка в LucX-UI
 
-1. Для опубликованного релиза скачайте ZIP с соответствующим номером версии. Для релиза `v2.3.7` используйте пакет `doh-health-monitor-v2.3.7.zip` со страницы GitHub Releases.
+1. Для опубликованного релиза скачайте ZIP с соответствующим номером версии. Для релиза `v2.4.0` используйте пакет `doh-health-monitor-v2.4.0.zip` со страницы GitHub Releases.
 2. В LucX-UI откройте менеджер плагинов и установите ZIP.
 3. Запустите плагин из панели.
 4. При первом запуске плагин создаст `config.json`, `doh-servers.txt`, `tst-domen.txt` и `local-hosts.txt`. Уже существующие текстовые файлы не перезаписываются (старый URL-only список DoH автоматически мигрирует в новый формат). Если `local-hosts.txt` отсутствует, старые записи `local_hosts` из `config.json` однократно переносятся в новый файл.
 5. Посмотрите журнал плагина. Нормальный старт содержит строки примерно такого вида:
 
 ```text
-level=INFO START id=doh-health-monitor version=2.3.7 arch=amd64 data=...
+level=INFO START id=doh-health-monitor version=2.4.0 arch=amd64 data=...
 level=INFO CONFIG loaded ... gemini_api=false
 level=INFO EVENT_SOCKET listening ...
 level=INFO READY DNS=127.0.0.1:5355/127.0.0.1:5355 HTTP=127.0.0.1:18765
@@ -167,7 +167,7 @@ dhm
 Не запускайте management script непосредственно через `curl | bash` или process substitution: такой путь не позволяет проверить целостность исполняемого файла до запуска. Для установки/обновления скачивайте опубликованный release ZIP и checksum, проверяйте архив и только затем устанавливайте его через штатный менеджер LucX-UI:
 
 ```bash
-version=2.3.7
+version=2.4.0
 asset="doh-health-monitor-v${version}.zip"
 base="https://github.com/agentnht/doh-health-monitor/releases/download/v${version}"
 curl -fSLO "$base/$asset"
@@ -671,11 +671,12 @@ go test -race ./...
 go vet ./...
 ```
 
-**Автоматические проверки версии 2.3.7:**
+**Автоматические проверки версии 2.4.0:**
 - GitHub Actions CI: module tidy, shell/JavaScript syntax, management helper tests, DNS checker tests, `go vet ./...`, `go test -coverprofile=coverage.out ./...`, критический coverage gate (>60%), `go test -race ./...`, `staticcheck`, `govulncheck` и Linux amd64 package build.
 - Go sidecar не содержит встроенного panel mutation adapter или Xray planner; DNS-процессом управляет LucX-UI Plugin Manager. Root SSH-скрипт отдельно обращается к штатному Panel API, получая короткоживущий admin Bearer token через локальный CLI панели; токен удаляется или ротируется после операции. SQLite dependency в Go sidecar отсутствует.
 - Регрессионные тесты охватывают анонимный доступ к Web UI, одноразовый bootstrap token, listener validation, Gemini key path, DoH URL redaction, resolver SERVFAIL/cooldown, ActiveDoH hard-failure failover, EDNS-aware UDP truncation, DNS error packet shape, OIDC URL validation, reload interval, pending restart semantics, status redaction, bootstrap public-IP filtering, symlinked configuration sources, PID/lock lifecycle, stale PID recovery и HTTP health probe.
-- Для PR #34 (CI run `45016223795`) и post-merge `main` (CI run `45016353102`, commit `7da0a87`) успешно прошли shell/Go tests, critical coverage gate, race detector, staticcheck, govulncheck и Linux amd64 package build. Реальный API smoke test на VPS и установка опубликованного ZIP в рамках подготовки релиза не выполнялись.
+- Для PR #36 (CI run `45058053887`, commit `f3bc4b4`) прошли module tidy, gofmt, shell/JavaScript syntax checks, Geosite DNS integration tests, `go vet`, Go tests с critical-path coverage gate, race detector, staticcheck, govulncheck и Linux amd64 package build.
+- Ручной smoke test через DNS роутера: Gemini загрузился с HTTP 200; AI Studio и Notebook также открылись после дополнительной проверки безопасности аккаунта Google. Это подтверждает проверенный пользовательский маршрут, но не гарантирует работу каждого домена или API Google.
 
 ## 12. Ограничения текущей реализации
 
