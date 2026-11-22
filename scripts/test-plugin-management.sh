@@ -114,7 +114,7 @@ PANEL_API_PORT="2053"
 PANEL_API_BASE_URL="http://127.0.0.1:2053/panel/api"
 PANEL_API_CURL_CONFIG="/run/test-curl-config"
 PANEL_API_INSECURE=0
-curl() { printf '%s\\n' "$@"; }
+curl() { printf '%s\n' "$@"; }
 panel_api_request GET "/plugins/doh-health-monitor/status" || fail_test "mocked panel API request"
 grep -Fq 'Host: panel.example.com:2053' <<<"$PANEL_API_RESPONSE" || fail_test "panel webDomain Host header missing"
 grep -Fq 'http://127.0.0.1:2053/panel/api/plugins/doh-health-monitor/status' <<<"$PANEL_API_RESPONSE" || fail_test "API request must connect to loopback, not webDomain"
