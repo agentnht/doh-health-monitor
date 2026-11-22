@@ -7,8 +7,12 @@ $version = $manifest.version
 $id = $manifest.id
 
 $goVersion = [regex]::Match((Get-Content main.go -Raw), 'pluginVersion\s*=\s*"([^"]+)"').Groups[1].Value
+$probeVersion = [regex]::Match((Get-Content active_doh.go -Raw), 'activeDoHUserAgent\s*=\s*"LucX-DoH-HealthMonitor/([^"]+)"').Groups[1].Value
+$menuVersion = [regex]::Match((Get-Content scripts/plugin-management.sh -Raw), 'DoH Health Monitor ([0-9.]+) — управление').Groups[1].Value
 $readme = Get-Content README.md -Raw -Encoding UTF8
 if ($goVersion -ne $version) { throw "Version mismatch: manifest=$version main.go=$goVersion" }
+if ($probeVersion -ne $version) { throw "Version mismatch: manifest=$version active_doh.go=$probeVersion" }
+if ($menuVersion -ne $version) { throw "Version mismatch: manifest=$version plugin-management.sh=$menuVersion" }
 if ($readme -notmatch [regex]::Escape("$id-v$version.zip")) { throw "README does not mention $id-v$version.zip" }
 if ($readme -notmatch [regex]::Escape("**Версия:** $version")) { throw "README version header is not $version" }
 if ((Get-Content CHANGELOG.md -Raw) -notmatch [regex]::Escape("[$version]")) { throw "CHANGELOG.md has no [$version] entry" }
