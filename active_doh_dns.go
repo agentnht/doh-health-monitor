@@ -1,7 +1,5 @@
 package main
 
-const activeDoHMaxCacheTTL = 300 * time.Second
-
 import (
 	"context"
 	"encoding/binary"
@@ -11,6 +9,8 @@ import (
 
 	"lucx-doh-health-monitor/internal/activedoh"
 )
+
+const activeDoHMaxCacheTTL = 300 * time.Second
 
 // activeDoHDNSResponse forwards the original A/AAAA query through the healthy
 // DoH endpoint selected by ActiveDoHSelector and returns its DNS response.
