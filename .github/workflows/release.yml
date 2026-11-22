@@ -33,7 +33,11 @@ jobs:
           grep -q "^## \[$version\]" CHANGELOG.md || { echo "CHANGELOG.md has no [$version]"; exit 1; }
 
       - run: go vet ./...
-      - run: go test ./...
+      - name: Run tests and enforce critical-path coverage
+        run: |
+          go test -coverprofile=coverage.out ./...
+          go tool cover -func=coverage.out | tail -n 1
+          bash scripts/check-critical-coverage.sh coverage.out
 
       - name: Build package
         id: package
