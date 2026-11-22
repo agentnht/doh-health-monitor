@@ -1033,7 +1033,7 @@ func buildSnapshot(c Config, dohURLs map[string]string) (*Snapshot, error) {
 		if u.Type == "system" {
 			s.upstreams[u.ID] = &UpstreamRuntime{
 				cfg:       u,
-				systemDNS: &systemDNSResolver{resolvConfPath: systemResolvConfPath},
+				systemDNS: &systemDNSResolver{resolvConfPath: systemResolvConfPath, listenerAddresses: []string{c.DNSListenUDP, c.DNSListenTCP}},
 			}
 			continue
 		}
@@ -1191,6 +1191,9 @@ func (b *bootstrapResolver) addresses(ctx context.Context, force bool) ([]string
 				lookupErr = nil
 				resolvedBy = server
 				break
+			}
+			if err == nil {
+				err = errors.New("DoH endpoint resolved only to non-public addresses (private, CGNAT, loopback, link-local and reserved ranges are rejected)")
 			}
 		}
 		lookupErr = err
@@ -1472,6 +1475,16 @@ func (r *Runtime) initHealth(s *Snapshot) {
 	for uid := range s.upstreams {
 		validUpstreams[uid] = struct{}{}
 	}
+	// Mode-2 resolver IDs share the cooldown map; do not discard their state on reload.
+	cooldownIDs := make(map[string]struct{}, len(validUpstreams)+len(s.resolverUpstreams))
+	for uid := range validUpstreams {
+		cooldownIDs[uid] = struct{}{}
+	}
+	for _, resolver := range s.resolverUpstreams {
+		if resolver != nil {
+			cooldownIDs[strings.TrimSpace(resolver.cfg.ID)] = struct{}{}
+		}
+	}
 	for gid, g := range s.groups {
 		valid := make(map[string]struct{}, len(g.Upstreams))
 		for _, uid := range g.Upstreams {
@@ -1516,7 +1529,7 @@ func (r *Runtime) initHealth(s *Snapshot) {
 	}
 	if r.upstreamCooldown != nil {
 		for uid := range r.upstreamCooldown {
-			if _, ok := validUpstreams[uid]; !ok {
+			if _, ok := cooldownIDs[uid]; !ok {
 				delete(r.upstreamCooldown, uid)
 			}
 		}
@@ -1670,6 +1683,9 @@ func (r *Runtime) serveUDPWithHandler(ctx context.Context, c *net.UDPConn, handl
 					r.activeUDP.Add(1)
 					resp := handle(job.packet)
 					r.activeUDP.Add(-1)
+					if len(resp) == 0 {
+						continue // dropped on purpose (e.g. QR=1 packet)
+					}
 					resp = truncateDNSResponse(resp, dnsUDPResponseLimit(job.packet))
 					_, _ = c.WriteToUDP(resp, job.addr)
 				}
@@ -1709,7 +1725,9 @@ func (r *Runtime) serveUDPWithHandler(ctx context.Context, c *net.UDPConn, handl
 		default:
 			r.udpQueueDepth.Add(-1)
 			r.udpDropped.Add(1)
-			_, _ = c.WriteToUDP(servfailResponse(q), addr)
+			if !dnsIsResponse(q) {
+				_, _ = c.WriteToUDP(servfailResponse(q), addr)
+			}
 		}
 	}
 }
@@ -1789,7 +1807,7 @@ func (r *Runtime) handleTCPConn(ctx context.Context, c net.Conn) {
 			return
 		}
 		resp := r.handleDNS(q)
-		if len(resp) > maxDNSMessage {
+		if len(resp) == 0 || len(resp) > maxDNSMessage {
 			return
 		}
 		_ = c.SetWriteDeadline(time.Now().Add(tcpWriteTimeout))
@@ -1802,7 +1820,18 @@ func (r *Runtime) handleTCPConn(ctx context.Context, c net.Conn) {
 		}
 	}
 }
+
+// dnsIsResponse reports whether the QR bit is set. A server must never answer
+// a response packet (two such peers could ping-pong error replies forever).
+func dnsIsResponse(packet []byte) bool { return len(packet) >= 3 && packet[2]&0x80 != 0 }
+
 func (r *Runtime) handleDNS(packet []byte) []byte {
+	if dnsIsResponse(packet) {
+		return nil
+	}
+	if len(packet) >= 12 && (packet[2]>>3)&0x0f != 0 {
+		return errorResponse(packet, 4) // NOTIMP: only opcode QUERY is served
+	}
 	select {
 	case r.dnsSem <- struct{}{}:
 		defer func() { <-r.dnsSem }()
@@ -3458,6 +3487,13 @@ func truncateDNSResponse(response []byte, limit int) []byte {
 	out := append([]byte(nil), response[:offset]...)
 	counts := [3]uint16{}
 	truncated := false
+	optRaw := findOPTRecord(response)
+	optKept := false
+	// Reserve room for OPT so that filling the packet with answers cannot crowd it out.
+	optReserve := 0
+	if optRaw != nil && len(out)+len(optRaw) <= limit {
+		optReserve = len(optRaw)
+	}
 	sectionCounts := []int{
 		int(binary.BigEndian.Uint16(response[6:8])),
 		int(binary.BigEndian.Uint16(response[8:10])),
@@ -3477,13 +3513,20 @@ func truncateDNSResponse(response []byte, limit int) []byte {
 				truncated = true
 				break
 			}
-			if len(out)+(offset-start) > limit {
+			recordLimit := limit - optReserve
+			if section == 2 && binary.BigEndian.Uint16(response[nameEnd:nameEnd+2]) == 41 {
+				recordLimit = limit
+			}
+			if len(out)+(offset-start) > recordLimit {
 				truncated = true
 				offset = start
 				break
 			}
 			out = append(out, response[start:offset]...)
 			counts[section]++
+			if section == 2 && binary.BigEndian.Uint16(response[nameEnd:nameEnd+2]) == 41 {
+				optKept = true
+			}
 		}
 		if truncated {
 			break
@@ -3491,6 +3534,11 @@ func truncateDNSResponse(response []byte, limit int) []byte {
 	}
 	if offset < len(response) {
 		truncated = true
+	}
+	// RFC 6891: a truncated reply should still carry OPT so the client keeps EDNS.
+	if truncated && optRaw != nil && !optKept && len(out)+len(optRaw) <= limit {
+		out = append(out, optRaw...)
+		counts[2]++
 	}
 	binary.BigEndian.PutUint16(out[4:6], uint16(questionCount))
 	binary.BigEndian.PutUint16(out[6:8], counts[0])
@@ -3655,4 +3703,39 @@ func decrementTTLs(p []byte, elapsed uint32) {
 		}
 		binary.BigEndian.PutUint32(p[o:o+4], v)
 	}
+}
+
+// findOPTRecord returns a copy of the first root-owned OPT record in the
+// Additional section, or nil. Parsing is tolerant: any inconsistency yields nil.
+func findOPTRecord(response []byte) []byte {
+	if len(response) < 12 {
+		return nil
+	}
+	offset := 12
+	for i := 0; i < int(binary.BigEndian.Uint16(response[4:6])); i++ {
+		_, end, err := decodeName(response, offset)
+		if err != nil || end+4 > len(response) {
+			return nil
+		}
+		offset = end + 4
+	}
+	counts := []int{int(binary.BigEndian.Uint16(response[6:8])), int(binary.BigEndian.Uint16(response[8:10])), int(binary.BigEndian.Uint16(response[10:12]))}
+	for section, count := range counts {
+		for i := 0; i < count; i++ {
+			start := offset
+			_, nameEnd, err := decodeName(response, offset)
+			if err != nil || nameEnd+10 > len(response) {
+				return nil
+			}
+			next := nameEnd + 10 + int(binary.BigEndian.Uint16(response[nameEnd+8:nameEnd+10]))
+			if next > len(response) {
+				return nil
+			}
+			if section == 2 && nameEnd == start+1 && response[start] == 0 && binary.BigEndian.Uint16(response[nameEnd:nameEnd+2]) == 41 {
+				return append([]byte(nil), response[start:next]...)
+			}
+			offset = next
+		}
+	}
+	return nil
 }
