@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"lucx-doh-health-monitor/internal/activedoh"
 )
 
 const activeDoHMaxCacheTTL = 300 * time.Second
