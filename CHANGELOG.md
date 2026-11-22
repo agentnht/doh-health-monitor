@@ -1,8 +1,8 @@
 ## [Unreleased]
 
 ### Управление через LucX-UI API и автозапуск
-- SSH-меню управляет запуском, остановкой, перезапуском и статусом через штатные \`/panel/api/plugins/{id}/...\` endpoint-ы LucX-UI; бинарник больше не запускается отдельным daemon-owning systemd unit в panel-managed режиме.
-- Добавлен отключаемый boot helper \`doh-health-monitor-panel-autostart.service\`: после \`x-ui.service\` он вызывает локальный Plugin Manager API один раз и запускает sidecar, только если тот остановлен.
+- SSH-меню управляет запуском, остановкой, перезапуском и статусом через штатные `/panel/api/plugins/{id}/...` endpoint-ы LucX-UI; бинарник больше не запускается отдельным daemon-owning systemd unit в panel-managed режиме.
+- Добавлен отключаемый boot helper `doh-health-monitor-panel-autostart.service`: после `x-ui.service` он вызывает локальный Plugin Manager API один раз и запускает sidecar, только если тот остановлен.
 - Ручной Stop из панели остаётся действующим до следующей перезагрузки VPS: периодического timer/watchdog, который самовольно поднимал бы остановленный процесс, нет.
 - Для API используется временный отдельный admin Bearer token с зарезервированным именем; plaintext не сохраняется постоянно, helper удаляет токен через API или ротирует его при ошибке очистки.
 - При миграции с v2.3.5 удаляются прежние standalone service/timer, чтобы избежать двух process managers. Отключение нового API-автозапуска не останавливает уже работающий daemon.
