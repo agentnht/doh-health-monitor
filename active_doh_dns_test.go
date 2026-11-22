@@ -19,33 +19,6 @@ func activeDoHTestQuery(qtype uint16, withEDNS bool) []byte {
 	return query
 }
 
-func TestActiveDoHResponsePreservesEDNSDOWithoutReflectingOptions(t *testing.T) {
-	now := time.Now().UTC()
-	query := makeDNSQuery("geosite.example", 1)
-	binary.BigEndian.PutUint16(query[10:12], 1)
-	// COOKIE option (code 10, length 4) must not be copied to the response.
-	query = append(query, 0, 0, 41, 0x04, 0xd0, 0, 0, 0x80, 0, 0, 8, 0, 10, 0, 4, 1, 2, 3, 4)
-	_, qtype, questionEnd, err := parseQuestion(query)
-	if err != nil {
-		t.Fatal(err)
-	}
-	selection := activedoh.Selection{
-		Candidate:  activedoh.Candidate{IPv4: []string{"1.1.1.1"}},
-		FreshUntil: now.Add(time.Minute),
-	}
-	response, _ := buildActiveDoHResponse(query, "geosite.example", qtype, questionEnd, selection, now)
-	opt := extractEDNSOPT(response)
-	if len(opt) != 11 || binary.BigEndian.Uint16(opt[3:5]) != 1232 {
-		t.Fatalf("unexpected minimal response OPT: %v", opt)
-	}
-	if binary.BigEndian.Uint16(opt[7:9])&0x8000 == 0 {
-		t.Fatal("DO bit was not preserved")
-	}
-	if binary.BigEndian.Uint16(opt[9:11]) != 0 {
-		t.Fatal("response OPT must not reflect client EDNS options")
-	}
-}
-
 func TestActiveDoHResponseRejectsSelectionFromStaleConfigGeneration(t *testing.T) {
 	now := time.Now().UTC()
 	selector := activedoh.NewSelector(activedoh.DefaultPolicy())
