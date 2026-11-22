@@ -32,6 +32,7 @@ pass "DNS mode menu entry is connected to the CLI action"
 
 unit="$(render_systemd_service /opt/doh-health-monitor/bin/doh-health-monitor /opt/doh-health-monitor /opt/doh-health-monitor/data 2.3.5)"
 grep -Fq 'Type=simple' <<<"$unit" || fail_test "systemd service type"
+grep -Fqx 'WorkingDirectory=/opt/doh-health-monitor' <<<"$unit" || fail_test "systemd working directory must be absolute and unquoted"
 grep -Fq 'Restart=on-failure' <<<"$unit" || fail_test "systemd failure restart policy"
 grep -Fq 'RestartSec=5s' <<<"$unit" || fail_test "systemd restart delay"
 grep -Fq 'LUCX_PLUGIN_DATA=/opt/doh-health-monitor/data' <<<"$unit" || fail_test "systemd data directory"
