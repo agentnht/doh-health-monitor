@@ -289,7 +289,18 @@ readonly SYSTEMD_SERVICE_NAME="doh-health-monitor.service"
 readonly SYSTEMD_TIMER_NAME="doh-health-monitor-healthcheck.timer"
 readonly SYSTEMD_HEALTHCHECK_SERVICE="doh-health-monitor-healthcheck.service"
 readonly SYSTEMD_HEALTHCHECK_PATH="/usr/local/libexec/doh-health-monitor-healthcheck"
+readonly PANEL_AUTOSTART_SERVICE_NAME="doh-health-monitor-panel-autostart.service"
 readonly SYSTEMD_UNIT_DIR="/etc/systemd/system"
+readonly PANEL_API_TOKEN_NAME="doh-health-monitor-plugin-management"
+readonly PANEL_API_LOCK_PATH="/run/lock/doh-health-monitor-panel-api.lock"
+
+PANEL_CLI=""
+PANEL_API_BASE_URL=""
+PANEL_API_CURL_CONFIG=""
+PANEL_API_LOCK_FD=""
+PANEL_API_TOKEN_ACTIVE=0
+PANEL_API_INSECURE=0
+PANEL_API_RESPONSE=""
 
 systemd_quote() {
   local value="$1"
@@ -299,77 +310,29 @@ systemd_quote() {
   printf '"%s"' "$value"
 }
 
-render_systemd_service() {
-  local binary="$1" root_dir="$2" data_dir="$3" version="$4"
+render_panel_api_autostart() {
+  local script_path="$1" data_dir="$2" panel_service="${3:-x-ui.service}"
   cat <<EOF
 [Unit]
-Description=DoH Health Monitor standalone DNS sidecar
-Wants=network-online.target
-After=network-online.target
+Description=Start DoH Health Monitor through the LucX-UI plugin API
+Wants=network-online.target $panel_service
+After=network-online.target $panel_service
 StartLimitIntervalSec=300
-StartLimitBurst=5
+StartLimitBurst=3
 
 [Service]
-Type=simple
-User=root
-WorkingDirectory=$root_dir
-Environment=$(systemd_quote "LUCX_PLUGIN_ID=$PLUGIN_ID")
-Environment=$(systemd_quote "LUCX_PLUGIN_VERSION=$version")
+Type=oneshot
 Environment=$(systemd_quote "LUCX_PLUGIN_DATA=$data_dir")
-ExecStart=$(systemd_quote "$binary")
+ExecStart=/bin/bash $(systemd_quote "$script_path") --panel-api-start-on-boot
+TimeoutStartSec=180
 Restart=on-failure
-RestartSec=5s
-KillSignal=SIGTERM
-TimeoutStopSec=15s
+RestartSec=20s
 UMask=0077
 StandardOutput=journal
 StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
-EOF
-}
-
-render_systemd_healthcheck() {
-  local binary="$1" data_dir="$2"
-  printf '#!/usr/bin/env bash\nset -Eeuo pipefail\n'
-  printf 'PLUGIN_BIN=%q\n' "$binary"
-  printf 'PLUGIN_DATA_DIR=%q\n' "$data_dir"
-  cat <<'EOF'
-SERVICE="doh-health-monitor.service"
-STATE="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
-
-case "$STATE" in
-  active)
-    if ! LUCX_PLUGIN_DATA="$PLUGIN_DATA_DIR" "$PLUGIN_BIN" healthcheck >/dev/null 2>&1; then
-      logger -t doh-health-monitor "health endpoint failed; restarting systemd service"
-      systemctl restart "$SERVICE"
-    fi
-    ;;
-  failed)
-    # A PID owned by the panel means the standalone unit must not start a
-    # second copy or fight the panel's process supervisor.
-    PID_FILE="$PLUGIN_DATA_DIR/doh-health-monitor.pid"
-    if [[ -s "$PID_FILE" ]]; then
-      PID="$(cat "$PID_FILE" 2>/dev/null || true)"
-      if [[ "$PID" =~ ^[1-9][0-9]*$ ]] && kill -0 "$PID" 2>/dev/null; then
-        RUNNING_EXE="$(readlink -f "/proc/$PID/exe" 2>/dev/null || true)"
-        EXPECTED_EXE="$(readlink -f "$PLUGIN_BIN" 2>/dev/null || true)"
-        if [[ -n "$EXPECTED_EXE" && "$RUNNING_EXE" == "$EXPECTED_EXE" ]]; then
-          logger -t doh-health-monitor "another supervisor owns the running daemon; leaving it untouched"
-          exit 0
-        fi
-      fi
-    fi
-    systemctl reset-failed "$SERVICE"
-    systemctl start "$SERVICE"
-    ;;
-  *)
-    # An explicit systemctl stop leaves the service inactive. Do not undo
-    # that operator action from the periodic health timer.
-    exit 0
-    ;;
-esac
 EOF
 }
 
@@ -395,125 +358,347 @@ pid_file_running_for_plugin() {
   [[ -n "$expected" && "$actual" == "$expected" ]]
 }
 
-install_systemd_autostart() {
-  local unit_tmp health_tmp health_service_tmp timer_tmp
-  systemd_require_available || return 1
-  [[ -x "$PLUGIN_BIN" && -f "$PLUGIN_BIN" ]] || {
-    fail "Не найден исполняемый файл плагина: $PLUGIN_BIN"
-    return 1
-  }
-  [[ ! -L "$PLUGIN_DATA_DIR" ]] || {
-    fail "Каталог данных не должен быть symlink: $PLUGIN_DATA_DIR"
-    return 1
-  }
-  if ! install -d -m 0700 "$PLUGIN_DATA_DIR" || ! chmod 0700 "$PLUGIN_DATA_DIR"; then
-    fail "Не удалось создать защищённый каталог данных: $PLUGIN_DATA_DIR"
-    return 1
-  fi
-  [[ "$PLUGIN_VERSION" =~ ^[0-9A-Za-z.+-]+$ ]] || {
-    fail "Не удалось безопасно прочитать версию плагина из manifest.json."
-    return 1
-  }
-
-  if ! systemctl is-active --quiet "$SYSTEMD_SERVICE_NAME"; then
-    if pid_file_running_for_plugin || LUCX_PLUGIN_DATA="$PLUGIN_DATA_DIR" "$PLUGIN_BIN" healthcheck >/dev/null 2>&1; then
-      fail "Обнаружен уже работающий экземпляр плагина. Сначала остановите его в LucX-UI; затем включите systemd-автозапуск. Два менеджера не должны одновременно управлять одним экземпляром."
-      return 1
-    fi
-  fi
-
-  install -d -m 0755 "$SYSTEMD_UNIT_DIR" /usr/local/libexec
-  unit_tmp="$(mktemp)" || return 1
-  health_tmp="$(mktemp)" || { rm -f "$unit_tmp"; return 1; }
-  health_service_tmp="$(mktemp)" || { rm -f "$unit_tmp" "$health_tmp"; return 1; }
-  timer_tmp="$(mktemp)" || { rm -f "$unit_tmp" "$health_tmp" "$health_service_tmp"; return 1; }
-
-  render_systemd_service "$PLUGIN_BIN" "$PLUGIN_ROOT_DIR" "$PLUGIN_DATA_DIR" "$PLUGIN_VERSION" > "$unit_tmp"
-  render_systemd_healthcheck "$PLUGIN_BIN" "$PLUGIN_DATA_DIR" > "$health_tmp"
-  cat > "$health_service_tmp" <<'EOF'
-[Unit]
-Description=DoH Health Monitor periodic health check
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/libexec/doh-health-monitor-healthcheck
-EOF
-  cat > "$timer_tmp" <<'EOF'
-[Unit]
-Description=Check DoH Health Monitor every minute
-
-[Timer]
-OnBootSec=1min
-OnUnitActiveSec=1min
-AccuracySec=10s
-Unit=doh-health-monitor-healthcheck.service
-
-[Install]
-WantedBy=timers.target
-EOF
-
-  if ! install -m 0644 "$unit_tmp" "$SYSTEMD_UNIT_DIR/$SYSTEMD_SERVICE_NAME" ||
-     ! install -m 0644 "$health_service_tmp" "$SYSTEMD_UNIT_DIR/$SYSTEMD_HEALTHCHECK_SERVICE" ||
-     ! install -m 0644 "$timer_tmp" "$SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER_NAME" ||
-     ! install -m 0755 "$health_tmp" "$SYSTEMD_HEALTHCHECK_PATH"; then
-    rm -f "$unit_tmp" "$health_tmp" "$health_service_tmp" "$timer_tmp"
-    fail "Не удалось установить systemd unit-файлы."
-    return 1
-  fi
-  rm -f "$unit_tmp" "$health_tmp" "$health_service_tmp" "$timer_tmp"
-
-  systemctl daemon-reload
-  if ! systemctl enable "$SYSTEMD_SERVICE_NAME"; then
-    fail "Не удалось включить systemd service."
-    return 1
-  fi
-  if ! systemctl enable --now "$SYSTEMD_TIMER_NAME"; then
-    fail "Не удалось включить периодическую health-проверку."
-    return 1
-  fi
-  if systemctl is-active --quiet "$SYSTEMD_SERVICE_NAME"; then
-    if ! systemctl restart "$SYSTEMD_SERVICE_NAME"; then
-      fail "Не удалось перезапустить systemd service."
-      return 1
-    fi
-  elif ! systemctl start "$SYSTEMD_SERVICE_NAME"; then
-    printf '[WARN] Автозапуск установлен, но демон пока не стартовал. Timer попробует восстановить failed-сервис при следующей проверке.\n' >&2
-    systemctl --no-pager --full status "$SYSTEMD_SERVICE_NAME" || true
-    return 1
-  fi
-
-  printf '[OK] systemd-автозапуск включён: %s; health-check — раз в минуту.\n' "$SYSTEMD_SERVICE_NAME"
-  printf 'PID-файл: %s/doh-health-monitor.pid\n' "$PLUGIN_DATA_DIR"
+extract_panel_setting() {
+  local key="$1" output="$2"
+  sed -n "s/^${key}:[[:space:]]*//p" <<<"$output" | tail -n 1 | tr -d '\r'
 }
 
-disable_systemd_autostart() {
-  systemd_require_available || return 1
+panel_api_discover() {
+  local panel_cwd settings listen_output port base_path listen_ip host scheme
+  panel_cwd="$(detect_panel_cwd)" || return 1
+  PANEL_CLI="$panel_cwd/x-ui"
+  [[ -x "$PANEL_CLI" && -f "$PANEL_CLI" ]] || {
+    fail "Не найден CLI панели: $PANEL_CLI"
+    return 1
+  }
+  settings="$("$PANEL_CLI" setting -show=true 2>/dev/null)" || {
+    fail "Не удалось прочитать настройки LucX-UI через локальный CLI."
+    return 1
+  }
+  listen_output="$("$PANEL_CLI" setting -getListen=true 2>/dev/null)" || {
+    fail "Не удалось прочитать адрес прослушивания LucX-UI."
+    return 1
+  }
+
+  port="$(extract_panel_setting port "$settings")"
+  base_path="$(extract_panel_setting webBasePath "$settings")"
+  listen_ip="$(extract_panel_setting listenIP "$listen_output")"
+  [[ "$port" =~ ^[0-9]{1,5}$ ]] && (( port >= 1 && port <= 65535 )) || {
+    fail "CLI панели вернул некорректный порт; API URL не сформирован."
+    return 1
+  }
+
+  case "$base_path" in
+    ""|"/") base_path="" ;;
+    *)
+      [[ "$base_path" == /* ]] || base_path="/$base_path"
+      base_path="${base_path%/}"
+      [[ "$base_path" =~ ^/[A-Za-z0-9._~/-]+$ && ! "$base_path" =~ (^|/)\.\.?(/|$) ]] || {
+        fail "webBasePath содержит неподдерживаемые символы; API URL не сформирован."
+        return 1
+      }
+      ;;
+  esac
+
+  case "$listen_ip" in
+    ""|"0.0.0.0") host="127.0.0.1" ;;
+    "::"|"::0") host="::1" ;;
+    *) host="$listen_ip" ;;
+  esac
+  if ! python3 -c 'import ipaddress,sys; ipaddress.ip_address(sys.argv[1])' "$host" >/dev/null 2>&1; then
+    fail "LucX-UI listenIP не является IP-адресом; API-клиент отказывается отправлять admin-токен."
+    return 1
+  fi
+  if [[ "$host" == *:* ]]; then host="[$host]"; fi
+
+  if grep -Fq "Panel is secure with SSL" <<<"$settings"; then
+    scheme="https"
+    PANEL_API_INSECURE=1
+  else
+    scheme="http"
+    PANEL_API_INSECURE=0
+  fi
+  PANEL_API_BASE_URL="$scheme://$host:$port${base_path}/panel/api"
+}
+
+panel_api_token_from_output() {
+  sed -n 's/^[[:space:]]*apiToken:[[:space:]]*//p' <<<"$1" | tail -n 1 | tr -d '\r'
+}
+
+panel_api_json_success() {
+  python3 -c 'import json,sys
+try:
+    value=json.load(sys.stdin)
+except Exception:
+    sys.exit(2)
+sys.exit(0 if value.get("success") is True else 1)' <<<"$1"
+}
+
+panel_api_json_running() {
+  python3 -c 'import json,sys
+try:
+    value=json.load(sys.stdin)
+    obj=value.get("obj")
+    running=obj.get("running") if isinstance(obj,dict) else None
+except Exception:
+    sys.exit(2)
+if value.get("success") is not True or not isinstance(running,bool):
+    sys.exit(2)
+print("running" if running else "stopped")' <<<"$1"
+}
+
+panel_api_token_id_from_response() {
+  python3 -c 'import json,sys
+try:
+    value=json.load(sys.stdin)
+    rows=value.get("obj")
+    if value.get("success") is not True or not isinstance(rows,list):
+        sys.exit(2)
+    matches=[row.get("id") for row in rows if isinstance(row,dict) and row.get("name")==sys.argv[1] and row.get("scope")=="admin"]
+    if len(matches)!=1 or not isinstance(matches[0],int) or matches[0]<=0:
+        sys.exit(2)
+    print(matches[0])
+except Exception:
+    sys.exit(2)' "$PANEL_API_TOKEN_NAME" <<<"$1"
+}
+
+panel_api_begin() {
+  local token_output token
+  command -v curl >/dev/null 2>&1 || { fail "curl не найден."; return 1; }
+  command -v python3 >/dev/null 2>&1 || { fail "python3 не найден; нужен стандартный JSON/IP parser."; return 1; }
+  command -v flock >/dev/null 2>&1 || { fail "flock не найден."; return 1; }
+  install -d -m 0755 /run/lock || return 1
+  exec {PANEL_API_LOCK_FD}>"$PANEL_API_LOCK_PATH" || return 1
+  chmod 0600 "$PANEL_API_LOCK_PATH" || return 1
+  flock -x "$PANEL_API_LOCK_FD" || return 1
+
+  if ! panel_api_discover; then
+    panel_api_finish
+    return 1
+  fi
+
+  # The panel CLI rotates only this reserved token name. Plaintext is held in
+  # memory and a short-lived root-only curl config; it is never written to disk.
+  token_output="$("$PANEL_CLI" setting -getApiToken=true \
+    -tokenName="$PANEL_API_TOKEN_NAME" -tokenScope=admin 2>&1)" || {
+    fail "Не удалось выпустить временный admin API token через CLI панели."
+    panel_api_finish
+    return 1
+  }
+  token="$(panel_api_token_from_output "$token_output")"
+  unset token_output
+  [[ "$token" =~ ^[A-Za-z0-9_-]{32,128}$ ]] || {
+    unset token
+    fail "CLI панели не вернул ожидаемый API token; API-запрос не выполнялся."
+    panel_api_finish
+    return 1
+  }
+  PANEL_API_TOKEN_ACTIVE=1
+  PANEL_API_CURL_CONFIG="$(mktemp /run/doh-health-monitor-api.XXXXXX)" || {
+    unset token
+    fail "Не удалось создать временный curl config в /run."
+    panel_api_finish
+    return 1
+  }
+  chmod 0600 "$PANEL_API_CURL_CONFIG"
+  printf 'header = "Authorization: Bearer %s"\n' "$token" >"$PANEL_API_CURL_CONFIG"
+  unset token
+}
+
+panel_api_request() {
+  local method="$1" route="$2" body="${3:-}"
+  local -a args
+  args=(--silent --show-error --fail --noproxy '*' --connect-timeout 3 --max-time 10
+        --config "$PANEL_API_CURL_CONFIG" --request "$method"
+        --url "$PANEL_API_BASE_URL$route" --header "Accept: application/json")
+  if (( PANEL_API_INSECURE == 1 )); then args+=(--insecure); fi
+  if [[ -n "$body" ]]; then
+    args+=(--header "Content-Type: application/json" --data-binary "$body")
+  fi
+  PANEL_API_RESPONSE="$(curl -q "${args[@]}")"
+}
+
+panel_api_finish() {
+  local token_id
+  if (( PANEL_API_TOKEN_ACTIVE == 1 )); then
+    if [[ -n "$PANEL_API_CURL_CONFIG" ]] &&
+       panel_api_request GET "/setting/apiTokens" &&
+       token_id="$(panel_api_token_id_from_response "$PANEL_API_RESPONSE" 2>/dev/null)"; then
+      if panel_api_request POST "/setting/apiTokens/delete/$token_id" '{"expectedScope":"admin"}' &&
+         panel_api_json_success "$PANEL_API_RESPONSE"; then
+        PANEL_API_TOKEN_ACTIVE=0
+      fi
+    fi
+    # If the API could not revoke the one-shot token, rotate the reserved slot
+    # locally. This invalidates the token held by the temporary curl config.
+    if (( PANEL_API_TOKEN_ACTIVE == 1 )) && [[ -n "$PANEL_CLI" && -x "$PANEL_CLI" ]]; then
+      "$PANEL_CLI" setting -getApiToken=true \
+        -tokenName="$PANEL_API_TOKEN_NAME" -tokenScope=admin >/dev/null 2>&1 || true
+    fi
+  fi
+  [[ -z "$PANEL_API_CURL_CONFIG" ]] || rm -f -- "$PANEL_API_CURL_CONFIG"
+  PANEL_API_CURL_CONFIG=""
+  PANEL_API_TOKEN_ACTIVE=0
+  if [[ -n "$PANEL_API_LOCK_FD" ]]; then
+    flock -u "$PANEL_API_LOCK_FD" >/dev/null 2>&1 || true
+    eval "exec ${PANEL_API_LOCK_FD}>&-" || true
+    PANEL_API_LOCK_FD=""
+  fi
+}
+
+panel_api_read_plugin_state() {
+  panel_api_request GET "/plugins/$PLUGIN_ID/status" || return 1
+  panel_api_json_running "$PANEL_API_RESPONSE"
+}
+
+panel_api_wait_plugin_state() {
+  local expected="$1" attempts="${2:-20}" state i
+  for ((i=0; i<attempts; i++)); do
+    if state="$(panel_api_read_plugin_state 2>/dev/null)" && [[ "$state" == "$expected" ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+panel_api_action() {
+  local action="$1" expected
+  case "$action" in
+    start|restart) expected="running" ;;
+    stop) expected="stopped" ;;
+    *) fail "Недопустимое действие API."; return 1 ;;
+  esac
+  panel_api_begin || return 1
+  if ! panel_api_request POST "/plugins/$PLUGIN_ID/$action" '{}'; then
+    fail "LucX-UI API не принял команду $action для $PLUGIN_ID."
+    panel_api_finish
+    return 1
+  fi
+  if ! panel_api_json_success "$PANEL_API_RESPONSE"; then
+    fail "LucX-UI API вернул success=false для команды $action."
+    panel_api_finish
+    return 1
+  fi
+  if ! panel_api_wait_plugin_state "$expected" 20; then
+    fail "LucX-UI API принял $action, но ожидаемое состояние $expected не появилось."
+    panel_api_finish
+    return 1
+  fi
+  panel_api_finish
+  printf '[OK] LucX-UI: %s; plugin %s.\n' "$action" "$expected"
+}
+
+panel_api_show_status() {
+  local state enabled
+  panel_api_begin || return 1
+  if ! state="$(panel_api_read_plugin_state)"; then
+    fail "Не удалось получить статус плагина через LucX-UI API."
+    panel_api_finish
+    return 1
+  fi
+  enabled="$(systemctl is-enabled "$PANEL_AUTOSTART_SERVICE_NAME" 2>/dev/null || true)"
+  printf '[INFO] Состояние плагина в LucX-UI: %s\n' "$state"
+  printf '[INFO] Автозапуск через API при загрузке: %s\n' "${enabled:-disabled}"
+  panel_api_finish
+}
+
+remove_legacy_standalone_autostart() {
   systemctl disable --now "$SYSTEMD_TIMER_NAME" >/dev/null 2>&1 || true
   systemctl disable --now "$SYSTEMD_SERVICE_NAME" >/dev/null 2>&1 || true
+  if systemctl is-active --quiet "$SYSTEMD_TIMER_NAME" ||
+     systemctl is-active --quiet "$SYSTEMD_SERVICE_NAME"; then
+    fail "Не удалось остановить старый standalone systemd manager; API-автозапуск не включён."
+    return 1
+  fi
   rm -f -- "$SYSTEMD_UNIT_DIR/$SYSTEMD_SERVICE_NAME" \
     "$SYSTEMD_UNIT_DIR/$SYSTEMD_HEALTHCHECK_SERVICE" \
     "$SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER_NAME" \
     "$SYSTEMD_HEALTHCHECK_PATH"
   systemctl daemon-reload
-  systemctl reset-failed "$SYSTEMD_SERVICE_NAME" "$SYSTEMD_HEALTHCHECK_SERVICE" >/dev/null 2>&1 || true
-  printf '[OK] systemd-автозапуск отключён и unit-файлы удалены.\n'
 }
 
-show_systemd_autostart_status() {
-  systemctl --no-pager --full status "$SYSTEMD_SERVICE_NAME" || true
-  printf '\n'
-  systemctl --no-pager --full status "$SYSTEMD_TIMER_NAME" || true
-  printf '\nПоследние записи журнала:\n'
-  journalctl -u "$SYSTEMD_SERVICE_NAME" -n 40 --no-pager || true
+install_panel_api_autostart() {
+  local state unit_tmp panel_load script_path
+  systemd_require_available || return 1
+  [[ -x "$PLUGIN_BIN" && -f "$PLUGIN_BIN" ]] || {
+    fail "Не найден исполняемый файл плагина: $PLUGIN_BIN"
+    return 1
+  }
+  panel_load="$(systemctl show --property=LoadState --value x-ui.service 2>/dev/null || true)"
+  [[ "$panel_load" == "loaded" ]] || {
+    fail "Не найдена служба x-ui.service. Не удалось задать правильный порядок запуска API-autostart."
+    return 1
+  }
+
+  panel_api_begin || return 1
+  if ! state="$(panel_api_read_plugin_state)"; then
+    fail "LucX-UI API недоступен или плагин не установлен в менеджере панели."
+    panel_api_finish
+    return 1
+  fi
+  if ! remove_legacy_standalone_autostart; then
+    panel_api_finish
+    return 1
+  fi
+  if [[ "$state" == "stopped" ]] && pid_file_running_for_plugin; then
+    fail "Обнаружен работающий экземпляр вне менеджера LucX-UI. Остановите его вручную и повторите включение."
+    panel_api_finish
+    return 1
+  fi
+
+  if [[ "$state" != "running" ]]; then
+    if ! panel_api_request POST "/plugins/$PLUGIN_ID/start" '{}' ||
+       ! panel_api_json_success "$PANEL_API_RESPONSE" ||
+       ! panel_api_wait_plugin_state running 20; then
+      fail "Не удалось передать запуск плагина менеджеру LucX-UI."
+      panel_api_finish
+      return 1
+    fi
+  fi
+
+  script_path="$MANAGEMENT_SCRIPT_PATH"
+  [[ -n "$script_path" && -f "$script_path" ]] || script_path="$PLUGIN_ROOT_DIR/scripts/plugin-management.sh"
+  install -d -m 0755 "$SYSTEMD_UNIT_DIR"
+  unit_tmp="$(mktemp)" || { panel_api_finish; return 1; }
+  render_panel_api_autostart "$script_path" "$PLUGIN_DATA_DIR" x-ui.service >"$unit_tmp"
+  if ! install -m 0644 "$unit_tmp" "$SYSTEMD_UNIT_DIR/$PANEL_AUTOSTART_SERVICE_NAME"; then
+    rm -f "$unit_tmp"
+    fail "Не удалось установить API-autostart systemd unit."
+    panel_api_finish
+    return 1
+  fi
+  rm -f "$unit_tmp"
+  systemctl daemon-reload
+  if ! systemctl enable "$PANEL_AUTOSTART_SERVICE_NAME"; then
+    fail "Не удалось включить API-autostart unit."
+    panel_api_finish
+    return 1
+  fi
+  panel_api_finish
+  printf '[OK] Автозапуск включён: при загрузке VPS скрипт вызовет LucX-UI API после x-ui.service.\n'
+  printf '[INFO] Сам DNS-процесс остаётся под управлением Plugin Manager; кнопки Start/Stop в панели управляют им напрямую.\n'
 }
 
-manage_systemd_autostart() {
+disable_panel_api_autostart() {
+  systemd_require_available || return 1
+  systemctl disable --now "$PANEL_AUTOSTART_SERVICE_NAME" >/dev/null 2>&1 || true
+  rm -f -- "$SYSTEMD_UNIT_DIR/$PANEL_AUTOSTART_SERVICE_NAME"
+  systemctl daemon-reload
+  systemctl reset-failed "$PANEL_AUTOSTART_SERVICE_NAME" >/dev/null 2>&1 || true
+  printf '[OK] API-автозапуск отключён. Текущий процесс не останавливался; при необходимости нажмите Stop в панели.\n'
+}
+
+manage_panel_api_autostart() {
   local choice
   while true; do
-    printf '\nSystemd — автозапуск DoH Health Monitor\n'
-    printf '%s\n' '  1) Установить и включить автозапуск'
-    printf '%s\n' '  2) Отключить и удалить автозапуск'
-    printf '%s\n' '  3) Статус и журнал'
+    printf '\nLucX-UI API — управление DoH Health Monitor\n'
+    printf '%s\n' '  1) Запустить через LucX-UI API'
+    printf '%s\n' '  2) Остановить через LucX-UI API'
+    printf '%s\n' '  3) Перезапустить через LucX-UI API'
+    printf '%s\n' '  4) Включить автозапуск при загрузке VPS'
+    printf '%s\n' '  5) Отключить автозапуск'
+    printf '%s\n' '  6) Статус плагина и автозапуска'
     printf '%s\n' '  0) Назад'
     printf 'Выберите действие: '
     if ! IFS= read -r choice </dev/tty; then
@@ -521,13 +706,46 @@ manage_systemd_autostart() {
       return 1
     fi
     case "$choice" in
-      1) install_systemd_autostart || printf '[WARN] Не удалось включить systemd-автозапуск.\n' >&2 ;;
-      2) disable_systemd_autostart || printf '[WARN] Не удалось отключить systemd-автозапуск.\n' >&2 ;;
-      3) show_systemd_autostart_status ;;
+      1) panel_api_action start || printf '[WARN] Не удалось запустить плагин через API.\n' >&2 ;;
+      2) panel_api_action stop || printf '[WARN] Не удалось остановить плагин через API.\n' >&2 ;;
+      3) panel_api_action restart || printf '[WARN] Не удалось перезапустить плагин через API.\n' >&2 ;;
+      4) install_panel_api_autostart || printf '[WARN] Не удалось включить API-автозапуск.\n' >&2 ;;
+      5) disable_panel_api_autostart || printf '[WARN] Не удалось отключить API-автозапуск.\n' >&2 ;;
+      6) panel_api_show_status || printf '[WARN] Не удалось получить состояние через API.\n' >&2 ;;
       0) return 0 ;;
       *) printf 'Неизвестный пункт меню.\n' ;;
     esac
   done
+}
+
+panel_api_start_on_boot() {
+  local state i
+  panel_api_begin || return 1
+  state=""
+  # x-ui.service is ordered before this oneshot; tolerate a delayed listener
+  # or DB/API initialization after the unit reaches active.
+  for ((i=0; i<60; i++)); do
+    if state="$(panel_api_read_plugin_state 2>/dev/null)"; then
+      break
+    fi
+    sleep 2
+  done
+  if [[ -z "$state" ]]; then
+    fail "LucX-UI API не стал доступен в течение 120 секунд; plugin не запускался."
+    panel_api_finish
+    return 1
+  fi
+  if [[ "$state" == "stopped" ]]; then
+    if ! panel_api_request POST "/plugins/$PLUGIN_ID/start" '{}' ||
+       ! panel_api_json_success "$PANEL_API_RESPONSE" ||
+       ! panel_api_wait_plugin_state running 20; then
+      fail "LucX-UI API не смог запустить $PLUGIN_ID после загрузки VPS."
+      panel_api_finish
+      return 1
+    fi
+  fi
+  panel_api_finish
+  printf '[OK] DoH Health Monitor запущен через LucX-UI Plugin Manager API.\n'
 }
 
 close_pipe_fd() {
@@ -637,7 +855,7 @@ show_menu() {
   printf '%s\n' '  1) Проверить plugin и утверждённый Xray Geosite DNS path (read-only)'
   printf '%s\n' '  2) Запустить Web UI через SSH-туннель'
   printf '%s\n' '  3) Переключить DNS mode / настроить resolver upstreams'
-  printf '%s\n' '  4) Настроить systemd-автозапуск'
+  printf '%s\n' '  4) Управление через LucX-UI API и автозапуск'
   printf '%s\n' '  0) Выход'
   printf '%s\n' '  Примечание: Xray DNS policy задаётся вручную по doc/GEOSITE-DNS-ROUTING-DESIGN.md.'
   printf 'Выберите действие: '
@@ -646,6 +864,10 @@ show_menu() {
 main() {
   require_root
   resolve_plugin_paths || exit 1
+  if [[ "${1:-}" == "--panel-api-start-on-boot" ]]; then
+    panel_api_start_on_boot || exit 1
+    exit 0
+  fi
   ensure_dhm_symlink
   trap 'stop_web_ui; exit 130' INT
   trap 'stop_web_ui; exit 129' HUP
@@ -663,7 +885,7 @@ main() {
       1) run_check || printf '[WARN] Диагностика завершилась с ошибками.\n' >&2 ;;
       2) run_web_ui || printf '[WARN] Не удалось запустить Web UI.\n' >&2 ;;
       3) run_dns_config || printf '[WARN] DNS-конфигурация не изменена.\n' >&2 ;;
-      4) manage_systemd_autostart || printf '[WARN] Управление systemd-автозапуском завершилось с ошибкой.\n' >&2 ;;
+      4) manage_panel_api_autostart || printf '[WARN] Управление LucX-UI API завершилось с ошибкой.\n' >&2 ;;
       0) printf 'Выход.\n'; break ;;
       *) printf 'Неизвестный пункт меню.\n' ;;
     esac
