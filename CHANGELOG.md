@@ -4,7 +4,7 @@
 
 ### DNS forwarding in endpoint_ip
 - Изменена семантика режима по умолчанию: ActiveDoHSelector по-прежнему выбирает здоровый DoH endpoint, но DNS-запрос A/AAAA теперь отправляется этому endpoint-у без подмены QNAME-ответа bootstrap IP-адресами DoH-сервера.
-- DoH-соединение закрепляется за проверенным bootstrap IP; URL hostname сохраняется для TLS SNI, проверки сертификата и HTTP Host. При транспортной/HTTP ошибке перебираются остальные bootstrap IP выбранного endpoint-а.
+- DoH-соединение закрепляется за проверенным bootstrap IP; URL hostname сохраняется для TLS SNI, проверки сертификата и HTTP Host. При транспортной/HTTP ошибке перебираются остальные bootstrap IP выбранного endpoint-а. Ошибка живого DNS-запроса также запускает внеочередной цикл проверки ActiveDoHSelector.
 - Возвращается исходный DNS-ответ DoH, включая CNAME, отрицательные ответы и EDNS-данные. Кэш режима привязан к поколению выбранного endpoint-а; при смене endpoint-а кэш очищается.
 
 
