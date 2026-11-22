@@ -30,7 +30,7 @@ grep -Fq '3) Переключить DNS mode / настроить resolver upstr
 grep -Fq '3) run_dns_config' "$SCRIPT_DIR/plugin-management.sh" || fail_test "DNS mode menu dispatch"
 pass "DNS mode menu entry is connected to the CLI action"
 
-unit="$(render_systemd_service /opt/doh-health-monitor/bin/doh-health-monitor /opt/doh-health-monitor /opt/doh-health-monitor/data 2.3.4)"
+unit="$(render_systemd_service /opt/doh-health-monitor/bin/doh-health-monitor /opt/doh-health-monitor /opt/doh-health-monitor/data 2.3.5)"
 grep -Fq 'Type=simple' <<<"$unit" || fail_test "systemd service type"
 grep -Fq 'Restart=on-failure' <<<"$unit" || fail_test "systemd failure restart policy"
 grep -Fq 'RestartSec=5s' <<<"$unit" || fail_test "systemd restart delay"
