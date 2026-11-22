@@ -299,6 +299,7 @@ PANEL_API_BASE_URL=""
 PANEL_API_CURL_CONFIG=""
 PANEL_API_LOCK_FD=""
 PANEL_API_TOKEN_ACTIVE=0
+PANEL_API_CLEANUP_TRAP_INSTALLED=0
 PANEL_API_INSECURE=0
 PANEL_API_RESPONSE=""
 
@@ -464,6 +465,10 @@ except Exception:
 
 panel_api_begin() {
   local token_output token
+  if (( PANEL_API_CLEANUP_TRAP_INSTALLED == 0 )); then
+    trap 'panel_api_finish' EXIT
+    PANEL_API_CLEANUP_TRAP_INSTALLED=1
+  fi
   command -v curl >/dev/null 2>&1 || { fail "curl не найден."; return 1; }
   command -v python3 >/dev/null 2>&1 || { fail "python3 не найден; нужен стандартный JSON/IP parser."; return 1; }
   command -v flock >/dev/null 2>&1 || { fail "flock не найден."; return 1; }
@@ -485,6 +490,9 @@ panel_api_begin() {
     panel_api_finish
     return 1
   }
+  # Mark the reserved slot active before parsing stdout. If CLI output changes,
+  # cleanup still rotates the slot and invalidates any newly issued token.
+  PANEL_API_TOKEN_ACTIVE=1
   token="$(panel_api_token_from_output "$token_output")"
   unset token_output
   [[ "$token" =~ ^[A-Za-z0-9_-]{32,128}$ ]] || {
@@ -493,7 +501,6 @@ panel_api_begin() {
     panel_api_finish
     return 1
   }
-  PANEL_API_TOKEN_ACTIVE=1
   PANEL_API_CURL_CONFIG="$(mktemp /run/doh-health-monitor-api.XXXXXX)" || {
     unset token
     fail "Не удалось создать временный curl config в /run."
