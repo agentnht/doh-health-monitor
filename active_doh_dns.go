@@ -69,6 +69,12 @@ func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte 
 	cancel()
 	if queryErr != nil {
 		r.failures.Add(1)
+		// Prompt a fresh selector cycle instead of waiting for the regular
+		// probe interval after the selected endpoint fails during live traffic.
+		select {
+		case r.activeDoHTrigger <- struct{}{}:
+		default:
+		}
 		return servfailResponse(query)
 	}
 
