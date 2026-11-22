@@ -245,11 +245,7 @@ systemd_quote() {
   value="${value//\\/\\\\}"
   value="${value//\"/\\\"}"
   value="${value//%/%%}"
-  value="${value//
-  local fd="$1"
-  if [[ "$fd" =~ ^[0-9]+$ ]]; then
-    eval "exec ${fd}>&-" || true
-  fi
+  printf '"%s"' "$value"
 }
 
 stop_web_ui() {
@@ -388,9 +384,6 @@ main() {
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   main "$@"
 fi
-\\n'/}"
-  printf '"%s"' "$value"
-}
 
 render_systemd_service() {
   local binary="$1" root_dir="$2" data_dir="$3" version="$4"
