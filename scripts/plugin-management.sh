@@ -351,8 +351,12 @@ install_systemd_autostart() {
     fail "Не найден исполняемый файл плагина: $PLUGIN_BIN"
     return 1
   }
-  [[ -d "$PLUGIN_DATA_DIR" ]] || {
-    fail "Каталог данных не найден: $PLUGIN_DATA_DIR"
+  [[ ! -L "$PLUGIN_DATA_DIR" ]] || {
+    fail "Каталог данных не должен быть symlink: $PLUGIN_DATA_DIR"
+    return 1
+  }
+  if ! install -d -m 0700 "$PLUGIN_DATA_DIR" || ! chmod 0700 "$PLUGIN_DATA_DIR"; then
+    fail "Не удалось создать защищённый каталог данных: $PLUGIN_DATA_DIR"
     return 1
   }
   [[ "$PLUGIN_VERSION" =~ ^[0-9A-Za-z.+-]+$ ]] || {
