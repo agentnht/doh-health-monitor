@@ -270,7 +270,7 @@ run_check() {
   elif [[ -n "$MANAGEMENT_SCRIPT_DIR" && -r "$MANAGEMENT_SCRIPT_DIR/check-dns-integration.sh" ]]; then
     checker_file="$MANAGEMENT_SCRIPT_DIR/check-dns-integration.sh"
   else
-    fail "В установленном ZIP отсутствует scripts/check-dns-integration.sh. Переустановите архив плагина 2.3.7."
+    fail "В установленном ZIP отсутствует scripts/check-dns-integration.sh. Переустановите архив плагина 2.4.0."
     return 1
   fi
 
@@ -950,7 +950,7 @@ run_web_ui() {
 }
 
 show_menu() {
-  printf '\nDoH Health Monitor 2.3.7 — управление\n'
+  printf '\nDoH Health Monitor 2.4.0 — управление\n'
   printf '%s\n' '  1) Проверить plugin и утверждённый Xray Geosite DNS path (read-only)'
   printf '%s\n' '  2) Запустить Web UI через SSH-туннель'
   printf '%s\n' '  3) Переключить DNS mode / настроить resolver upstreams'
