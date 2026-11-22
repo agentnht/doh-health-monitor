@@ -41,8 +41,8 @@ systemctl() {
   case "$command" in
     show)
       case "$service" in
-        "$PANEL_SERVICE_NAME") printf '%s\\n' "$MOCK_PANEL_LOAD" ;;
-        "$SYSTEMD_SERVICE_NAME") printf '%s\\n' "$MOCK_STANDALONE_LOAD" ;;
+        "$PANEL_SERVICE_NAME") printf '%s\n' "$MOCK_PANEL_LOAD" ;;
+        "$SYSTEMD_SERVICE_NAME") printf '%s\n' "$MOCK_STANDALONE_LOAD" ;;
         *) return 1 ;;
       esac
       ;;
