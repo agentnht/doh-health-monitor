@@ -296,6 +296,10 @@ readonly PANEL_API_LOCK_PATH="/run/lock/doh-health-monitor-panel-api.lock"
 
 PANEL_CLI=""
 PANEL_API_BASE_URL=""
+PANEL_API_PORT=""
+PANEL_API_HOST_HEADER=""
+PANEL_API_HOST_OVERRIDE=""
+PANEL_API_HOST_OVERRIDE_ACTIVE=0
 PANEL_API_CURL_CONFIG=""
 PANEL_API_LOCK_FD=""
 PANEL_API_TOKEN_ACTIVE=0
@@ -425,7 +429,25 @@ panel_api_discover() {
     scheme="http"
     PANEL_API_INSECURE=0
   fi
+  PANEL_API_PORT="$port"
+  if (( PANEL_API_HOST_OVERRIDE_ACTIVE == 1 )); then
+    PANEL_API_HOST_HEADER="$PANEL_API_HOST_OVERRIDE"
+  else
+    PANEL_API_HOST_HEADER=""
+    if [[ -s "$PLUGIN_DATA_DIR/panel-api-host" ]]; then
+      IFS= read -r PANEL_API_HOST_HEADER < "$PLUGIN_DATA_DIR/panel-api-host" || true
+    fi
+  fi
+  if [[ -n "$PANEL_API_HOST_HEADER" ]] && ! panel_api_host_valid "$PANEL_API_HOST_HEADER"; then
+    fail "Файл panel-api-host содержит некорректный Host; поправьте его через пункт 7."
+    return 1
+  fi
   PANEL_API_BASE_URL="$scheme://$host:$port${base_path}/panel/api"
+}
+
+panel_api_host_valid() {
+  local host="$1"
+  [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ && "$host" != *..* ]]
 }
 
 panel_api_token_from_output() {
@@ -531,6 +553,9 @@ panel_api_request() {
   args=(--silent --show-error --fail --noproxy '*' --connect-timeout 3 --max-time 10
         --config "$PANEL_API_CURL_CONFIG" --request "$method"
         --url "$PANEL_API_BASE_URL$route" --header "Accept: application/json")
+  if [[ -n "$PANEL_API_HOST_HEADER" ]]; then
+    args+=(--header "Host: $PANEL_API_HOST_HEADER:$PANEL_API_PORT")
+  fi
   if (( PANEL_API_INSECURE == 1 )); then args+=(--insecure); fi
   if [[ -n "$body" ]]; then
     args+=(--header "Content-Type: application/json" --data-binary "$body")
@@ -621,6 +646,42 @@ panel_api_action() {
   fi
   panel_api_finish
   printf '[OK] LucX-UI: %s; plugin %s.\n' "$action" "$expected"
+}
+
+configure_panel_api_host() {
+  local host tmp state
+  printf 'Введите webDomain панели без схемы и порта (пустая строка — убрать override): '
+  if ! IFS= read -r host </dev/tty; then
+    printf '\nВвод закрыт.\n'
+    return 1
+  fi
+  if [[ -n "$host" ]] && ! panel_api_host_valid "$host"; then
+    fail "Некорректный hostname. Разрешены DNS-имена и IPv4 без схемы, порта и пути."
+    return 1
+  fi
+
+  # Dynamically scoped overrides let us validate the proposed Host header
+  # against the live API before persisting it to the private data directory.
+  local PANEL_API_HOST_OVERRIDE="$host"
+  local PANEL_API_HOST_OVERRIDE_ACTIVE=1
+  panel_api_begin || return 1
+  if ! state="$(panel_api_read_plugin_state)"; then
+    fail "Панель не приняла Host override. Проверьте точное значение webDomain и попробуйте ещё раз."
+    panel_api_finish
+    return 1
+  fi
+  panel_api_finish
+
+  install -d -m 0700 "$PLUGIN_DATA_DIR" || return 1
+  if [[ -z "$host" ]]; then
+    rm -f -- "$PLUGIN_DATA_DIR/panel-api-host"
+  else
+    tmp="$(mktemp "$PLUGIN_DATA_DIR/.panel-api-host.XXXXXX")" || return 1
+    chmod 0600 "$tmp"
+    printf '%s\n' "$host" >"$tmp"
+    mv -f -- "$tmp" "$PLUGIN_DATA_DIR/panel-api-host"
+  fi
+  printf '[OK] Host override сохранён; состояние плагина: %s.\n' "$state"
 }
 
 panel_api_show_status() {
