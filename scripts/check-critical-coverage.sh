@@ -26,7 +26,7 @@ required=(
 
 failed=0
 for function in "${required[@]}"; do
-  actual="$(awk -v function="$function" '$2 == function { gsub(/%/, "", $3); print $3; exit }' <<<"$report")"
+  actual="$(awk -v fn="$function" '$2 == fn { gsub(/%/, "", $3); print $3; exit }' <<<"$report")"
   if [[ -z "$actual" ]]; then
     echo "COVERAGE ERROR: function not found in coverage profile: $function" >&2
     failed=1
