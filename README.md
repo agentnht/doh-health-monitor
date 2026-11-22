@@ -23,7 +23,7 @@ DoH Health Monitor — локальный DNS sidecar для LucX-UI/Xray. В л
 - UDP и TCP DNS listener по умолчанию на `127.0.0.1:5355`; конфигурация принимает только loopback IP literals и валидные порты 1–65535.
 - DNS UDP payload учитывает EDNS buffer size клиента (или 512 байт без EDNS); при нехватке места ответ обрезается по границе RR и получает флаг TC.
 - ActiveDoHSelector: семь контрольных доменов, A/AAAA DNS probes через кандидатов DoH, затем HTTPS/TLS probes по IP с исходными hostname, SNI, HTTP Host и проверкой сертификата.
-- Отдельный режим `endpoint_ip` с TTL до 60 секунд, ограниченным временем актуальности выбранного endpoint-а.
+- Режим `endpoint_ip` пересылает исходный A/AAAA DNS-запрос через выбранный ActiveDoH endpoint; соединение закреплено за его bootstrap IP, а hostname/SNI/сертификат сохраняются. Ответ содержит реальные DNS-записи запрошенного домена; TTL исходного ответа сохраняется, кэш ограничивается настройками cache (по умолчанию максимум 300 секунд).
 - Режим `resolver` с последовательным fallback через system, UDP, TCP и DoH upstream-ы; упавшие upstream-ы получают cooldown, а отказ всех upstream-ов возвращает DNS SERVFAIL вместо ложного NODATA.
 - Раздельные cache namespace/generation для двух режимов; режим 2 использует positive cache TTL не более 300 секунд и SOA-based negative caching по RFC 2308.
 - Сохранение исходного TTL upstream в первом ответе; ограничения TTL применяются к отдельной копии, помещаемой в кэш.
@@ -529,7 +529,7 @@ Checker не изменяет конфигурацию. Он остаётся с
 
 Изменения Xray выполняются только вручную по §4.4. Автоматизация будет отдельной задачей после end-to-end проверки и отдельного проектирования безопасного planner-а.
 
-Для режима `endpoint_ip` плагин возвращает bootstrap IP выбранного DoH endpoint-а. Для режима `resolver` плагин разрешает исходный QNAME через отдельный `resolver_upstreams`. В обоих случаях эта логика применяется только к запросам, которые Xray направил через Geosite `direct` на локальный listener плагина.
+Для режима `endpoint_ip` плагин отправляет исходный DNS-запрос выбранному здоровому DoH endpoint-у и возвращает ответ для исходного QNAME. Bootstrap IP используется только для установления соединения с DoH; TLS SNI, проверка сертификата и HTTP Host используют hostname endpoint-а. Для режима `resolver` плагин разрешает исходный QNAME через отдельный `resolver_upstreams`. В обоих случаях эта логика применяется только к запросам, которые Xray направил через Geosite `direct` на локальный listener плагина.
 
 Подробные ограничения QTYPE, cache/TTL, DNS loop checks и результаты приёмочных проверок описаны в design doc §4.4 и §9.
 
