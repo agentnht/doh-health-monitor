@@ -109,6 +109,17 @@ panel_api_host_valid "192.0.2.10" || fail_test "valid IPv4 Host rejected"
 if panel_api_host_valid "-panel.example.com" || panel_api_host_valid "panel..example.com" || panel_api_host_valid "panel.example.com/path"; then
   fail_test "invalid panel webDomain accepted"
 fi
+PANEL_API_HOST_HEADER="panel.example.com"
+PANEL_API_PORT="2053"
+PANEL_API_BASE_URL="http://127.0.0.1:2053/panel/api"
+PANEL_API_CURL_CONFIG="/run/test-curl-config"
+PANEL_API_INSECURE=0
+curl() { printf '%s\\n' "$@"; }
+panel_api_request GET "/plugins/doh-health-monitor/status" || fail_test "mocked panel API request"
+grep -Fq 'Host: panel.example.com:2053' <<<"$PANEL_API_RESPONSE" || fail_test "panel webDomain Host header missing"
+grep -Fq 'http://127.0.0.1:2053/panel/api/plugins/doh-health-monitor/status' <<<"$PANEL_API_RESPONSE" || fail_test "API request must connect to loopback, not webDomain"
+unset -f curl
+pass "panel API Host override is sent while the TCP URL stays on loopback"
 pass "panel API response, status, token and webDomain parsers handle valid and rejected input"
 
 grep -Fq '4) Управление через LucX-UI API и автозапуск' <<<"$menu_output" || fail_test "panel API menu entry"
