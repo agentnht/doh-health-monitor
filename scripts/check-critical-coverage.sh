@@ -11,13 +11,14 @@ fi
 
 report="$(go tool cover -func="$coverage_file")"
 required=(
-  "(*Runtime).handleDNS"
-  "(*Runtime).serveUDPWithHandler"
-  "(*Runtime).reloadLoop"
-  "(*Runtime).activeDoHLoop"
-  "(*Runtime).runActiveDoHSelection"
-  "(*Runtime).runActiveDoHSelectionWithProbe"
-  "(*Runtime).activeDoHCandidates"
+  "handleDNS"
+  "serveUDP"
+  "serveUDPWithHandler"
+  "reloadLoop"
+  "activeDoHLoop"
+  "runActiveDoHSelection"
+  "runActiveDoHSelectionWithProbe"
+  "activeDoHCandidates"
   "activeDoHChecks"
   "activeDoHRetryDelay"
   "runActiveDoHLoop"
@@ -26,7 +27,7 @@ required=(
 
 failed=0
 for function in "${required[@]}"; do
-  actual="$(awk -v fn="$function" '$2 == fn { gsub(/%/, "", $3); print $3; exit }' <<<"$report")"
+  actual="$(awk -v fn="$function" '($2 == fn || $2 ~ ("\\." fn "$")) { gsub(/%/, "", $3); print $3; exit }' <<<"$report")"
   if [[ -z "$actual" ]]; then
     echo "COVERAGE ERROR: function not found in coverage profile: $function" >&2
     failed=1
