@@ -576,13 +576,27 @@ panel_api_wait_plugin_state() {
 }
 
 panel_api_action() {
-  local action="$1" expected
+  local action="$1" expected state_before
   case "$action" in
     start|restart) expected="running" ;;
     stop) expected="stopped" ;;
     *) fail "Недопустимое действие API."; return 1 ;;
   esac
   panel_api_begin || return 1
+  if ! remove_legacy_standalone_autostart; then
+    panel_api_finish
+    return 1
+  fi
+  if ! state_before="$(panel_api_read_plugin_state)"; then
+    fail "Не удалось определить текущее состояние плагина через API."
+    panel_api_finish
+    return 1
+  fi
+  if [[ "$state_before" == "stopped" ]] && pid_file_running_for_plugin; then
+    fail "Обнаружен процесс плагина вне LucX-UI Plugin Manager. Остановите его через его текущий менеджер перед API-командой."
+    panel_api_finish
+    return 1
+  fi
   if ! panel_api_request POST "/plugins/$PLUGIN_ID/$action" '{}'; then
     fail "LucX-UI API не принял команду $action для $PLUGIN_ID."
     panel_api_finish
