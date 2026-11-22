@@ -1,9 +1,15 @@
-## [Unreleased]
+## [2.3.5] - 2026-11-22
 
-### Daemon lifecycle
-- Добавлен опциональный standalone systemd service и ежеминутный health-check timer через scripts/plugin-management.sh; аварийные выходы перезапускаются, а штатная остановка не приводит к повторному старту.
-- Добавлена межпроцессная flock-блокировка и PID-файл в $LUCX_PLUGIN_DATA; PID публикуется после успешного bind listener-ов и удаляется при штатном завершении.
-- Добавлен read-only CLI healthcheck для проверки реального /healthz без изменения конфигурации.
+### Автономный запуск и восстановление демона
+- Добавлен опциональный standalone systemd service и периодический health-check timer, настраиваемые из пункта 4 меню plugin-management.sh. Демон может работать без LucX-UI и запускаться непосредственно при загрузке Linux.
+- Реализован PID-файл в $LUCX_PLUGIN_DATA/doh-health-monitor.pid: он создаётся после успешного bind UDP/TCP/HTTP listener-ов и удаляется при штатной остановке.
+- Добавлена межпроцессная flock-блокировка, предотвращающая одновременный запуск через LucX-UI и systemd; stale PID после аварийного завершения безопасно заменяется после захвата lock.
+- Systemd перезапускает аварийно завершившийся процесс через 5 секунд с лимитом 5 запусков за 5 минут. Ежеминутный timer проверяет фактический /healthz, перезапускает нездоровый active service и повторяет запуск после состояния failed; намеренно остановленный inactive service остаётся остановленным.
+- Добавлен read-only CLI healthcheck, который проверяет настроенный HTTP listener без изменения config.json.
+
+### Проверки
+- Добавлены тесты PID/lock lifecycle и HTTP health probe; CI проверяет генерацию systemd unit-ов и маршрутизацию меню.
+- Для PR #31 прошли gofmt, shell checks, plugin management tests, Go tests, critical-path coverage gate, race detector, staticcheck, govulncheck и Linux amd64 package build.
 
 ## [2.3.4] - 2026-11-22
 
