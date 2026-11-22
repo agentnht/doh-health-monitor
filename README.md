@@ -196,9 +196,9 @@ Web UI не содержит кнопок изменения Xray-конфигу
 
 Доступ к Web UI начинается с одноразового bootstrap-токена, который SSH-меню выводит вместе с локальным URL. Первый запрос атомарно обменивает билет на HttpOnly/SameSite cookie и очищает токен из адресной строки; повторное использование билета отклоняется. Каждый Web UI API-запрос требует сессионную cookie; дополнительно проверяются Host/Origin. Интерфейс слушает только loopback и предназначен для доступа через SSH local port forwarding. Не пересылайте bootstrap URL и не публикуйте вывод SSH-меню. Ключ Gemini сохраняется в отдельный файл с правами `0600`, его содержимое не возвращается браузеру.
 
-### Optional standalone systemd autostart
+### Автономный автозапуск через systemd
 
-Пункт **4) Настроить systemd-автозапуск** в dhm устанавливает отдельный systemd service и timer. Этот режим запускает тот же бинарник напрямую и не требует, чтобы LucX-UI управляла процессом: после включения service демон стартует при загрузке системы.
+Пункт **4) Настроить systemd-автозапуск** в `dhm` устанавливает отдельные systemd service и timer. Systemd запускает тот же foreground-бинарник напрямую, независимо от lifecycle LucX-UI. При установленной панели сам каталог плагина и его data остаются на месте, поэтому панель не должна управлять вторым экземпляром.
 
 Перед включением остановите экземпляр sidecar в LucX-UI. Один и тот же каталог данных нельзя одновременно обслуживать двумя менеджерами процессов. Встроенная блокировка flock защищает от второго экземпляра, но в панели такой конфликт будет отображён как неудачный запуск.
 
@@ -210,6 +210,17 @@ Web UI не содержит кнопок изменения Xray-конфигу
 - Логи standalone service доступны через journalctl -u doh-health-monitor.service. Пункт 4 → Статус и журнал показывает статус сервиса и timer.
 
 Чтобы вернуться к управлению sidecar через LucX-UI, сначала выберите пункт 4 → Отключить и удалить автозапуск. Это остановит standalone service и удалит установленные unit-файлы. Перед удалением или переустановкой плагина systemd-автозапуск также нужно отключить.
+
+Для полностью автономной установки без LucX-UI можно распаковать содержимое проверенного ZIP в отдельный каталог, например `/opt/doh-health-monitor`, и запустить меню с явным путём к data:
+
+```bash
+mkdir -p /opt/doh-health-monitor
+unzip doh-health-monitor-v2.3.5.zip -d /opt/doh-health-monitor
+LUCX_PLUGIN_DATA=/opt/doh-health-monitor/data \
+  bash /opt/doh-health-monitor/scripts/plugin-management.sh
+```
+
+Выберите пункт 4 → Установить и включить автозапуск. В этом режиме DNS daemon работает без панели; события LucX-UI (например, `xray.crash` и `outbound.*`) и panel health/status integration ему недоступны, поскольку panel socket и process supervisor отсутствуют.
 
 Web UI по-прежнему запускается отдельно из SSH-меню и завершается при закрытии управляющей SSH-сессии.
 
@@ -642,11 +653,11 @@ go test -race ./...
 go vet ./...
 ```
 
-**Автоматические проверки версии 2.3.4:**
+**Автоматические проверки версии 2.3.5:**
 - GitHub Actions CI: module tidy, shell/JavaScript syntax, management helper tests, DNS checker tests, `go vet ./...`, `go test -coverprofile=coverage.out ./...`, критический coverage gate (>60%), `go test -race ./...`, `staticcheck`, `govulncheck` и Linux amd64 package build.
 - Устаревшие panel mutation helpers, planner/diagnostics, admin-token minting и SQLite dependency удалены; sidecar содержит только read-only plugin preflight, не меняющий LucX-UI/Xray.
-- Регрессионные тесты охватывают анонимный доступ к Web UI, одноразовый bootstrap token, listener validation, Gemini key path, DoH URL redaction, resolver SERVFAIL/cooldown, ActiveDoH hard-failure failover, EDNS-aware UDP truncation, DNS error packet shape, OIDC URL validation, reload interval, pending restart semantics, status redaction, bootstrap public-IP filtering и symlinked configuration sources.
-- Проверки CI выполнены в GitHub Actions. Установочный smoke test опубликованного ZIP на VPS не выполнялся; конфигурация VPS и Xray в рамках подготовки версии не изменялась.
+- Регрессионные тесты охватывают анонимный доступ к Web UI, одноразовый bootstrap token, listener validation, Gemini key path, DoH URL redaction, resolver SERVFAIL/cooldown, ActiveDoH hard-failure failover, EDNS-aware UDP truncation, DNS error packet shape, OIDC URL validation, reload interval, pending restart semantics, status redaction, bootstrap public-IP filtering, symlinked configuration sources, PID/lock lifecycle, stale PID recovery и HTTP health probe.
+- CI для PR #31 и post-merge `main` должен завершиться успешно до публикации. Установочный smoke test опубликованного ZIP и фактическая проверка standalone systemd на VPS не выполнялись; конфигурация VPS и Xray в рамках подготовки версии не изменялась.
 
 ## 12. Ограничения текущей реализации
 
