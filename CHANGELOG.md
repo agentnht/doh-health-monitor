@@ -1,3 +1,15 @@
+## [2.3.4] - 2026-11-22
+
+### CI и надёжность ActiveDoH
+- Форматирование Go в CI переведено на read-only проверку `gofmt`: workflow больше не создаёт bot-коммиты в ветках pull request и не запускает повторный workflow после форматирования.
+- Добавлен обязательный coverage gate: покрытие критических DNS/ActiveDoH путей должно быть строго выше 60%.
+- Retry scheduler ActiveDoH выделен в тестируемый цикл; при отзыве выбора логируются планируемая задержка и номер последовательной неудачи, после восстановления явно фиксируется возврат к штатному интервалу.
+- Добавлен детерминированный outage/recovery тест: backoff 15/30/60/120/240 секунд, cap штатным интервалом 5 минут, возврат к обычной cadence после успешной проверки и новый старт с 15 секунд при последующем отказе.
+- Проверенный coverage на текущем коде: общий проект — 67.1%; `handleDNS` — 81.0%; `serveUDP` — 100%; `serveUDPWithHandler` — 92.2%; `reloadLoop` — 62.5%; ActiveDoH selection/candidates/retry — 86.1–100%.
+
+### Проверки
+- Для PR #29 и post-merge commit `90d2b2c` успешно прошли gofmt, module tidy, shell/JavaScript checks, `go vet`, unit tests, critical coverage gate, race detector, `staticcheck`, `govulncheck` и Linux amd64 build.
+
 ## [2.3.3] - 2026-11-22
 
 ### Второй раунд аудита DNS и ActiveDoH
