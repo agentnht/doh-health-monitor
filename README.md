@@ -114,11 +114,11 @@ $LUCX_PLUGIN_DATA/gemini_api_key
 
 Для каждого релиза публикуются ZIP, файл SHA-256 и GitHub artifact attestation (Sigstore). Проверяйте **оба** свойства: checksum подтверждает целостность скачанного файла, attestation — репозиторий и workflow, которые его собрали.
 
-Для релиза `v2.3.6` после скачивания обоих файлов выполните:
+Для релиза `v2.3.7` после скачивания обоих файлов выполните:
 
 ```bash
-sha256sum -c doh-health-monitor-v2.3.6.zip.sha256
-gh attestation verify doh-health-monitor-v2.3.6.zip \
+sha256sum -c doh-health-monitor-v2.3.7.zip.sha256
+gh attestation verify doh-health-monitor-v2.3.7.zip \
   --repo agentnht/doh-health-monitor \
   --signer-workflow agentnht/doh-health-monitor/.github/workflows/release.yml
 ```
@@ -127,7 +127,7 @@ gh attestation verify doh-health-monitor-v2.3.6.zip \
 
 ## 4. Установка в LucX-UI
 
-1. Для опубликованного релиза скачайте ZIP с соответствующим номером версии. Для релиза `v2.3.6` используйте пакет `doh-health-monitor-v2.3.6.zip` со страницы GitHub Releases.
+1. Для опубликованного релиза скачайте ZIP с соответствующим номером версии. Для релиза `v2.3.7` используйте пакет `doh-health-monitor-v2.3.7.zip` со страницы GitHub Releases.
 2. В LucX-UI откройте менеджер плагинов и установите ZIP.
 3. Запустите плагин из панели.
 4. При первом запуске плагин создаст `config.json`, `doh-servers.txt`, `tst-domen.txt` и `local-hosts.txt`. Уже существующие текстовые файлы не перезаписываются (старый URL-only список DoH автоматически мигрирует в новый формат). Если `local-hosts.txt` отсутствует, старые записи `local_hosts` из `config.json` однократно переносятся в новый файл.
@@ -167,7 +167,7 @@ dhm
 Не запускайте management script непосредственно через `curl | bash` или process substitution: такой путь не позволяет проверить целостность исполняемого файла до запуска. Для установки/обновления скачивайте опубликованный release ZIP и checksum, проверяйте архив и только затем устанавливайте его через штатный менеджер LucX-UI:
 
 ```bash
-version=2.3.6
+version=2.3.7
 asset="doh-health-monitor-v${version}.zip"
 base="https://github.com/agentnht/doh-health-monitor/releases/download/v${version}"
 curl -fSLO "$base/$asset"
@@ -671,7 +671,7 @@ go test -race ./...
 go vet ./...
 ```
 
-**Автоматические проверки версии 2.3.6:**
+**Автоматические проверки версии 2.3.7:**
 - GitHub Actions CI: module tidy, shell/JavaScript syntax, management helper tests, DNS checker tests, `go vet ./...`, `go test -coverprofile=coverage.out ./...`, критический coverage gate (>60%), `go test -race ./...`, `staticcheck`, `govulncheck` и Linux amd64 package build.
 - Go sidecar не содержит встроенного panel mutation adapter или Xray planner; DNS-процессом управляет LucX-UI Plugin Manager. Root SSH-скрипт отдельно обращается к штатному Panel API, получая короткоживущий admin Bearer token через локальный CLI панели; токен удаляется или ротируется после операции. SQLite dependency в Go sidecar отсутствует.
 - Регрессионные тесты охватывают анонимный доступ к Web UI, одноразовый bootstrap token, listener validation, Gemini key path, DoH URL redaction, resolver SERVFAIL/cooldown, ActiveDoH hard-failure failover, EDNS-aware UDP truncation, DNS error packet shape, OIDC URL validation, reload interval, pending restart semantics, status redaction, bootstrap public-IP filtering, symlinked configuration sources, PID/lock lifecycle, stale PID recovery и HTTP health probe.
