@@ -60,8 +60,8 @@ DNS-выход режима 2 настраивается отдельно:
 - В конфигурации активен только один режим; режим 1 — значение по умолчанию.
 - Xray/панель отвечает за Geosite-сопоставление и направление DNS-запроса в нужный поток. Плагин не определяет Geosite-категорию запроса.
 - Списки endpoint-ов режима 1 и DNS-выходов режима 2 раздельные.
-- Режим 1 возвращает адрес DoH endpoint-а, полученный bootstrap-разрешением hostname этого endpoint-а; режим 2 возвращает адрес запрошенного домена.
-- Переключение режима должно менять именно способ формирования DNS-ответа, не смешивая синтетический endpoint IP с обычным разрешением имени.
+- Режим 1 (`endpoint_ip`) выбирает здоровый DoH endpoint через ActiveDoHSelector, затем пересылает ему исходный DNS-запрос и возвращает полноценный ответ исходного QNAME. Bootstrap IP используется только для подключения; TLS SNI, сертификат и HTTP Host проверяются по hostname endpoint-а.
+- Режим 2 (`resolver`) разрешает исходный QNAME через отдельный упорядоченный список resolver upstream-ов. Оба режима возвращают DNS-ответ для запрошенного имени, но используют разные механизмы выбора резолвера.
 
 **Конфигурационная модель плагина утверждена.** Она сохраняет взаимоисключающий выбор одного режима (режим 1 по умолчанию), отдельный список DoH endpoint-ов режима 1, отдельный список resolver upstream-ов режима 2 и независимые bootstrap-настройки. Смысловые значения режима:
 
@@ -477,9 +477,9 @@ Geosite matching расположен на стороне Xray, внутри `dn
 
 1. Конфигурационная модель двух взаимоисключающих режимов: `dns_mode: endpoint_ip | resolver`; независимые DoH upstream режима 1 и упорядоченный `resolver_upstreams` режима 2; валидация system/UDP/TCP/DoH upstream и bootstrap-настроек.
 2. ActiveDoHSelector вынесен в `internal/activedoh`; семь control domains, DNS A/AAAA probes через каждого DoH candidate и HTTPS/TLS probes по IP с исходными hostname/SNI/Host.
-3. Режим `endpoint_ip` возвращает bootstrap IP выбранного DoH endpoint-а, а не IP исходного QNAME. TTL положительного ответа ограничен 60 секундами и остатком freshness.
+3. Режим `endpoint_ip` пересылает исходный A/AAAA запрос через выбранный ActiveDoH endpoint. Соединение закрепляется за одним из bootstrap IP, но hostname сохраняется для SNI, проверки сертификата и HTTP Host. Возвращается DNS-ответ исходного QNAME, включая CNAME и отрицательные ответы.
 4. Режим `resolver` выполняет последовательный fallback для system, UDP, TCP и DoH upstream-ов. Транспортные ошибки, timeout, SERVFAIL/REFUSED и неисправимый TC ведут к следующему upstream; валидные NXDOMAIN/NODATA завершают resolution.
-5. Cache пространства режимов разделены. Положительный TTL режима 2 ограничен 300 секундами; negative caching требует SOA и использует `min(SOA RR TTL, SOA.MINIMUM)` с cap 300 секунд. Ответы без SOA и synthetic NODATA не кэшируются.
+5. Cache пространства режимов разделены и привязаны к поколениям конфигурации/выбранного endpoint-а. Кэширование DNS-ответов ограничивает TTL отдельной копии, не изменяя TTL первого ответа клиенту; negative caching требует корректной SOA и использует `min(SOA RR TTL, SOA.MINIMUM)` с cap 300 секунд.
 6. Default `tst-domen.txt` содержит девять проверок: семь selector domains, `notebook.google.com` и `accounts.google.com`; пользовательские существующие файлы не перезаписываются.
 7. Xray Geosite policy остаётся ручной и соответствует §4.4. Read-only checker проверяет структуру правил, но не доказывает фактическую загрузку Geosite asset или end-to-end клиентский путь.
 
