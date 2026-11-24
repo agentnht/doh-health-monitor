@@ -274,19 +274,17 @@ type Status struct {
 	ActiveDoH        *ActiveDoHStatus              `json:"active_doh,omitempty"`
 	SystemDNSServers []string                      `json:"system_dns_servers,omitempty"`
 	SystemDNSError   string                        `json:"system_dns_error,omitempty"`
-	GeminiAPI string                        `json:"gemini_api"`
-	Queries   uint64                        `json:"queries"`
-	CacheHits uint64                        `json:"cache_hits"`
-
+	GeminiAPI        string                        `json:"gemini_api"`
+	Queries          uint64                        `json:"queries"`
+	CacheHits        uint64                        `json:"cache_hits"`
 	DNSCoalesced     uint64                        `json:"dns_coalesced"`
 	StaleCacheHits   uint64                        `json:"stale_cache_hits"`
 	ExtraAttempts    uint64                        `json:"bootstrap_extra_attempts"`
 	HedgeWins        uint64                        `json:"hedge_wins"`
 	DNSQualityReject uint64                        `json:"dns_quality_rejections"`
-
-	Failures uint64                        `json:"failures"`
-	ActiveUDP     int64                         `json:"active_udp"`
-	UDPQueueDepth int64                         `json:"udp_queue_depth"`
+	Failures         uint64                        `json:"failures"`
+	ActiveUDP        int64                         `json:"active_udp"`
+	UDPQueueDepth    int64                         `json:"udp_queue_depth"`
 	UDPDropped       uint64                        `json:"udp_dropped"`
 	ActiveTCP        int64                         `json:"active_tcp"`
 	TCPRejected      uint64                        `json:"tcp_rejected"`
