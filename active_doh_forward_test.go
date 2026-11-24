@@ -117,8 +117,12 @@ func TestSendActiveDoHRejectsUnusableDNSAnswersAndTriesNextBootstrapIP(t *testin
 		name string
 		bad  func([]byte) []byte
 	}{
-		{name: "SERVFAIL", bad: func(query []byte) []byte { return mode2ResponseWithRCode(query, 2) }},
-		{name: "REFUSED", bad: func(query []byte) []byte { return mode2ResponseWithRCode(query, 5) }},
+		{name: "SERVFAIL", bad: func(query []byte) []byte {
+			return mode2ResponseWithRCode(query, 2)
+		}},
+		{name: "REFUSED", bad: func(query []byte) []byte {
+			return mode2ResponseWithRCode(query, 5)
+		}},
 		{name: "truncated", bad: func(query []byte) []byte {
 			response := testAResponse(query, 30)
 			response[2] |= 0x02 // TC flag
@@ -146,7 +150,9 @@ func TestSendActiveDoHRejectsUnusableDNSAnswersAndTriesNextBootstrapIP(t *testin
 			}
 			response, err := sendActiveDoHWithClientFactory(
 				context.Background(), candidate, query, 2*time.Second,
-				func(ip, host string, timeout time.Duration) *http.Client { return server.Client() },
+				func(ip, host string, timeout time.Duration) *http.Client {
+					return server.Client()
+				},
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -178,7 +184,9 @@ func TestSendActiveDoHDoesNotRetryNXDOMAIN(t *testing.T) {
 	}
 	response, err := sendActiveDoHWithClientFactory(
 		context.Background(), candidate, query, 2*time.Second,
-		func(ip, host string, timeout time.Duration) *http.Client { return server.Client() },
+		func(ip, host string, timeout time.Duration) *http.Client {
+			return server.Client()
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
