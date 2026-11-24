@@ -45,7 +45,7 @@ func TestActiveDoHHedgeDelayUsesMedianPerIPLatencyAndBounds(t *testing.T) {
 	}}
 	candidate := activedoh.Candidate{Hostname: "doh.example", IPv4: []string{"8.8.8.8", "8.8.4.4", "1.1.1.1"}}
 	if got := r.activeDoHHedgeDelay(candidate); got != 300*time.Millisecond {
-		t.Fatalf("hedge delay=%s, want 1.5x median (200ms)", got)
+		t.Fatalf("hedge delay=%s, want 300ms (1.5x median 200ms)", got)
 	}
 	candidate.IPv4 = []string{"9.9.9.9"}
 	if got := r.activeDoHHedgeDelay(candidate); got != activeDoHHedgeDelay {
