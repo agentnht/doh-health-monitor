@@ -43,7 +43,7 @@ func TestCoalesceDNSResponseSharesWorkAndRestoresIDs(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for {
 		value, ok := runtime.dnsFlights.Load("mode1:1:test")
-		if ok && value.(*dnsFlight).waiters.Load() == 1 {
+		if ok && runtime.dnsCoalesced.Load() == 1 {
 			break
 		}
 		if time.Now().After(deadline) {
