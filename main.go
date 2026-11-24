@@ -345,6 +345,8 @@ type Runtime struct {
 	active                 map[string]string
 	upstreamCooldown       map[string]time.Time
 	cacheMu                sync.Mutex
+	staleRecheckMu         sync.Mutex
+	staleRechecks          map[string]time.Time
 	dnsFlights             sync.Map
 	cache                  map[string]cacheItem
 	cacheOrder             []cacheOrderEntry
