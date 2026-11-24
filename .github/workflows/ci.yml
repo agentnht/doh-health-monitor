@@ -74,6 +74,39 @@ jobs:
         run: |
           go test -run=^$ -fuzz=FuzzStaleAndTTLParsers -fuzztime=5s .
           go test -run=^$ -fuzz=FuzzHandleDNSInput -fuzztime=5s .
+      - name: Run DNS resilience benchmark smoke tests
+        run: go test -run=^$ -bench='Benchmark(ResolverFreshCacheHit|DNSFlightCoalescing|PinnedDoHTransportReuse|StaleFallbackBudget)        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@2026.2.2
+          "$(go env GOPATH)/bin/staticcheck" ./...
+      - name: Run govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@ef4cb2f7cae47fe3e21fc596455f694951867b29
+          "$(go env GOPATH)/bin/govulncheck" ./...
+      - name: Build Linux amd64 test package
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          id=$(jq -r .id manifest.json)
+          mkdir -p stage/bin stage/scripts
+          go build -trimpath -ldflags "-s -w" -o "stage/bin/$id" .
+          cp manifest.json stage/
+          install -m 0755 scripts/plugin-management.sh scripts/check-dns-integration.sh stage/scripts/
+          (cd stage && zip -r "../$id-pr-test.zip" .)
+          unzip -Z1 "$id-pr-test.zip" | grep -Fx "scripts/plugin-management.sh"
+          unzip -Z1 "$id-pr-test.zip" | grep -Fx "scripts/check-dns-integration.sh"
+          sha256sum "$id-pr-test.zip" > "$id-pr-test.zip.sha256"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: doh-health-monitor-pr-test
+          path: |
+            doh-health-monitor-pr-test.zip
+            doh-health-monitor-pr-test.zip.sha256
+            coverage.out
+          if-no-files-found: error
+          retention-days: 7
+ -benchtime=1x .
       - name: Run staticcheck
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@2026.2.2
