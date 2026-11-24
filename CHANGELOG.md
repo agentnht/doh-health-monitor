@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 ### DNS resilience fixes
+- Add benchmarks for fresh resolver cache hits, DNS singleflight, pinned transport reuse and bounded stale fallback timing.
 - Expand end-to-end coverage for stale fallback timing/recheck suppression and forwarding hedge metrics; remove test-only singleflight waiter state and make cache stale-TTL arguments explicit. Group resilience counters under one runtime metrics field.
 - Expose bounded-cardinality p50/p95 DoH forwarding latency estimates from a fixed histogram; no per-domain or per-IP metrics are exported.
 - Add fuzz targets for DNS packet handling and stale/TTL parsing, with bounded smoke runs in GitHub Actions.
