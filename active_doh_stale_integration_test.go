@@ -32,7 +32,7 @@ func newActiveDoHStaleFixture(t *testing.T) (*Runtime, *Snapshot, []byte) {
 	cached := testAResponse(query, 60)
 	r := &Runtime{
 		activeDoHSelector: selector,
-		activeDoHTrigger: make(chan struct{}, 1),
+		activeDoHTrigger:  make(chan struct{}, 1),
 		cache: map[string]cacheItem{
 			staleKey: {
 				packet: cached, expires: time.Now().Add(-time.Second),
