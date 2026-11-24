@@ -33,7 +33,7 @@ func TestActiveDoHStaleCacheSurvivesSelectionWithdrawal(t *testing.T) {
 	cached := testAResponse(query, 60)
 	runtime := &Runtime{
 		activeDoHSelector: selector,
-		cache:             map[string]cacheItem{
+		cache: map[string]cacheItem{
 			staleKey: {
 				packet: cached, expires: time.Now().Add(-time.Second),
 				inserted: time.Now().Add(-61 * time.Second), size: len(cached),
@@ -57,7 +57,7 @@ func TestActiveDoHStaleCacheSurvivesSelectionWithdrawal(t *testing.T) {
 	if err != nil || len(positions) != 1 {
 		t.Fatalf("stale TTL positions: %v err=%v", positions, err)
 	}
-	if got := binary.BigEndian.Uint32(response[positions[0]:positions[0]+4]); got != 1 {
+	if got := binary.BigEndian.Uint32(response[positions[0] : positions[0]+4]); got != 1 {
 		t.Fatalf("stale TTL=%d, want 1", got)
 	}
 	if runtime.staleCacheHits.Load() != 1 {
