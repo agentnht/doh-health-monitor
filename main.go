@@ -336,6 +336,7 @@ type Runtime struct {
 	lastRejectedSourceHash string
 	healthCheckTrigger     chan struct{}
 	activeDoHTrigger       chan struct{}
+	activeDoHTriggerLast   atomic.Int64
 	activeDoHSelector      *activedoh.Selector
 	statusToken            string
 	snapshot               atomic.Pointer[Snapshot]
