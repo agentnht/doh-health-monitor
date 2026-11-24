@@ -52,11 +52,11 @@ func TestSendActiveDoHMetricsRecordHedgeWinAndLatency(t *testing.T) {
 		t.Fatalf("hedge wins=%d, want 1", got)
 	}
 	deadline := time.Now().Add(time.Second)
-	for latencySamples.Load() < 2 && time.Now().Before(deadline) {
+	for latencySamples.Load() < 1 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if got := latencySamples.Load(); got != 2 {
-		t.Fatalf("latency samples=%d, want both bootstrap attempts", got)
+	if got := latencySamples.Load(); got != 1 {
+		t.Fatalf("latency samples=%d, want only the completed winning attempt", got)
 	}
 	if got := qualityRejections.Load(); got != 0 {
 		t.Fatalf("quality rejections=%d, want 0", got)
