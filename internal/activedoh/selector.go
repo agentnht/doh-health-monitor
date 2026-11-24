@@ -84,6 +84,7 @@ type Selection struct {
 	FreshUntil time.Time
 	Score      int
 	CheckCount int
+	Latency    time.Duration
 }
 
 // Selector applies deterministic scoring and anti-flap policy to one active DoH candidate.
@@ -256,6 +257,7 @@ func (s *Selector) setCurrent(candidate Candidate, score, checkCount int, now ti
 		FreshUntil: freshUntil,
 		Score:      score,
 		CheckCount: checkCount,
+		Latency:    s.latencyEWMA[candidate.ServerID],
 	}
 	s.current = &selection
 	return cloneSelection(selection)
