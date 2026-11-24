@@ -2,8 +2,11 @@ package main
 
 import (
 	"net/http"
+	"sort"
 	"strings"
 	"time"
+
+	"lucx-doh-health-monitor/internal/activedoh"
 )
 
 const (
@@ -12,8 +15,9 @@ const (
 )
 
 type pinnedDoHTransportEntry struct {
-	transport *http.Transport
-	lastUsed  time.Time
+	transport  *http.Transport
+	lastUsed   time.Time
+	latencyEWMA time.Duration
 }
 
 // pinnedDoHHTTPClient reuses an HTTP transport only for the exact endpoint
@@ -59,4 +63,54 @@ func (r *Runtime) pinnedDoHHTTPClient(ip, host string, timeout time.Duration) *h
 		Timeout: timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
+}
+
+
+// recordPinnedDoHLatency keeps a bounded EWMA of actual DNS-forwarding request
+// durations for each pinned bootstrap identity.
+func (r *Runtime) recordPinnedDoHLatency(ip string, elapsed time.Duration) {
+	if elapsed <= 0 {
+		return
+	}
+	r.activeDoHTransportMu.Lock()
+	defer r.activeDoHTransportMu.Unlock()
+	keySuffix := "|" + ip
+	for key, entry := range r.activeDoHTransports {
+		if !strings.HasSuffix(key, keySuffix) {
+			continue
+		}
+		if entry.latencyEWMA <= 0 {
+			entry.latencyEWMA = elapsed
+		} else {
+			entry.latencyEWMA = (entry.latencyEWMA*7 + elapsed*3) / 10
+		}
+		entry.lastUsed = time.Now()
+	}
+}
+
+// activeDoHHedgeDelay uses the median of recent observed per-bootstrap request
+// durations. It falls back conservatively until enough live traffic exists.
+func (r *Runtime) activeDoHHedgeDelay(candidate activedoh.Candidate) time.Duration {
+	r.activeDoHTransportMu.Lock()
+	defer r.activeDoHTransportMu.Unlock()
+	var samples []time.Duration
+	host := strings.ToLower(strings.TrimSuffix(candidate.Hostname, "."))
+	for _, ip := range append(append([]string(nil), candidate.IPv4...), candidate.IPv6...) {
+		if entry := r.activeDoHTransports[host+"|"+ip]; entry != nil && entry.latencyEWMA > 0 {
+			samples = append(samples, entry.latencyEWMA)
+		}
+	}
+	if len(samples) == 0 {
+		return activeDoHHedgeDelay
+	}
+	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+	median := samples[len(samples)/2]
+	delay := median + median/2
+	if delay < 100*time.Millisecond {
+		delay = 100 * time.Millisecond
+	}
+	if delay > 1500*time.Millisecond {
+		delay = 1500 * time.Millisecond
+	}
+	return delay
 }
