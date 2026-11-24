@@ -68,17 +68,14 @@ func (r *Runtime) pinnedDoHHTTPClient(ip, host string, timeout time.Duration) *h
 
 // recordPinnedDoHLatency keeps a bounded EWMA of actual DNS-forwarding request
 // durations for each pinned bootstrap identity.
-func (r *Runtime) recordPinnedDoHLatency(ip string, elapsed time.Duration) {
+func (r *Runtime) recordPinnedDoHLatency(host, ip string, elapsed time.Duration) {
 	if elapsed <= 0 {
 		return
 	}
+	key := strings.ToLower(strings.TrimSuffix(host, ".")) + "|" + ip
 	r.activeDoHTransportMu.Lock()
 	defer r.activeDoHTransportMu.Unlock()
-	keySuffix := "|" + ip
-	for key, entry := range r.activeDoHTransports {
-		if !strings.HasSuffix(key, keySuffix) {
-			continue
-		}
+	if entry := r.activeDoHTransports[key]; entry != nil {
 		if entry.latencyEWMA <= 0 {
 			entry.latencyEWMA = elapsed
 		} else {
