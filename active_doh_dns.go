@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"lucx-doh-health-monitor/internal/activedoh"
 )
 
 const activeDoHMaxCacheTTL = 300 * time.Second
@@ -159,9 +161,15 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 	}
 	result := make(chan activeDoHAttemptResult, 1)
 	go func() {
-		response, err := sendActiveDoHWithClientFactoryAndMetrics(
-			ctx, selection.Candidate, query, dohTimeout, r.pinnedDoHHTTPClient, metrics,
-		)
+		forward := r.activeDoHForwarder
+		if forward == nil {
+			forward = func(forwardCtx context.Context, candidate activedoh.Candidate, packet []byte, timeout time.Duration, forwardMetrics *activeDoHForwardMetrics) ([]byte, error) {
+				return sendActiveDoHWithClientFactoryAndMetrics(
+					forwardCtx, candidate, packet, timeout, r.pinnedDoHHTTPClient, forwardMetrics,
+				)
+			}
+		}
+		response, err := forward(ctx, selection.Candidate, query, dohTimeout, metrics)
 		result <- activeDoHAttemptResult{response: response, err: err}
 	}()
 	response, queryErr, servedStale := awaitActiveDoHWithStaleBudget(
