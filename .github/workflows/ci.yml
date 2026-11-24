@@ -32,16 +32,16 @@ jobs:
           files="$(git ls-files '*.go')"
           unformatted="$(gofmt -l $files)"
           if [ -n "$unformatted" ]; then
-            printf '%s\\n' "Go files must be formatted with gofmt:" "$unformatted"
+            printf '%s\n' "Go files must be formatted with gofmt:" "$unformatted"
             exit 1
           fi
       - name: Verify release metadata consistency
         run: |
           version=$(jq -r .version manifest.json)
-          source=$(sed -n 's/.*pluginVersion *= *"\\([^"]*\\)".*/\\1/p' main.go)
-          probe_agent=$(sed -n 's/.*activeDoHUserAgent *= *"LucX-DoH-HealthMonitor\\/\\([^"]*\\)".*/\\1/p' active_doh.go)
-          readme=$(sed -n 's/^\\*\\*Версия:\\*\\* \\([0-9.]*\\).*/\\1/p' README.md)
-          menu=$(sed -n 's/.*DoH Health Monitor \\([0-9.]*\\) — управление.*/\\1/p' scripts/plugin-management.sh)
+          source=$(sed -n 's/.*pluginVersion *= *"\([^"]*\)".*/\1/p' main.go)
+          probe_agent=$(sed -n 's/.*activeDoHUserAgent *= *"LucX-DoH-HealthMonitor\/\([^"]*\)".*/\1/p' active_doh.go)
+          readme=$(sed -n 's/^\*\*Версия:\*\* \([0-9.]*\).*/\1/p' README.md)
+          menu=$(sed -n 's/.*DoH Health Monitor \([0-9.]*\) — управление.*/\1/p' scripts/plugin-management.sh)
           [ "$source" = "$version" ] || { echo "main.go=$source, manifest=$version"; exit 1; }
           [ "$probe_agent" = "$version" ] || { echo "active_doh.go=$probe_agent, manifest=$version"; exit 1; }
           [ "$readme" = "$version" ] || { echo "README=$readme, manifest=$version"; exit 1; }
@@ -49,7 +49,7 @@ jobs:
           grep -Fq "LucX-DoH-HealthMonitor/$version" main.go
           grep -Fq "LucX-DoH-HealthMonitor/$version" active_doh.go
           grep -Fq "doh-health-monitor-v$version.zip" README.md
-          grep -q "^## \\[$version\\]" CHANGELOG.md
+          grep -q "^## \[$version\]" CHANGELOG.md
       - name: Check shell and Web UI JavaScript syntax
         run: |
           bash -n scripts/plugin-management.sh
