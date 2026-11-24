@@ -67,11 +67,11 @@ type webUIStatus struct {
 	Queries       uint64                      `json:"queries"`
 	CacheHits     uint64                      `json:"cache_hits"`
 
-	DNSCoalesced  uint64                      `json:"dns_coalesced"`
-	StaleCacheHits uint64                     `json:"stale_cache_hits"`
-	ExtraAttempts uint64                      `json:"bootstrap_extra_attempts"`
-	HedgeWins     uint64                      `json:"hedge_wins"`
-	DNSQualityReject uint64                   `json:"dns_quality_rejections"`
+	DNSCoalesced      uint64                      `json:"dns_coalesced"`
+	StaleCacheHits    uint64                      `json:"stale_cache_hits"`
+	ExtraAttempts     uint64                      `json:"bootstrap_extra_attempts"`
+	HedgeWins         uint64                      `json:"hedge_wins"`
+	DNSQualityReject  uint64                      `json:"dns_quality_rejections"`
 
 	Failures      uint64                      `json:"failures"`
 	ActiveUDP     int64                       `json:"active_udp"`
@@ -299,7 +299,6 @@ func fetchWebUIStatus(ctx context.Context, statusURL, dataDir string) (webUIStat
 		DNSCoalesced: raw.DNSCoalesced,
 		StaleCacheHits: raw.StaleCacheHits, ExtraAttempts: raw.ExtraAttempts, HedgeWins: raw.HedgeWins,
 		DNSQualityReject: raw.DNSQualityReject, Failures: raw.Failures,
-
 
 		ActiveUDP: raw.ActiveUDP, UDPQueueDepth: raw.UDPQueueDepth, UDPDropped: raw.UDPDropped,
 		ActiveTCP: raw.ActiveTCP, TCPRejected: raw.TCPRejected,
