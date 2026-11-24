@@ -49,16 +49,16 @@ func (r *Runtime) markStaleRecheck(key string, now time.Time) {
 	r.staleRechecks[key] = now.Add(activeDoHFailureRecheckInterval)
 }
 
-type activeDoHAttemptResult struct {
+type dnsAttemptResult struct {
 	response []byte
 	err      error
 }
 
-// awaitActiveDoHWithStaleBudget lets an already-expired cache entry satisfy a
+// awaitDNSWithStaleBudget lets an already-expired cache entry satisfy a
 // request within the client-facing budget. If no stale answer is eligible when
 // the timer fires, the caller continues waiting for the real upstream result.
-func awaitActiveDoHWithStaleBudget(
-	result <-chan activeDoHAttemptResult,
+func awaitDNSWithStaleBudget(
+	result <-chan dnsAttemptResult,
 	budget time.Duration,
 	stale func() ([]byte, bool),
 ) ([]byte, error, bool) {
