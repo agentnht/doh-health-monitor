@@ -150,7 +150,7 @@
       text("cache-hits", number(status.cache_hits));
       text("dns-coalesced", number(status.dns_coalesced));
       text("stale-cache-hits", number(status.stale_cache_hits));
-      text("hedge-attempts", number(status.hedge_attempts));
+      text("bootstrap-extra-attempts", number(status.bootstrap_extra_attempts));
       text("hedge-wins", number(status.hedge_wins));
       text("dns-quality-rejections", number(status.dns_quality_rejections));
       text("active-udp", number(status.active_udp));
