@@ -6,13 +6,13 @@ import (
 )
 
 func TestAwaitActiveDoHUsesStaleWithinBudget(t *testing.T) {
-	result := make(chan activeDoHAttemptResult, 1)
+	result := make(chan dnsAttemptResult, 1)
 	go func() {
 		time.Sleep(30 * time.Millisecond)
-		result <- activeDoHAttemptResult{response: []byte("upstream")}
+		result <- dnsAttemptResult{response: []byte("upstream")}
 	}()
 	started := time.Now()
-	got, err, stale := awaitActiveDoHWithStaleBudget(result, 5*time.Millisecond, func() ([]byte, bool) {
+	got, err, stale := awaitDNSWithStaleBudget(result, 5*time.Millisecond, func() ([]byte, bool) {
 		return []byte("stale"), true
 	})
 	if err != nil || !stale || string(got) != "stale" {
@@ -24,9 +24,9 @@ func TestAwaitActiveDoHUsesStaleWithinBudget(t *testing.T) {
 }
 
 func TestAwaitActiveDoHFallsThroughWhenStaleUnavailable(t *testing.T) {
-	result := make(chan activeDoHAttemptResult, 1)
-	result <- activeDoHAttemptResult{response: []byte("upstream")}
-	got, err, stale := awaitActiveDoHWithStaleBudget(result, time.Millisecond, func() ([]byte, bool) {
+	result := make(chan dnsAttemptResult, 1)
+	result <- dnsAttemptResult{response: []byte("upstream")}
+	got, err, stale := awaitDNSWithStaleBudget(result, time.Millisecond, func() ([]byte, bool) {
 		return nil, false
 	})
 	if err != nil || stale || string(got) != "upstream" {
