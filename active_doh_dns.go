@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,9 +11,45 @@ import (
 
 const activeDoHMaxCacheTTL = 300 * time.Second
 
+const activeDoHTriggerMinInterval = 30 * time.Second
+
+// triggerActiveDoHOnTransportFailure coalesces DNS-triggered selector runs.
+// Query-scoped DNS results such as SERVFAIL/REFUSED must not trigger probes.
+func (r *Runtime) triggerActiveDoHOnTransportFailure() {
+	if r == nil || r.activeDoHTrigger == nil {
+		return
+	}
+	now := time.Now()
+	for {
+		previous := r.activeDoHTriggerLast.Load()
+		if previous != 0 && now.Sub(time.Unix(0, previous)) < activeDoHTriggerMinInterval {
+			return
+		}
+		if !r.activeDoHTriggerLast.CompareAndSwap(previous, now.UnixNano()) {
+			continue
+		}
+		select {
+		case r.activeDoHTrigger <- struct{}{}:
+		default:
+		}
+		return
+	}
+}
+
 // activeDoHDNSResponse forwards the original A/AAAA query through the healthy
 // DoH endpoint selected by ActiveDoHSelector and returns its DNS response.
 func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte {
+	if snapshot == nil || r.activeDoHSelector == nil {
+		return r.activeDoHDNSResponseUncoalesced(query, snapshot)
+	}
+	key := fmt.Sprintf("mode1-flight:%d:%d:%s",
+		snapshot.activeDoHGeneration, r.activeDoHSelector.Generation(), cacheKey(query))
+	return r.coalesceDNSResponse(key, query, func() []byte {
+		return r.activeDoHDNSResponseUncoalesced(query, snapshot)
+	})
+}
+
+func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapshot) []byte {
 	_, qtype, questionEnd, err := parseQuestion(query)
 	if err != nil || len(query) < 12 || binary.BigEndian.Uint16(query[4:6]) != 1 {
 		return formerrResponse(query)
@@ -34,15 +71,26 @@ func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte 
 	if current == nil || current.activeDoHGeneration != snapshot.activeDoHGeneration {
 		return servfailResponse(query)
 	}
+
+	// Keep stale answers in a configuration-scoped namespace rather than the
+	// selector generation. A withdrawn selection increments Generation, but
+	// that must not make the last known-good answer unreachable during outage.
+	staleKey := fmt.Sprintf("mode1-stale:%d:%s", snapshot.activeDoHGeneration, cacheKey(query))
 	selection, ok := r.activeDoHSelector.Current(time.Now())
 	if !ok || selection.Candidate.ConfigGeneration != current.activeDoHGeneration {
+		if snapshot.cfg.Cache.Enabled {
+			if stale, found := r.cacheGetStale(staleKey, packetID(query), snapshot.cfg.Cache.StaleTTL); found {
+				r.cacheHits.Add(1)
+				return stale
+			}
+		}
 		return servfailResponse(query)
 	}
 
 	key := fmt.Sprintf("mode1:%d:%s", selection.Generation, cacheKey(query))
 	cacheConfig := snapshot.cfg.Cache
 	if cacheConfig.Enabled {
-		if cached, found := r.cacheGet(key, packetID(query)); found {
+		if cached, found := r.cacheGet(key, packetID(query), cacheConfig.StaleTTL); found {
 			r.cacheHits.Add(1)
 			if !r.activeDoHConfigMatches(snapshot) ||
 				selection.Candidate.ConfigGeneration != snapshot.activeDoHGeneration ||
@@ -65,16 +113,28 @@ func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte 
 	if totalTimeout < dohTimeout {
 		dohTimeout = totalTimeout
 	}
-	response, queryErr := sendActiveDoH(ctx, selection.Candidate, query, dohTimeout)
+	metrics := &activeDoHForwardMetrics{
+		extraAttempts:     &r.bootstrapExtraAttempts,
+		hedgeWins:         &r.hedgeWins,
+		qualityRejections: &r.dnsQualityRejections,
+	}
+	response, queryErr := sendActiveDoHWithMetrics(ctx, selection.Candidate, query, dohTimeout, metrics)
 	cancel()
 	if queryErr != nil {
-		r.failures.Add(1)
-		// Prompt a fresh selector cycle instead of waiting for the regular
-		// probe interval after the selected endpoint fails during live traffic.
-		select {
-		case r.activeDoHTrigger <- struct{}{}:
-		default:
+		// Only transport-level failures justify an early selector cycle.
+		// DNS policy responses (SERVFAIL/REFUSED) are returned to the client and
+		// must not amplify into repeated provider-wide health probes.
+		var forwardErr *activeDoHForwardError
+		if errors.As(queryErr, &forwardErr) && forwardErr.transportOnly {
+			r.triggerActiveDoHOnTransportFailure()
 		}
+		if cacheConfig.Enabled {
+			if stale, found := r.cacheGetStale(staleKey, packetID(query), cacheConfig.StaleTTL); found {
+				r.cacheHits.Add(1)
+				return stale
+			}
+		}
+		r.failures.Add(1)
 		return servfailResponse(query)
 	}
 
@@ -98,6 +158,11 @@ func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte 
 			cacheConfig.MinTTL = 0
 			cacheConfig.MaxTTL = int(maxTTL / time.Second)
 			r.cachePut(key, cacheResponse, cacheConfig)
+			if cacheConfig.StaleTTL > 0 {
+				// A generation-independent stale copy survives selector withdrawal;
+				// it is consulted only after upstream failure or loss of selection.
+				r.cachePut(staleKey, cacheResponse, cacheConfig)
+			}
 		}
 	}
 	return response

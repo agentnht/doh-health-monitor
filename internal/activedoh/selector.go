@@ -84,6 +84,7 @@ type Selection struct {
 	FreshUntil time.Time
 	Score      int
 	CheckCount int
+	Latency    time.Duration
 }
 
 // Selector applies deterministic scoring and anti-flap policy to one active DoH candidate.
@@ -100,10 +101,11 @@ type Selector struct {
 	lastSwitch            time.Time
 	betterCandidate       string
 	betterCandidateStreak int
+	latencyEWMA           map[string]time.Duration
 }
 
 func NewSelector(policy Policy) *Selector {
-	return &Selector{policy: normalizePolicy(policy)}
+	return &Selector{policy: normalizePolicy(policy), latencyEWMA: make(map[string]time.Duration)}
 }
 
 // Select applies one completed probe cycle. A false result means no fresh, healthy endpoint
@@ -128,7 +130,13 @@ func (s *Selector) Select(candidates []Candidate, results []ProbeResult, now tim
 		eligible[candidate.ServerID] = candidate
 	}
 
+	for id := range s.latencyEWMA {
+		if _, exists := eligible[id]; !exists {
+			delete(s.latencyEWMA, id)
+		}
+	}
 	scores := scoreResults(results)
+	s.updateLatencyEWMA(results)
 	candidateIDs := make([]string, 0, len(eligible))
 	for id := range eligible {
 		candidateIDs = append(candidateIDs, id)
@@ -138,7 +146,7 @@ func (s *Selector) Select(candidates []Candidate, results []ProbeResult, now tim
 	bestID, bestScore := "", 0
 	for _, id := range candidateIDs {
 		score := scores[id]
-		if score > bestScore {
+		if score > bestScore || (score == bestScore && latencyLower(s.latencyEWMA[id], s.latencyEWMA[bestID])) {
 			bestID, bestScore = id, score
 		}
 	}
@@ -177,9 +185,11 @@ func (s *Selector) Select(candidates []Candidate, results []ProbeResult, now tim
 		return Selection{}, false
 	}
 
-	// Ties retain the current endpoint. This also makes selection stable across map iteration
-	// order and config reloads.
-	if bestID == currentID || bestScore <= currentScore {
+	// Keep the current endpoint unless another candidate is materially faster at
+	// the same health score, or has a strictly better health score. Latency-only
+	// improvements still pass through the repeated-cycle and hold/cooldown gates.
+	latencyImprovement := bestScore == currentScore && latencyPreferred(s.latencyEWMA[bestID], s.latencyEWMA[currentID])
+	if bestID == currentID || (bestScore <= currentScore && !latencyImprovement) {
 		s.betterCandidate = ""
 		s.betterCandidateStreak = 0
 		return s.refreshCurrent(currentCandidate, currentScore, len(controlDomains), now), true
@@ -252,6 +262,7 @@ func (s *Selector) setCurrent(candidate Candidate, score, checkCount int, now ti
 		FreshUntil: freshUntil,
 		Score:      score,
 		CheckCount: checkCount,
+		Latency:    s.latencyEWMA[candidate.ServerID],
 	}
 	s.current = &selection
 	return cloneSelection(selection)
@@ -333,6 +344,74 @@ func normalizeIPs(values []string, wantIPv4 bool) []string {
 
 func normalizeHostname(raw string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(raw)), ".")
+}
+
+// updateLatencyEWMA records successful health-probe durations. Probe durations are
+// provider-level end-to-end observations, not per-bootstrap-IP measurements.
+func (s *Selector) updateLatencyEWMA(results []ProbeResult) {
+	if s.latencyEWMA == nil {
+		s.latencyEWMA = make(map[string]time.Duration)
+	}
+	latest := make(map[string]map[string]ProbeResult)
+	for _, result := range results {
+		id := strings.TrimSpace(result.ServerID)
+		domain := normalizeHostname(result.Domain)
+		if id == "" || !isControlDomain(domain) {
+			continue
+		}
+		byDomain := latest[id]
+		if byDomain == nil {
+			byDomain = make(map[string]ProbeResult)
+			latest[id] = byDomain
+		}
+		previous, exists := byDomain[domain]
+		if exists && previous.CheckedAt.After(result.CheckedAt) {
+			continue
+		}
+		byDomain[domain] = result
+	}
+
+	for id, byDomain := range latest {
+		var total time.Duration
+		count := 0
+		for _, result := range byDomain {
+			if result.Success && result.Duration > 0 {
+				total += result.Duration
+				count++
+			}
+		}
+		if count == 0 {
+			continue
+		}
+		sample := total / time.Duration(count)
+		previous := s.latencyEWMA[id]
+		if previous <= 0 {
+			s.latencyEWMA[id] = sample
+			continue
+		}
+		// alpha=0.3: smooth individual probe-cycle noise without hiding sustained changes.
+		s.latencyEWMA[id] = (previous*7 + sample*3) / 10
+	}
+}
+
+// latencyLower orders candidates by their observed EWMA latency when health scores tie.
+func latencyLower(candidate, current time.Duration) bool {
+	if candidate <= 0 {
+		return false
+	}
+	return current <= 0 || candidate < current
+}
+
+// latencyPreferred requires at least a 10% improvement to avoid switching on
+// insignificant probe-latency noise. An observed latency beats an unknown latency.
+func latencyPreferred(candidate, current time.Duration) bool {
+	if candidate <= 0 {
+		return false
+	}
+	if current <= 0 {
+		return true
+	}
+	return candidate <= current-current/10
 }
 
 func scoreResults(results []ProbeResult) map[string]int {

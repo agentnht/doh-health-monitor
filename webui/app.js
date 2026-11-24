@@ -129,6 +129,7 @@
     addMetric("IPv4", (active.ipv4 || []).join(", "));
     addMetric("IPv6", (active.ipv6 || []).join(", "));
     addMetric("Score", number(active.score) + "/" + number(active.check_count));
+    addMetric("EWMA probe latency", active.latency_ms > 0 ? number(active.latency_ms) + " ms" : "—");
     addMetric("Generation", number(active.generation));
     addMetric("Выбран", when(active.selected_at));
     addMetric("Актуален до", when(active.fresh_until));
@@ -148,6 +149,11 @@
       text("queries", number(status.queries));
       text("failures", number(status.failures));
       text("cache-hits", number(status.cache_hits));
+      text("dns-coalesced", number(status.dns_coalesced));
+      text("stale-cache-hits", number(status.stale_cache_hits));
+      text("bootstrap-extra-attempts", number(status.bootstrap_extra_attempts));
+      text("hedge-wins", number(status.hedge_wins));
+      text("dns-quality-rejections", number(status.dns_quality_rejections));
       text("active-udp", number(status.active_udp));
       text("active-tcp", number(status.active_tcp));
       text("udp-dropped", number(status.udp_dropped));
@@ -231,6 +237,7 @@
     addConfigField(cache, "Min TTL (сек.)", "cache.min_ttl_seconds", config.cache.min_ttl_seconds, "number");
     addConfigField(cache, "Max TTL (сек.)", "cache.max_ttl_seconds", config.cache.max_ttl_seconds, "number");
     addConfigField(cache, "Negative TTL (сек.)", "cache.negative_ttl_seconds", config.cache.negative_ttl_seconds, "number");
+    addConfigField(cache, "Stale TTL (сек.)", "cache.stale_ttl_seconds", config.cache.stale_ttl_seconds, "number");
     addConfigField(cache, "Max entries", "cache.max_entries", config.cache.max_entries, "number");
     addConfigField(cache, "Max bytes", "cache.max_bytes", config.cache.max_bytes, "number");
     $("config-bootstrap").value = (config.bootstrap_resolvers || []).join("\n");

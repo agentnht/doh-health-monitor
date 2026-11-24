@@ -111,3 +111,142 @@ func TestSendActiveDoHRetriesNextBootstrapIPOnHTTPFailure(t *testing.T) {
 		t.Fatalf("unexpected retried DNS response: rcode=%d answers=%d", dnsRCode(response), dnsAnswerCount(response))
 	}
 }
+
+func TestSendActiveDoHRejectsUnusableDNSAnswersAndTriesNextBootstrapIP(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		rcode     uint16
+		truncated bool
+	}{
+		{name: "SERVFAIL", rcode: 2},
+		{name: "REFUSED", rcode: 5},
+		{name: "truncated", truncated: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			query := makeDNSQuery("quality.example.test", 1)
+			var requests atomic.Int32
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				var response []byte
+				if requests.Add(1) == 1 {
+					if tc.truncated {
+						response = testAResponse(query, 30)
+						response[2] |= 0x02
+					} else {
+						response = mode2ResponseWithRCode(query, tc.rcode)
+					}
+				} else {
+					response = testAResponse(query, 45)
+				}
+				w.Header().Set("Content-Type", "application/dns-message")
+				_, _ = w.Write(response)
+			}))
+			defer server.Close()
+
+			candidate := activedoh.Candidate{
+				ServerID: "selected", URL: server.URL + "/dns-query", Hostname: "127.0.0.1",
+				IPv4: []string{"1.1.1.1", "8.8.8.8"}, ResolvedAt: time.Now(),
+			}
+			var qualityRejections atomic.Uint64
+			response, err := sendActiveDoHWithClientFactoryAndMetrics(
+				context.Background(), candidate, query, 2*time.Second,
+				func(ip, host string, timeout time.Duration) *http.Client {
+					return server.Client()
+				},
+				&activeDoHForwardMetrics{qualityRejections: &qualityRejections},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if qualityRejections.Load() != 1 {
+				t.Fatalf("quality rejection count=%d, want 1", qualityRejections.Load())
+			}
+			if requests.Load() != 2 {
+				t.Fatalf("request count=%d, want retry on second bootstrap IP", requests.Load())
+			}
+			if dnsRCode(response) != 0 || dnsAnswerCount(response) != 1 || dnsTruncated(response) {
+				t.Fatalf("returned unusable response: rcode=%d answers=%d truncated=%t",
+					dnsRCode(response), dnsAnswerCount(response), dnsTruncated(response))
+			}
+		})
+	}
+}
+
+func TestSendActiveDoHDoesNotRetryNXDOMAIN(t *testing.T) {
+	query := makeDNSQuery("missing.example.test", 1)
+	var requests atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/dns-message")
+		_, _ = w.Write(mode2ResponseWithRCode(query, 3))
+	}))
+	defer server.Close()
+
+	candidate := activedoh.Candidate{
+		ServerID: "selected", URL: server.URL + "/dns-query", Hostname: "127.0.0.1",
+		IPv4: []string{"1.1.1.1", "8.8.8.8"}, ResolvedAt: time.Now(),
+	}
+	response, err := sendActiveDoHWithClientFactory(
+		context.Background(), candidate, query, 2*time.Second,
+		func(ip, host string, timeout time.Duration) *http.Client {
+			return server.Client()
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 1 || dnsRCode(response) != 3 {
+		t.Fatalf("NXDOMAIN should be returned without retry: requests=%d rcode=%d", requests.Load(), dnsRCode(response))
+	}
+}
+
+func TestSendActiveDoHHedgesSlowBootstrapAttempt(t *testing.T) {
+	query := makeDNSQuery("hedge.example.test", 1)
+	var requests atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		attempt := requests.Add(1)
+		delay := 2 * time.Second
+		if attempt == 2 {
+			delay = 500 * time.Millisecond
+		} else if attempt >= 3 {
+			delay = 200 * time.Millisecond
+		}
+		select {
+		case <-req.Context().Done():
+			return
+		case <-time.After(delay):
+		}
+		w.Header().Set("Content-Type", "application/dns-message")
+		_, _ = w.Write(testAResponse(query, 60))
+	}))
+	defer server.Close()
+
+	candidate := activedoh.Candidate{
+		ServerID: "selected", URL: server.URL + "/dns-query", Hostname: "127.0.0.1",
+		IPv4: []string{"1.1.1.1", "8.8.8.8", "9.9.9.9", "208.67.222.222"}, ResolvedAt: time.Now(),
+	}
+	started := time.Now()
+	var extraAttempts, hedgeWins atomic.Uint64
+	response, err := sendActiveDoHWithClientFactoryAndMetrics(
+		context.Background(), candidate, query, 3*time.Second,
+		func(ip, host string, timeout time.Duration) *http.Client {
+			return server.Client()
+		},
+		&activeDoHForwardMetrics{extraAttempts: &extraAttempts, hedgeWins: &hedgeWins},
+	)
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("request count=%d, want two hedged attempts", requests.Load())
+	}
+	if extraAttempts.Load() != 1 || hedgeWins.Load() != 1 {
+		t.Fatalf("extra attempts=%d hedge wins=%d, want 1/1", extraAttempts.Load(), hedgeWins.Load())
+	}
+	if elapsed >= 1500*time.Millisecond {
+		t.Fatalf("hedged request took %s; expected second bootstrap IP to win before first timeout", elapsed)
+	}
+	if dnsRCode(response) != 0 || dnsAnswerCount(response) != 1 {
+		t.Fatalf("unexpected DNS response: rcode=%d answers=%d", dnsRCode(response), dnsAnswerCount(response))
+	}
+}

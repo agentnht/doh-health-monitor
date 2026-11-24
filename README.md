@@ -22,8 +22,10 @@ DoH Health Monitor — локальный DNS sidecar для LucX-UI/Xray. В л
 
 - UDP и TCP DNS listener по умолчанию на `127.0.0.1:5355`; конфигурация принимает только loopback IP literals и валидные порты 1–65535.
 - DNS UDP payload учитывает EDNS buffer size клиента (или 512 байт без EDNS); при нехватке места ответ обрезается по границе RR и получает флаг TC.
-- ActiveDoHSelector: семь контрольных доменов, A/AAAA DNS probes через кандидатов DoH, затем HTTPS/TLS probes по IP с исходными hostname, SNI, HTTP Host и проверкой сертификата.
+- ActiveDoHSelector: семь контрольных доменов, A/AAAA DNS probes через кандидатов DoH, затем HTTPS/TLS probes по IP с исходными hostname, SNI, HTTP Host и проверкой сертификата. При равном health score учитывается EWMA успешных end-to-end probe durations (alpha=0.3); latency-only переключение требует преимущества не менее 10%, двух последовательных циклов и соблюдения minimum-hold/switch-cooldown.
 - Режим `endpoint_ip` пересылает исходный A/AAAA DNS-запрос через выбранный ActiveDoH endpoint; соединение закреплено за его bootstrap IP, а hostname/SNI/сертификат сохраняются. Ответ содержит реальные DNS-записи запрошенного домена; TTL исходного ответа сохраняется, кэш ограничивается настройками cache (по умолчанию максимум 300 секунд).
+- Stale cache в `endpoint_ip` хранит отдельную копию ответа в пределах текущего поколения конфигурации, но не поколения выбора endpoint-а: при отзыве выбора после сбоя можно вернуть последний известный ответ с TTL=1 в течение `cache.stale_ttl_seconds` (по умолчанию 60 секунд). При успешном ответе обычный cache остаётся привязан к поколению выбора.
+- В `endpoint_ip` структурно корректные `SERVFAIL` и `REFUSED` допускают не более одной повторной попытки на другом bootstrap IP; если второй адрес тоже не даёт пригодного ответа, клиент получает последний DNS-ответ провайдера без подмены на синтетический SERVFAIL. Ответы с флагом `TC` продолжают проверяться через остальные bootstrap IP. При транспортной/HTTP-ошибке следующий IP запускается сразу, а если попытка просто медленная — через 250 мс (не более одной параллельной hedge-попытки на DNS-запрос); первый пригодный ответ побеждает, остальные попытки отменяются. `NXDOMAIN` и другие корректные DNS-ответы не повторяются. Ошибка DNS policy не запускает selector probes; внеочередная проверка запускается только после транспортных ошибок и не чаще раза в 30 секунд. Это не переключает ActiveDoHSelector на другой provider и не меняет его anti-flap policy.
 - Режим `resolver` с последовательным fallback через system, UDP, TCP и DoH upstream-ы; упавшие upstream-ы получают cooldown, а отказ всех upstream-ов возвращает DNS SERVFAIL вместо ложного NODATA.
 - Раздельные cache namespace/generation для двух режимов; режим 2 использует positive cache TTL не более 300 секунд и SOA-based negative caching по RFC 2308.
 - Сохранение исходного TTL upstream в первом ответе; ограничения TTL применяются к отдельной копии, помещаемой в кэш.
@@ -372,18 +374,23 @@ Selector использует freshness, score, failure grace cycles, minimum ho
 
 ### 5.3 DNS cache
 
+Одинаковые одновременные DNS-запросы в рамках одного режима и generation объединяются: только первый запрос обращается к upstream, остальные ожидают его результат. Перед отправкой каждому клиенту восстанавливается его исходный DNS transaction ID. При смене ActiveDoH selection или resolver generation запросы не объединяются между разными поколениями.
+
+
 ```json
 "cache": {
   "enabled": true,
   "min_ttl_seconds": 0,
   "max_ttl_seconds": 300,
   "negative_ttl_seconds": 15,
+  "stale_ttl_seconds": 60,
   "max_entries": 8192,
   "max_bytes": 8388608
 }
 ```
 
 - `enabled`, `max_entries` и `max_bytes` управляют общим RAM-кэшем.
+- `stale_ttl_seconds` (0–3600, по умолчанию 60) задаёт окно использования недавно истёкшего ответа **только при ошибке upstream**. Такой ответ отдаётся с TTL=1; если upstream доступен, истёкшая запись не используется.
 - В режиме `endpoint_ip` первый ответ сохраняет upstream TTL; TTL отдельной кэш-копии ограничивается 300 секундами. Кэш привязан к generation выбранного endpoint-а и очищается при переключении.
 - В режиме `resolver` положительный cache TTL ограничен сверху 300 секундами; исходный TTL первого ответа upstream не изменяется.
 - Для NXDOMAIN и NODATA с SOA negative TTL равен `min(SOA RR TTL, SOA.MINIMUM)`, с верхней границей 300 секунд. Это включает NODATA после CNAME chain: CNAME RR сохраняются, но срок negative-кэша конечного QNAME определяется SOA.
@@ -558,7 +565,8 @@ unset status_token
 - `failure_streak` / `success_streak`;
 - `checks` — DNS/HTTP результаты отдельных контрольных точек;
 - `last_error`, `check_duration_ms` — длительность всего цикла проверок данного upstream, а не время одного DNS-запроса;
-- `active_doh` — выбранный endpoint режима `endpoint_ip`, его IP, freshness, score и generation; `queries`, `cache_hits`, `failures` — счётчики DNS работы;
+- `active_doh` — выбранный endpoint режима `endpoint_ip`, его IP, freshness, score, generation и сглаженная длительность health probe (`latency_ms`); `queries`, `cache_hits`, `failures` — счётчики DNS работы;
+- `dns_coalesced`, `stale_cache_hits`, `bootstrap_extra_attempts`, `hedge_wins`, `dns_quality_rejections` — счётчики механизмов устойчивости: объединённые запросы, stale-ответы, дополнительные bootstrap-попытки, победы параллельной попытки и отклонённые непригодные DNS-ответы.
 - `active_udp`, `udp_queue_depth`, `udp_dropped`, `active_tcp`, `tcp_rejected` — текущая нагрузка и отказы при переполнении ограниченных очередей/соединений;
 - `goroutines`, `heap_alloc_bytes`, `heap_inuse_bytes`, `heap_sys_bytes` — показатели runtime Go;
 - `cpu_user_ns`, `cpu_system_ns` — накопленное CPU-время процесса в user/system mode; разница между двумя замерами за интервал позволяет оценить использование CPU;

@@ -46,6 +46,7 @@ type ActiveDoHStatus struct {
 	Generation uint64    `json:"generation"`
 	Score      int       `json:"score"`
 	CheckCount int       `json:"check_count"`
+	LatencyMS  int64     `json:"latency_ms"`
 }
 
 // activeDoHRetryDelay returns the wait before re-probing after a withdrawn
@@ -220,8 +221,8 @@ sendJobs:
 		logLine("WARN", "ACTIVE_DOH no healthy endpoint selected candidates=%d successful_checks=%d", len(candidates), successes)
 		return false
 	}
-	logLine("INFO", "ACTIVE_DOH selected server=%s score=%d/%d ipv4=%d ipv6=%d generation=%d freshness_until=%s",
-		selected.Candidate.ServerID, selected.Score, selected.CheckCount,
+	logLine("INFO", "ACTIVE_DOH selected server=%s score=%d/%d latency=%s ipv4=%d ipv6=%d generation=%d freshness_until=%s",
+		selected.Candidate.ServerID, selected.Score, selected.CheckCount, selected.Latency,
 		len(selected.Candidate.IPv4), len(selected.Candidate.IPv6), selected.Generation,
 		selected.FreshUntil.UTC().Format(time.RFC3339))
 	return true
@@ -624,5 +625,6 @@ func (r *Runtime) activeDoHStatus() *ActiveDoHStatus {
 		Generation: selection.Generation,
 		Score:      selection.Score,
 		CheckCount: selection.CheckCount,
+		LatencyMS:  selection.Latency.Milliseconds(),
 	}
 }

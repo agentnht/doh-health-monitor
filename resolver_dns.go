@@ -17,6 +17,16 @@ const (
 )
 
 func (r *Runtime) resolverDNSResponse(query []byte, snapshot *Snapshot) []byte {
+	if snapshot == nil {
+		return r.resolverDNSResponseUncoalesced(query, snapshot)
+	}
+	key := fmt.Sprintf("mode2-flight:%d:%s", snapshot.resolverGeneration, cacheKey(query))
+	return r.coalesceDNSResponse(key, query, func() []byte {
+		return r.resolverDNSResponseUncoalesced(query, snapshot)
+	})
+}
+
+func (r *Runtime) resolverDNSResponseUncoalesced(query []byte, snapshot *Snapshot) []byte {
 	if snapshot == nil || len(query) < 12 || binary.BigEndian.Uint16(query[4:6]) != 1 {
 		return formerrResponse(query)
 	}
@@ -30,7 +40,7 @@ func (r *Runtime) resolverDNSResponse(query []byte, snapshot *Snapshot) []byte {
 
 	key := fmt.Sprintf("mode2:%d:%s", snapshot.resolverGeneration, cacheKey(query))
 	if snapshot.cfg.Cache.Enabled {
-		if cached, found := r.cacheGet(key, packetID(query)); found {
+		if cached, found := r.cacheGet(key, packetID(query), snapshot.cfg.Cache.StaleTTL); found {
 			r.cacheHits.Add(1)
 			return cached
 		}
@@ -44,6 +54,12 @@ func (r *Runtime) resolverDNSResponse(query []byte, snapshot *Snapshot) []byte {
 	response, _, queryErr := r.queryResolverUpstreams(ctx, snapshot, query)
 	cancel()
 	if queryErr != nil {
+		if snapshot.cfg.Cache.Enabled {
+			if stale, found := r.cacheGetStale(key, packetID(query), snapshot.cfg.Cache.StaleTTL); found {
+				r.cacheHits.Add(1)
+				return stale
+			}
+		}
 		r.failures.Add(1)
 		return servfailResponse(query)
 	}
