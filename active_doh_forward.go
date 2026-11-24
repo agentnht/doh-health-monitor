@@ -161,6 +161,7 @@ func sendActiveDoHWithClientFactoryAndMetrics(
 	failures := make([]string, 0, len(ips))
 	transportOnly := true
 	qualityRetries := 0
+	hedgeLaunched := false
 	var lastProviderResponse []byte
 	launch := func() {
 		attemptIndex := nextIP
@@ -239,9 +240,9 @@ func sendActiveDoHWithClientFactoryAndMetrics(
 				timer.Reset(activeDoHHedgeDelay)
 			}
 		case <-timer.C:
-			if nextIP < len(ips) && qualityRetries == 0 {
+			if nextIP < len(ips) && qualityRetries == 0 && !hedgeLaunched {
 				launch()
-				timer.Reset(activeDoHHedgeDelay)
+				hedgeLaunched = true
 			}
 		}
 		if qualityRetries > 0 && active == 0 {
