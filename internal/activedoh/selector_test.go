@@ -345,7 +345,7 @@ func TestLatencyOnlySwitchRequiresRepeatedImprovementAndAntiFlapGates(t *testing
 
 	first := now.Add(11 * time.Minute)
 	probes := append(
-		setSuccessfulProbeDuration(results("a", 5, first), 200*time.Millisecond),
+		setSuccessfulProbeDuration(results("a", 5, first), 300*time.Millisecond),
 		setSuccessfulProbeDuration(results("b", 5, first), 10*time.Millisecond)...,
 	)
 	selected, ok = s.Select([]Candidate{a, b}, probes, first)
@@ -355,7 +355,7 @@ func TestLatencyOnlySwitchRequiresRepeatedImprovementAndAntiFlapGates(t *testing
 
 	second := first.Add(time.Minute)
 	probes = append(
-		setSuccessfulProbeDuration(results("a", 5, second), 200*time.Millisecond),
+		setSuccessfulProbeDuration(results("a", 5, second), 300*time.Millisecond),
 		setSuccessfulProbeDuration(results("b", 5, second), 10*time.Millisecond)...,
 	)
 	selected, ok = s.Select([]Candidate{a, b}, probes, second)
