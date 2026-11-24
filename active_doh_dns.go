@@ -13,6 +13,17 @@ const activeDoHMaxCacheTTL = 300 * time.Second
 // activeDoHDNSResponse forwards the original A/AAAA query through the healthy
 // DoH endpoint selected by ActiveDoHSelector and returns its DNS response.
 func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte {
+	if snapshot == nil || r.activeDoHSelector == nil {
+		return r.activeDoHDNSResponseUncoalesced(query, snapshot)
+	}
+	key := fmt.Sprintf("mode1-flight:%d:%d:%s",
+		snapshot.activeDoHGeneration, r.activeDoHSelector.Generation(), cacheKey(query))
+	return r.coalesceDNSResponse(key, query, func() []byte {
+		return r.activeDoHDNSResponseUncoalesced(query, snapshot)
+	})
+}
+
+func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapshot) []byte {
 	_, qtype, questionEnd, err := parseQuestion(query)
 	if err != nil || len(query) < 12 || binary.BigEndian.Uint16(query[4:6]) != 1 {
 		return formerrResponse(query)
