@@ -54,8 +54,8 @@ func BenchmarkStaleFallbackBudget(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		result := make(chan activeDoHAttemptResult)
-		_, _, served := awaitActiveDoHWithStaleBudget(result, time.Nanosecond, func() ([]byte, bool) {
+		result := make(chan dnsAttemptResult)
+		_, _, served := awaitDNSWithStaleBudget(result, time.Nanosecond, func() ([]byte, bool) {
 			return stale, true
 		})
 		if !served {
