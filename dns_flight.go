@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/binary"
-	"sync/atomic"
 )
 
 // dnsFlight represents one in-progress upstream lookup. The response is
@@ -10,7 +9,6 @@ import (
 type dnsFlight struct {
 	done     chan struct{}
 	response []byte
-	waiters  atomic.Int32
 }
 
 // coalesceDNSResponse ensures that identical concurrent DNS cache misses share
@@ -39,7 +37,6 @@ func (r *Runtime) coalesceDNSResponse(key string, query []byte, run func() []byt
 	if loaded {
 		r.dnsCoalesced.Add(1)
 		flight := actual.(*dnsFlight)
-		flight.waiters.Add(1)
 		<-flight.done
 		response := append([]byte(nil), flight.response...)
 		if len(response) >= 2 {
