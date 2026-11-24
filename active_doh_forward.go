@@ -184,6 +184,7 @@ func sendActiveDoHWithClientFactory(
 	}
 	return nil, fmt.Errorf("all bootstrap IP attempts for selected DoH endpoint %s failed: %s",
 		host, strings.Join(failures, "; "))
+}
 
 // activeDoHResponseQualityError rejects DNS responses that should not win an
 // upstream attempt. This is deliberately query-scoped: it does not mark the
