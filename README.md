@@ -50,28 +50,11 @@ Geosite matching находится в правилах внутри Xray DNS ou
 
 ## 2. Схема работы
 
-```text
-WireGuard / TProxy client
-          |
-          v
-     Xray inbound
-          |
-          v
- routing: TCP/UDP port 53 -> dns-out
-          |
-          v
-   dns-out.settings.rules
-       /           \
-  Geosite HIT    catch-all
-   direct         hijack
-      |              |
-      v              v
-127.0.0.1:5355   Xray built-in DNS
- plugin listener   (e.g. Quad9)
-      |
-      v
- endpoint_ip OR resolver
-```
+Ниже показан полный путь DNS-запроса: от маршрутизации в Xray до ответа выбранного режима плагина.
+
+![Архитектура DoH Health Monitor](docs/architecture.svg)
+
+Сопоставление Geosite и выбор DNS-ветки выполняет Xray: `Geosite HIT → direct → 127.0.0.1:5355` попадает в плагин, а `catch-all → hijack` остаётся на встроенном DNS Xray. Внутри listener сначала проверяется точное совпадение в `local-hosts.txt`, затем запрос обрабатывается одним из взаимоисключающих режимов.
 
 В `endpoint_ip` плагин пересылает исходный A/AAAA запрос выбранному здоровому DoH серверу и возвращает DNS-ответ исходного QNAME. Bootstrap IP нужен только для подключения к DoH endpoint; он не подменяет адрес запрошенного домена. В `resolver` исходный QNAME разрешается через отдельный список `resolver_upstreams`. Это независимые режимы: при ошибке одного режима нельзя переключаться в другой.
 
