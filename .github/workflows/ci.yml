@@ -33,6 +33,7 @@ jobs:
           unformatted="$(gofmt -l $files)"
           if [ -n "$unformatted" ]; then
             printf '%s\n' "Go files must be formatted with gofmt:" "$unformatted"
+            gofmt -d $unformatted
             exit 1
           fi
       - name: Verify release metadata consistency
