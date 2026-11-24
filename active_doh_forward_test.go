@@ -111,3 +111,80 @@ func TestSendActiveDoHRetriesNextBootstrapIPOnHTTPFailure(t *testing.T) {
 		t.Fatalf("unexpected retried DNS response: rcode=%d answers=%d", dnsRCode(response), dnsAnswerCount(response))
 	}
 }
+
+func TestSendActiveDoHRejectsUnusableDNSAnswersAndTriesNextBootstrapIP(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		bad  func([]byte) []byte
+	}{
+		{name: "SERVFAIL", bad: func(query []byte) []byte { return mode2ResponseWithRCode(query, 2) }},
+		{name: "REFUSED", bad: func(query []byte) []byte { return mode2ResponseWithRCode(query, 5) }},
+		{name: "truncated", bad: func(query []byte) []byte {
+			response := testAResponse(query, 30)
+			response[2] |= 0x02 // TC flag
+			return response
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			query := makeDNSQuery("quality.example.test", 1)
+			var requests atomic.Int32
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				var response []byte
+				if requests.Add(1) == 1 {
+					response = tc.bad(query)
+				} else {
+					response = testAResponse(query, 45)
+				}
+				w.Header().Set("Content-Type", "application/dns-message")
+				_, _ = w.Write(response)
+			}))
+			defer server.Close()
+
+			candidate := activedoh.Candidate{
+				ServerID: "selected", URL: server.URL + "/dns-query", Hostname: "127.0.0.1",
+				IPv4: []string{"1.1.1.1", "8.8.8.8"}, ResolvedAt: time.Now(),
+			}
+			response, err := sendActiveDoHWithClientFactory(
+				context.Background(), candidate, query, 2*time.Second,
+				func(ip, host string, timeout time.Duration) *http.Client { return server.Client() },
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if requests.Load() != 2 {
+				t.Fatalf("request count=%d, want retry on second bootstrap IP", requests.Load())
+			}
+			if dnsRCode(response) != 0 || dnsAnswerCount(response) != 1 || dnsTruncated(response) {
+				t.Fatalf("returned unusable response: rcode=%d answers=%d truncated=%t",
+					dnsRCode(response), dnsAnswerCount(response), dnsTruncated(response))
+			}
+		})
+	}
+}
+
+func TestSendActiveDoHDoesNotRetryNXDOMAIN(t *testing.T) {
+	query := makeDNSQuery("missing.example.test", 1)
+	var requests atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/dns-message")
+		_, _ = w.Write(mode2ResponseWithRCode(query, 3))
+	}))
+	defer server.Close()
+
+	candidate := activedoh.Candidate{
+		ServerID: "selected", URL: server.URL + "/dns-query", Hostname: "127.0.0.1",
+		IPv4: []string{"1.1.1.1", "8.8.8.8"}, ResolvedAt: time.Now(),
+	}
+	response, err := sendActiveDoHWithClientFactory(
+		context.Background(), candidate, query, 2*time.Second,
+		func(ip, host string, timeout time.Duration) *http.Client { return server.Client() },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 1 || dnsRCode(response) != 3 {
+		t.Fatalf("NXDOMAIN should be returned without retry: requests=%d rcode=%d", requests.Load(), dnsRCode(response))
+	}
+}
+
