@@ -146,7 +146,7 @@ func (s *Selector) Select(candidates []Candidate, results []ProbeResult, now tim
 	bestID, bestScore := "", 0
 	for _, id := range candidateIDs {
 		score := scores[id]
-		if score > bestScore || (score == bestScore && latencyPreferred(s.latencyEWMA[id], s.latencyEWMA[bestID])) {
+		if score > bestScore || (score == bestScore && latencyLower(s.latencyEWMA[id], s.latencyEWMA[bestID])) {
 			bestID, bestScore = id, score
 		}
 	}
@@ -392,6 +392,14 @@ func (s *Selector) updateLatencyEWMA(results []ProbeResult) {
 		// alpha=0.3: smooth individual probe-cycle noise without hiding sustained changes.
 		s.latencyEWMA[id] = (previous*7 + sample*3) / 10
 	}
+}
+
+// latencyLower orders candidates by their observed EWMA latency when health scores tie.
+func latencyLower(candidate, current time.Duration) bool {
+	if candidate <= 0 {
+		return false
+	}
+	return current <= 0 || candidate < current
 }
 
 // latencyPreferred requires at least a 10% improvement to avoid switching on
