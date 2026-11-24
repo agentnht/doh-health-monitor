@@ -341,6 +341,7 @@ type Runtime struct {
 	activeDoHTrigger       chan struct{}
 	activeDoHTriggerLast   atomic.Int64
 	activeDoHSelector      *activedoh.Selector
+	activeDoHForwarder     func(context.Context, activedoh.Candidate, []byte, time.Duration, *activeDoHForwardMetrics) ([]byte, error)
 	statusToken            string
 	snapshot               atomic.Pointer[Snapshot]
 	mu                     sync.RWMutex
