@@ -16,7 +16,7 @@ func BenchmarkResolverFreshCacheHit(b *testing.B) {
 		},
 	}
 	snapshot := &Snapshot{
-		cfg: Config{DNSMode: "resolver", Cache: CacheConfig{Enabled: true, StaleTTL: 3600}},
+		cfg:                Config{DNSMode: "resolver", Cache: CacheConfig{Enabled: true, StaleTTL: 3600}},
 		resolverGeneration: generation,
 	}
 	r.snapshot.Store(snapshot)
