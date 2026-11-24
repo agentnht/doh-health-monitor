@@ -2047,7 +2047,7 @@ func (r *Runtime) deleteCacheEntryLocked(key string, item cacheItem) {
 	}
 }
 
-func (r *Runtime) cacheGet(key string, id uint16, staleTTLSeconds ...int) ([]byte, bool) {
+func (r *Runtime) cacheGet(key string, id uint16, staleTTLSeconds int) ([]byte, bool) {
 	r.cacheMu.Lock()
 	defer r.cacheMu.Unlock()
 	v, ok := r.cache[key]
@@ -2056,11 +2056,7 @@ func (r *Runtime) cacheGet(key string, id uint16, staleTTLSeconds ...int) ([]byt
 	}
 	now := time.Now()
 	if !now.Before(v.expires) {
-		staleTTL := 0
-		if len(staleTTLSeconds) > 0 {
-			staleTTL = staleTTLSeconds[0]
-		}
-		if staleTTL <= 0 || now.After(v.expires.Add(time.Duration(staleTTL)*time.Second)) {
+		if staleTTLSeconds <= 0 || now.After(v.expires.Add(time.Duration(staleTTLSeconds)*time.Second)) {
 			r.deleteCacheEntryLocked(key, v)
 		}
 		return nil, false
