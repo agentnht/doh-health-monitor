@@ -1,12 +1,22 @@
-## [Unreleased]
+## [2.5.0] - 2026-11-24
 
 ### DNS resilience fixes
+- Add benchmarks for fresh resolver cache hits, DNS singleflight, pinned transport reuse and bounded stale fallback timing.
+- Expand end-to-end coverage for stale fallback timing/recheck suppression and forwarding hedge metrics; remove test-only singleflight waiter state and make cache stale-TTL arguments explicit. Group resilience counters under one runtime metrics field.
+- Expose bounded-cardinality p50/p95 DoH forwarding latency estimates from a fixed histogram; no per-domain or per-IP metrics are exported.
+- Add fuzz targets for DNS packet handling and stale/TTL parsing, with bounded smoke runs in GitHub Actions.
+- Cache valid provider-originated SERVFAIL responses separately for at most five seconds when negative caching is enabled; never stale-serve or cache synthetic/truncated SERVFAIL responses.
+- Adapt bootstrap hedging from measured per-IP forwarding latency (1.5× median, clamped to 100–1500ms) with a conservative fallback before observations exist. Tighten selector EWMA tie-breaks to require at least 25% and 100ms improvement while retaining repeated-cycle and hold/cooldown gates.
+- Reuse pinned HTTP transports and keep-alive connections by exact DoH hostname/bootstrap-IP identity. The pool is capped at 64 entries, expires idle identities, and preserves hostname TLS SNI while dialing the pinned address.
+- Add a bounded 1.8-second client response budget for eligible stale ActiveDoH answers, plus a bounded per-query failure recheck suppression window to avoid repeatedly hitting an unavailable upstream.
+- Recover panics at UDP/TCP DNS worker boundaries, log stack traces, and prevent one malformed request or unexpected handler failure from permanently consuming a bounded worker.
 - Keep an `endpoint_ip` stale-answer cache in a configuration-scoped namespace independent of ActiveDoH selection generation. A withdrawn selector can therefore still serve a recently expired answer with TTL=1 during the configured stale window.
 - Bound `SERVFAIL` and `REFUSED` handling to one alternate bootstrap-IP retry. If no usable answer is found, return the last DNS policy response from the provider instead of synthesizing a new SERVFAIL or walking every bootstrap IP.
 - Trigger an early ActiveDoH selection cycle only after transport-level forwarding failures, with a 30-second per-process debounce. Query-specific DNS responses no longer cause repeated health-probe cycles.
-- Initialize `stale_ttl_seconds` to the 60-second default before decoding both startup and hot-reloaded configuration. Missing fields inherit the default; explicit zero remains an opt-out.
+- Initialize `stale_ttl_seconds` to the 1800-second (30-minute) default before decoding both startup and hot-reloaded configuration. Missing fields inherit the 1800-second default; explicit zero remains an opt-out.
 - Add regression tests for stale serving after selector withdrawal, bounded SERVFAIL retry, trigger debounce, and config migration through startup/hot-reload paths.
-- Limit delayed bootstrap hedging to one parallel alternate attempt per DNS request; subsequent failures advance sequentially. Adaptive per-IP hedge timing and connection pooling remain deferred.
+- Add an end-to-end `resolver`-mode regression: a successful upstream answer is cached, the upstream then fails, and the same query receives the stale RRset with TTL=1 inside the configured stale window.
+- Limit delayed bootstrap hedging to one parallel alternate attempt per DNS request; subsequent failures advance sequentially. Adaptive per-IP hedge timing and bounded connection pooling are enabled.
 
 
 ## [2.4.0] - 2026-11-23

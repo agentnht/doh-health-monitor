@@ -5,8 +5,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"time"
+
+	"lucx-doh-health-monitor/internal/activedoh"
 )
 
 const activeDoHMaxCacheTTL = 300 * time.Second
@@ -41,6 +44,31 @@ func (r *Runtime) triggerActiveDoHOnTransportFailure() {
 func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte {
 	if snapshot == nil || r.activeDoHSelector == nil {
 		return r.activeDoHDNSResponseUncoalesced(query, snapshot)
+	}
+	// Serve a fresh cache hit before allocating/looking up a singleflight entry.
+	// The authoritative path repeats the check to handle races with a concurrent
+	// cache fill after this fast-path lookup.
+	if snapshot.cfg.Cache.Enabled && len(query) >= 12 &&
+		binary.BigEndian.Uint16(query[4:6]) == 1 {
+		_, qtype, questionEnd, err := parseQuestion(query)
+		if err == nil && questionEnd >= 2 && questionEnd <= len(query) &&
+			binary.BigEndian.Uint16(query[questionEnd-2:questionEnd]) == 1 &&
+			(qtype == 1 || qtype == 28) {
+			current := r.currentSnapshot()
+			selection, ok := r.activeDoHSelector.Current(time.Now())
+			if ok && current != nil &&
+				current.activeDoHGeneration == snapshot.activeDoHGeneration &&
+				selection.Candidate.ConfigGeneration == current.activeDoHGeneration {
+				key := fmt.Sprintf("mode1:%d:%s", selection.Generation, cacheKey(query))
+				if cached, found := r.cacheGet(key, packetID(query), snapshot.cfg.Cache.StaleTTL); found {
+					if r.activeDoHConfigMatches(snapshot) &&
+						r.activeDoHSelector.Generation() == selection.Generation {
+						r.cacheHits.Add(1)
+						return cached
+					}
+				}
+			}
+		}
 	}
 	key := fmt.Sprintf("mode1-flight:%d:%d:%s",
 		snapshot.activeDoHGeneration, r.activeDoHSelector.Generation(), cacheKey(query))
@@ -81,12 +109,14 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 		if snapshot.cfg.Cache.Enabled {
 			if stale, found := r.cacheGetStale(staleKey, packetID(query), snapshot.cfg.Cache.StaleTTL); found {
 				r.cacheHits.Add(1)
+				r.markStaleRecheck(staleKey, time.Now())
 				return stale
 			}
 		}
 		return servfailResponse(query)
 	}
 
+	servfailKey := fmt.Sprintf("mode1-servfail:%d:%d:%s", snapshot.activeDoHGeneration, selection.Generation, cacheKey(query))
 	key := fmt.Sprintf("mode1:%d:%s", selection.Generation, cacheKey(query))
 	cacheConfig := snapshot.cfg.Cache
 	if cacheConfig.Enabled {
@@ -98,6 +128,16 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 				return servfailResponse(query)
 			}
 			return cached
+		}
+		if cached, found := r.cacheGet(servfailKey, packetID(query), 0); found {
+			r.cacheHits.Add(1)
+			return cached
+		}
+		if r.staleRecheckSuppressed(staleKey, time.Now()) {
+			if stale, found := r.cacheGetStale(staleKey, packetID(query), cacheConfig.StaleTTL); found {
+				r.cacheHits.Add(1)
+				return stale
+			}
 		}
 	}
 
@@ -114,11 +154,55 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 		dohTimeout = totalTimeout
 	}
 	metrics := &activeDoHForwardMetrics{
-		extraAttempts:     &r.bootstrapExtraAttempts,
-		hedgeWins:         &r.hedgeWins,
-		qualityRejections: &r.dnsQualityRejections,
+		extraAttempts:     &r.resilience.bootstrapExtraAttempts,
+		hedgeWins:         &r.resilience.hedgeWins,
+		qualityRejections: &r.resilience.dnsQualityRejections,
+		hedgeDelay:        r.activeDoHHedgeDelay(selection.Candidate),
+		recordLatency:     r.recordPinnedDoHLatency,
 	}
-	response, queryErr := sendActiveDoHWithMetrics(ctx, selection.Candidate, query, dohTimeout, metrics)
+	result := make(chan dnsAttemptResult, 1)
+	go func() {
+		// This forwarding attempt runs in its own goroutine, so worker- and
+		// singleflight-level recovery cannot contain a panic from the forwarder.
+		// The buffered result channel lets recovery always release the waiter.
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				logLine("ERROR", "ActiveDoH forwarding goroutine panicked: %v\\n%s", recovered, debug.Stack())
+				result <- dnsAttemptResult{
+					response: servfailResponse(query),
+					err:      fmt.Errorf("ActiveDoH forwarder panicked: %v", recovered),
+				}
+			}
+		}()
+		forward := r.activeDoHForwarder
+		if forward == nil {
+			forward = func(forwardCtx context.Context, candidate activedoh.Candidate, packet []byte, timeout time.Duration, forwardMetrics *activeDoHForwardMetrics) ([]byte, error) {
+				return sendActiveDoHWithClientFactoryAndMetrics(
+					forwardCtx, candidate, packet, timeout, r.pinnedDoHHTTPClient, forwardMetrics,
+				)
+			}
+		}
+		response, err := forward(ctx, selection.Candidate, query, dohTimeout, metrics)
+		result <- dnsAttemptResult{response: response, err: err}
+	}()
+	response, queryErr, servedStale := awaitDNSWithStaleBudget(
+		result, activeDoHStaleResponseBudget,
+		func() ([]byte, bool) {
+			if !cacheConfig.Enabled {
+				return nil, false
+			}
+			stale, found := r.cacheGetStale(staleKey, packetID(query), cacheConfig.StaleTTL)
+			if found {
+				r.cacheHits.Add(1)
+			}
+			return stale, found
+		},
+	)
+	if servedStale {
+		cancel()
+		r.markStaleRecheck(staleKey, time.Now())
+		return response
+	}
 	cancel()
 	if queryErr != nil {
 		// Only transport-level failures justify an early selector cycle.
@@ -131,6 +215,7 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 		if cacheConfig.Enabled {
 			if stale, found := r.cacheGetStale(staleKey, packetID(query), cacheConfig.StaleTTL); found {
 				r.cacheHits.Add(1)
+				r.markStaleRecheck(staleKey, time.Now())
 				return stale
 			}
 		}
@@ -144,6 +229,14 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 		selection.Candidate.ConfigGeneration != snapshot.activeDoHGeneration ||
 		r.activeDoHSelector.Generation() != selection.Generation {
 		return servfailResponse(query)
+	}
+
+	if dnsRCode(response) == 2 && !dnsTruncated(response) {
+		if cacheConfig.Enabled && cacheConfig.NegativeTTL > 0 {
+			r.cachePutFixedTTL(servfailKey, response,
+				time.Duration(cacheConfig.NegativeTTL)*time.Second, 5*time.Second, cacheConfig)
+		}
+		return response
 	}
 
 	if cacheConfig.Enabled {

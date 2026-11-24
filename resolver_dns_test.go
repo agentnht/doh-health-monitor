@@ -360,7 +360,7 @@ func TestMode2FirstResponseKeepsUpstreamTTLWhileCacheCapsCopy(t *testing.T) {
 	}
 
 	cacheKey := "mode2:77:" + cacheKey(query)
-	cachedResponse, found := runtime.cacheGet(cacheKey, packetID(query))
+	cachedResponse, found := runtime.cacheGet(cacheKey, packetID(query), 0)
 	if !found {
 		t.Fatal("expected capped response in resolver cache")
 	}
@@ -452,7 +452,7 @@ func TestMode2CNAMEToNODATAPreservesFirstUpstreamResponse(t *testing.T) {
 	}
 
 	cacheKey := "mode2:78:" + cacheKey(query)
-	cachedResponse, found := runtime.cacheGet(cacheKey, packetID(query))
+	cachedResponse, found := runtime.cacheGet(cacheKey, packetID(query), 0)
 	if !found {
 		t.Fatal("expected CNAME/NODATA response in mode-2 cache")
 	}
@@ -604,7 +604,7 @@ func TestMode2ResolverForwardsCNAMEAddressAndEDNSDO(t *testing.T) {
 				t.Fatal("test upstream response did not set AD; plugin must not add a false AD bit")
 			}
 
-			cached, found := runtime.cacheGet("mode2:91:"+cacheKey(query), packetID(query))
+			cached, found := runtime.cacheGet("mode2:91:"+cacheKey(query), packetID(query), 0)
 			if !found {
 				t.Fatal("expected positive CNAME/address response to be cached")
 			}
@@ -884,5 +884,71 @@ func TestMode2ResolverCooldownSkipsKnownFailedUpstream(t *testing.T) {
 	}
 	if selected != "good" || dnsRCode(response) != 0 || goodCount.Load() != 1 {
 		t.Fatalf("selected=%q rcode=%d good calls=%d", selected, dnsRCode(response), goodCount.Load())
+	}
+}
+
+func TestMode2ResolverReturnsStaleAnswerWhenAllUpstreamsFail(t *testing.T) {
+	var failUpstream atomic.Bool
+	address, requestCount := startMode2TestUDPResolver(t, func(query []byte) []byte {
+		if failUpstream.Load() {
+			return nil // Simulate an upstream timeout after the initial successful response.
+		}
+		return testAResponse(query, 60)
+	})
+	query := makeDNSQuery("mode2-stale.example", 1)
+	snapshot := &Snapshot{
+		cfg: Config{
+			DNSMode: "resolver",
+			Cache: CacheConfig{
+				Enabled: true, MinTTL: 0, MaxTTL: 300, StaleTTL: 1800,
+				MaxEntries: 10, MaxBytes: 4096,
+			},
+			DNSQueryTimeoutSeconds: 1,
+		},
+		resolverGeneration: 1800,
+		resolverUpstreams: []*ResolverRuntime{
+			{cfg: ResolverUpstream{ID: "primary", Type: "udp"}, address: address},
+		},
+	}
+	runtime := &Runtime{cache: make(map[string]cacheItem)}
+	runtime.snapshot.Store(snapshot)
+
+	fresh := runtime.resolverDNSResponse(query, snapshot)
+	if dnsRCode(fresh) != 0 || dnsAnswerCount(fresh) != 1 {
+		t.Fatalf("initial response: rcode=%d answers=%d, want successful A answer", dnsRCode(fresh), dnsAnswerCount(fresh))
+	}
+	key := "mode2:1800:" + cacheKey(query)
+	runtime.cacheMu.Lock()
+	item, ok := runtime.cache[key]
+	if !ok {
+		runtime.cacheMu.Unlock()
+		t.Fatal("successful resolver answer was not cached")
+	}
+	item.expires = time.Now().Add(-time.Second)
+	runtime.cache[key] = item
+	runtime.cacheMu.Unlock()
+
+	failUpstream.Store(true)
+	stale := runtime.resolverDNSResponse(query, snapshot)
+	if dnsRCode(stale) != 0 || dnsAnswerCount(stale) != 1 {
+		t.Fatalf("stale response: rcode=%d answers=%d, want cached successful A answer", dnsRCode(stale), dnsAnswerCount(stale))
+	}
+	if got := binary.BigEndian.Uint16(stale[:2]); got != packetID(query) {
+		t.Fatalf("response ID=%#x, want %#x", got, packetID(query))
+	}
+	positions, err := rrTTLPositions(stale)
+	if err != nil || len(positions) == 0 {
+		t.Fatalf("failed to inspect stale TTLs: positions=%v err=%v", positions, err)
+	}
+	for _, offset := range positions {
+		if got := binary.BigEndian.Uint32(stale[offset : offset+4]); got != 1 {
+			t.Fatalf("stale TTL=%d, want 1", got)
+		}
+	}
+	if got := runtime.resilience.staleCacheHits.Load(); got != 1 {
+		t.Fatalf("stale cache hits=%d, want 1", got)
+	}
+	if got := requestCount.Load(); got != 2 {
+		t.Fatalf("upstream requests=%d, want initial success plus one failed refresh", got)
 	}
 }

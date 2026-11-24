@@ -60,8 +60,8 @@ func TestActiveDoHStaleCacheSurvivesSelectionWithdrawal(t *testing.T) {
 	if got := binary.BigEndian.Uint32(response[positions[0] : positions[0]+4]); got != 1 {
 		t.Fatalf("stale TTL=%d, want 1", got)
 	}
-	if runtime.staleCacheHits.Load() != 1 {
-		t.Fatalf("stale cache hits=%d, want 1", runtime.staleCacheHits.Load())
+	if runtime.resilience.staleCacheHits.Load() != 1 {
+		t.Fatalf("stale cache hits=%d, want 1", runtime.resilience.staleCacheHits.Load())
 	}
 }
 

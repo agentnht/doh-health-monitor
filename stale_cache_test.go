@@ -43,7 +43,7 @@ func TestCacheGetStaleReturnsExpiredAnswerWithTTLOne(t *testing.T) {
 			t.Fatalf("stale TTL = %d, want 1", got)
 		}
 	}
-	if got := runtime.staleCacheHits.Load(); got != 1 {
+	if got := runtime.resilience.staleCacheHits.Load(); got != 1 {
 		t.Fatalf("stale cache hit counter = %d, want 1", got)
 	}
 }

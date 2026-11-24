@@ -402,8 +402,10 @@ func latencyLower(candidate, current time.Duration) bool {
 	return current <= 0 || candidate < current
 }
 
-// latencyPreferred requires at least a 10% improvement to avoid switching on
-// insignificant probe-latency noise. An observed latency beats an unknown latency.
+// latencyPreferred treats health-probe duration as a conservative tie-breaker,
+// not as DoH request latency. Require both a 25% relative improvement and at
+// least 100ms absolute gain; repeated-cycle and selector hold/cooldown gates
+// still apply before a switch.
 func latencyPreferred(candidate, current time.Duration) bool {
 	if candidate <= 0 {
 		return false
@@ -411,7 +413,12 @@ func latencyPreferred(candidate, current time.Duration) bool {
 	if current <= 0 {
 		return true
 	}
-	return candidate <= current-current/10
+	improvement := current - candidate
+	minimum := current / 4
+	if minimum < 100*time.Millisecond {
+		minimum = 100 * time.Millisecond
+	}
+	return improvement >= minimum
 }
 
 func scoreResults(results []ProbeResult) map[string]int {

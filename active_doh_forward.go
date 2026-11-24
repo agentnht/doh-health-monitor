@@ -16,20 +16,12 @@ import (
 	"lucx-doh-health-monitor/internal/activedoh"
 )
 
-// sendActiveDoHWithMetrics forwards the original client DNS message to the
-// DoH endpoint selected by ActiveDoHSelector. The TCP connection is pinned to
-// a bootstrap address while URL host, HTTP Host and TLS SNI remain the endpoint name.
-func sendActiveDoHWithMetrics(ctx context.Context, candidate activedoh.Candidate, packet []byte, timeout time.Duration, metrics *activeDoHForwardMetrics) ([]byte, error) {
-	return sendActiveDoHWithClientFactoryAndMetrics(ctx, candidate, packet, timeout,
-		func(ip, host string, attemptTimeout time.Duration) *http.Client {
-			return newPinnedHTTPClient(ip, host, attemptTimeout)
-		}, metrics)
-}
-
 type activeDoHForwardMetrics struct {
 	extraAttempts     *atomic.Uint64
 	hedgeWins         *atomic.Uint64
 	qualityRejections *atomic.Uint64
+	hedgeDelay        time.Duration
+	recordLatency     func(host, ip string, elapsed time.Duration)
 }
 
 type activeDoHHTTPClientFactory func(ip, host string, timeout time.Duration) *http.Client
@@ -55,7 +47,6 @@ func sendActiveDoHAttempt(
 	}
 	request, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, candidate.URL, bytes.NewReader(packet))
 	if err != nil {
-		client.CloseIdleConnections()
 		return nil, fmt.Errorf("build selected DoH request: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/dns-message")
@@ -66,7 +57,6 @@ func sendActiveDoHAttempt(
 		return nil, sanitizeDoHTransportError(err, candidate.URL)
 	}
 	defer response.Body.Close()
-	defer client.CloseIdleConnections()
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("DoH HTTP %d", response.StatusCode)
 	}
@@ -173,12 +163,22 @@ func sendActiveDoHWithClientFactoryAndMetrics(
 			metrics.extraAttempts.Add(1)
 		}
 		go func(hedged bool) {
+			started := time.Now()
 			body, err := sendActiveDoHAttempt(attemptCtx, candidate, packet, ip, host, timeout, newClient)
+			if err == nil && metrics != nil && metrics.recordLatency != nil {
+				// Only completed HTTP/DNS exchanges inform latency estimates;
+				// hedge-cancelled attempts must not look artificially fast.
+				metrics.recordLatency(host, ip, time.Since(started))
+			}
 			results <- attemptResult{ip: ip, response: body, err: err, hedged: hedged}
 		}(hedged)
 	}
 	launch()
-	timer := time.NewTimer(activeDoHHedgeDelay)
+	hedgeDelay := activeDoHHedgeDelay
+	if metrics != nil && metrics.hedgeDelay > 0 {
+		hedgeDelay = metrics.hedgeDelay
+	}
+	timer := time.NewTimer(hedgeDelay)
 	defer timer.Stop()
 
 	for active > 0 || nextIP < len(ips) {
@@ -237,7 +237,7 @@ func sendActiveDoHWithClientFactoryAndMetrics(
 					default:
 					}
 				}
-				timer.Reset(activeDoHHedgeDelay)
+				timer.Reset(hedgeDelay)
 			}
 		case <-timer.C:
 			if nextIP < len(ips) && qualityRetries == 0 && !hedgeLaunched {

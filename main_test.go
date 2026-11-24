@@ -164,7 +164,7 @@ func TestCacheTTLAndTransactionID(t *testing.T) {
 	key := cacheKey(q)
 	r.cachePut(key, resp, c)
 	otherID := uint16(0x1234)
-	got, ok := r.cacheGet(key, otherID)
+	got, ok := r.cacheGet(key, otherID, 0)
 	if !ok {
 		t.Fatal("expected cache hit")
 	}
@@ -285,10 +285,10 @@ func TestCacheFIFOAndByteLimit(t *testing.T) {
 	if entries >= 30 {
 		t.Fatalf("entries=%d, want some FIFO eviction under 1 KiB budget", entries)
 	}
-	if _, ok := r.cacheGet(oldestKey, oldestID); ok {
+	if _, ok := r.cacheGet(oldestKey, oldestID, 0); ok {
 		t.Fatal("oldest entry should have been evicted")
 	}
-	if _, ok := r.cacheGet(newestKey, newestID); !ok {
+	if _, ok := r.cacheGet(newestKey, newestID, 0); !ok {
 		t.Fatal("newest cache entry should remain")
 	}
 }
@@ -503,7 +503,7 @@ func BenchmarkCacheHit(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		r.cacheGet(key, uint16(i))
+		r.cacheGet(key, uint16(i), 0)
 	}
 }
 

@@ -42,8 +42,8 @@ func TestCoalesceDNSResponseSharesWorkAndRestoresIDs(t *testing.T) {
 
 	deadline := time.Now().Add(time.Second)
 	for {
-		value, ok := runtime.dnsFlights.Load("mode1:1:test")
-		if ok && value.(*dnsFlight).waiters.Load() == 1 {
+		_, ok := runtime.dnsFlights.Load("mode1:1:test")
+		if ok && runtime.resilience.dnsCoalesced.Load() == 1 {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -58,7 +58,7 @@ func TestCoalesceDNSResponseSharesWorkAndRestoresIDs(t *testing.T) {
 	if calls.Load() != 1 {
 		t.Fatalf("upstream operation called %d times, want 1", calls.Load())
 	}
-	if got := runtime.dnsCoalesced.Load(); got != 1 {
+	if got := runtime.resilience.dnsCoalesced.Load(); got != 1 {
 		t.Fatalf("coalesced request counter = %d, want 1", got)
 	}
 	if got := binary.BigEndian.Uint16(got1[:2]); got != 0x1111 {

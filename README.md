@@ -1,6 +1,6 @@
 # DoH DNS Proxy & Health Monitor для LucX-UI
 
-**Версия:** 2.4.0  
+**Версия:** 2.5.0  
 **Платформа:** Linux x86-64 (`amd64`), статический Go-бинарник  
 **Тип:** LucX-UI sidecar, `apiVersion: 1`  
 **Режим Gemini API:** необязательный, управляется параметром `gemini_api.enabled`
@@ -22,10 +22,10 @@ DoH Health Monitor — локальный DNS sidecar для LucX-UI/Xray. В л
 
 - UDP и TCP DNS listener по умолчанию на `127.0.0.1:5355`; конфигурация принимает только loopback IP literals и валидные порты 1–65535.
 - DNS UDP payload учитывает EDNS buffer size клиента (или 512 байт без EDNS); при нехватке места ответ обрезается по границе RR и получает флаг TC.
-- ActiveDoHSelector: семь контрольных доменов, A/AAAA DNS probes через кандидатов DoH, затем HTTPS/TLS probes по IP с исходными hostname, SNI, HTTP Host и проверкой сертификата. При равном health score учитывается EWMA успешных end-to-end probe durations (alpha=0.3); latency-only переключение требует преимущества не менее 10%, двух последовательных циклов и соблюдения minimum-hold/switch-cooldown.
+- ActiveDoHSelector: семь контрольных доменов, A/AAAA DNS probes через кандидатов DoH, затем HTTPS/TLS probes по IP с исходными hostname, SNI, HTTP Host и проверкой сертификата. При равном health score учитывается EWMA успешных end-to-end probe durations (alpha=0.3); latency-only переключение требует одновременно не менее 25% и 100 мс выигрыша, двух последовательных циклов и соблюдения minimum-hold/switch-cooldown.
 - Режим `endpoint_ip` пересылает исходный A/AAAA DNS-запрос через выбранный ActiveDoH endpoint; соединение закреплено за его bootstrap IP, а hostname/SNI/сертификат сохраняются. Ответ содержит реальные DNS-записи запрошенного домена; TTL исходного ответа сохраняется, кэш ограничивается настройками cache (по умолчанию максимум 300 секунд).
-- Stale cache в `endpoint_ip` хранит отдельную копию ответа в пределах текущего поколения конфигурации, но не поколения выбора endpoint-а: при отзыве выбора после сбоя можно вернуть последний известный ответ с TTL=1 в течение `cache.stale_ttl_seconds` (по умолчанию 60 секунд). При успешном ответе обычный cache остаётся привязан к поколению выбора.
-- В `endpoint_ip` структурно корректные `SERVFAIL` и `REFUSED` допускают не более одной повторной попытки на другом bootstrap IP; если второй адрес тоже не даёт пригодного ответа, клиент получает последний DNS-ответ провайдера без подмены на синтетический SERVFAIL. Ответы с флагом `TC` продолжают проверяться через остальные bootstrap IP. При транспортной/HTTP-ошибке следующий IP запускается сразу, а если попытка просто медленная — через 250 мс (не более одной параллельной hedge-попытки на DNS-запрос); первый пригодный ответ побеждает, остальные попытки отменяются. `NXDOMAIN` и другие корректные DNS-ответы не повторяются. Ошибка DNS policy не запускает selector probes; внеочередная проверка запускается только после транспортных ошибок и не чаще раза в 30 секунд. Это не переключает ActiveDoHSelector на другой provider и не меняет его anti-flap policy.
+- Stale cache работает в обоих режимах и включается только при ошибке upstream. В `endpoint_ip` отдельная копия ответа хранится в пределах поколения конфигурации, независимо от поколения выбора endpoint-а: после сбоя или отзыва выбора можно вернуть последний известный ответ с TTL=1 в течение `cache.stale_ttl_seconds`. При наличии stale-ответа клиент получает его в пределах 1.8 секунды; после fallback повторный запрос того же QNAME/QTYPE подавляется на 2 секунды. В `resolver` stale-ответ из namespace текущего поколения resolver-а возвращается с TTL=1, если все upstream-ы завершились ошибкой; ожидание ограничено обычным `dns_query_timeout_seconds`, отдельного 1.8-секундного таймера в этом режиме нет. По умолчанию окно stale — 30 минут; `0` отключает механизм. Успешный свежий ответ всегда имеет приоритет. Если DoH-провайдер в `endpoint_ip` вернул валидный SERVFAIL, он может кратковременно кэшироваться отдельно (не более 5 секунд, управляется `negative_ttl_seconds`); синтетические ошибки и усечённый SERVFAIL не кэшируются.
+- В `endpoint_ip` структурно корректные `SERVFAIL` и `REFUSED` допускают не более одной повторной попытки на другом bootstrap IP; если второй адрес тоже не даёт пригодного ответа, клиент получает последний DNS-ответ провайдера без подмены на синтетический SERVFAIL. Ответы с флагом `TC` продолжают проверяться через остальные bootstrap IP. При транспортной/HTTP-ошибке следующий IP запускается сразу, а если попытка просто медленная — через адаптивную задержку 1.5× медианы фактической latency bootstrap IP (100–1500 мс; fallback 250 мс до накопления измерений; не более одной параллельной hedge-попытки на DNS-запрос); первый пригодный ответ побеждает, остальные попытки отменяются. `NXDOMAIN` и другие корректные DNS-ответы не повторяются. Ошибка DNS policy не запускает selector probes; внеочередная проверка запускается только после транспортных ошибок и не чаще раза в 30 секунд. Это не переключает ActiveDoHSelector на другой provider и не меняет его anti-flap policy.
 - Режим `resolver` с последовательным fallback через system, UDP, TCP и DoH upstream-ы; упавшие upstream-ы получают cooldown, а отказ всех upstream-ов возвращает DNS SERVFAIL вместо ложного NODATA.
 - Раздельные cache namespace/generation для двух режимов; режим 2 использует positive cache TTL не более 300 секунд и SOA-based negative caching по RFC 2308.
 - Сохранение исходного TTL upstream в первом ответе; ограничения TTL применяются к отдельной копии, помещаемой в кэш.
@@ -116,11 +116,11 @@ $LUCX_PLUGIN_DATA/gemini_api_key
 
 Для каждого релиза публикуются ZIP, файл SHA-256 и GitHub artifact attestation (Sigstore). Проверяйте **оба** свойства: checksum подтверждает целостность скачанного файла, attestation — репозиторий и workflow, которые его собрали.
 
-Для релиза `v2.4.0` после скачивания обоих файлов выполните:
+Для релиза `v2.5.0` после скачивания обоих файлов выполните:
 
 ```bash
-sha256sum -c doh-health-monitor-v2.4.0.zip.sha256
-gh attestation verify doh-health-monitor-v2.4.0.zip \
+sha256sum -c doh-health-monitor-v2.5.0.zip.sha256
+gh attestation verify doh-health-monitor-v2.5.0.zip \
   --repo agentnht/doh-health-monitor \
   --signer-workflow agentnht/doh-health-monitor/.github/workflows/release.yml
 ```
@@ -129,14 +129,14 @@ gh attestation verify doh-health-monitor-v2.4.0.zip \
 
 ## 4. Установка в LucX-UI
 
-1. Для опубликованного релиза скачайте ZIP с соответствующим номером версии. Для релиза `v2.4.0` используйте пакет `doh-health-monitor-v2.4.0.zip` со страницы GitHub Releases.
+1. Для опубликованного релиза скачайте ZIP с соответствующим номером версии. Для релиза `v2.5.0` используйте пакет `doh-health-monitor-v2.5.0.zip` со страницы GitHub Releases.
 2. В LucX-UI откройте менеджер плагинов и установите ZIP.
 3. Запустите плагин из панели.
 4. При первом запуске плагин создаст `config.json`, `doh-servers.txt`, `tst-domen.txt` и `local-hosts.txt`. Уже существующие текстовые файлы не перезаписываются (старый URL-only список DoH автоматически мигрирует в новый формат). Если `local-hosts.txt` отсутствует, старые записи `local_hosts` из `config.json` однократно переносятся в новый файл.
 5. Посмотрите журнал плагина. Нормальный старт содержит строки примерно такого вида:
 
 ```text
-level=INFO START id=doh-health-monitor version=2.4.0 arch=amd64 data=...
+level=INFO START id=doh-health-monitor version=2.5.0 arch=amd64 data=...
 level=INFO CONFIG loaded ... gemini_api=false
 level=INFO EVENT_SOCKET listening ...
 level=INFO READY DNS=127.0.0.1:5355/127.0.0.1:5355 HTTP=127.0.0.1:18765
@@ -169,7 +169,7 @@ dhm
 Не запускайте management script непосредственно через `curl | bash` или process substitution: такой путь не позволяет проверить целостность исполняемого файла до запуска. Для установки/обновления скачивайте опубликованный release ZIP и checksum, проверяйте архив и только затем устанавливайте его через штатный менеджер LucX-UI:
 
 ```bash
-version=2.4.0
+version=2.5.0
 asset="doh-health-monitor-v${version}.zip"
 base="https://github.com/agentnht/doh-health-monitor/releases/download/v${version}"
 curl -fSLO "$base/$asset"
@@ -310,9 +310,9 @@ Web UI по-прежнему запускается отдельно из SSH-м
 - `udp` / `tcp` — обычный DNS upstream. `address` должен быть IP literal; порт необязателен и по умолчанию равен 53. Hostname здесь не принимается.
 - `doh` — HTTPS DoH endpoint. Задаётся через `url`; `bootstrap_ips` необязателен и содержит IP literal для подключения без предварительного разрешения hostname.
 
-Порядок объектов в `resolver_upstreams` задаёт fallback-порядок. Следующий upstream пробуется при транспортной ошибке/таймауте, SERVFAIL, REFUSED или непригодном усечённом ответе. Валидный NXDOMAIN или NOERROR/NODATA считается окончательным DNS-ответом и не маскируется следующим upstream-ом. Если все upstream-ы исчерпаны, плагин возвращает синтетический NOERROR/NODATA без SOA и не кэширует его.
+Порядок объектов в `resolver_upstreams` задаёт fallback-порядок. Следующий upstream пробуется при транспортной ошибке/таймауте, SERVFAIL, REFUSED или непригодном усечённом ответе. Валидный NXDOMAIN или NOERROR/NODATA считается окончательным DNS-ответом и не маскируется следующим upstream-ом. Если все upstream-ы исчерпаны, плагин возвращает синтетический SERVFAIL и не кэширует его; если для этого QNAME/QTYPE есть stale-запись в пределах окна, возвращается она с TTL=1.
 
-Если `resolver_upstreams` отсутствует или имеет значение `null`, применяется default — один system resolver. Явный пустой массив `[]` означает, что upstream-ов нет; в режиме `resolver` запросы завершатся синтетическим NOERROR/NODATA. Чтобы отключить system resolver, укажите непустой список других upstream-ов или явно задайте нужный порядок.
+Если `resolver_upstreams` отсутствует или имеет значение `null`, применяется default — один system resolver. Явный пустой массив `[]` означает, что upstream-ов нет; в режиме `resolver` запросы завершатся синтетическим SERVFAIL (или stale-ответом, если он есть в пределах настроенного окна). Чтобы отключить system resolver, укажите непустой список других upstream-ов или явно задайте нужный порядок.
 
 `bootstrap_resolvers` — отдельная настройка для bootstrap hostname-ов DoH endpoint-ов. Она не является списком пользовательских DNS upstream-ов режима 2 и не подменяет `resolver_upstreams`.
 
@@ -383,14 +383,14 @@ Selector использует freshness, score, failure grace cycles, minimum ho
   "min_ttl_seconds": 0,
   "max_ttl_seconds": 300,
   "negative_ttl_seconds": 15,
-  "stale_ttl_seconds": 60,
+  "stale_ttl_seconds": 1800,
   "max_entries": 8192,
   "max_bytes": 8388608
 }
 ```
 
 - `enabled`, `max_entries` и `max_bytes` управляют общим RAM-кэшем.
-- `stale_ttl_seconds` (0–3600, по умолчанию 60) задаёт окно использования недавно истёкшего ответа **только при ошибке upstream**. Такой ответ отдаётся с TTL=1; если upstream доступен, истёкшая запись не используется.
+- `stale_ttl_seconds` (0–3600, по умолчанию 1800) задаёт окно использования недавно истёкшего ответа **только при ошибке upstream**. Такой ответ отдаётся с TTL=1; если upstream доступен, истёкшая запись не используется.
 - В режиме `endpoint_ip` первый ответ сохраняет upstream TTL; TTL отдельной кэш-копии ограничивается 300 секундами. Кэш привязан к generation выбранного endpoint-а и очищается при переключении.
 - В режиме `resolver` положительный cache TTL ограничен сверху 300 секундами; исходный TTL первого ответа upstream не изменяется.
 - Для NXDOMAIN и NODATA с SOA negative TTL равен `min(SOA RR TTL, SOA.MINIMUM)`, с верхней границей 300 секунд. Это включает NODATA после CNAME chain: CNAME RR сохраняются, но срок negative-кэша конечного QNAME определяется SOA.
@@ -679,7 +679,7 @@ go test -race ./...
 go vet ./...
 ```
 
-**Автоматические проверки версии 2.4.0:**
+**Автоматические проверки версии 2.5.0:**
 - GitHub Actions CI: module tidy, shell/JavaScript syntax, management helper tests, DNS checker tests, `go vet ./...`, `go test -coverprofile=coverage.out ./...`, критический coverage gate (>60%), `go test -race ./...`, `staticcheck`, `govulncheck` и Linux amd64 package build.
 - Go sidecar не содержит встроенного panel mutation adapter или Xray planner; DNS-процессом управляет LucX-UI Plugin Manager. Root SSH-скрипт отдельно обращается к штатному Panel API, получая короткоживущий admin Bearer token через локальный CLI панели; токен удаляется или ротируется после операции. SQLite dependency в Go sidecar отсутствует.
 - Регрессионные тесты охватывают анонимный доступ к Web UI, одноразовый bootstrap token, listener validation, Gemini key path, DoH URL redaction, resolver SERVFAIL/cooldown, ActiveDoH hard-failure failover, EDNS-aware UDP truncation, DNS error packet shape, OIDC URL validation, reload interval, pending restart semantics, status redaction, bootstrap public-IP filtering, symlinked configuration sources, PID/lock lifecycle, stale PID recovery и HTTP health probe.

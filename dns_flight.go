@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/binary"
-	"sync/atomic"
 )
 
 // dnsFlight represents one in-progress upstream lookup. The response is
@@ -10,12 +9,10 @@ import (
 type dnsFlight struct {
 	done     chan struct{}
 	response []byte
-	waiters  atomic.Int32
 }
 
-// coalesceDNSResponse ensures that identical concurrent DNS cache misses share
-// one upstream operation. The key must include the DNS mode and its generation.
-
+// runDNSFlight contains a panic from the leader's operation and converts it
+// into a DNS SERVFAIL response so followers are always released.
 func runDNSFlight(query []byte, run func() []byte) (response []byte) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -26,6 +23,8 @@ func runDNSFlight(query []byte, run func() []byte) (response []byte) {
 	return run()
 }
 
+// coalesceDNSResponse ensures that identical concurrent DNS cache misses share
+// one upstream operation. The key must include the DNS mode and its generation.
 func (r *Runtime) coalesceDNSResponse(key string, query []byte, run func() []byte) []byte {
 	if r == nil || len(query) < 2 || run == nil {
 		if run == nil {
@@ -37,9 +36,8 @@ func (r *Runtime) coalesceDNSResponse(key string, query []byte, run func() []byt
 	candidate := &dnsFlight{done: make(chan struct{})}
 	actual, loaded := r.dnsFlights.LoadOrStore(key, candidate)
 	if loaded {
-		r.dnsCoalesced.Add(1)
+		r.resilience.dnsCoalesced.Add(1)
 		flight := actual.(*dnsFlight)
-		flight.waiters.Add(1)
 		<-flight.done
 		response := append([]byte(nil), flight.response...)
 		if len(response) >= 2 {

@@ -24,7 +24,7 @@ const (
 	activeDoHProbeWorkers     = 6
 	activeDoHMaxServers       = 64
 	activeDoHMaxWebsiteIPs    = 32
-	activeDoHUserAgent        = "LucX-DoH-HealthMonitor/2.4.0"
+	activeDoHUserAgent        = "LucX-DoH-HealthMonitor/2.5.0"
 )
 
 type activeDoHProbeJob struct {

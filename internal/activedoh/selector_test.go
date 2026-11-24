@@ -345,7 +345,7 @@ func TestLatencyOnlySwitchRequiresRepeatedImprovementAndAntiFlapGates(t *testing
 
 	first := now.Add(11 * time.Minute)
 	probes := append(
-		setSuccessfulProbeDuration(results("a", 5, first), 200*time.Millisecond),
+		setSuccessfulProbeDuration(results("a", 5, first), 500*time.Millisecond),
 		setSuccessfulProbeDuration(results("b", 5, first), 10*time.Millisecond)...,
 	)
 	selected, ok = s.Select([]Candidate{a, b}, probes, first)
@@ -355,7 +355,7 @@ func TestLatencyOnlySwitchRequiresRepeatedImprovementAndAntiFlapGates(t *testing
 
 	second := first.Add(time.Minute)
 	probes = append(
-		setSuccessfulProbeDuration(results("a", 5, second), 200*time.Millisecond),
+		setSuccessfulProbeDuration(results("a", 5, second), 500*time.Millisecond),
 		setSuccessfulProbeDuration(results("b", 5, second), 10*time.Millisecond)...,
 	)
 	selected, ok = s.Select([]Candidate{a, b}, probes, second)
@@ -402,5 +402,23 @@ func TestLatencyOnlySwitchIgnoresInsignificantAdvantage(t *testing.T) {
 		if !ok || selected.Candidate.ServerID != "a" {
 			t.Fatalf("sub-10%% latency advantage must not cause a switch, got %+v", selected)
 		}
+	}
+}
+
+func TestLatencyPreferredRequiresRelativeAndAbsoluteImprovement(t *testing.T) {
+	if latencyPreferred(950*time.Millisecond, time.Second) {
+		t.Fatal("50ms improvement should not pass 100ms absolute threshold")
+	}
+	if latencyPreferred(800*time.Millisecond, time.Second) {
+		t.Fatal("200ms improvement should not pass 25% relative threshold")
+	}
+	if !latencyPreferred(700*time.Millisecond, time.Second) {
+		t.Fatal("300ms improvement should pass both thresholds")
+	}
+	if latencyPreferred(100*time.Millisecond, 150*time.Millisecond) {
+		t.Fatal("50ms gain must not pass the 100ms absolute threshold")
+	}
+	if !latencyPreferred(350*time.Millisecond, 500*time.Millisecond) {
+		t.Fatal("150ms gain at 500ms should pass both thresholds")
 	}
 }
