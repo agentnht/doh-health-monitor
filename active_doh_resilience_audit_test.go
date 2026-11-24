@@ -33,7 +33,7 @@ func TestActiveDoHStaleCacheSurvivesSelectionWithdrawal(t *testing.T) {
 	cached := testAResponse(query, 60)
 	runtime := &Runtime{
 		activeDoHSelector: selector,
-		cache: map[string]cacheItem{
+		cache:             map[string]cacheItem{
 			staleKey: {
 				packet: cached, expires: time.Now().Add(-time.Second),
 				inserted: time.Now().Add(-61 * time.Second), size: len(cached),
@@ -41,7 +41,7 @@ func TestActiveDoHStaleCacheSurvivesSelectionWithdrawal(t *testing.T) {
 		},
 	}
 	snapshot := &Snapshot{
-		cfg: Config{DNSMode: "endpoint_ip", Cache: CacheConfig{Enabled: true, StaleTTL: 60}},
+		cfg:                 Config{DNSMode: "endpoint_ip", Cache: CacheConfig{Enabled: true, StaleTTL: 60}},
 		activeDoHGeneration: 41,
 	}
 	runtime.snapshot.Store(snapshot)
