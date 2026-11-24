@@ -153,9 +153,9 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 		dohTimeout = totalTimeout
 	}
 	metrics := &activeDoHForwardMetrics{
-		extraAttempts:     &r.bootstrapExtraAttempts,
-		hedgeWins:         &r.hedgeWins,
-		qualityRejections: &r.dnsQualityRejections,
+		extraAttempts:     &r.resilience.bootstrapExtraAttempts,
+		hedgeWins:         &r.resilience.hedgeWins,
+		qualityRejections: &r.resilience.dnsQualityRejections,
 		hedgeDelay:        r.activeDoHHedgeDelay(selection.Candidate),
 		recordLatency:     r.recordPinnedDoHLatency,
 	}
