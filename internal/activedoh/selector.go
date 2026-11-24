@@ -341,7 +341,6 @@ func normalizeHostname(raw string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(raw)), ".")
 }
 
-
 // updateLatencyEWMA records successful health-probe durations. Probe durations are
 // provider-level end-to-end observations, not per-bootstrap-IP measurements.
 func (s *Selector) updateLatencyEWMA(results []ProbeResult) {
