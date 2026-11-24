@@ -277,6 +277,11 @@ type Status struct {
 	GeminiAPI        string                        `json:"gemini_api"`
 	Queries          uint64                        `json:"queries"`
 	CacheHits        uint64                        `json:"cache_hits"`
+	DNSCoalesced     uint64                        `json:"dns_coalesced"`
+	StaleCacheHits   uint64                        `json:"stale_cache_hits"`
+	HedgeAttempts    uint64                        `json:"hedge_attempts"`
+	HedgeWins        uint64                        `json:"hedge_wins"`
+	DNSQualityReject uint64                        `json:"dns_quality_rejections"`
 	Failures         uint64                        `json:"failures"`
 	ActiveUDP        int64                         `json:"active_udp"`
 	UDPQueueDepth    int64                         `json:"udp_queue_depth"`
@@ -346,6 +351,11 @@ type Runtime struct {
 	cacheBytes             int
 	cacheSeq               uint64
 	cacheHits              atomic.Uint64
+	dnsCoalesced           atomic.Uint64
+	staleCacheHits         atomic.Uint64
+	hedgeExtraAttempts     atomic.Uint64
+	hedgeWins              atomic.Uint64
+	dnsQualityRejections   atomic.Uint64
 	activeUDP              atomic.Int64
 	udpQueueDepth          atomic.Int64
 	udpDropped             atomic.Uint64
@@ -3225,7 +3235,10 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 		Cache:  CacheStatus{Enabled: s.cfg.Cache.Enabled, Entries: cacheEntries, MaxEntries: s.cfg.Cache.MaxEntries, Bytes: cacheBytes, MaxBytes: s.cfg.Cache.MaxBytes},
 		Groups: map[string]GroupStatus{}, DoHBootstrap: map[string]DoHBootstrapStatus{},
 		ActiveDoH: r.activeDoHStatus(),
-		Queries:   r.queries.Load(), CacheHits: r.cacheHits.Load(), Failures: r.failures.Load(),
+		Queries: r.queries.Load(), CacheHits: r.cacheHits.Load(),
+		DNSCoalesced: r.dnsCoalesced.Load(), StaleCacheHits: r.staleCacheHits.Load(),
+		HedgeAttempts: r.hedgeExtraAttempts.Load(), HedgeWins: r.hedgeWins.Load(),
+		DNSQualityReject: r.dnsQualityRejections.Load(), Failures: r.failures.Load(),
 		ActiveUDP: r.activeUDP.Load(), UDPQueueDepth: r.udpQueueDepth.Load(), UDPDropped: r.udpDropped.Load(),
 		ActiveTCP: r.activeTCP.Load(), TCPRejected: r.tcpRejected.Load(), Goroutines: runtime.NumGoroutine(),
 		HeapAllocBytes: mem.HeapAlloc, HeapInuseBytes: mem.HeapInuse, HeapSysBytes: mem.HeapSys,
