@@ -159,7 +159,7 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 		hedgeDelay:        r.activeDoHHedgeDelay(selection.Candidate),
 		recordLatency:     r.recordPinnedDoHLatency,
 	}
-	result := make(chan activeDoHAttemptResult, 1)
+	result := make(chan dnsAttemptResult, 1)
 	go func() {
 		forward := r.activeDoHForwarder
 		if forward == nil {
@@ -170,9 +170,9 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 			}
 		}
 		response, err := forward(ctx, selection.Candidate, query, dohTimeout, metrics)
-		result <- activeDoHAttemptResult{response: response, err: err}
+		result <- dnsAttemptResult{response: response, err: err}
 	}()
-	response, queryErr, servedStale := awaitActiveDoHWithStaleBudget(
+	response, queryErr, servedStale := awaitDNSWithStaleBudget(
 		result, activeDoHStaleResponseBudget,
 		func() ([]byte, bool) {
 			if !cacheConfig.Enabled {
