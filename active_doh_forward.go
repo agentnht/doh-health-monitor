@@ -27,6 +27,62 @@ func sendActiveDoH(ctx context.Context, candidate activedoh.Candidate, packet []
 
 type activeDoHHTTPClientFactory func(ip, host string, timeout time.Duration) *http.Client
 
+const activeDoHHedgeDelay = 250 * time.Millisecond
+
+func sendActiveDoHAttempt(
+	ctx context.Context,
+	candidate activedoh.Candidate,
+	packet []byte,
+	ip, host string,
+	timeout time.Duration,
+	newClient activeDoHHTTPClientFactory,
+) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	client := newClient(ip, host, timeout)
+	if client == nil {
+		return nil, errors.New("HTTP client creation failed")
+	}
+	request, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, candidate.URL, bytes.NewReader(packet))
+	if err != nil {
+		client.CloseIdleConnections()
+		return nil, fmt.Errorf("build selected DoH request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/dns-message")
+	request.Header.Set("Accept", "application/dns-message")
+	response, err := client.Do(request)
+	if err != nil {
+		client.CloseIdleConnections()
+		return nil, sanitizeDoHTransportError(err, candidate.URL)
+	}
+	defer response.Body.Close()
+	defer client.CloseIdleConnections()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("DoH HTTP %d", response.StatusCode)
+	}
+	contentType := strings.ToLower(response.Header.Get("Content-Type"))
+	if !strings.Contains(contentType, "application/dns-message") {
+		return nil, fmt.Errorf("unexpected DoH content-type %q", response.Header.Get("Content-Type"))
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxDNSMessage+1))
+	if err != nil {
+		return nil, errors.New("failed to read DoH DNS response")
+	}
+	if len(body) < 12 || len(body) > maxDNSMessage {
+		return nil, fmt.Errorf("invalid DoH DNS response size %d", len(body))
+	}
+	if err := validateDNSResponse(packet, body, "selected DoH"); err != nil {
+		return nil, err
+	}
+	if err := activeDoHResponseQualityError(body); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
 // The factory seam keeps endpoint pinning testable without weakening TLS
 // verification or adding test-only behavior to the production transport.
 func sendActiveDoHWithClientFactory(
@@ -69,77 +125,65 @@ func sendActiveDoHWithClientFactory(
 		return nil, errors.New("selected DoH endpoint has no usable bootstrap IP")
 	}
 
-	var failures []string
-	for _, ip := range ips {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		attemptCtx, cancel := context.WithTimeout(ctx, timeout)
-		client := newClient(ip, host, timeout)
-		if client == nil {
-			cancel()
-			failures = append(failures, ip+": HTTP client creation failed")
-			continue
-		}
-		request, requestErr := http.NewRequestWithContext(attemptCtx, http.MethodPost, candidate.URL, bytes.NewReader(packet))
-		if requestErr != nil {
-			cancel()
-			client.CloseIdleConnections()
-			return nil, fmt.Errorf("build selected DoH request: %w", requestErr)
-		}
-		request.Header.Set("Content-Type", "application/dns-message")
-		request.Header.Set("Accept", "application/dns-message")
-		response, requestErr := client.Do(request)
-		if requestErr != nil {
-			cancel()
-			client.CloseIdleConnections()
-			failures = append(failures, ip+": "+sanitizeDoHTransportError(requestErr, candidate.URL).Error())
-			continue
-		}
-		if response.StatusCode != http.StatusOK {
-			status := response.StatusCode
-			_ = response.Body.Close()
-			cancel()
-			client.CloseIdleConnections()
-			failures = append(failures, fmt.Sprintf("%s: DoH HTTP %d", ip, status))
-			continue
-		}
-		if contentType := strings.ToLower(response.Header.Get("Content-Type")); !strings.Contains(contentType, "application/dns-message") {
-			contentType = response.Header.Get("Content-Type")
-			_ = response.Body.Close()
-			cancel()
-			client.CloseIdleConnections()
-			failures = append(failures, fmt.Sprintf("%s: unexpected DoH content-type %q", ip, contentType))
-			continue
-		}
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, maxDNSMessage+1))
-		_ = response.Body.Close()
-		cancel()
-		client.CloseIdleConnections()
-		if readErr != nil {
-			failures = append(failures, ip+": failed to read DoH DNS response")
-			continue
-		}
-		if len(body) < 12 || len(body) > maxDNSMessage {
-			failures = append(failures, fmt.Sprintf("%s: invalid DoH DNS response size %d", ip, len(body)))
-			continue
-		}
-		if validateErr := validateDNSResponse(packet, body, "selected DoH"); validateErr != nil {
-			failures = append(failures, ip+": "+validateErr.Error())
-			continue
-		}
-		// A structurally valid DNS packet is not necessarily a usable answer.
-		// Try another pinned bootstrap address for transient/negative service
-		// failures, but keep NXDOMAIN and other authoritative DNS answers intact.
-		if qualityErr := activeDoHResponseQualityError(body); qualityErr != nil {
-			failures = append(failures, ip+": "+qualityErr.Error())
-			continue
-		}
-		return body, nil
+	// Hedge only within this selected endpoint's pinned bootstrap addresses.
+	// The first address gets a head start; if it is slow, another address is
+	// tried without waiting for the full request timeout.
+	attemptCtx, cancelAttempts := context.WithCancel(ctx)
+	defer cancelAttempts()
+
+	type attemptResult struct {
+		ip       string
+		response []byte
+		err      error
 	}
-	return nil, fmt.Errorf("all bootstrap IPs for selected DoH endpoint %s failed: %s",
+	results := make(chan attemptResult, len(ips))
+	nextIP := 0
+	active := 0
+	failures := make([]string, 0, len(ips))
+	launch := func() {
+		ip := ips[nextIP]
+		nextIP++
+		active++
+		go func() {
+			body, err := sendActiveDoHAttempt(attemptCtx, candidate, packet, ip, host, timeout, newClient)
+			results <- attemptResult{ip: ip, response: body, err: err}
+		}()
+	}
+	launch()
+	timer := time.NewTimer(activeDoHHedgeDelay)
+	defer timer.Stop()
+
+	for active > 0 || nextIP < len(ips) {
+		select {
+		case result := <-results:
+			active--
+			if result.err == nil {
+				return result.response, nil
+			}
+			failures = append(failures, result.ip+": "+result.err.Error())
+			// A failed/low-quality response should not wait for the hedge timer.
+			if nextIP < len(ips) {
+				launch()
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(activeDoHHedgeDelay)
+			}
+		case <-timer.C:
+			if nextIP < len(ips) {
+				launch()
+				timer.Reset(activeDoHHedgeDelay)
+			}
+		}
+		if active == 0 && nextIP >= len(ips) {
+			break
+		}
+	}
+	return nil, fmt.Errorf("all bootstrap IP attempts for selected DoH endpoint %s failed: %s",
 		host, strings.Join(failures, "; "))
-}
 
 // activeDoHResponseQualityError rejects DNS responses that should not win an
 // upstream attempt. This is deliberately query-scoped: it does not mark the
