@@ -71,6 +71,7 @@ func (r *Runtime) recordPinnedDoHLatency(host, ip string, elapsed time.Duration)
 	if elapsed <= 0 {
 		return
 	}
+	r.recordDoHForwardLatency(elapsed)
 	key := strings.ToLower(strings.TrimSuffix(host, ".")) + "|" + ip
 	r.activeDoHTransportMu.Lock()
 	defer r.activeDoHTransportMu.Unlock()
