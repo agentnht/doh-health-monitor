@@ -360,7 +360,7 @@ func TestMode2FirstResponseKeepsUpstreamTTLWhileCacheCapsCopy(t *testing.T) {
 	}
 
 	cacheKey := "mode2:77:" + cacheKey(query)
-	cachedResponse, found := runtime.cacheGet(cacheKey, packetID(query))
+	cachedResponse, found := runtime.cacheGet(cacheKey, packetID(query), 0)
 	if !found {
 		t.Fatal("expected capped response in resolver cache")
 	}
@@ -452,7 +452,7 @@ func TestMode2CNAMEToNODATAPreservesFirstUpstreamResponse(t *testing.T) {
 	}
 
 	cacheKey := "mode2:78:" + cacheKey(query)
-	cachedResponse, found := runtime.cacheGet(cacheKey, packetID(query))
+	cachedResponse, found := runtime.cacheGet(cacheKey, packetID(query), 0)
 	if !found {
 		t.Fatal("expected CNAME/NODATA response in mode-2 cache")
 	}
@@ -604,7 +604,7 @@ func TestMode2ResolverForwardsCNAMEAddressAndEDNSDO(t *testing.T) {
 				t.Fatal("test upstream response did not set AD; plugin must not add a false AD bit")
 			}
 
-			cached, found := runtime.cacheGet("mode2:91:"+cacheKey(query), packetID(query))
+			cached, found := runtime.cacheGet("mode2:91:"+cacheKey(query), packetID(query), 0)
 			if !found {
 				t.Fatal("expected positive CNAME/address response to be cached")
 			}
