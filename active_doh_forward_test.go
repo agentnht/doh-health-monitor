@@ -203,12 +203,17 @@ func TestSendActiveDoHHedgesSlowBootstrapAttempt(t *testing.T) {
 	query := makeDNSQuery("hedge.example.test", 1)
 	var requests atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if requests.Add(1) == 1 {
-			select {
-			case <-req.Context().Done():
-				return
-			case <-time.After(2 * time.Second):
-			}
+		attempt := requests.Add(1)
+		delay := 2 * time.Second
+		if attempt == 2 {
+			delay = 500 * time.Millisecond
+		} else if attempt >= 3 {
+			delay = 200 * time.Millisecond
+		}
+		select {
+		case <-req.Context().Done():
+			return
+		case <-time.After(delay):
 		}
 		w.Header().Set("Content-Type", "application/dns-message")
 		_, _ = w.Write(testAResponse(query, 60))
