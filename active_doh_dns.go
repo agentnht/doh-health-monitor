@@ -158,9 +158,11 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 			cacheConfig.MinTTL = 0
 			cacheConfig.MaxTTL = int(maxTTL / time.Second)
 			r.cachePut(key, cacheResponse, cacheConfig)
-			// A generation-independent stale copy survives selector withdrawal;
-			// it is consulted only after upstream failure or loss of selection.
-			r.cachePut(staleKey, cacheResponse, cacheConfig)
+			if cacheConfig.StaleTTL > 0 {
+				// A generation-independent stale copy survives selector withdrawal;
+				// it is consulted only after upstream failure or loss of selection.
+				r.cachePut(staleKey, cacheResponse, cacheConfig)
+			}
 		}
 	}
 	return response
