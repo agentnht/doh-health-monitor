@@ -129,6 +129,7 @@
     addMetric("IPv4", (active.ipv4 || []).join(", "));
     addMetric("IPv6", (active.ipv6 || []).join(", "));
     addMetric("Score", number(active.score) + "/" + number(active.check_count));
+    addMetric("EWMA probe latency", active.latency_ms > 0 ? number(active.latency_ms) + " ms" : "—");
     addMetric("Generation", number(active.generation));
     addMetric("Выбран", when(active.selected_at));
     addMetric("Актуален до", when(active.fresh_until));
