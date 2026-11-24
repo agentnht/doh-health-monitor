@@ -565,7 +565,8 @@ unset status_token
 - `failure_streak` / `success_streak`;
 - `checks` — DNS/HTTP результаты отдельных контрольных точек;
 - `last_error`, `check_duration_ms` — длительность всего цикла проверок данного upstream, а не время одного DNS-запроса;
-- `active_doh` — выбранный endpoint режима `endpoint_ip`, его IP, freshness, score и generation; `queries`, `cache_hits`, `failures` — счётчики DNS работы;
+- `active_doh` — выбранный endpoint режима `endpoint_ip`, его IP, freshness, score, generation и сглаженная длительность health probe (`latency_ms`); `queries`, `cache_hits`, `failures` — счётчики DNS работы;
+- `dns_coalesced`, `stale_cache_hits`, `bootstrap_extra_attempts`, `hedge_wins`, `dns_quality_rejections` — счётчики механизмов устойчивости: объединённые запросы, stale-ответы, дополнительные bootstrap-попытки, победы параллельной попытки и отклонённые непригодные DNS-ответы.
 - `active_udp`, `udp_queue_depth`, `udp_dropped`, `active_tcp`, `tcp_rejected` — текущая нагрузка и отказы при переполнении ограниченных очередей/соединений;
 - `goroutines`, `heap_alloc_bytes`, `heap_inuse_bytes`, `heap_sys_bytes` — показатели runtime Go;
 - `cpu_user_ns`, `cpu_system_ns` — накопленное CPU-время процесса в user/system mode; разница между двумя замерами за интервал позволяет оценить использование CPU;
