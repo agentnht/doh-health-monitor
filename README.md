@@ -381,12 +381,14 @@ Selector использует freshness, score, failure grace cycles, minimum ho
   "min_ttl_seconds": 0,
   "max_ttl_seconds": 300,
   "negative_ttl_seconds": 15,
+  "stale_ttl_seconds": 60,
   "max_entries": 8192,
   "max_bytes": 8388608
 }
 ```
 
 - `enabled`, `max_entries` и `max_bytes` управляют общим RAM-кэшем.
+- `stale_ttl_seconds` (0–3600, по умолчанию 60) задаёт окно использования недавно истёкшего ответа **только при ошибке upstream**. Такой ответ отдаётся с TTL=1; если upstream доступен, истёкшая запись не используется.
 - В режиме `endpoint_ip` первый ответ сохраняет upstream TTL; TTL отдельной кэш-копии ограничивается 300 секундами. Кэш привязан к generation выбранного endpoint-а и очищается при переключении.
 - В режиме `resolver` положительный cache TTL ограничен сверху 300 секундами; исходный TTL первого ответа upstream не изменяется.
 - Для NXDOMAIN и NODATA с SOA negative TTL равен `min(SOA RR TTL, SOA.MINIMUM)`, с верхней границей 300 секунд. Это включает NODATA после CNAME chain: CNAME RR сохраняются, но срок negative-кэша конечного QNAME определяется SOA.
