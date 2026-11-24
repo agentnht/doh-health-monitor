@@ -217,7 +217,7 @@ func TestSendActiveDoHHedgesSlowBootstrapAttempt(t *testing.T) {
 
 	candidate := activedoh.Candidate{
 		ServerID: "selected", URL: server.URL + "/dns-query", Hostname: "127.0.0.1",
-		IPv4: []string{"1.1.1.1", "8.8.8.8"}, ResolvedAt: time.Now(),
+		IPv4: []string{"1.1.1.1", "8.8.8.8", "9.9.9.9", "208.67.222.222"}, ResolvedAt: time.Now(),
 	}
 	started := time.Now()
 	var extraAttempts, hedgeWins atomic.Uint64
