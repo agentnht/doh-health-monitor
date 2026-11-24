@@ -503,7 +503,7 @@ func BenchmarkCacheHit(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		r.cacheGet(key, uint16(i))
+		r.cacheGet(key, uint16(i), 0)
 	}
 }
 
