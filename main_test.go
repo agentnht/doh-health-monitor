@@ -288,7 +288,7 @@ func TestCacheFIFOAndByteLimit(t *testing.T) {
 	if _, ok := r.cacheGet(oldestKey, oldestID, 0); ok {
 		t.Fatal("oldest entry should have been evicted")
 	}
-	if _, ok := r.cacheGet(newestKey, newestID); !ok {
+	if _, ok := r.cacheGet(newestKey, newestID, 0); !ok {
 		t.Fatal("newest cache entry should remain")
 	}
 }
