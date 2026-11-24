@@ -148,6 +148,11 @@
       text("queries", number(status.queries));
       text("failures", number(status.failures));
       text("cache-hits", number(status.cache_hits));
+      text("dns-coalesced", number(status.dns_coalesced));
+      text("stale-cache-hits", number(status.stale_cache_hits));
+      text("hedge-attempts", number(status.hedge_attempts));
+      text("hedge-wins", number(status.hedge_wins));
+      text("dns-quality-rejections", number(status.dns_quality_rejections));
       text("active-udp", number(status.active_udp));
       text("active-tcp", number(status.active_tcp));
       text("udp-dropped", number(status.udp_dropped));
