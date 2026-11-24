@@ -2074,7 +2074,7 @@ func (r *Runtime) cacheGetStale(key string, id uint16, staleTTLSeconds int) ([]b
 		return nil, false
 	}
 	now := time.Now()
-	if now.Before(v.expires) || now.After(v.expires.Add(time.Duration(staleTTLSeconds)*time.Second)) {
+	if now.Before(v.expires) || now.After(v.expires.Add(time.Duration(staleTTLSeconds) * time.Second)) {
 		if now.After(v.expires.Add(time.Duration(staleTTLSeconds)*time.Second)) {
 			r.deleteCacheEntryLocked(key, v)
 		}
