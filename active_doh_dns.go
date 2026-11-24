@@ -53,7 +53,7 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 	key := fmt.Sprintf("mode1:%d:%s", selection.Generation, cacheKey(query))
 	cacheConfig := snapshot.cfg.Cache
 	if cacheConfig.Enabled {
-		if cached, found := r.cacheGet(key, packetID(query)); found {
+		if cached, found := r.cacheGet(key, packetID(query), cacheConfig.StaleTTL); found {
 			r.cacheHits.Add(1)
 			if !r.activeDoHConfigMatches(snapshot) ||
 				selection.Candidate.ConfigGeneration != snapshot.activeDoHGeneration ||
@@ -79,13 +79,16 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 	response, queryErr := sendActiveDoH(ctx, selection.Candidate, query, dohTimeout)
 	cancel()
 	if queryErr != nil {
-		r.failures.Add(1)
-		// Prompt a fresh selector cycle instead of waiting for the regular
-		// probe interval after the selected endpoint fails during live traffic.
+		// Prompt a fresh selector cycle even when a stale answer can be served.
 		select {
 		case r.activeDoHTrigger <- struct{}{}:
 		default:
 		}
+		if stale, found := r.cacheGetStale(key, packetID(query), cacheConfig.StaleTTL); found {
+			r.cacheHits.Add(1)
+			return stale
+		}
+		r.failures.Add(1)
 		return servfailResponse(query)
 	}
 
