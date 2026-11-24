@@ -2103,7 +2103,7 @@ func (r *Runtime) cacheGetStale(key string, id uint16, staleTTLSeconds int) ([]b
 	for _, offset := range positions {
 		binary.BigEndian.PutUint32(b[offset:offset+4], 1)
 	}
-	r.staleCacheHits.Add(1)
+	r.resilience.staleCacheHits.Add(1)
 	return b, true
 }
 
