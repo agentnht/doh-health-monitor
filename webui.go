@@ -66,6 +66,11 @@ type webUIStatus struct {
 	GeminiAPI     string                      `json:"gemini_api"`
 	Queries       uint64                      `json:"queries"`
 	CacheHits     uint64                      `json:"cache_hits"`
+	DNSCoalesced  uint64                      `json:"dns_coalesced"`
+	StaleCacheHits uint64                     `json:"stale_cache_hits"`
+	HedgeAttempts uint64                      `json:"hedge_attempts"`
+	HedgeWins     uint64                      `json:"hedge_wins"`
+	DNSQualityReject uint64                   `json:"dns_quality_rejections"`
 	Failures      uint64                      `json:"failures"`
 	ActiveUDP     int64                       `json:"active_udp"`
 	UDPQueueDepth int64                       `json:"udp_queue_depth"`
@@ -287,7 +292,9 @@ func fetchWebUIStatus(ctx context.Context, statusURL, dataDir string) (webUIStat
 		ID: raw.ID, Version: raw.Version, StartedAt: raw.StartedAt, UpdatedAt: raw.UpdatedAt,
 		DNSUDP: raw.DNSUDP, DNSTCP: raw.DNSTCP, DNSMode: raw.DNSMode, HTTP: raw.HTTP, Cache: raw.Cache, ActiveDoH: raw.ActiveDoH,
 		Groups: map[string]webUIGroupStatus{}, GeminiAPI: raw.GeminiAPI,
-		Queries: raw.Queries, CacheHits: raw.CacheHits, Failures: raw.Failures,
+		Queries: raw.Queries, CacheHits: raw.CacheHits, DNSCoalesced: raw.DNSCoalesced,
+		StaleCacheHits: raw.StaleCacheHits, HedgeAttempts: raw.HedgeAttempts, HedgeWins: raw.HedgeWins,
+		DNSQualityReject: raw.DNSQualityReject, Failures: raw.Failures,
 		ActiveUDP: raw.ActiveUDP, UDPQueueDepth: raw.UDPQueueDepth, UDPDropped: raw.UDPDropped,
 		ActiveTCP: raw.ActiveTCP, TCPRejected: raw.TCPRejected,
 	}
