@@ -1,7 +1,6 @@
 package main
 
 import (
-	"sync"
 	"time"
 )
 
@@ -12,11 +11,6 @@ const maxActiveDoHFailureRechecks = 4096
 // activeDoHFailureRecheck suppresses repeated upstream attempts briefly after
 // a request has already fallen back to stale data. Entries are bounded and
 // keyed by the configuration-scoped stale cache key.
-type activeDoHFailureRecheck struct {
-	mu       sync.Mutex
-	deadlines map[string]time.Time
-}
-
 func (r *Runtime) staleRecheckSuppressed(key string, now time.Time) bool {
 	r.staleRecheckMu.Lock()
 	defer r.staleRecheckMu.Unlock()
