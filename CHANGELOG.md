@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 ### DNS resilience fixes
+- Recover panics at UDP/TCP DNS worker boundaries, log stack traces, and prevent one malformed request or unexpected handler failure from permanently consuming a bounded worker.
 - Keep an `endpoint_ip` stale-answer cache in a configuration-scoped namespace independent of ActiveDoH selection generation. A withdrawn selector can therefore still serve a recently expired answer with TTL=1 during the configured stale window.
 - Bound `SERVFAIL` and `REFUSED` handling to one alternate bootstrap-IP retry. If no usable answer is found, return the last DNS policy response from the provider instead of synthesizing a new SERVFAIL or walking every bootstrap IP.
 - Trigger an early ActiveDoH selection cycle only after transport-level forwarding failures, with a 30-second per-process debounce. Query-specific DNS responses no longer cause repeated health-probe cycles.
