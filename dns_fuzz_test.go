@@ -16,6 +16,10 @@ func FuzzStaleAndTTLParsers(f *testing.F) {
 		_, _ = rrTTLPositions(packet)
 		_, _ = minResponseTTL(packet)
 		_, _ = negativeSOATTL(packet)
+		_ = extractEDNSOPT(packet)
+		_ = truncateDNSResponse(packet, 512)
+		cacheCopy := append([]byte(nil), packet...)
+		_ = prepareMode2ResponseForCache(cacheCopy, 300)
 		copyPacket := append([]byte(nil), packet...)
 		decrementTTLs(copyPacket, uint32(len(packet)%300))
 		r := &Runtime{
@@ -45,6 +49,8 @@ func FuzzHandleDNSInput(f *testing.F) {
 				Cache: CacheConfig{Enabled: true, MaxEntries: 16, MaxBytes: 4096, StaleTTL: 60},
 			},
 		})
-		_ = r.handleDNS(packet)
+		response := r.handleDNS(packet)
+		_ = truncateDNSResponse(response, dnsUDPResponseLimit(packet))
+		_ = extractEDNSOPT(response)
 	})
 }
