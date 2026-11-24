@@ -2689,6 +2689,14 @@ func newPinnedHTTPTransport(ip, host string, timeout time.Duration) *http.Transp
 	}
 }
 
+func newPinnedHTTPClient(ip, host string, timeout time.Duration) *http.Client {
+	return &http.Client{
+		Transport:     newPinnedHTTPTransport(ip, host, timeout),
+		Timeout:       timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
 func (r *Runtime) resolveA(ctx context.Context, u *UpstreamRuntime, domain string) ([]string, error) {
 	resp, _, e := r.queryVia(ctx, u, makeDNSQuery(domain, 1))
 	if e != nil {
