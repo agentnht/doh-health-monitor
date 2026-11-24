@@ -114,20 +114,13 @@ func TestSendActiveDoHRetriesNextBootstrapIPOnHTTPFailure(t *testing.T) {
 
 func TestSendActiveDoHRejectsUnusableDNSAnswersAndTriesNextBootstrapIP(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		bad  func([]byte) []byte
+		name      string
+		rcode     uint16
+		truncated bool
 	}{
-		{name: "SERVFAIL", bad: func(query []byte) []byte {
-			return mode2ResponseWithRCode(query, 2)
-		}},
-		{name: "REFUSED", bad: func(query []byte) []byte {
-			return mode2ResponseWithRCode(query, 5)
-		}},
-		{name: "truncated", bad: func(query []byte) []byte {
-			response := testAResponse(query, 30)
-			response[2] |= 0x02 // TC flag
-			return response
-		}},
+		{name: "SERVFAIL", rcode: 2},
+		{name: "REFUSED", rcode: 5},
+		{name: "truncated", truncated: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			query := makeDNSQuery("quality.example.test", 1)
@@ -135,7 +128,12 @@ func TestSendActiveDoHRejectsUnusableDNSAnswersAndTriesNextBootstrapIP(t *testin
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				var response []byte
 				if requests.Add(1) == 1 {
-					response = tc.bad(query)
+					if tc.truncated {
+						response = testAResponse(query, 30)
+						response[2] |= 0x02
+					} else {
+						response = mode2ResponseWithRCode(query, tc.rcode)
+					}
 				} else {
 					response = testAResponse(query, 45)
 				}
