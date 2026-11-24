@@ -13,7 +13,7 @@ func TestResolverFreshCacheHitBypassesSingleflight(t *testing.T) {
 	snapshot := &Snapshot{
 		cfg: Config{
 			DNSMode: "resolver",
-			Cache: CacheConfig{Enabled: true, MaxEntries: 8, MaxBytes: 4096, MaxTTL: 300},
+			Cache:   CacheConfig{Enabled: true, MaxEntries: 8, MaxBytes: 4096, MaxTTL: 300},
 		},
 		resolverGeneration: 17,
 	}
@@ -60,13 +60,13 @@ func TestActiveDoHFreshCacheHitBypassesSingleflight(t *testing.T) {
 	snapshot := &Snapshot{
 		cfg: Config{
 			DNSMode: "endpoint_ip",
-			Cache: CacheConfig{Enabled: true, MaxEntries: 8, MaxBytes: 4096, MaxTTL: 300},
+			Cache:   CacheConfig{Enabled: true, MaxEntries: 8, MaxBytes: 4096, MaxTTL: 300},
 		},
 		activeDoHGeneration: 23,
 	}
 	runtime := &Runtime{
 		activeDoHSelector: selector,
-		cache: make(map[string]cacheItem),
+		cache:             make(map[string]cacheItem),
 	}
 	runtime.snapshot.Store(snapshot)
 	runtime.cachePut(fmt.Sprintf("mode1:%d:%s", selection.Generation, cacheKey(query)),
