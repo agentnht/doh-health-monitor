@@ -259,46 +259,46 @@ type GroupStatus struct {
 	Upstreams      map[string]HealthEntry `json:"upstreams"`
 }
 type Status struct {
-	ID               string                        `json:"id"`
-	Version          string                        `json:"version"`
-	StartedAt        time.Time                     `json:"started_at"`
-	UpdatedAt        time.Time                     `json:"updated_at"`
-	DNSUDP           string                        `json:"dns_udp"`
-	DNSTCP           string                        `json:"dns_tcp"`
-	DNSMode          string                        `json:"dns_mode"`
-	HTTP             string                        `json:"http"`
-	Config           string                        `json:"config"`
-	Cache            CacheStatus                   `json:"cache"`
-	Groups           map[string]GroupStatus        `json:"groups"`
-	DoHBootstrap     map[string]DoHBootstrapStatus `json:"doh_bootstrap,omitempty"`
-	ActiveDoH        *ActiveDoHStatus              `json:"active_doh,omitempty"`
-	SystemDNSServers []string                      `json:"system_dns_servers,omitempty"`
-	SystemDNSError   string                        `json:"system_dns_error,omitempty"`
-	GeminiAPI        string                        `json:"gemini_api"`
-	Queries          uint64                        `json:"queries"`
-	CacheHits        uint64                        `json:"cache_hits"`
-	DNSCoalesced     uint64                        `json:"dns_coalesced"`
-	StaleCacheHits   uint64                        `json:"stale_cache_hits"`
-	ExtraAttempts    uint64                        `json:"bootstrap_extra_attempts"`
-	HedgeWins        uint64                        `json:"hedge_wins"`
-	DNSQualityReject uint64                        `json:"dns_quality_rejections"`
-	DoHForwardP50MS  uint64                        `json:"doh_forward_p50_ms"`
-	DoHForwardP95MS  uint64                        `json:"doh_forward_p95_ms"`
-	DoHForwardSamples uint64                       `json:"doh_forward_samples"`
-	Failures         uint64                        `json:"failures"`
-	ActiveUDP        int64                         `json:"active_udp"`
-	UDPQueueDepth    int64                         `json:"udp_queue_depth"`
-	UDPDropped       uint64                        `json:"udp_dropped"`
-	ActiveTCP        int64                         `json:"active_tcp"`
-	TCPRejected      uint64                        `json:"tcp_rejected"`
-	Goroutines       int                           `json:"goroutines"`
-	HeapAllocBytes   uint64                        `json:"heap_alloc_bytes"`
-	HeapInuseBytes   uint64                        `json:"heap_inuse_bytes"`
-	HeapSysBytes     uint64                        `json:"heap_sys_bytes"`
-	CPUUserNS        uint64                        `json:"cpu_user_ns"`
-	CPUSystemNS      uint64                        `json:"cpu_system_ns"`
-	LastReload       time.Time                     `json:"last_reload,omitempty"`
-	LastError        string                        `json:"last_error,omitempty"`
+	ID                string                        `json:"id"`
+	Version           string                        `json:"version"`
+	StartedAt         time.Time                     `json:"started_at"`
+	UpdatedAt         time.Time                     `json:"updated_at"`
+	DNSUDP            string                        `json:"dns_udp"`
+	DNSTCP            string                        `json:"dns_tcp"`
+	DNSMode           string                        `json:"dns_mode"`
+	HTTP              string                        `json:"http"`
+	Config            string                        `json:"config"`
+	Cache             CacheStatus                   `json:"cache"`
+	Groups            map[string]GroupStatus        `json:"groups"`
+	DoHBootstrap      map[string]DoHBootstrapStatus `json:"doh_bootstrap,omitempty"`
+	ActiveDoH         *ActiveDoHStatus              `json:"active_doh,omitempty"`
+	SystemDNSServers  []string                      `json:"system_dns_servers,omitempty"`
+	SystemDNSError    string                        `json:"system_dns_error,omitempty"`
+	GeminiAPI         string                        `json:"gemini_api"`
+	Queries           uint64                        `json:"queries"`
+	CacheHits         uint64                        `json:"cache_hits"`
+	DNSCoalesced      uint64                        `json:"dns_coalesced"`
+	StaleCacheHits    uint64                        `json:"stale_cache_hits"`
+	ExtraAttempts     uint64                        `json:"bootstrap_extra_attempts"`
+	HedgeWins         uint64                        `json:"hedge_wins"`
+	DNSQualityReject  uint64                        `json:"dns_quality_rejections"`
+	DoHForwardP50MS   uint64                        `json:"doh_forward_p50_ms"`
+	DoHForwardP95MS   uint64                        `json:"doh_forward_p95_ms"`
+	DoHForwardSamples uint64                        `json:"doh_forward_samples"`
+	Failures          uint64                        `json:"failures"`
+	ActiveUDP         int64                         `json:"active_udp"`
+	UDPQueueDepth     int64                         `json:"udp_queue_depth"`
+	UDPDropped        uint64                        `json:"udp_dropped"`
+	ActiveTCP         int64                         `json:"active_tcp"`
+	TCPRejected       uint64                        `json:"tcp_rejected"`
+	Goroutines        int                           `json:"goroutines"`
+	HeapAllocBytes    uint64                        `json:"heap_alloc_bytes"`
+	HeapInuseBytes    uint64                        `json:"heap_inuse_bytes"`
+	HeapSysBytes      uint64                        `json:"heap_sys_bytes"`
+	CPUUserNS         uint64                        `json:"cpu_user_ns"`
+	CPUSystemNS       uint64                        `json:"cpu_system_ns"`
+	LastReload        time.Time                     `json:"last_reload,omitempty"`
+	LastError         string                        `json:"last_error,omitempty"`
 }
 type CacheStatus struct {
 	Enabled    bool `json:"enabled"`
@@ -361,9 +361,9 @@ type Runtime struct {
 	staleRechecks          map[string]time.Time
 	activeDoHTransportMu   sync.Mutex
 	activeDoHTransports    map[string]*pinnedDoHTransportEntry
-	forwardLatencyMu      sync.Mutex
-	forwardLatencyBuckets [8]uint64
-	forwardLatencySamples uint64
+	forwardLatencyMu       sync.Mutex
+	forwardLatencyBuckets  [8]uint64
+	forwardLatencySamples  uint64
 	dnsFlights             sync.Map
 	cache                  map[string]cacheItem
 	cacheOrder             []cacheOrderEntry
