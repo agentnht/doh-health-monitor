@@ -7,7 +7,7 @@ import "time"
 // must choose the response class explicitly; synthesized local errors should
 // not be cached through this helper.
 func (r *Runtime) cachePutFixedTTL(key string, packet []byte, ttl, maxTTL time.Duration, config CacheConfig) {
-	if !config.Enabled || ttl <= 0 || maxTTL <= 0 || len(packet) < 12 ||
+	if !config.Enabled || config.NegativeTTL <= 0 || ttl <= 0 || maxTTL <= 0 || len(packet) < 12 ||
 		config.MaxEntries < 1 || config.MaxBytes < 1024 {
 		return
 	}
