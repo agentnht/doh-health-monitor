@@ -17,6 +17,16 @@ const (
 )
 
 func (r *Runtime) resolverDNSResponse(query []byte, snapshot *Snapshot) []byte {
+	if snapshot == nil {
+		return r.resolverDNSResponseUncoalesced(query, snapshot)
+	}
+	key := fmt.Sprintf("mode2-flight:%d:%s", snapshot.resolverGeneration, cacheKey(query))
+	return r.coalesceDNSResponse(key, query, func() []byte {
+		return r.resolverDNSResponseUncoalesced(query, snapshot)
+	})
+}
+
+func (r *Runtime) resolverDNSResponseUncoalesced(query []byte, snapshot *Snapshot) []byte {
 	if snapshot == nil || len(query) < 12 || binary.BigEndian.Uint16(query[4:6]) != 1 {
 		return formerrResponse(query)
 	}
