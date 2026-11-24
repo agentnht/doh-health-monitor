@@ -106,6 +106,7 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 		if snapshot.cfg.Cache.Enabled {
 			if stale, found := r.cacheGetStale(staleKey, packetID(query), snapshot.cfg.Cache.StaleTTL); found {
 				r.cacheHits.Add(1)
+				r.markStaleRecheck(staleKey, time.Now())
 				return stale
 			}
 		}
@@ -123,6 +124,12 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 				return servfailResponse(query)
 			}
 			return cached
+		}
+		if r.staleRecheckSuppressed(staleKey, time.Now()) {
+			if stale, found := r.cacheGetStale(staleKey, packetID(query), cacheConfig.StaleTTL); found {
+				r.cacheHits.Add(1)
+				return stale
+			}
 		}
 	}
 
@@ -143,7 +150,29 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 		hedgeWins:         &r.hedgeWins,
 		qualityRejections: &r.dnsQualityRejections,
 	}
-	response, queryErr := sendActiveDoHWithMetrics(ctx, selection.Candidate, query, dohTimeout, metrics)
+	result := make(chan activeDoHAttemptResult, 1)
+	go func() {
+		response, err := sendActiveDoHWithMetrics(ctx, selection.Candidate, query, dohTimeout, metrics)
+		result <- activeDoHAttemptResult{response: response, err: err}
+	}()
+	response, queryErr, servedStale := awaitActiveDoHWithStaleBudget(
+		result, activeDoHStaleResponseBudget,
+		func() ([]byte, bool) {
+			if !cacheConfig.Enabled {
+				return nil, false
+			}
+			stale, found := r.cacheGetStale(staleKey, packetID(query), cacheConfig.StaleTTL)
+			if found {
+				r.cacheHits.Add(1)
+			}
+			return stale, found
+		},
+	)
+	if servedStale {
+		cancel()
+		r.markStaleRecheck(staleKey, time.Now())
+		return response
+	}
 	cancel()
 	if queryErr != nil {
 		// Only transport-level failures justify an early selector cycle.
@@ -156,6 +185,7 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 		if cacheConfig.Enabled {
 			if stale, found := r.cacheGetStale(staleKey, packetID(query), cacheConfig.StaleTTL); found {
 				r.cacheHits.Add(1)
+				r.markStaleRecheck(staleKey, time.Now())
 				return stale
 			}
 		}
