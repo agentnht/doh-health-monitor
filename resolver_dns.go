@@ -54,9 +54,11 @@ func (r *Runtime) resolverDNSResponseUncoalesced(query []byte, snapshot *Snapsho
 	response, _, queryErr := r.queryResolverUpstreams(ctx, snapshot, query)
 	cancel()
 	if queryErr != nil {
-		if stale, found := r.cacheGetStale(key, packetID(query), snapshot.cfg.Cache.StaleTTL); found {
-			r.cacheHits.Add(1)
-			return stale
+		if snapshot.cfg.Cache.Enabled {
+			if stale, found := r.cacheGetStale(key, packetID(query), snapshot.cfg.Cache.StaleTTL); found {
+				r.cacheHits.Add(1)
+				return stale
+			}
 		}
 		r.failures.Add(1)
 		return servfailResponse(query)
