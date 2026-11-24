@@ -165,7 +165,9 @@ func sendActiveDoHWithClientFactoryAndMetrics(
 		go func(hedged bool) {
 			started := time.Now()
 			body, err := sendActiveDoHAttempt(attemptCtx, candidate, packet, ip, host, timeout, newClient)
-			if metrics != nil && metrics.recordLatency != nil {
+			if err == nil && metrics != nil && metrics.recordLatency != nil {
+				// Only completed HTTP/DNS exchanges inform latency estimates;
+				// hedge-cancelled attempts must not look artificially fast.
 				metrics.recordLatency(host, ip, time.Since(started))
 			}
 			results <- attemptResult{ip: ip, response: body, err: err, hedged: hedged}
