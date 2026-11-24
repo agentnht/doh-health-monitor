@@ -887,7 +887,6 @@ func TestMode2ResolverCooldownSkipsKnownFailedUpstream(t *testing.T) {
 	}
 }
 
-
 func TestMode2ResolverReturnsStaleAnswerWhenAllUpstreamsFail(t *testing.T) {
 	var failUpstream atomic.Bool
 	address, requestCount := startMode2TestUDPResolver(t, func(query []byte) []byte {
