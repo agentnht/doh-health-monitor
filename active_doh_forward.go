@@ -128,8 +128,31 @@ func sendActiveDoHWithClientFactory(
 			failures = append(failures, ip+": "+validateErr.Error())
 			continue
 		}
+		// A structurally valid DNS packet is not necessarily a usable answer.
+		// Try another pinned bootstrap address for transient/negative service
+		// failures, but keep NXDOMAIN and other authoritative DNS answers intact.
+		if qualityErr := activeDoHResponseQualityError(body); qualityErr != nil {
+			failures = append(failures, ip+": "+qualityErr.Error())
+			continue
+		}
 		return body, nil
 	}
 	return nil, fmt.Errorf("all bootstrap IPs for selected DoH endpoint %s failed: %s",
 		host, strings.Join(failures, "; "))
+}
+
+// activeDoHResponseQualityError rejects DNS responses that should not win an
+// upstream attempt. This is deliberately query-scoped: it does not mark the
+// selected provider unhealthy or alter ActiveDoHSelector's anti-flap policy.
+func activeDoHResponseQualityError(response []byte) error {
+	switch dnsRCode(response) {
+	case 2:
+		return errors.New("DoH upstream returned SERVFAIL")
+	case 5:
+		return errors.New("DoH upstream returned REFUSED")
+	}
+	if dnsTruncated(response) {
+		return errors.New("DoH upstream returned a truncated DNS response")
+	}
+	return nil
 }
