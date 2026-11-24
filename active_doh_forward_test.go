@@ -235,4 +235,3 @@ func TestSendActiveDoHHedgesSlowBootstrapAttempt(t *testing.T) {
 		t.Fatalf("unexpected DNS response: rcode=%d answers=%d", dnsRCode(response), dnsAnswerCount(response))
 	}
 }
-
