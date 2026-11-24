@@ -37,6 +37,7 @@ func (r *Runtime) coalesceDNSResponse(key string, query []byte, run func() []byt
 	candidate := &dnsFlight{done: make(chan struct{})}
 	actual, loaded := r.dnsFlights.LoadOrStore(key, candidate)
 	if loaded {
+		r.dnsCoalesced.Add(1)
 		flight := actual.(*dnsFlight)
 		flight.waiters.Add(1)
 		<-flight.done
