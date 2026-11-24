@@ -87,6 +87,7 @@ type CacheConfig struct {
 	MinTTL      int  `json:"min_ttl_seconds"`
 	MaxTTL      int  `json:"max_ttl_seconds"`
 	NegativeTTL int  `json:"negative_ttl_seconds"`
+	StaleTTL    int  `json:"stale_ttl_seconds"`
 	MaxEntries  int  `json:"max_entries"`
 	MaxBytes    int  `json:"max_bytes"`
 }
@@ -609,7 +610,7 @@ func defaultConfig() Config {
 		DNSListenUDP: "127.0.0.1:5355", DNSListenTCP: "127.0.0.1:5355", HTTPListen: "127.0.0.1:18765", ReloadSecs: 5,
 		DNSQueryTimeoutSeconds: 15, DoHTimeoutSeconds: 10, DNSMaxConcurrent: 256,
 		Health:             HealthConfig{IntervalSeconds: 25 * 60, TimeoutSeconds: 5, FailureThreshold: 1, SuccessThreshold: 1},
-		Cache:              CacheConfig{Enabled: true, MinTTL: 5, MaxTTL: 300, NegativeTTL: 15, MaxEntries: 8192, MaxBytes: defaultCacheMaxBytes},
+		Cache:              CacheConfig{Enabled: true, MinTTL: 5, MaxTTL: 300, NegativeTTL: 15, StaleTTL: 60, MaxEntries: 8192, MaxBytes: defaultCacheMaxBytes},
 		DNSMode:            "endpoint_ip",
 		ResolverUpstreams:  []ResolverUpstream{{ID: "system", Name: "System resolver (OS)", Type: "system"}},
 		LocalHosts:         map[string]LocalHost{},
@@ -812,7 +813,7 @@ func validateConfig(c Config) error {
 	if c.Health.IntervalSeconds < 5 || c.Health.IntervalSeconds > 3600 || c.Health.TimeoutSeconds < 1 || c.Health.TimeoutSeconds > 60 || c.Health.FailureThreshold < 1 || c.Health.FailureThreshold > 20 || c.Health.SuccessThreshold < 1 || c.Health.SuccessThreshold > 50 {
 		return errors.New("invalid health settings")
 	}
-	if c.Cache.MinTTL < 0 || c.Cache.MaxTTL < 1 || c.Cache.MaxTTL < c.Cache.MinTTL || c.Cache.NegativeTTL < 0 || c.Cache.MaxEntries < 0 || c.Cache.MaxBytes < 0 {
+	if c.Cache.MinTTL < 0 || c.Cache.MaxTTL < 1 || c.Cache.MaxTTL < c.Cache.MinTTL || c.Cache.NegativeTTL < 0 || c.Cache.StaleTTL < 0 || c.Cache.StaleTTL > 3600 || c.Cache.MaxEntries < 0 || c.Cache.MaxBytes < 0 {
 		return errors.New("invalid cache settings")
 	}
 	if c.Cache.Enabled && (c.Cache.MaxEntries < 1 || c.Cache.MaxEntries > 100000 || c.Cache.MaxBytes < 1024 || c.Cache.MaxBytes > maxCacheMaxBytes) {
@@ -2024,20 +2025,61 @@ func (r *Runtime) deleteCacheEntryLocked(key string, item cacheItem) {
 	}
 }
 
-func (r *Runtime) cacheGet(key string, id uint16) ([]byte, bool) {
+func (r *Runtime) cacheGet(key string, id uint16, staleTTLSeconds ...int) ([]byte, bool) {
 	r.cacheMu.Lock()
 	defer r.cacheMu.Unlock()
 	v, ok := r.cache[key]
 	if !ok {
 		return nil, false
 	}
-	if !time.Now().Before(v.expires) {
-		r.deleteCacheEntryLocked(key, v)
+	now := time.Now()
+	if !now.Before(v.expires) {
+		staleTTL := 0
+		if len(staleTTLSeconds) > 0 {
+			staleTTL = staleTTLSeconds[0]
+		}
+		if staleTTL <= 0 || now.After(v.expires.Add(time.Duration(staleTTL)*time.Second)) {
+			r.deleteCacheEntryLocked(key, v)
+		}
 		return nil, false
 	}
 	b := append([]byte(nil), v.packet...)
 	binary.BigEndian.PutUint16(b[:2], id)
-	decrementTTLs(b, uint32(time.Since(v.inserted).Seconds()))
+	decrementTTLs(b, uint32(now.Sub(v.inserted).Seconds()))
+	return b, true
+}
+
+// cacheGetStale returns a recently expired answer only after an upstream
+// failure. RFC 8767 recommends a short TTL for stale answers; use TTL=1.
+func (r *Runtime) cacheGetStale(key string, id uint16, staleTTLSeconds int) ([]byte, bool) {
+	if staleTTLSeconds <= 0 {
+		return nil, false
+	}
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+	v, ok := r.cache[key]
+	if !ok {
+		return nil, false
+	}
+	now := time.Now()
+	if now.Before(v.expires) || now.After(v.expires.Add(time.Duration(staleTTLSeconds)*time.Second)) {
+		if now.After(v.expires.Add(time.Duration(staleTTLSeconds)*time.Second)) {
+			r.deleteCacheEntryLocked(key, v)
+		}
+		return nil, false
+	}
+	b := append([]byte(nil), v.packet...)
+	if len(b) < 12 {
+		return nil, false
+	}
+	binary.BigEndian.PutUint16(b[:2], id)
+	positions, err := rrTTLPositions(b)
+	if err != nil || len(positions) == 0 {
+		return nil, false
+	}
+	for _, offset := range positions {
+		binary.BigEndian.PutUint32(b[offset:offset+4], 1)
+	}
 	return b, true
 }
 
