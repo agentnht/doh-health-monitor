@@ -130,6 +130,11 @@ func (s *Selector) Select(candidates []Candidate, results []ProbeResult, now tim
 		eligible[candidate.ServerID] = candidate
 	}
 
+	for id := range s.latencyEWMA {
+		if _, exists := eligible[id]; !exists {
+			delete(s.latencyEWMA, id)
+		}
+	}
 	scores := scoreResults(results)
 	s.updateLatencyEWMA(results)
 	candidateIDs := make([]string, 0, len(eligible))
@@ -344,6 +349,9 @@ func normalizeHostname(raw string) string {
 // updateLatencyEWMA records successful health-probe durations. Probe durations are
 // provider-level end-to-end observations, not per-bootstrap-IP measurements.
 func (s *Selector) updateLatencyEWMA(results []ProbeResult) {
+	if s.latencyEWMA == nil {
+		s.latencyEWMA = make(map[string]time.Duration)
+	}
 	latest := make(map[string]map[string]ProbeResult)
 	for _, result := range results {
 		id := strings.TrimSpace(result.ServerID)
