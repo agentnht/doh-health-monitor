@@ -395,7 +395,7 @@ func (s *Selector) updateLatencyEWMA(results []ProbeResult) {
 }
 
 // latencyPreferred requires at least a 10% improvement to avoid switching on
-// insignificant RTT noise. An observed latency beats an unknown latency.
+// insignificant probe-latency noise. An observed latency beats an unknown latency.
 func latencyPreferred(candidate, current time.Duration) bool {
 	if candidate <= 0 {
 		return false
