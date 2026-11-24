@@ -379,3 +379,28 @@ func TestLatencyEWMAIgnoresFailedAndUnknownProbes(t *testing.T) {
 		t.Fatalf("EWMA = %s, want 100ms from successful known probe only", got)
 	}
 }
+
+func TestLatencyOnlySwitchIgnoresInsignificantAdvantage(t *testing.T) {
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	s := NewSelector(DefaultPolicy())
+	a := candidate("a", "192.0.2.1", now)
+	b := candidate("b", "192.0.2.2", now)
+	initial := append(
+		setSuccessfulProbeDuration(results("a", 5, now), 100*time.Millisecond),
+		setSuccessfulProbeDuration(results("b", 5, now), 100*time.Millisecond)...,
+	)
+	if selected, ok := s.Select([]Candidate{a, b}, initial, now); !ok || selected.Candidate.ServerID != "a" {
+		t.Fatalf("expected deterministic initial A selection, got %+v", selected)
+	}
+	for cycle := 1; cycle <= 3; cycle++ {
+		at := now.Add(time.Duration(10+cycle) * time.Minute)
+		probes := append(
+			setSuccessfulProbeDuration(results("a", 5, at), 100*time.Millisecond),
+			setSuccessfulProbeDuration(results("b", 5, at), 95*time.Millisecond)...,
+		)
+		selected, ok := s.Select([]Candidate{a, b}, probes, at)
+		if !ok || selected.Candidate.ServerID != "a" {
+			t.Fatalf("sub-10%% latency advantage must not cause a switch, got %+v", selected)
+		}
+	}
+}
