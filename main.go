@@ -279,7 +279,7 @@ type Status struct {
 	CacheHits        uint64                        `json:"cache_hits"`
 	DNSCoalesced     uint64                        `json:"dns_coalesced"`
 	StaleCacheHits   uint64                        `json:"stale_cache_hits"`
-	HedgeAttempts    uint64                        `json:"hedge_attempts"`
+	BootstrapExtraAttempts    uint64                        `json:"bootstrap_extra_attempts"`
 	HedgeWins        uint64                        `json:"hedge_wins"`
 	DNSQualityReject uint64                        `json:"dns_quality_rejections"`
 	Failures         uint64                        `json:"failures"`
@@ -353,7 +353,7 @@ type Runtime struct {
 	cacheHits              atomic.Uint64
 	dnsCoalesced           atomic.Uint64
 	staleCacheHits         atomic.Uint64
-	hedgeExtraAttempts     atomic.Uint64
+	bootstrapExtraAttempts     atomic.Uint64
 	hedgeWins              atomic.Uint64
 	dnsQualityRejections   atomic.Uint64
 	activeUDP              atomic.Int64
@@ -3238,7 +3238,7 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 		ActiveDoH: r.activeDoHStatus(),
 		Queries: r.queries.Load(), CacheHits: r.cacheHits.Load(),
 		DNSCoalesced: r.dnsCoalesced.Load(), StaleCacheHits: r.staleCacheHits.Load(),
-		HedgeAttempts: r.hedgeExtraAttempts.Load(), HedgeWins: r.hedgeWins.Load(),
+		BootstrapExtraAttempts: r.bootstrapExtraAttempts.Load(), HedgeWins: r.hedgeWins.Load(),
 		DNSQualityReject: r.dnsQualityRejections.Load(), Failures: r.failures.Load(),
 		ActiveUDP: r.activeUDP.Load(), UDPQueueDepth: r.udpQueueDepth.Load(), UDPDropped: r.udpDropped.Load(),
 		ActiveTCP: r.activeTCP.Load(), TCPRejected: r.tcpRejected.Load(), Goroutines: runtime.NumGoroutine(),
