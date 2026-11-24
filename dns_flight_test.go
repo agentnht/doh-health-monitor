@@ -58,6 +58,9 @@ func TestCoalesceDNSResponseSharesWorkAndRestoresIDs(t *testing.T) {
 	if calls.Load() != 1 {
 		t.Fatalf("upstream operation called %d times, want 1", calls.Load())
 	}
+	if got := runtime.dnsCoalesced.Load(); got != 1 {
+		t.Fatalf("coalesced request counter = %d, want 1", got)
+	}
 	if got := binary.BigEndian.Uint16(got1[:2]); got != 0x1111 {
 		t.Fatalf("leader response ID = %#x, want %#x", got, 0x1111)
 	}
