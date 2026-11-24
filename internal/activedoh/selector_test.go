@@ -300,3 +300,86 @@ func TestConfigGenerationChangeInvalidatesActiveSelection(t *testing.T) {
 		t.Fatalf("config generation change was not published: %+v", updated)
 	}
 }
+
+
+func setSuccessfulProbeDuration(values []ProbeResult, duration time.Duration) []ProbeResult {
+	for i := range values {
+		if values[i].Success {
+			values[i].Duration = duration
+		}
+	}
+	return values
+}
+
+func TestInitialSelectionUsesLowestEWMAForEqualHealthScore(t *testing.T) {
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	s := NewSelector(DefaultPolicy())
+	a := candidate("a", "192.0.2.1", now)
+	b := candidate("b", "192.0.2.2", now)
+	probes := append(
+		setSuccessfulProbeDuration(results("a", 5, now), 120*time.Millisecond),
+		setSuccessfulProbeDuration(results("b", 5, now), 40*time.Millisecond)...,
+	)
+	selected, ok := s.Select([]Candidate{a, b}, probes, now)
+	if !ok || selected.Candidate.ServerID != "b" {
+		t.Fatalf("expected lower-latency equal-score candidate b, got %+v ok=%t", selected, ok)
+	}
+	if got := s.latencyEWMA["b"]; got != 40*time.Millisecond {
+		t.Fatalf("initial EWMA = %s, want 40ms", got)
+	}
+}
+
+func TestLatencyOnlySwitchRequiresRepeatedImprovementAndAntiFlapGates(t *testing.T) {
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	s := NewSelector(DefaultPolicy())
+	a := candidate("a", "192.0.2.1", now)
+	b := candidate("b", "192.0.2.2", now)
+	initial := append(
+		setSuccessfulProbeDuration(results("a", 5, now), 100*time.Millisecond),
+		setSuccessfulProbeDuration(results("b", 5, now), 20*time.Millisecond)...,
+	)
+	// Start with A preferred; B's initial lower latency is intentionally not used
+	// until the next observations establish a stable advantage.
+	initial = setSuccessfulProbeDuration(results("a", 5, now), 100*time.Millisecond)
+	initial = append(initial, setSuccessfulProbeDuration(results("b", 5, now), 200*time.Millisecond)...)
+	selected, ok := s.Select([]Candidate{a, b}, initial, now)
+	if !ok || selected.Candidate.ServerID != "a" {
+		t.Fatalf("expected initial A selection, got %+v ok=%t", selected, ok)
+	}
+
+	first := now.Add(11 * time.Minute)
+	probes := append(
+		setSuccessfulProbeDuration(results("a", 5, first), 200*time.Millisecond),
+		setSuccessfulProbeDuration(results("b", 5, first), 10*time.Millisecond)...,
+	)
+	selected, ok = s.Select([]Candidate{a, b}, probes, first)
+	if !ok || selected.Candidate.ServerID != "a" {
+		t.Fatalf("one latency improvement cycle must not switch, got %+v", selected)
+	}
+
+	second := first.Add(time.Minute)
+	probes = append(
+		setSuccessfulProbeDuration(results("a", 5, second), 200*time.Millisecond),
+		setSuccessfulProbeDuration(results("b", 5, second), 10*time.Millisecond)...,
+	)
+	selected, ok = s.Select([]Candidate{a, b}, probes, second)
+	if !ok || selected.Candidate.ServerID != "b" {
+		t.Fatalf("second sustained latency improvement should switch to B, got %+v", selected)
+	}
+}
+
+func TestLatencyEWMAIgnoresFailedAndUnknownProbes(t *testing.T) {
+	now := time.Now().UTC()
+	s := NewSelector(DefaultPolicy())
+	probes := []ProbeResult{
+		{ServerID: "a", Domain: "chatgpt.com", Success: true, CheckedAt: now, Duration: 100 * time.Millisecond},
+		{ServerID: "a", Domain: "claude.ai", Success: false, CheckedAt: now, Duration: 900 * time.Millisecond},
+		{ServerID: "a", Domain: "unknown.example", Success: true, CheckedAt: now, Duration: time.Millisecond},
+	}
+	s.mu.Lock()
+	s.updateLatencyEWMA(probes)
+	s.mu.Unlock()
+	if got := s.latencyEWMA["a"]; got != 100*time.Millisecond {
+		t.Fatalf("EWMA = %s, want 100ms from successful known probe only", got)
+	}
+}
