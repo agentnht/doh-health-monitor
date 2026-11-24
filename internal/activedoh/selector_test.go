@@ -301,7 +301,6 @@ func TestConfigGenerationChangeInvalidatesActiveSelection(t *testing.T) {
 	}
 }
 
-
 func setSuccessfulProbeDuration(values []ProbeResult, duration time.Duration) []ProbeResult {
 	for i := range values {
 		if values[i].Success {
