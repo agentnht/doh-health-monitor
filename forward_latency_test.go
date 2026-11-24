@@ -22,8 +22,8 @@ func TestForwardLatencyHistogramReportsBoundedPercentiles(t *testing.T) {
 	if got := r.forwardLatencyPercentile(50); got != 200 {
 		t.Fatalf("p50 bucket=%dms, want 200ms", got)
 	}
-	if got := r.forwardLatencyPercentile(95); got != 6400 {
-		t.Fatalf("p95 bucket=%dms, want 6400ms overflow bucket", got)
+	if got := r.forwardLatencyPercentile(95); got != 60000 {
+		t.Fatalf("p95 bucket=%dms, want 60000ms overflow bucket", got)
 	}
 	if got := r.forwardLatencySampleCount(); got != 8 {
 		t.Fatalf("sample count=%d, want 8", got)
