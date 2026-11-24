@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 ### DNS resilience fixes
+- Expose bounded-cardinality p50/p95 DoH forwarding latency estimates from a fixed histogram; no per-domain or per-IP metrics are exported.
 - Add fuzz targets for DNS packet handling and stale/TTL parsing, with bounded smoke runs in GitHub Actions.
 - Cache valid provider-originated SERVFAIL responses separately for at most five seconds when negative caching is enabled; never stale-serve or cache synthetic/truncated SERVFAIL responses.
 - Adapt bootstrap hedging from measured per-IP forwarding latency (1.5× median, clamped to 100–1500ms) with a conservative fallback before observations exist. Tighten selector EWMA tie-breaks to require at least 25% and 100ms improvement while retaining repeated-cycle and hold/cooldown gates.
