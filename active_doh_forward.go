@@ -30,6 +30,8 @@ type activeDoHForwardMetrics struct {
 	extraAttempts     *atomic.Uint64
 	hedgeWins         *atomic.Uint64
 	qualityRejections *atomic.Uint64
+	hedgeDelay        time.Duration
+	recordLatency     func(ip string, elapsed time.Duration)
 }
 
 type activeDoHHTTPClientFactory func(ip, host string, timeout time.Duration) *http.Client
@@ -171,12 +173,20 @@ func sendActiveDoHWithClientFactoryAndMetrics(
 			metrics.extraAttempts.Add(1)
 		}
 		go func(hedged bool) {
+			started := time.Now()
 			body, err := sendActiveDoHAttempt(attemptCtx, candidate, packet, ip, host, timeout, newClient)
+			if metrics != nil && metrics.recordLatency != nil {
+				metrics.recordLatency(ip, time.Since(started))
+			}
 			results <- attemptResult{ip: ip, response: body, err: err, hedged: hedged}
 		}(hedged)
 	}
 	launch()
-	timer := time.NewTimer(activeDoHHedgeDelay)
+	hedgeDelay := activeDoHHedgeDelay
+	if metrics != nil && metrics.hedgeDelay > 0 {
+		hedgeDelay = metrics.hedgeDelay
+	}
+	timer := time.NewTimer(hedgeDelay)
 	defer timer.Stop()
 
 	for active > 0 || nextIP < len(ips) {
