@@ -146,14 +146,19 @@ func TestSendActiveDoHRejectsUnusableDNSAnswersAndTriesNextBootstrapIP(t *testin
 				ServerID: "selected", URL: server.URL + "/dns-query", Hostname: "127.0.0.1",
 				IPv4: []string{"1.1.1.1", "8.8.8.8"}, ResolvedAt: time.Now(),
 			}
-			response, err := sendActiveDoHWithClientFactory(
+			var qualityRejections atomic.Uint64
+			response, err := sendActiveDoHWithClientFactoryAndMetrics(
 				context.Background(), candidate, query, 2*time.Second,
 				func(ip, host string, timeout time.Duration) *http.Client {
 					return server.Client()
 				},
+				&activeDoHForwardMetrics{qualityRejections: &qualityRejections},
 			)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if qualityRejections.Load() != 1 {
+				t.Fatalf("quality rejection count=%d, want 1", qualityRejections.Load())
 			}
 			if requests.Load() != 2 {
 				t.Fatalf("request count=%d, want retry on second bootstrap IP", requests.Load())
@@ -215,11 +220,13 @@ func TestSendActiveDoHHedgesSlowBootstrapAttempt(t *testing.T) {
 		IPv4: []string{"1.1.1.1", "8.8.8.8"}, ResolvedAt: time.Now(),
 	}
 	started := time.Now()
-	response, err := sendActiveDoHWithClientFactory(
+	var extraAttempts, hedgeWins atomic.Uint64
+	response, err := sendActiveDoHWithClientFactoryAndMetrics(
 		context.Background(), candidate, query, 3*time.Second,
 		func(ip, host string, timeout time.Duration) *http.Client {
 			return server.Client()
 		},
+		&activeDoHForwardMetrics{extraAttempts: &extraAttempts, hedgeWins: &hedgeWins},
 	)
 	elapsed := time.Since(started)
 	if err != nil {
@@ -227,6 +234,9 @@ func TestSendActiveDoHHedgesSlowBootstrapAttempt(t *testing.T) {
 	}
 	if requests.Load() != 2 {
 		t.Fatalf("request count=%d, want two hedged attempts", requests.Load())
+	}
+	if extraAttempts.Load() != 1 || hedgeWins.Load() != 1 {
+		t.Fatalf("extra attempts=%d hedge wins=%d, want 1/1", extraAttempts.Load(), hedgeWins.Load())
 	}
 	if elapsed >= time.Second {
 		t.Fatalf("hedged request took %s; expected second bootstrap IP to win before first timeout", elapsed)
