@@ -334,14 +334,11 @@ func TestLatencyOnlySwitchRequiresRepeatedImprovementAndAntiFlapGates(t *testing
 	s := NewSelector(DefaultPolicy())
 	a := candidate("a", "192.0.2.1", now)
 	b := candidate("b", "192.0.2.2", now)
+	// Equal initial RTTs preserve deterministic configured ordering (A first).
 	initial := append(
 		setSuccessfulProbeDuration(results("a", 5, now), 100*time.Millisecond),
-		setSuccessfulProbeDuration(results("b", 5, now), 20*time.Millisecond)...,
+		setSuccessfulProbeDuration(results("b", 5, now), 100*time.Millisecond)...,
 	)
-	// Start with A preferred; B's initial lower latency is intentionally not used
-	// until the next observations establish a stable advantage.
-	initial = setSuccessfulProbeDuration(results("a", 5, now), 100*time.Millisecond)
-	initial = append(initial, setSuccessfulProbeDuration(results("b", 5, now), 200*time.Millisecond)...)
 	selected, ok := s.Select([]Candidate{a, b}, initial, now)
 	if !ok || selected.Candidate.ServerID != "a" {
 		t.Fatalf("expected initial A selection, got %+v ok=%t", selected, ok)
