@@ -42,6 +42,31 @@ func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte 
 	if snapshot == nil || r.activeDoHSelector == nil {
 		return r.activeDoHDNSResponseUncoalesced(query, snapshot)
 	}
+	// Serve a fresh cache hit before allocating/looking up a singleflight entry.
+	// The authoritative path repeats the check to handle races with a concurrent
+	// cache fill after this fast-path lookup.
+	if snapshot.cfg.Cache.Enabled && len(query) >= 12 &&
+		binary.BigEndian.Uint16(query[4:6]) == 1 {
+		_, qtype, questionEnd, err := parseQuestion(query)
+		if err == nil && questionEnd >= 2 && questionEnd <= len(query) &&
+			binary.BigEndian.Uint16(query[questionEnd-2:questionEnd]) == 1 &&
+			(qtype == 1 || qtype == 28) {
+			current := r.currentSnapshot()
+			selection, ok := r.activeDoHSelector.Current(time.Now())
+			if ok && current != nil &&
+				current.activeDoHGeneration == snapshot.activeDoHGeneration &&
+				selection.Candidate.ConfigGeneration == current.activeDoHGeneration {
+				key := fmt.Sprintf("mode1:%d:%s", selection.Generation, cacheKey(query))
+				if cached, found := r.cacheGet(key, packetID(query), snapshot.cfg.Cache.StaleTTL); found {
+					if r.activeDoHConfigMatches(snapshot) &&
+						r.activeDoHSelector.Generation() == selection.Generation {
+						r.cacheHits.Add(1)
+						return cached
+					}
+				}
+			}
+		}
+	}
 	key := fmt.Sprintf("mode1-flight:%d:%d:%s",
 		snapshot.activeDoHGeneration, r.activeDoHSelector.Generation(), cacheKey(query))
 	return r.coalesceDNSResponse(key, query, func() []byte {
