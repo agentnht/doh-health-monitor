@@ -85,7 +85,7 @@ func sendActiveDoHAttempt(
 		return nil, err
 	}
 	if err := activeDoHResponseQualityError(body); err != nil {
-		return nil, err
+		return body, err
 	}
 	return body, nil
 }
@@ -159,6 +159,9 @@ func sendActiveDoHWithClientFactoryAndMetrics(
 	nextIP := 0
 	active := 0
 	failures := make([]string, 0, len(ips))
+	transportOnly := true
+	qualityRetries := 0
+	var lastProviderResponse []byte
 	launch := func() {
 		attemptIndex := nextIP
 		ip := ips[attemptIndex]
@@ -188,11 +191,43 @@ func sendActiveDoHWithClientFactoryAndMetrics(
 				return result.response, nil
 			}
 			var qualityErr *activeDoHQualityError
-			if errors.As(result.err, &qualityErr) && metrics != nil && metrics.qualityRejections != nil {
-				metrics.qualityRejections.Add(1)
+			if errors.As(result.err, &qualityErr) {
+				transportOnly = false
+				if metrics != nil && metrics.qualityRejections != nil {
+					metrics.qualityRejections.Add(1)
+				}
+				if dnsRCode(result.response) == 2 || dnsRCode(result.response) == 5 {
+					// SERVFAIL and REFUSED are DNS policy/results, not evidence that
+					// every bootstrap address is broken. Permit one alternate-IP
+					// retry at most, then return the provider's last DNS answer intact.
+					lastProviderResponse = append(lastProviderResponse[:0], result.response...)
+					if qualityRetries == 0 {
+						qualityRetries = 1
+						if active == 0 && nextIP < len(ips) {
+							launch()
+						}
+						continue
+					}
+					if active > 0 {
+						continue
+					}
+					return lastProviderResponse, nil
+				}
+			}
+			var transportErr *activeDoHTransportError
+			if !errors.As(result.err, &transportErr) {
+				transportOnly = false
 			}
 			failures = append(failures, result.ip+": "+result.err.Error())
-			// A failed/low-quality response should not wait for the hedge timer.
+			// After a SERVFAIL/REFUSED, the one permitted alternate attempt is
+			// already spent. Preserve the provider response if that retry failed.
+			if qualityRetries > 0 {
+				if active == 0 && len(lastProviderResponse) > 0 {
+					return lastProviderResponse, nil
+				}
+				continue
+			}
+			// A transport/HTTP/structural failure should not wait for the hedge timer.
 			if nextIP < len(ips) {
 				launch()
 				if !timer.Stop() {
@@ -213,8 +248,14 @@ func sendActiveDoHWithClientFactoryAndMetrics(
 			break
 		}
 	}
-	return nil, fmt.Errorf("all bootstrap IP attempts for selected DoH endpoint %s failed: %s",
-		host, strings.Join(failures, "; "))
+	if len(lastProviderResponse) > 0 {
+		return lastProviderResponse, nil
+	}
+	return nil, &activeDoHForwardError{
+		err: fmt.Errorf("all bootstrap IP attempts for selected DoH endpoint %s failed: %s",
+			host, strings.Join(failures, "; ")),
+		transportOnly: transportOnly && len(failures) > 0,
+	}
 }
 
 // activeDoHQualityError identifies a syntactically valid DNS response that is
@@ -224,6 +265,21 @@ type activeDoHQualityError struct {
 }
 
 func (e *activeDoHQualityError) Error() string { return e.reason }
+
+type activeDoHTransportError struct {
+	err error
+}
+
+func (e *activeDoHTransportError) Error() string { return e.err.Error() }
+func (e *activeDoHTransportError) Unwrap() error { return e.err }
+
+type activeDoHForwardError struct {
+	err               error
+	transportOnly     bool
+}
+
+func (e *activeDoHForwardError) Error() string { return e.err.Error() }
+func (e *activeDoHForwardError) Unwrap() error { return e.err }
 
 // activeDoHResponseQualityError rejects DNS responses that should not win an
 // upstream attempt. This is deliberately query-scoped: it does not mark the
