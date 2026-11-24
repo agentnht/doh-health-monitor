@@ -339,7 +339,7 @@ type Runtime struct {
 	active                 map[string]string
 	upstreamCooldown       map[string]time.Time
 	cacheMu                sync.Mutex
-	dnsFlights             sync.Map // map[string]*dnsFlight; coalesces identical concurrent DNS misses
+	dnsFlights             sync.Map
 	cache                  map[string]cacheItem
 	cacheOrder             []cacheOrderEntry
 	cacheOrderHead         int
