@@ -15,6 +15,17 @@ type dnsFlight struct {
 
 // coalesceDNSResponse ensures that identical concurrent DNS cache misses share
 // one upstream operation. The key must include the DNS mode and its generation.
+
+func runDNSFlight(query []byte, run func() []byte) (response []byte) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			logLine("ERROR", "DNS singleflight operation panicked; returning SERVFAIL: %v", recovered)
+			response = servfailResponse(query)
+		}
+	}()
+	return run()
+}
+
 func (r *Runtime) coalesceDNSResponse(key string, query []byte, run func() []byte) []byte {
 	if r == nil || len(query) < 2 || run == nil {
 		if run == nil {
@@ -36,7 +47,7 @@ func (r *Runtime) coalesceDNSResponse(key string, query []byte, run func() []byt
 		return response
 	}
 
-	response := run()
+	response := runDNSFlight(query, run)
 	candidate.response = append([]byte(nil), response...)
 	close(candidate.done)
 	r.dnsFlights.Delete(key)
