@@ -101,6 +101,7 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 	// selector generation. A withdrawn selection increments Generation, but
 	// that must not make the last known-good answer unreachable during outage.
 	staleKey := fmt.Sprintf("mode1-stale:%d:%s", snapshot.activeDoHGeneration, cacheKey(query))
+	servfailKey := fmt.Sprintf("mode1-servfail:%d:%s", snapshot.activeDoHGeneration, cacheKey(query))
 	selection, ok := r.activeDoHSelector.Current(time.Now())
 	if !ok || selection.Candidate.ConfigGeneration != current.activeDoHGeneration {
 		if snapshot.cfg.Cache.Enabled {
@@ -123,6 +124,10 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 				r.activeDoHSelector.Generation() != selection.Generation {
 				return servfailResponse(query)
 			}
+			return cached
+		}
+		if cached, found := r.cacheGet(servfailKey, packetID(query), 0); found {
+			r.cacheHits.Add(1)
 			return cached
 		}
 		if r.staleRecheckSuppressed(staleKey, time.Now()) {
@@ -203,6 +208,14 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 		selection.Candidate.ConfigGeneration != snapshot.activeDoHGeneration ||
 		r.activeDoHSelector.Generation() != selection.Generation {
 		return servfailResponse(query)
+	}
+
+	if dnsRCode(response) == 2 {
+		if cacheConfig.Enabled && cacheConfig.NegativeTTL > 0 {
+			r.cachePutFixedTTL(servfailKey, response,
+				time.Duration(cacheConfig.NegativeTTL)*time.Second, 5*time.Second, cacheConfig)
+		}
+		return response
 	}
 
 	if cacheConfig.Enabled {
