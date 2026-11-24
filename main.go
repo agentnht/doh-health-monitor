@@ -2667,11 +2667,11 @@ func verifyOIDCIssuer(body []byte, discoveryURL string) error {
 
 func newPinnedHTTPTransport(ip, host string, timeout time.Duration) *http.Transport {
 	return &http.Transport{
-		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: host},
-		ForceAttemptHTTP2: true,
-		MaxIdleConns: 1,
+		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12, ServerName: host},
+		ForceAttemptHTTP2:   true,
+		MaxIdleConns:        1,
 		MaxIdleConnsPerHost: 1,
-		IdleConnTimeout: 10 * time.Second,
+		IdleConnTimeout:     10 * time.Second,
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			_, port, err := net.SplitHostPort(address)
 			if err != nil {
@@ -2684,8 +2684,8 @@ func newPinnedHTTPTransport(ip, host string, timeout time.Duration) *http.Transp
 
 func newPinnedHTTPClient(ip, host string, timeout time.Duration) *http.Client {
 	return &http.Client{
-		Transport: newPinnedHTTPTransport(ip, host, timeout),
-		Timeout: timeout,
+		Transport:     newPinnedHTTPTransport(ip, host, timeout),
+		Timeout:       timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 }
