@@ -65,3 +65,17 @@ func TestCoalesceDNSResponseSharesWorkAndRestoresIDs(t *testing.T) {
 		t.Fatalf("follower response ID = %#x, want %#x", got, 0x2222)
 	}
 }
+
+func TestCoalesceDNSResponseRecoversPanicsAndCleansFlight(t *testing.T) {
+	runtime := &Runtime{}
+	query := makeDNSQuery("panic.example.test", 1)
+	response := runtime.coalesceDNSResponse("panic-flight", query, func() []byte {
+		panic("synthetic upstream panic")
+	})
+	if dnsRCode(response) != 2 {
+		t.Fatalf("panic response rcode=%d, want SERVFAIL (2)", dnsRCode(response))
+	}
+	if _, exists := runtime.dnsFlights.Load("panic-flight"); exists {
+		t.Fatal("in-flight entry was not removed after panic")
+	}
+}
