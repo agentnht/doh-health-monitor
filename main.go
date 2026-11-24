@@ -3236,7 +3236,7 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 		Cache:  CacheStatus{Enabled: s.cfg.Cache.Enabled, Entries: cacheEntries, MaxEntries: s.cfg.Cache.MaxEntries, Bytes: cacheBytes, MaxBytes: s.cfg.Cache.MaxBytes},
 		Groups: map[string]GroupStatus{}, DoHBootstrap: map[string]DoHBootstrapStatus{},
 		ActiveDoH: r.activeDoHStatus(),
-		Queries: r.queries.Load(), CacheHits: r.cacheHits.Load(),
+		Queries:   r.queries.Load(), CacheHits: r.cacheHits.Load(),
 
 		DNSCoalesced: r.dnsCoalesced.Load(), StaleCacheHits: r.staleCacheHits.Load(),
 		ExtraAttempts: r.bootstrapExtraAttempts.Load(), HedgeWins: r.hedgeWins.Load(),
