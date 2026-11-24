@@ -237,7 +237,7 @@ func sendActiveDoHWithClientFactoryAndMetrics(
 					default:
 					}
 				}
-				timer.Reset(activeDoHHedgeDelay)
+				timer.Reset(hedgeDelay)
 			}
 		case <-timer.C:
 			if nextIP < len(ips) && qualityRetries == 0 && !hedgeLaunched {
