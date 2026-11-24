@@ -55,7 +55,6 @@ func sendActiveDoHAttempt(
 	}
 	request, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, candidate.URL, bytes.NewReader(packet))
 	if err != nil {
-		client.CloseIdleConnections()
 		return nil, fmt.Errorf("build selected DoH request: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/dns-message")
@@ -66,7 +65,6 @@ func sendActiveDoHAttempt(
 		return nil, sanitizeDoHTransportError(err, candidate.URL)
 	}
 	defer response.Body.Close()
-	defer client.CloseIdleConnections()
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("DoH HTTP %d", response.StatusCode)
 	}
