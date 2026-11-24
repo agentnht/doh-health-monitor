@@ -277,8 +277,8 @@ func (e *activeDoHTransportError) Error() string { return e.err.Error() }
 func (e *activeDoHTransportError) Unwrap() error { return e.err }
 
 type activeDoHForwardError struct {
-	err               error
-	transportOnly     bool
+	err           error
+	transportOnly bool
 }
 
 func (e *activeDoHForwardError) Error() string { return e.err.Error() }
