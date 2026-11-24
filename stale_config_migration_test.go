@@ -54,8 +54,8 @@ func TestStaleTTLDefaultAppliesToStartupAndHotReload(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cfg.Cache.StaleTTL != 60 {
-				t.Fatalf("missing stale_ttl_seconds loaded as %d, want 60", cfg.Cache.StaleTTL)
+			if cfg.Cache.StaleTTL != 3600 {
+				t.Fatalf("missing stale_ttl_seconds loaded as %d, want 3600", cfg.Cache.StaleTTL)
 			}
 			writeConfigWithoutStaleTTL(t, path, true)
 			cfg, err = load.fn(path)
