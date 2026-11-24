@@ -19,7 +19,7 @@ import (
 // sendActiveDoH forwards the original client DNS message to the DoH endpoint
 // selected by ActiveDoHSelector. The TCP connection is pinned to a bootstrap
 // address while the URL host, HTTP Host and TLS SNI remain the endpoint name.
-	func sendActiveDoH(ctx context.Context, candidate activedoh.Candidate, packet []byte, timeout time.Duration) ([]byte, error) {
+func sendActiveDoH(ctx context.Context, candidate activedoh.Candidate, packet []byte, timeout time.Duration) ([]byte, error) {
 	return sendActiveDoHWithMetrics(ctx, candidate, packet, timeout, nil)
 }
 
@@ -157,7 +157,7 @@ func sendActiveDoHWithClientFactoryAndMetrics(
 		ip       string
 		response []byte
 		err      error
-		he dged   bool
+		hedged   bool
 	}
 	results := make(chan attemptResult, len(ips))
 	nextIP := 0
