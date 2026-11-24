@@ -45,8 +45,19 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 	if current == nil || current.activeDoHGeneration != snapshot.activeDoHGeneration {
 		return servfailResponse(query)
 	}
+
+	// Keep stale answers in a configuration-scoped namespace rather than the
+	// selector generation. A withdrawn selection increments Generation, but
+	// that must not make the last known-good answer unreachable during outage.
+	staleKey := fmt.Sprintf("mode1-stale:%d:%s", snapshot.activeDoHGeneration, cacheKey(query))
 	selection, ok := r.activeDoHSelector.Current(time.Now())
 	if !ok || selection.Candidate.ConfigGeneration != current.activeDoHGeneration {
+		if snapshot.cfg.Cache.Enabled {
+			if stale, found := r.cacheGetStale(staleKey, packetID(query), snapshot.cfg.Cache.StaleTTL); found {
+				r.cacheHits.Add(1)
+				return stale
+			}
+		}
 		return servfailResponse(query)
 	}
 
@@ -90,7 +101,7 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 		default:
 		}
 		if cacheConfig.Enabled {
-			if stale, found := r.cacheGetStale(key, packetID(query), cacheConfig.StaleTTL); found {
+			if stale, found := r.cacheGetStale(staleKey, packetID(query), cacheConfig.StaleTTL); found {
 				r.cacheHits.Add(1)
 				return stale
 			}
@@ -119,6 +130,9 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 			cacheConfig.MinTTL = 0
 			cacheConfig.MaxTTL = int(maxTTL / time.Second)
 			r.cachePut(key, cacheResponse, cacheConfig)
+			// A generation-independent stale copy survives selector withdrawal;
+			// it is consulted only after upstream failure or loss of selection.
+			r.cachePut(staleKey, cacheResponse, cacheConfig)
 		}
 	}
 	return response
