@@ -223,7 +223,9 @@ func sendActiveDoHWithClientFactoryAndMetrics(
 
 // activeDoHQualityError identifies a syntactically valid DNS response that is
 // not usable as a successful upstream result.
-type activeDoHQualityError struct { reason string }
+type activeDoHQualityError struct {
+	reason string
+}
 
 func (e *activeDoHQualityError) Error() string { return e.reason }
 
