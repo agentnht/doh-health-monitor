@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"lucx-doh-health-monitor/internal/activedoh"
@@ -18,11 +19,21 @@ import (
 // sendActiveDoH forwards the original client DNS message to the DoH endpoint
 // selected by ActiveDoHSelector. The TCP connection is pinned to a bootstrap
 // address while the URL host, HTTP Host and TLS SNI remain the endpoint name.
-func sendActiveDoH(ctx context.Context, candidate activedoh.Candidate, packet []byte, timeout time.Duration) ([]byte, error) {
-	return sendActiveDoHWithClientFactory(ctx, candidate, packet, timeout,
+	func sendActiveDoH(ctx context.Context, candidate activedoh.Candidate, packet []byte, timeout time.Duration) ([]byte, error) {
+	return sendActiveDoHWithMetrics(ctx, candidate, packet, timeout, nil)
+}
+
+func sendActiveDoHWithMetrics(ctx context.Context, candidate activedoh.Candidate, packet []byte, timeout time.Duration, metrics *activeDoHForwardMetrics) ([]byte, error) {
+	return sendActiveDoHWithClientFactoryAndMetrics(ctx, candidate, packet, timeout,
 		func(ip, host string, attemptTimeout time.Duration) *http.Client {
 			return newPinnedHTTPClient(ip, host, attemptTimeout)
-		})
+		}, metrics)
+}
+
+type activeDoHForwardMetrics struct {
+	extraAttempts    *atomic.Uint64
+	hedgeWins        *atomic.Uint64
+	qualityRejections *atomic.Uint64
 }
 
 type activeDoHHTTPClientFactory func(ip, host string, timeout time.Duration) *http.Client
@@ -92,6 +103,17 @@ func sendActiveDoHWithClientFactory(
 	timeout time.Duration,
 	newClient activeDoHHTTPClientFactory,
 ) ([]byte, error) {
+	return sendActiveDoHWithClientFactoryAndMetrics(ctx, candidate, packet, timeout, newClient, nil)
+}
+
+func sendActiveDoHWithClientFactoryAndMetrics(
+	ctx context.Context,
+	candidate activedoh.Candidate,
+	packet []byte,
+	timeout time.Duration,
+	newClient activeDoHHTTPClientFactory,
+	metrics *activeDoHForwardMetrics,
+) ([]byte, error) {
 	if len(packet) < 12 || len(packet) > maxDNSMessage {
 		return nil, errors.New("invalid DNS query size for selected DoH endpoint")
 	}
@@ -135,19 +157,24 @@ func sendActiveDoHWithClientFactory(
 		ip       string
 		response []byte
 		err      error
+		he dged   bool
 	}
 	results := make(chan attemptResult, len(ips))
 	nextIP := 0
 	active := 0
 	failures := make([]string, 0, len(ips))
 	launch := func() {
-		ip := ips[nextIP]
+		attemptIndex := nextIP
+		ip := ips[attemptIndex]
 		nextIP++
 		active++
-		go func() {
+		if attemptIndex > 0 && metrics != nil && metrics.extraAttempts != nil {
+			metrics.extraAttempts.Add(1)
+		}
+		go func(hedged bool) {
 			body, err := sendActiveDoHAttempt(attemptCtx, candidate, packet, ip, host, timeout, newClient)
-			results <- attemptResult{ip: ip, response: body, err: err}
-		}()
+			results <- attemptResult{ip: ip, response: body, err: err, hedged: hedged}
+		}(attemptIndex > 0)
 	}
 	launch()
 	timer := time.NewTimer(activeDoHHedgeDelay)
@@ -158,7 +185,14 @@ func sendActiveDoHWithClientFactory(
 		case result := <-results:
 			active--
 			if result.err == nil {
+				if result.hedged && metrics != nil && metrics.hedgeWins != nil {
+					metrics.hedgeWins.Add(1)
+				}
 				return result.response, nil
+			}
+			var qualityErr *activeDoHQualityError
+			if errors.As(result.err, &qualityErr) && metrics != nil && metrics.qualityRejections != nil {
+				metrics.qualityRejections.Add(1)
 			}
 			failures = append(failures, result.ip+": "+result.err.Error())
 			// A failed/low-quality response should not wait for the hedge timer.
@@ -186,18 +220,24 @@ func sendActiveDoHWithClientFactory(
 		host, strings.Join(failures, "; "))
 }
 
+// activeDoHQualityError identifies a syntactically valid DNS response that is
+// not usable as a successful upstream result.
+type activeDoHQualityError struct { reason string }
+
+func (e *activeDoHQualityError) Error() string { return e.reason }
+
 // activeDoHResponseQualityError rejects DNS responses that should not win an
 // upstream attempt. This is deliberately query-scoped: it does not mark the
 // selected provider unhealthy or alter ActiveDoHSelector's anti-flap policy.
 func activeDoHResponseQualityError(response []byte) error {
 	switch dnsRCode(response) {
 	case 2:
-		return errors.New("DoH upstream returned SERVFAIL")
+		return &activeDoHQualityError{reason: "DoH upstream returned SERVFAIL"}
 	case 5:
-		return errors.New("DoH upstream returned REFUSED")
+		return &activeDoHQualityError{reason: "DoH upstream returned REFUSED"}
 	}
 	if dnsTruncated(response) {
-		return errors.New("DoH upstream returned a truncated DNS response")
+		return &activeDoHQualityError{reason: "DoH upstream returned a truncated DNS response"}
 	}
 	return nil
 }
