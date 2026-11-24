@@ -637,7 +637,7 @@ func defaultConfig() Config {
 		DNSListenUDP: "127.0.0.1:5355", DNSListenTCP: "127.0.0.1:5355", HTTPListen: "127.0.0.1:18765", ReloadSecs: 5,
 		DNSQueryTimeoutSeconds: 15, DoHTimeoutSeconds: 10, DNSMaxConcurrent: 256,
 		Health:             HealthConfig{IntervalSeconds: 25 * 60, TimeoutSeconds: 5, FailureThreshold: 1, SuccessThreshold: 1},
-		Cache:              CacheConfig{Enabled: true, MinTTL: 5, MaxTTL: 300, NegativeTTL: 15, StaleTTL: 60, MaxEntries: 8192, MaxBytes: defaultCacheMaxBytes},
+		Cache:              CacheConfig{Enabled: true, MinTTL: 5, MaxTTL: 300, NegativeTTL: 15, StaleTTL: 3600, MaxEntries: 8192, MaxBytes: defaultCacheMaxBytes},
 		DNSMode:            "endpoint_ip",
 		ResolverUpstreams:  []ResolverUpstream{{ID: "system", Name: "System resolver (OS)", Type: "system"}},
 		LocalHosts:         map[string]LocalHost{},
