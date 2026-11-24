@@ -76,7 +76,7 @@ func sendActiveDoHAttempt(
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxDNSMessage+1))
 	if err != nil {
-		return nil, errors.New("failed to read DoH DNS response")
+		return nil, &activeDoHTransportError{err: errors.New("failed to read DoH DNS response")}
 	}
 	if len(body) < 12 || len(body) > maxDNSMessage {
 		return nil, fmt.Errorf("invalid DoH DNS response size %d", len(body))
@@ -239,10 +239,13 @@ func sendActiveDoHWithClientFactoryAndMetrics(
 				timer.Reset(activeDoHHedgeDelay)
 			}
 		case <-timer.C:
-			if nextIP < len(ips) {
+			if nextIP < len(ips) && qualityRetries == 0 {
 				launch()
 				timer.Reset(activeDoHHedgeDelay)
 			}
+		}
+		if qualityRetries > 0 && active == 0 {
+			return lastProviderResponse, nil
 		}
 		if active == 0 && nextIP >= len(ips) {
 			break
