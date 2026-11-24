@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -68,7 +69,7 @@ func TestActiveDoHFreshCacheHitBypassesSingleflight(t *testing.T) {
 		cache: make(map[string]cacheItem),
 	}
 	runtime.snapshot.Store(snapshot)
-	runtime.cachePut("mode1:"+formatInt64(selection.Generation)+":"+cacheKey(query),
+	runtime.cachePut(fmt.Sprintf("mode1:%d:%s", selection.Generation, cacheKey(query)),
 		testAResponse(query, 60), snapshot.cfg.Cache)
 
 	for i := 0; i < 2; i++ {
