@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 ### DNS resilience fixes
+- Add fuzz targets for DNS packet handling and stale/TTL parsing, with bounded smoke runs in GitHub Actions.
 - Cache valid provider-originated SERVFAIL responses separately for at most five seconds when negative caching is enabled; never stale-serve or cache synthetic/truncated SERVFAIL responses.
 - Adapt bootstrap hedging from measured per-IP forwarding latency (1.5× median, clamped to 100–1500ms) with a conservative fallback before observations exist. Tighten selector EWMA tie-breaks to require at least 25% and 100ms improvement while retaining repeated-cycle and hold/cooldown gates.
 - Reuse pinned HTTP transports and keep-alive connections by exact DoH hostname/bootstrap-IP identity. The pool is capped at 64 entries, expires idle identities, and preserves hostname TLS SNI while dialing the pinned address.
