@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"lucx-doh-health-monitor/internal/activedoh"
 )
 
 func TestPinnedDoHHTTPClientReusesTransportByEndpointAndBootstrap(t *testing.T) {
@@ -32,5 +34,25 @@ func TestPinnedDoHTransportPoolIsBounded(t *testing.T) {
 	defer r.activeDoHTransportMu.Unlock()
 	if len(r.activeDoHTransports) > maxPinnedDoHTransports {
 		t.Fatalf("pool contains %d transports; max is %d", len(r.activeDoHTransports), maxPinnedDoHTransports)
+	}
+}
+
+func TestActiveDoHHedgeDelayUsesMedianPerIPLatencyAndBounds(t *testing.T) {
+	r := &Runtime{activeDoHTransports: map[string]*pinnedDoHTransportEntry{
+		"doh.example|8.8.8.8": {latencyEWMA: 100 * time.Millisecond},
+		"doh.example|8.8.4.4": {latencyEWMA: 200 * time.Millisecond},
+		"doh.example|1.1.1.1": {latencyEWMA: 300 * time.Millisecond},
+	}}
+	candidate := activedoh.Candidate{Hostname: "doh.example", IPv4: []string{"8.8.8.8", "8.8.4.4", "1.1.1.1"}}
+	if got := r.activeDoHHedgeDelay(candidate); got != 300*time.Millisecond {
+		t.Fatalf("hedge delay=%s, want 1.5x median (200ms)", got)
+	}
+	candidate.IPv4 = []string{"9.9.9.9"}
+	if got := r.activeDoHHedgeDelay(candidate); got != activeDoHHedgeDelay {
+		t.Fatalf("unknown IP hedge delay=%s, want conservative fallback %s", got, activeDoHHedgeDelay)
+	}
+	r.activeDoHTransports["doh.example|9.9.9.9"] = &pinnedDoHTransportEntry{latencyEWMA: time.Second}
+	if got := r.activeDoHHedgeDelay(candidate); got != 1500*time.Millisecond {
+		t.Fatalf("high-latency hedge delay=%s, want 1500ms cap", got)
 	}
 }
