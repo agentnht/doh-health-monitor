@@ -76,7 +76,12 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 	if totalTimeout < dohTimeout {
 		dohTimeout = totalTimeout
 	}
-	response, queryErr := sendActiveDoH(ctx, selection.Candidate, query, dohTimeout)
+	metrics := &activeDoHForwardMetrics{
+		extraAttempts:     &r.hedgeExtraAttempts,
+		hedgeWins:         &r.hedgeWins,
+		qualityRejections: &r.dnsQualityRejections,
+	}
+	response, queryErr := sendActiveDoHWithMetrics(ctx, selection.Candidate, query, dohTimeout, metrics)
 	cancel()
 	if queryErr != nil {
 		// Prompt a fresh selector cycle even when a stale answer can be served.
