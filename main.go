@@ -1717,7 +1717,7 @@ func (r *Runtime) serveUDPWithHandler(ctx context.Context, c *net.UDPConn, handl
 					}
 					r.udpQueueDepth.Add(-1)
 					r.activeUDP.Add(1)
-					resp := handle(job.packet)
+					resp := invokeDNSHandlerSafely("UDP", handle, job.packet)
 					r.activeUDP.Add(-1)
 					if len(resp) == 0 {
 						continue // dropped on purpose (e.g. QR=1 packet)
@@ -1842,7 +1842,7 @@ func (r *Runtime) handleTCPConn(ctx context.Context, c net.Conn) {
 		if _, err := io.ReadFull(c, q); err != nil {
 			return
 		}
-		resp := r.handleDNS(q)
+		resp := invokeDNSHandlerSafely("TCP", r.handleDNS, q)
 		if len(resp) == 0 || len(resp) > maxDNSMessage {
 			return
 		}
