@@ -347,6 +347,8 @@ type Runtime struct {
 	cacheMu                sync.Mutex
 	staleRecheckMu         sync.Mutex
 	staleRechecks          map[string]time.Time
+	activeDoHTransportMu   sync.Mutex
+	activeDoHTransports    map[string]*pinnedDoHTransportEntry
 	dnsFlights             sync.Map
 	cache                  map[string]cacheItem
 	cacheOrder             []cacheOrderEntry
