@@ -10,13 +10,13 @@ import (
 )
 
 const (
-	maxPinnedDoHTransports = 64
+	maxPinnedDoHTransports      = 64
 	pinnedDoHTransportMaxIdleAge = 10 * time.Minute
 )
 
 type pinnedDoHTransportEntry struct {
-	transport  *http.Transport
-	lastUsed   time.Time
+	transport   *http.Transport
+	lastUsed    time.Time
 	latencyEWMA time.Duration
 }
 
@@ -59,12 +59,11 @@ func (r *Runtime) pinnedDoHHTTPClient(ip, host string, timeout time.Duration) *h
 	r.activeDoHTransportMu.Unlock()
 
 	return &http.Client{
-		Transport: transport,
-		Timeout: timeout,
+		Transport:     transport,
+		Timeout:       timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 }
-
 
 // recordPinnedDoHLatency keeps a bounded EWMA of actual DNS-forwarding request
 // durations for each pinned bootstrap identity.
