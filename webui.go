@@ -294,7 +294,7 @@ func fetchWebUIStatus(ctx context.Context, statusURL, dataDir string) (webUIStat
 		Groups: map[string]webUIGroupStatus{}, GeminiAPI: raw.GeminiAPI,
 		Queries: raw.Queries, CacheHits: raw.CacheHits,
 
-		DNSCoalesced: raw.DNSCoalesced,
+		DNSCoalesced:   raw.DNSCoalesced,
 		StaleCacheHits: raw.StaleCacheHits, ExtraAttempts: raw.ExtraAttempts, HedgeWins: raw.HedgeWins,
 		DNSQualityReject: raw.DNSQualityReject, Failures: raw.Failures,
 
