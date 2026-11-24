@@ -231,6 +231,7 @@
     addConfigField(cache, "Min TTL (сек.)", "cache.min_ttl_seconds", config.cache.min_ttl_seconds, "number");
     addConfigField(cache, "Max TTL (сек.)", "cache.max_ttl_seconds", config.cache.max_ttl_seconds, "number");
     addConfigField(cache, "Negative TTL (сек.)", "cache.negative_ttl_seconds", config.cache.negative_ttl_seconds, "number");
+    addConfigField(cache, "Stale TTL (сек.)", "cache.stale_ttl_seconds", config.cache.stale_ttl_seconds, "number");
     addConfigField(cache, "Max entries", "cache.max_entries", config.cache.max_entries, "number");
     addConfigField(cache, "Max bytes", "cache.max_bytes", config.cache.max_bytes, "number");
     $("config-bootstrap").value = (config.bootstrap_resolvers || []).join("\n");
