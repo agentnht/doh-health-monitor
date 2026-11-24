@@ -3,12 +3,38 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 )
 
 const activeDoHMaxCacheTTL = 300 * time.Second
+
+const activeDoHTriggerMinInterval = 30 * time.Second
+
+// triggerActiveDoHOnTransportFailure coalesces DNS-triggered selector runs.
+// Query-scoped DNS results such as SERVFAIL/REFUSED must not trigger probes.
+func (r *Runtime) triggerActiveDoHOnTransportFailure() {
+	if r == nil || r.activeDoHTrigger == nil {
+		return
+	}
+	now := time.Now()
+	for {
+		previous := r.activeDoHTriggerLast.Load()
+		if previous != 0 && now.Sub(time.Unix(0, previous)) < activeDoHTriggerMinInterval {
+			return
+		}
+		if !r.activeDoHTriggerLast.CompareAndSwap(previous, now.UnixNano()) {
+			continue
+		}
+		select {
+		case r.activeDoHTrigger <- struct{}{}:
+		default:
+		}
+		return
+	}
+}
 
 // activeDoHDNSResponse forwards the original A/AAAA query through the healthy
 // DoH endpoint selected by ActiveDoHSelector and returns its DNS response.
@@ -95,10 +121,12 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 	response, queryErr := sendActiveDoHWithMetrics(ctx, selection.Candidate, query, dohTimeout, metrics)
 	cancel()
 	if queryErr != nil {
-		// Prompt a fresh selector cycle even when a stale answer can be served.
-		select {
-		case r.activeDoHTrigger <- struct{}{}:
-		default:
+		// Only transport-level failures justify an early selector cycle.
+		// DNS policy responses (SERVFAIL/REFUSED) are returned to the client and
+		// must not amplify into repeated provider-wide health probes.
+		var forwardErr *activeDoHForwardError
+		if errors.As(queryErr, &forwardErr) && forwardErr.transportOnly {
+			r.triggerActiveDoHOnTransportFailure()
 		}
 		if cacheConfig.Enabled {
 			if stale, found := r.cacheGetStale(staleKey, packetID(query), cacheConfig.StaleTTL); found {
