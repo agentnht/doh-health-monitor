@@ -31,8 +31,8 @@ func sendActiveDoHWithMetrics(ctx context.Context, candidate activedoh.Candidate
 }
 
 type activeDoHForwardMetrics struct {
-	extraAttempts    *atomic.Uint64
-	hedgeWins        *atomic.Uint64
+	extraAttempts     *atomic.Uint64
+	hedgeWins         *atomic.Uint64
 	qualityRejections *atomic.Uint64
 }
 
@@ -167,6 +167,7 @@ func sendActiveDoHWithClientFactoryAndMetrics(
 		attemptIndex := nextIP
 		ip := ips[attemptIndex]
 		nextIP++
+		hedged := attemptIndex > 0 && active > 0
 		active++
 		if attemptIndex > 0 && metrics != nil && metrics.extraAttempts != nil {
 			metrics.extraAttempts.Add(1)
@@ -174,7 +175,7 @@ func sendActiveDoHWithClientFactoryAndMetrics(
 		go func(hedged bool) {
 			body, err := sendActiveDoHAttempt(attemptCtx, candidate, packet, ip, host, timeout, newClient)
 			results <- attemptResult{ip: ip, response: body, err: err, hedged: hedged}
-		}(attemptIndex > 0)
+		}(hedged)
 	}
 	launch()
 	timer := time.NewTimer(activeDoHHedgeDelay)
