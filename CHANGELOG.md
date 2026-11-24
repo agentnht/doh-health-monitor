@@ -6,6 +6,7 @@
 - Trigger an early ActiveDoH selection cycle only after transport-level forwarding failures, with a 30-second per-process debounce. Query-specific DNS responses no longer cause repeated health-probe cycles.
 - Initialize `stale_ttl_seconds` to the 60-second default before decoding both startup and hot-reloaded configuration. Missing fields inherit the default; explicit zero remains an opt-out.
 - Add regression tests for stale serving after selector withdrawal, bounded SERVFAIL retry, trigger debounce, and config migration through startup/hot-reload paths.
+- Limit delayed bootstrap hedging to one parallel alternate attempt per DNS request; subsequent failures advance sequentially. Adaptive per-IP hedge timing and connection pooling remain deferred.
 
 
 ## [2.4.0] - 2026-11-23
