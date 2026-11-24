@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	maxPinnedDoHTransports      = 64
+	maxPinnedDoHTransports       = 64
 	pinnedDoHTransportMaxIdleAge = 10 * time.Minute
 )
 
