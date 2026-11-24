@@ -152,7 +152,9 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 	}
 	result := make(chan activeDoHAttemptResult, 1)
 	go func() {
-		response, err := sendActiveDoHWithMetrics(ctx, selection.Candidate, query, dohTimeout, metrics)
+		response, err := sendActiveDoHWithClientFactoryAndMetrics(
+			ctx, selection.Candidate, query, dohTimeout, r.pinnedDoHHTTPClient, metrics,
+		)
 		result <- activeDoHAttemptResult{response: response, err: err}
 	}()
 	response, queryErr, servedStale := awaitActiveDoHWithStaleBudget(
