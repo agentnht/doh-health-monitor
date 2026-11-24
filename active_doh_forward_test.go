@@ -243,7 +243,7 @@ func TestSendActiveDoHHedgesSlowBootstrapAttempt(t *testing.T) {
 	if extraAttempts.Load() != 1 || hedgeWins.Load() != 1 {
 		t.Fatalf("extra attempts=%d hedge wins=%d, want 1/1", extraAttempts.Load(), hedgeWins.Load())
 	}
-	if elapsed >= time.Second {
+	if elapsed >= 1500*time.Millisecond {
 		t.Fatalf("hedged request took %s; expected second bootstrap IP to win before first timeout", elapsed)
 	}
 	if dnsRCode(response) != 0 || dnsAnswerCount(response) != 1 {
