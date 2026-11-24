@@ -210,7 +210,7 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 		return servfailResponse(query)
 	}
 
-	if dnsRCode(response) == 2 {
+	if dnsRCode(response) == 2 && !dnsTruncated(response) {
 		if cacheConfig.Enabled && cacheConfig.NegativeTTL > 0 {
 			r.cachePutFixedTTL(servfailKey, response,
 				time.Duration(cacheConfig.NegativeTTL)*time.Second, 5*time.Second, cacheConfig)
