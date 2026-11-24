@@ -52,33 +52,31 @@ type webUIGroupStatus struct {
 }
 
 type webUIStatus struct {
-	ID            string                      `json:"id"`
-	Version       string                      `json:"version"`
-	StartedAt     time.Time                   `json:"started_at"`
-	UpdatedAt     time.Time                   `json:"updated_at"`
-	DNSUDP        string                      `json:"dns_udp"`
-	DNSTCP        string                      `json:"dns_tcp"`
-	DNSMode       string                      `json:"dns_mode"`
-	HTTP          string                      `json:"http"`
-	Cache         CacheStatus                 `json:"cache"`
-	ActiveDoH     *ActiveDoHStatus            `json:"active_doh,omitempty"`
-	Groups        map[string]webUIGroupStatus `json:"groups"`
-	GeminiAPI     string                      `json:"gemini_api"`
-	Queries       uint64                      `json:"queries"`
-	CacheHits     uint64                      `json:"cache_hits"`
-
+	ID               string                      `json:"id"`
+	Version          string                      `json:"version"`
+	StartedAt        time.Time                   `json:"started_at"`
+	UpdatedAt        time.Time                   `json:"updated_at"`
+	DNSUDP           string                      `json:"dns_udp"`
+	DNSTCP           string                      `json:"dns_tcp"`
+	DNSMode          string                      `json:"dns_mode"`
+	HTTP             string                      `json:"http"`
+	Cache            CacheStatus                 `json:"cache"`
+	ActiveDoH        *ActiveDoHStatus            `json:"active_doh,omitempty"`
+	Groups           map[string]webUIGroupStatus `json:"groups"`
+	GeminiAPI        string                      `json:"gemini_api"`
+	Queries          uint64                      `json:"queries"`
+	CacheHits        uint64                      `json:"cache_hits"`
 	DNSCoalesced     uint64                      `json:"dns_coalesced"`
 	StaleCacheHits   uint64                      `json:"stale_cache_hits"`
 	ExtraAttempts    uint64                      `json:"bootstrap_extra_attempts"`
 	HedgeWins        uint64                      `json:"hedge_wins"`
 	DNSQualityReject uint64                      `json:"dns_quality_rejections"`
-
-	Failures      uint64                      `json:"failures"`
-	ActiveUDP     int64                       `json:"active_udp"`
-	UDPQueueDepth int64                       `json:"udp_queue_depth"`
-	UDPDropped    uint64                      `json:"udp_dropped"`
-	ActiveTCP     int64                       `json:"active_tcp"`
-	TCPRejected   uint64                      `json:"tcp_rejected"`
+	Failures         uint64                      `json:"failures"`
+	ActiveUDP        int64                       `json:"active_udp"`
+	UDPQueueDepth    int64                       `json:"udp_queue_depth"`
+	UDPDropped       uint64                      `json:"udp_dropped"`
+	ActiveTCP        int64                       `json:"active_tcp"`
+	TCPRejected      uint64                      `json:"tcp_rejected"`
 }
 
 func webUIHandler() http.Handler {
