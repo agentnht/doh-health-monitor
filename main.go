@@ -282,6 +282,9 @@ type Status struct {
 	ExtraAttempts    uint64                        `json:"bootstrap_extra_attempts"`
 	HedgeWins        uint64                        `json:"hedge_wins"`
 	DNSQualityReject uint64                        `json:"dns_quality_rejections"`
+	DoHForwardP50MS  uint64                        `json:"doh_forward_p50_ms"`
+	DoHForwardP95MS  uint64                        `json:"doh_forward_p95_ms"`
+	DoHForwardSamples uint64                       `json:"doh_forward_samples"`
 	Failures         uint64                        `json:"failures"`
 	ActiveUDP        int64                         `json:"active_udp"`
 	UDPQueueDepth    int64                         `json:"udp_queue_depth"`
@@ -349,6 +352,9 @@ type Runtime struct {
 	staleRechecks          map[string]time.Time
 	activeDoHTransportMu   sync.Mutex
 	activeDoHTransports    map[string]*pinnedDoHTransportEntry
+	forwardLatencyMu      sync.Mutex
+	forwardLatencyBuckets [8]uint64
+	forwardLatencySamples uint64
 	dnsFlights             sync.Map
 	cache                  map[string]cacheItem
 	cacheOrder             []cacheOrderEntry
@@ -3251,6 +3257,8 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 		DNSCoalesced: r.dnsCoalesced.Load(), StaleCacheHits: r.staleCacheHits.Load(),
 		ExtraAttempts: r.bootstrapExtraAttempts.Load(), HedgeWins: r.hedgeWins.Load(),
 		DNSQualityReject: r.dnsQualityRejections.Load(), Failures: r.failures.Load(),
+		DoHForwardP50MS: r.forwardLatencyPercentile(50), DoHForwardP95MS: r.forwardLatencyPercentile(95),
+		DoHForwardSamples: r.forwardLatencySampleCount(),
 
 		ActiveUDP: r.activeUDP.Load(), UDPQueueDepth: r.udpQueueDepth.Load(), UDPDropped: r.udpDropped.Load(),
 		ActiveTCP: r.activeTCP.Load(), TCPRejected: r.tcpRejected.Load(), Goroutines: runtime.NumGoroutine(),
