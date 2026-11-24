@@ -10,7 +10,7 @@ var forwardLatencyBounds = [...]time.Duration{
 	800 * time.Millisecond,
 	1600 * time.Millisecond,
 	3200 * time.Millisecond,
-	6400 * time.Millisecond,
+	60000 * time.Millisecond,
 }
 
 // recordDoHForwardLatency stores fixed-bucket samples only; no endpoint, domain,
