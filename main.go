@@ -2665,16 +2665,31 @@ func verifyOIDCIssuer(body []byte, discoveryURL string) error {
 	return nil
 }
 
-func newPinnedHTTPClient(ip, host string, timeout time.Duration) *http.Client {
-	tr := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: host}, ForceAttemptHTTP2: true, MaxIdleConns: 1, MaxIdleConnsPerHost: 1, IdleConnTimeout: 10 * time.Second, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-		_, port, e := net.SplitHostPort(address)
-		if e != nil {
-			port = "443"
-		}
-		return (&net.Dialer{Timeout: timeout}).DialContext(ctx, network, net.JoinHostPort(ip, port))
-	}}
-	return &http.Client{Transport: tr, Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+func newPinnedHTTPTransport(ip, host string, timeout time.Duration) *http.Transport {
+	return &http.Transport{
+		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: host},
+		ForceAttemptHTTP2: true,
+		MaxIdleConns: 1,
+		MaxIdleConnsPerHost: 1,
+		IdleConnTimeout: 10 * time.Second,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			_, port, err := net.SplitHostPort(address)
+			if err != nil {
+				port = "443"
+			}
+			return (&net.Dialer{Timeout: timeout}).DialContext(ctx, network, net.JoinHostPort(ip, port))
+		},
+	}
 }
+
+func newPinnedHTTPClient(ip, host string, timeout time.Duration) *http.Client {
+	return &http.Client{
+		Transport: newPinnedHTTPTransport(ip, host, timeout),
+		Timeout: timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
 func (r *Runtime) resolveA(ctx context.Context, u *UpstreamRuntime, domain string) ([]string, error) {
 	resp, _, e := r.queryVia(ctx, u, makeDNSQuery(domain, 1))
 	if e != nil {
