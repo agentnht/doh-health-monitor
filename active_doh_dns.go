@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -161,6 +162,18 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 	}
 	result := make(chan dnsAttemptResult, 1)
 	go func() {
+		// This forwarding attempt runs in its own goroutine, so worker- and
+		// singleflight-level recovery cannot contain a panic from the forwarder.
+		// The buffered result channel lets recovery always release the waiter.
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				logLine("ERROR", "ActiveDoH forwarding goroutine panicked: %v\\n%s", recovered, debug.Stack())
+				result <- dnsAttemptResult{
+					response: servfailResponse(query),
+					err:      fmt.Errorf("ActiveDoH forwarder panicked: %v", recovered),
+				}
+			}
+		}()
 		forward := r.activeDoHForwarder
 		if forward == nil {
 			forward = func(forwardCtx context.Context, candidate activedoh.Candidate, packet []byte, timeout time.Duration, forwardMetrics *activeDoHForwardMetrics) ([]byte, error) {
