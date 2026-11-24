@@ -193,4 +193,3 @@ func TestSendActiveDoHDoesNotRetryNXDOMAIN(t *testing.T) {
 		t.Fatalf("NXDOMAIN should be returned without retry: requests=%d rcode=%d", requests.Load(), dnsRCode(response))
 	}
 }
-
