@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 ### DNS resilience fixes
+- Reuse pinned HTTP transports and keep-alive connections by exact DoH hostname/bootstrap-IP identity. The pool is capped at 64 entries, expires idle identities, and preserves hostname TLS SNI while dialing the pinned address.
 - Add a bounded 1.8-second client response budget for eligible stale ActiveDoH answers, plus a bounded per-query failure recheck suppression window to avoid repeatedly hitting an unavailable upstream.
 - Recover panics at UDP/TCP DNS worker boundaries, log stack traces, and prevent one malformed request or unexpected handler failure from permanently consuming a bounded worker.
 - Keep an `endpoint_ip` stale-answer cache in a configuration-scoped namespace independent of ActiveDoH selection generation. A withdrawn selector can therefore still serve a recently expired answer with TTL=1 during the configured stale window.
