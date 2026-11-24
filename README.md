@@ -372,6 +372,9 @@ Selector использует freshness, score, failure grace cycles, minimum ho
 
 ### 5.3 DNS cache
 
+Одинаковые одновременные DNS-запросы в рамках одного режима и generation объединяются: только первый запрос обращается к upstream, остальные ожидают его результат. Перед отправкой каждому клиенту восстанавливается его исходный DNS transaction ID. При смене ActiveDoH selection или resolver generation запросы не объединяются между разными поколениями.
+
+
 ```json
 "cache": {
   "enabled": true,
