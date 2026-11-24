@@ -16,16 +16,6 @@ import (
 	"lucx-doh-health-monitor/internal/activedoh"
 )
 
-// sendActiveDoHWithMetrics forwards the original client DNS message to the
-// DoH endpoint selected by ActiveDoHSelector. The TCP connection is pinned to
-// a bootstrap address while URL host, HTTP Host and TLS SNI remain the endpoint name.
-func sendActiveDoHWithMetrics(ctx context.Context, candidate activedoh.Candidate, packet []byte, timeout time.Duration, metrics *activeDoHForwardMetrics) ([]byte, error) {
-	return sendActiveDoHWithClientFactoryAndMetrics(ctx, candidate, packet, timeout,
-		func(ip, host string, attemptTimeout time.Duration) *http.Client {
-			return newPinnedHTTPClient(ip, host, attemptTimeout)
-		}, metrics)
-}
-
 type activeDoHForwardMetrics struct {
 	extraAttempts     *atomic.Uint64
 	hedgeWins         *atomic.Uint64
