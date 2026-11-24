@@ -27,7 +27,7 @@ func TestResolverFreshCacheHitBypassesSingleflight(t *testing.T) {
 			t.Fatalf("cache hit %d returned rcode=%d answers=%d", i, dnsRCode(response), dnsAnswerCount(response))
 		}
 	}
-	if got := runtime.dnsCoalesced.Load(); got != 0 {
+	if got := runtime.resilience.dnsCoalesced.Load(); got != 0 {
 		t.Fatalf("cache hits entered singleflight %d times; want 0", got)
 	}
 	if got := runtime.cacheHits.Load(); got != 2 {
@@ -78,7 +78,7 @@ func TestActiveDoHFreshCacheHitBypassesSingleflight(t *testing.T) {
 			t.Fatalf("cache hit %d returned rcode=%d answers=%d", i, dnsRCode(response), dnsAnswerCount(response))
 		}
 	}
-	if got := runtime.dnsCoalesced.Load(); got != 0 {
+	if got := runtime.resilience.dnsCoalesced.Load(); got != 0 {
 		t.Fatalf("cache hits entered singleflight %d times; want 0", got)
 	}
 	if got := runtime.cacheHits.Load(); got != 2 {
