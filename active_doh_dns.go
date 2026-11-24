@@ -84,9 +84,11 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 		case r.activeDoHTrigger <- struct{}{}:
 		default:
 		}
-		if stale, found := r.cacheGetStale(key, packetID(query), cacheConfig.StaleTTL); found {
-			r.cacheHits.Add(1)
-			return stale
+		if cacheConfig.Enabled {
+			if stale, found := r.cacheGetStale(key, packetID(query), cacheConfig.StaleTTL); found {
+				r.cacheHits.Add(1)
+				return stale
+			}
 		}
 		r.failures.Add(1)
 		return servfailResponse(query)
