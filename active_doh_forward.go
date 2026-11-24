@@ -255,7 +255,7 @@ func sendActiveDoHWithClientFactoryAndMetrics(
 		return lastProviderResponse, nil
 	}
 	return nil, &activeDoHForwardError{
-		err: fmt.Errorf("all bootstrap IP attempts for selected DoH endpoint %s failed: %s",
+		err:           fmt.Errorf("all bootstrap IP attempts for selected DoH endpoint %s failed: %s",
 			host, strings.Join(failures, "; ")),
 		transportOnly: transportOnly && len(failures) > 0,
 	}
