@@ -25,8 +25,8 @@ func FuzzStaleAndTTLParsers(f *testing.F) {
 		r := &Runtime{
 			cache: map[string]cacheItem{
 				"fuzz": {packet: append([]byte(nil), packet...), expires: time.Now().Add(-time.Second), inserted: time.Now().Add(-2 * time.Second), size: len(packet)},
-				},
-			}
+			},
+		}
 		_, _ = r.cacheGetStale("fuzz", packetID(packet), 60)
 	})
 }
@@ -46,7 +46,7 @@ func FuzzHandleDNSInput(f *testing.F) {
 		r.snapshot.Store(&Snapshot{
 			cfg: Config{
 				DNSMode: "resolver",
-				Cache: CacheConfig{Enabled: true, MaxEntries: 16, MaxBytes: 4096, StaleTTL: 60},
+				Cache:   CacheConfig{Enabled: true, MaxEntries: 16, MaxBytes: 4096, StaleTTL: 60},
 			},
 		})
 		response := r.handleDNS(packet)
