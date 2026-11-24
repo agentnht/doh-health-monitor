@@ -75,7 +75,9 @@ jobs:
           go test -run=^$ -fuzz=FuzzStaleAndTTLParsers -fuzztime=5s .
           go test -run=^$ -fuzz=FuzzHandleDNSInput -fuzztime=5s .
       - name: Run DNS resilience benchmark smoke tests
-        run: go test -run=^$ -bench='Benchmark(ResolverFreshCacheHit|DNSFlightCoalescing|PinnedDoHTransportReuse|StaleFallbackBudget)        run: |
+        run: go test -run=^$ -bench=Benchmark -benchtime=1x .
+      - name: Run staticcheck
+        run: |
           go install honnef.co/go/tools/cmd/staticcheck@2026.2.2
           "$(go env GOPATH)/bin/staticcheck" ./...
       - name: Run govulncheck
