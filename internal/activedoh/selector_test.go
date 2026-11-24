@@ -415,7 +415,10 @@ func TestLatencyPreferredRequiresRelativeAndAbsoluteImprovement(t *testing.T) {
 	if !latencyPreferred(700*time.Millisecond, time.Second) {
 		t.Fatal("300ms improvement should pass both thresholds")
 	}
-	if !latencyPreferred(100*time.Millisecond, 150*time.Millisecond) {
-		t.Fatal("unknown or low-duration scale should still require 100ms absolute gain")
+	if latencyPreferred(100*time.Millisecond, 150*time.Millisecond) {
+		t.Fatal("50ms gain must not pass the 100ms absolute threshold")
+	}
+	if !latencyPreferred(350*time.Millisecond, 500*time.Millisecond) {
+		t.Fatal("150ms gain at 500ms should pass both thresholds")
 	}
 }
