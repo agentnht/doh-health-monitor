@@ -599,22 +599,11 @@ func loadConfig(path string) (Config, error) {
 		return Config{}, e
 	}
 	var c Config
+	c.Cache.StaleTTL = defaultConfig().Cache.StaleTTL
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	if e = dec.Decode(&c); e != nil {
 		return Config{}, fmt.Errorf("decode config: %w", e)
-	}
-	// Migrate existing config files that predate stale_ttl_seconds while
-	// preserving an explicit zero value as the operator's opt-out.
-	var persisted map[string]json.RawMessage
-	if json.Unmarshal(b, &persisted) == nil {
-		var cacheFields map[string]json.RawMessage
-		cacheRaw, hasCache := persisted["cache"]
-		if !hasCache || json.Unmarshal(cacheRaw, &cacheFields) != nil {
-			c.Cache.StaleTTL = defaultConfig().Cache.StaleTTL
-		} else if _, hasStaleTTL := cacheFields["stale_ttl_seconds"]; !hasStaleTTL {
-			c.Cache.StaleTTL = defaultConfig().Cache.StaleTTL
-		}
 	}
 	c, e = normalizeConfigGroups(c)
 	if e != nil {
@@ -3198,6 +3187,7 @@ func loadConfigNoCreate(path string) (Config, error) {
 		return Config{}, e
 	}
 	var c Config
+	c.Cache.StaleTTL = defaultConfig().Cache.StaleTTL
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.DisallowUnknownFields()
 	if e = d.Decode(&c); e != nil {
