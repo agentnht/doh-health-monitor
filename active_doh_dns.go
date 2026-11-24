@@ -149,6 +149,8 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 		extraAttempts:     &r.bootstrapExtraAttempts,
 		hedgeWins:         &r.hedgeWins,
 		qualityRejections: &r.dnsQualityRejections,
+		hedgeDelay:        r.activeDoHHedgeDelay(selection.Candidate),
+		recordLatency:     r.recordPinnedDoHLatency,
 	}
 	result := make(chan activeDoHAttemptResult, 1)
 	go func() {
