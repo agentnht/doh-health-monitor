@@ -329,6 +329,14 @@ type cacheOrderEntry struct {
 	key        string
 	generation uint64
 }
+type resilienceMetrics struct {
+	dnsCoalesced           atomic.Uint64
+	staleCacheHits         atomic.Uint64
+	bootstrapExtraAttempts atomic.Uint64
+	hedgeWins              atomic.Uint64
+	dnsQualityRejections   atomic.Uint64
+}
+
 type Runtime struct {
 	dnsSem                 chan struct{}
 	dataDir                string
@@ -363,11 +371,7 @@ type Runtime struct {
 	cacheBytes             int
 	cacheSeq               uint64
 	cacheHits              atomic.Uint64
-	dnsCoalesced           atomic.Uint64
-	staleCacheHits         atomic.Uint64
-	bootstrapExtraAttempts atomic.Uint64
-	hedgeWins              atomic.Uint64
-	dnsQualityRejections   atomic.Uint64
+	resilience             resilienceMetrics
 	activeUDP              atomic.Int64
 	udpQueueDepth          atomic.Int64
 	udpDropped             atomic.Uint64
@@ -3251,9 +3255,9 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 		ActiveDoH: r.activeDoHStatus(),
 		Queries:   r.queries.Load(), CacheHits: r.cacheHits.Load(),
 
-		DNSCoalesced: r.dnsCoalesced.Load(), StaleCacheHits: r.staleCacheHits.Load(),
-		ExtraAttempts: r.bootstrapExtraAttempts.Load(), HedgeWins: r.hedgeWins.Load(),
-		DNSQualityReject: r.dnsQualityRejections.Load(), Failures: r.failures.Load(),
+		DNSCoalesced: r.resilience.dnsCoalesced.Load(), StaleCacheHits: r.resilience.staleCacheHits.Load(),
+		ExtraAttempts: r.resilience.bootstrapExtraAttempts.Load(), HedgeWins: r.resilience.hedgeWins.Load(),
+		DNSQualityReject: r.resilience.dnsQualityRejections.Load(), Failures: r.failures.Load(),
 		DoHForwardP50MS: r.forwardLatencyPercentile(50), DoHForwardP95MS: r.forwardLatencyPercentile(95),
 		DoHForwardSamples: r.forwardLatencySampleCount(),
 
