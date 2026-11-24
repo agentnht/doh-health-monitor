@@ -20,6 +20,22 @@ func (r *Runtime) resolverDNSResponse(query []byte, snapshot *Snapshot) []byte {
 	if snapshot == nil {
 		return r.resolverDNSResponseUncoalesced(query, snapshot)
 	}
+	// Keep the hot cache-hit path out of singleflight. The uncoalesced path
+	// repeats this lookup to cover a response populated between the fast check
+	// and the leader starting its upstream operation.
+	if snapshot.cfg.Cache.Enabled && len(query) >= 12 &&
+		binary.BigEndian.Uint16(query[4:6]) == 1 {
+		_, qtype, questionEnd, err := parseQuestion(query)
+		if err == nil && questionEnd >= 2 && questionEnd <= len(query) &&
+			binary.BigEndian.Uint16(query[questionEnd-2:questionEnd]) == 1 &&
+			(qtype == 1 || qtype == 28) {
+			key := fmt.Sprintf("mode2:%d:%s", snapshot.resolverGeneration, cacheKey(query))
+			if cached, found := r.cacheGet(key, packetID(query), snapshot.cfg.Cache.StaleTTL); found {
+				r.cacheHits.Add(1)
+				return cached
+			}
+		}
+	}
 	key := fmt.Sprintf("mode2-flight:%d:%s", snapshot.resolverGeneration, cacheKey(query))
 	return r.coalesceDNSResponse(key, query, func() []byte {
 		return r.resolverDNSResponseUncoalesced(query, snapshot)
