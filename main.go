@@ -3244,7 +3244,6 @@ func (r *Runtime) handleStatus(w http.ResponseWriter, req *http.Request) {
 		ExtraAttempts: r.bootstrapExtraAttempts.Load(), HedgeWins: r.hedgeWins.Load(),
 		DNSQualityReject: r.dnsQualityRejections.Load(), Failures: r.failures.Load(),
 
-
 		ActiveUDP: r.activeUDP.Load(), UDPQueueDepth: r.udpQueueDepth.Load(), UDPDropped: r.udpDropped.Load(),
 		ActiveTCP: r.activeTCP.Load(), TCPRejected: r.tcpRejected.Load(), Goroutines: runtime.NumGoroutine(),
 		HeapAllocBytes: mem.HeapAlloc, HeapInuseBytes: mem.HeapInuse, HeapSysBytes: mem.HeapSys,
