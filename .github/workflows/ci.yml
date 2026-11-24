@@ -27,9 +27,6 @@ jobs:
         run: go mod tidy
       - name: Verify Go module files are tidy
         run: git diff --exit-code -- go.mod go.sum
-      - name: Temporary gofmt diagnostic
-        run: gofmt -d main.go
-
       - name: Verify Go formatting
         run: |
           files="$(git ls-files '*.go')"
