@@ -404,3 +404,18 @@ func TestLatencyOnlySwitchIgnoresInsignificantAdvantage(t *testing.T) {
 		}
 	}
 }
+
+func TestLatencyPreferredRequiresRelativeAndAbsoluteImprovement(t *testing.T) {
+	if latencyPreferred(950*time.Millisecond, time.Second) {
+		t.Fatal("50ms improvement should not pass 100ms absolute threshold")
+	}
+	if latencyPreferred(800*time.Millisecond, time.Second) {
+		t.Fatal("200ms improvement should not pass 25% relative threshold")
+	}
+	if !latencyPreferred(700*time.Millisecond, time.Second) {
+		t.Fatal("300ms improvement should pass both thresholds")
+	}
+	if !latencyPreferred(100*time.Millisecond, 150*time.Millisecond) {
+		t.Fatal("unknown or low-duration scale should still require 100ms absolute gain")
+	}
+}
