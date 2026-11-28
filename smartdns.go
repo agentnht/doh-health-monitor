@@ -226,15 +226,33 @@ func smartDNSProbeConfiguredDomain(ctx context.Context, check Check, ip string) 
 func smartDNSBestCandidate(results map[string]*smartDNSProbeResult) *smartDNSProbeResult {
 	var best *smartDNSProbeResult
 	for _, candidate := range results {
-		if candidate == nil || candidate.successful == 0 || candidate.requiredFailed {
+		if candidate == nil || candidate.requiredFailed {
 			continue
 		}
 		if best == nil || candidate.optionalScore > best.optionalScore ||
-			(candidate.optionalScore == best.optionalScore && candidate.latency/time.Duration(candidate.successful) < best.latency/time.Duration(best.successful)) {
+			(candidate.optionalScore == best.optionalScore && smartDNSCandidateFaster(candidate, best)) {
 			best = candidate
 		}
 	}
 	return best
+}
+
+// smartDNSCandidateFaster compares mean latency across successful checks.
+// An IP with no successful checks has no measurable latency and loses a tie
+// to one with successful checks; lexical IP order makes all-failed ties stable.
+func smartDNSCandidateFaster(candidate, current *smartDNSProbeResult) bool {
+	if candidate.successful == 0 {
+		return current.successful == 0 && candidate.ip < current.ip
+	}
+	if current.successful == 0 {
+		return true
+	}
+	candidateMean := candidate.latency / time.Duration(candidate.successful)
+	currentMean := current.latency / time.Duration(current.successful)
+	if candidateMean == currentMean {
+		return candidate.ip < current.ip
+	}
+	return candidateMean < currentMean
 }
 
 func dnsQueryDO(query []byte) bool {
