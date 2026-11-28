@@ -27,7 +27,8 @@ type smartDNSProbeJob struct {
 type smartDNSProbeResult struct {
 	ip             string
 	latency        time.Duration
-	score          int
+	optionalScore  int
+	successful     int
 	requiredFailed bool
 }
 
@@ -97,7 +98,8 @@ func (r *Runtime) smartDNSSelectResponse(query, response []byte) []byte {
 				}
 				results <- smartDNSProbeResult{
 					ip: job.ip, latency: latency,
-					score: boolScore(ok), requiredFailed: job.required && !ok,
+					optionalScore: boolScore(ok && !job.required), successful: boolScore(ok),
+					requiredFailed: job.required && !ok,
 				}
 			}
 		}()
@@ -130,7 +132,8 @@ sendJobs:
 		if current == nil {
 			continue
 		}
-		current.score += result.score
+		current.optionalScore += result.optionalScore
+		current.successful += result.successful
 		current.latency += result.latency
 		current.requiredFailed = current.requiredFailed || result.requiredFailed
 	}
@@ -141,14 +144,14 @@ sendJobs:
 	}
 
 	// Required checks are hard gates; optional checks contribute score.
-	bestLatency := best.latency / time.Duration(best.score)
+	bestLatency := best.latency / time.Duration(best.successful)
 	rewritten, err := smartDNSKeepAddress(response, qtype, best.ip)
 	if err != nil {
 		logLine("WARN", "SMARTDNS could not rewrite DNS answer for selected IP: %v", err)
 		return response
 	}
 	logLine("DEBUG", "SMARTDNS selected %s after configured checks score=%d/%d latency=%s",
-		best.ip, best.score, len(checks), bestLatency.Round(time.Millisecond))
+		best.ip, best.optionalScore, len(checks), bestLatency.Round(time.Millisecond))
 	return rewritten
 }
 
@@ -223,11 +226,11 @@ func smartDNSProbeConfiguredDomain(ctx context.Context, check Check, ip string) 
 func smartDNSBestCandidate(results map[string]*smartDNSProbeResult) *smartDNSProbeResult {
 	var best *smartDNSProbeResult
 	for _, candidate := range results {
-		if candidate == nil || candidate.score == 0 || candidate.requiredFailed {
+		if candidate == nil || candidate.successful == 0 || candidate.requiredFailed {
 			continue
 		}
-		if best == nil || candidate.score > best.score ||
-			(candidate.score == best.score && candidate.latency/time.Duration(candidate.score) < best.latency/time.Duration(best.score)) {
+		if best == nil || candidate.optionalScore > best.optionalScore ||
+			(candidate.optionalScore == best.optionalScore && candidate.latency/time.Duration(candidate.successful) < best.latency/time.Duration(best.successful)) {
 			best = candidate
 		}
 	}
