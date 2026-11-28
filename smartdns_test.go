@@ -76,9 +76,9 @@ func TestSmartDNSUsesEditableConfiguredChecks(t *testing.T) {
 
 func TestSmartDNSBestCandidateScoresThenUsesMeanLatency(t *testing.T) {
 	results := map[string]*smartDNSProbeResult{
-		"192.0.2.10": {ip: "192.0.2.10", score: 2, latency: 400 * time.Millisecond},
-		"192.0.2.20": {ip: "192.0.2.20", score: 3, latency: 900 * time.Millisecond},
-		"192.0.2.30": {ip: "192.0.2.30", score: 3, latency: 300 * time.Millisecond},
+		"192.0.2.10": {ip: "192.0.2.10", optionalScore: 2, successful: 3, latency: 400 * time.Millisecond},
+		"192.0.2.20": {ip: "192.0.2.20", optionalScore: 3, successful: 4, latency: 900 * time.Millisecond},
+		"192.0.2.30": {ip: "192.0.2.30", optionalScore: 3, successful: 4, latency: 300 * time.Millisecond},
 	}
 	best := smartDNSBestCandidate(results)
 	if best == nil || best.ip != "192.0.2.30" {
@@ -86,10 +86,32 @@ func TestSmartDNSBestCandidateScoresThenUsesMeanLatency(t *testing.T) {
 	}
 }
 
+func TestSmartDNSBestCandidateUsesOptionalChecksForScore(t *testing.T) {
+	results := map[string]*smartDNSProbeResult{
+		// More successful required checks do not increase the optional score.
+		"192.0.2.10": {ip: "192.0.2.10", optionalScore: 1, successful: 4, latency: 400 * time.Millisecond},
+		"192.0.2.20": {ip: "192.0.2.20", optionalScore: 2, successful: 3, latency: 600 * time.Millisecond},
+	}
+	best := smartDNSBestCandidate(results)
+	if best == nil || best.ip != "192.0.2.20" {
+		t.Fatalf("best candidate=%v, want 192.0.2.20 (higher optional score)", best)
+	}
+}
+
+func TestSmartDNSBestCandidateAllowsNoOptionalSuccess(t *testing.T) {
+	results := map[string]*smartDNSProbeResult{
+		"192.0.2.10": {ip: "192.0.2.10", optionalScore: 0, successful: 2, latency: 300 * time.Millisecond},
+	}
+	best := smartDNSBestCandidate(results)
+	if best == nil || best.ip != "192.0.2.10" {
+		t.Fatalf("best candidate=%v, want required-only passing IP", best)
+	}
+}
+
 func TestSmartDNSBestCandidateRejectsRequiredCheckFailure(t *testing.T) {
 	results := map[string]*smartDNSProbeResult{
-		"192.0.2.10": {ip: "192.0.2.10", score: 7, latency: time.Second, requiredFailed: true},
-		"192.0.2.20": {ip: "192.0.2.20", score: 2, latency: 500 * time.Millisecond},
+		"192.0.2.10": {ip: "192.0.2.10", optionalScore: 7, successful: 8, latency: time.Second, requiredFailed: true},
+		"192.0.2.20": {ip: "192.0.2.20", optionalScore: 2, successful: 3, latency: 500 * time.Millisecond},
 	}
 	best := smartDNSBestCandidate(results)
 	if best == nil || best.ip != "192.0.2.20" {
