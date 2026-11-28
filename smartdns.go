@@ -91,8 +91,12 @@ func (r *Runtime) smartDNSSelectResponse(query, response []byte) []byte {
 				checkCtx, checkCancel := context.WithTimeout(probeCtx, activeDoHProbeTimeout)
 				ok := smartDNSProbeConfiguredDomain(checkCtx, job.check, job.ip)
 				checkCancel()
+				var latency time.Duration
+				if ok {
+					latency = time.Since(started)
+				}
 				results <- smartDNSProbeResult{
-					ip: job.ip, latency: time.Since(started),
+					ip: job.ip, latency: latency,
 					score: boolScore(ok), requiredFailed: job.required && !ok,
 				}
 			}
@@ -136,17 +140,7 @@ sendJobs:
 		return response
 	}
 
-	// Compare mean latency among candidates with the same number of successful
-	// checks. Required checks are hard gates; optional checks contribute score.
-	successCount := 0
-	for _, result := range byIP {
-		if result.score > 0 && !result.requiredFailed {
-			successCount++
-		}
-	}
-	if successCount == 0 {
-		return response
-	}
+	// Required checks are hard gates; optional checks contribute score.
 	bestLatency := best.latency / time.Duration(best.score)
 	rewritten, err := smartDNSKeepAddress(response, qtype, best.ip)
 	if err != nil {
