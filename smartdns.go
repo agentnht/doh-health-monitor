@@ -150,8 +150,8 @@ sendJobs:
 		logLine("WARN", "SMARTDNS could not rewrite DNS answer for selected IP: %v", err)
 		return response
 	}
-	logLine("DEBUG", "SMARTDNS selected %s after configured checks score=%d/%d latency=%s",
-		best.ip, best.optionalScore, len(checks), bestLatency.Round(time.Millisecond))
+	logLine("DEBUG", "SMARTDNS selected %s after configured checks optional_successes=%d latency=%s",
+		best.ip, best.optionalScore, bestLatency.Round(time.Millisecond))
 	return rewritten
 }
 
