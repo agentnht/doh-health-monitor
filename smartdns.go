@@ -45,7 +45,7 @@ func (r *Runtime) smartDNSSelectResponse(query, response []byte) []byte {
 		return response
 	}
 	ips, err := parseActiveDoHAddressRecords(response, qtype)
-	if err != nil || len(ips) < 2 {
+	if err != nil || len(ips) == 0 {
 		return response
 	}
 	if len(ips) > smartDNSMaxCandidates {
@@ -151,6 +151,10 @@ func smartDNSKeepAddress(packet []byte, qtype uint16, selected string) ([]byte, 
 						keep = true
 					}
 				}
+			}
+			// RRSIG records covering the rewritten RRset are no longer valid.
+			if section == 0 && typ == 46 && rdlen >= 2 && binary.BigEndian.Uint16(packet[next+10:next+12]) == qtype {
+				keep = false
 			}
 			if keep {
 				out = append(out, packet[start:end]...)
