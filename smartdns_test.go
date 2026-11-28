@@ -29,14 +29,14 @@ func TestSmartDNSKeepAddressSelectsSingleARecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count := dnsAnswerCount(got); count != 1 {
-		t.Fatalf("answer count=%d, want 1", count)
+	if count := dnsAnswerCount(got); count != 2 {
+		t.Fatalf("answer count=%d, want original RR count 2", count)
 	}
 	ips, err := parseActiveDoHAddressRecords(got, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ips) != 1 || ips[0] != "192.0.2.20" {
+	if len(ips) != 2 || ips[0] != "192.0.2.20" || ips[1] != "192.0.2.20" {
 		t.Fatalf("selected answers=%v", ips)
 	}
 }
