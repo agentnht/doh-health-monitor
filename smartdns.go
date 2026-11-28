@@ -118,20 +118,31 @@ func smartDNSKeepAddress(packet []byte, qtype uint16, selected string) ([]byte, 
 	if len(packet) < 12 || (qtype != 1 && qtype != 28) {
 		return nil, fmt.Errorf("invalid DNS packet or qtype")
 	}
+	selectedIP := net.ParseIP(selected)
+	if qtype == 1 {
+		selectedIP = selectedIP.To4()
+	} else {
+		selectedIP = selectedIP.To16()
+		if selectedIP != nil && selectedIP.To4() != nil {
+			return nil, fmt.Errorf("selected address family does not match qtype")
+		}
+	}
+	if selectedIP == nil {
+		return nil, fmt.Errorf("invalid selected IP")
+	}
 	_, _, offset, err := parseQuestion(packet)
 	if err != nil || offset > len(packet) {
 		return nil, fmt.Errorf("invalid DNS question")
 	}
+	out := append([]byte(nil), packet...)
 	counts := [3]int{
 		int(binary.BigEndian.Uint16(packet[6:8])),
 		int(binary.BigEndian.Uint16(packet[8:10])),
 		int(binary.BigEndian.Uint16(packet[10:12])),
 	}
-	out := append([]byte(nil), packet[:offset]...)
-	answerCount := 0
+	found := false
 	for section, count := range counts {
 		for i := 0; i < count; i++ {
-			start := offset
 			_, next, nameErr := decodeName(packet, offset)
 			if nameErr != nil || next+10 > len(packet) {
 				return nil, fmt.Errorf("malformed DNS RR")
@@ -143,23 +154,17 @@ func smartDNSKeepAddress(packet []byte, qtype uint16, selected string) ([]byte, 
 			if end > len(packet) {
 				return nil, fmt.Errorf("truncated DNS RDATA")
 			}
-			keep := true
-			if section == 0 && typ == qtype && class == 1 {
-				keep = false
-				if (qtype == 1 && rdlen == net.IPv4len) || (qtype == 28 && rdlen == net.IPv6len) {
-					if net.IP(packet[next+10 : end]).String() == selected {
-						keep = true
-					}
-				}
-			}
-			// RRSIG records covering the rewritten RRset are no longer valid.
 			if section == 0 && typ == 46 && rdlen >= 2 && binary.BigEndian.Uint16(packet[next+10:next+12]) == qtype {
-				keep = false
+				return nil, fmt.Errorf("DNSSEC RRSIG covers rewritten RRset")
 			}
-			if keep {
-				out = append(out, packet[start:end]...)
-				if section == 0 {
-					answerCount++
+			if section == 0 && typ == qtype && class == 1 {
+				expected := net.IPv4len
+				if qtype == 28 {
+					expected = net.IPv6len
+				}
+				if rdlen == expected {
+					copy(out[next+10:end], selectedIP)
+					found = true
 				}
 			}
 			offset = end
@@ -168,7 +173,9 @@ func smartDNSKeepAddress(packet []byte, qtype uint16, selected string) ([]byte, 
 	if offset != len(packet) {
 		return nil, fmt.Errorf("unexpected trailing DNS bytes")
 	}
-	binary.BigEndian.PutUint16(out[6:8], uint16(answerCount))
+	if !found {
+		return nil, fmt.Errorf("selected address record not found")
+	}
 	return out, nil
 }
 
