@@ -65,8 +65,9 @@ func (r *Runtime) smartDNSSelectResponse(query, response []byte) []byte {
 			defer wg.Done()
 			for ip := range jobs {
 				started := time.Now()
-				_, _, probeErr := probeActiveDoHIP(probeCtx, targetURL, host, ip)
-				results <- smartDNSProbeResult{ip:ip, latency:time.Since(started), ok:probeErr==nil}
+				status, _, probeErr := probeActiveDoHIP(probeCtx, targetURL, host, ip)
+				accepted := probeErr == nil && status >= 200 && status < 400
+				results <- smartDNSProbeResult{ip:ip, latency:time.Since(started), ok:accepted}
 			}
 		}()
 	}
@@ -144,4 +145,13 @@ func smartDNSKeepAddress(packet []byte, qtype uint16, selected string) ([]byte, 
 	if offset != len(packet) { return nil, fmt.Errorf("unexpected trailing DNS bytes") }
 	binary.BigEndian.PutUint16(out[6:8], uint16(answerCount))
 	return out, nil
+}
+
+// activeDoHCacheKey isolates raw DoH answers from SmartDNS-selected answers.
+func activeDoHCacheKey(query []byte, snapshot *Snapshot) string {
+	key := cacheKey(query)
+	if snapshot != nil && snapshot.cfg.SmartDNSEnabled {
+		return key + "|smartdns"
+	}
+	return key + "|doh"
 }
