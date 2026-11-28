@@ -59,7 +59,7 @@ func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte 
 			if ok && current != nil &&
 				current.activeDoHGeneration == snapshot.activeDoHGeneration &&
 				selection.Candidate.ConfigGeneration == current.activeDoHGeneration {
-				key := fmt.Sprintf("mode1:%d:%s", selection.Generation, cacheKey(query))
+				key := fmt.Sprintf("mode1:%d:%s", selection.Generation, activeDoHCacheKey(query, snapshot))
 				if cached, found := r.cacheGet(key, packetID(query), snapshot.cfg.Cache.StaleTTL); found {
 					if r.activeDoHConfigMatches(snapshot) &&
 						r.activeDoHSelector.Generation() == selection.Generation {
@@ -71,7 +71,7 @@ func (r *Runtime) activeDoHDNSResponse(query []byte, snapshot *Snapshot) []byte 
 		}
 	}
 	key := fmt.Sprintf("mode1-flight:%d:%d:%s",
-		snapshot.activeDoHGeneration, r.activeDoHSelector.Generation(), cacheKey(query))
+		snapshot.activeDoHGeneration, r.activeDoHSelector.Generation(), activeDoHCacheKey(query, snapshot))
 	return r.coalesceDNSResponse(key, query, func() []byte {
 		return r.activeDoHDNSResponseUncoalesced(query, snapshot)
 	})
@@ -103,7 +103,7 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 	// Keep stale answers in a configuration-scoped namespace rather than the
 	// selector generation. A withdrawn selection increments Generation, but
 	// that must not make the last known-good answer unreachable during outage.
-	staleKey := fmt.Sprintf("mode1-stale:%d:%s", snapshot.activeDoHGeneration, cacheKey(query))
+	staleKey := fmt.Sprintf("mode1-stale:%d:%s", snapshot.activeDoHGeneration, activeDoHCacheKey(query, snapshot))
 	selection, ok := r.activeDoHSelector.Current(time.Now())
 	if !ok || selection.Candidate.ConfigGeneration != current.activeDoHGeneration {
 		if snapshot.cfg.Cache.Enabled {
@@ -116,8 +116,8 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 		return servfailResponse(query)
 	}
 
-	servfailKey := fmt.Sprintf("mode1-servfail:%d:%d:%s", snapshot.activeDoHGeneration, selection.Generation, cacheKey(query))
-	key := fmt.Sprintf("mode1:%d:%s", selection.Generation, cacheKey(query))
+	servfailKey := fmt.Sprintf("mode1-servfail:%d:%d:%s", snapshot.activeDoHGeneration, selection.Generation, activeDoHCacheKey(query, snapshot))
+	key := fmt.Sprintf("mode1:%d:%s", selection.Generation, activeDoHCacheKey(query, snapshot))
 	cacheConfig := snapshot.cfg.Cache
 	if cacheConfig.Enabled {
 		if cached, found := r.cacheGet(key, packetID(query), cacheConfig.StaleTTL); found {
@@ -229,6 +229,10 @@ func (r *Runtime) activeDoHDNSResponseUncoalesced(query []byte, snapshot *Snapsh
 		selection.Candidate.ConfigGeneration != snapshot.activeDoHGeneration ||
 		r.activeDoHSelector.Generation() != selection.Generation {
 		return servfailResponse(query)
+	}
+
+	if snapshot.cfg.SmartDNSEnabled {
+		response = r.smartDNSSelectResponse(query, response)
 	}
 
 	if dnsRCode(response) == 2 && !dnsTruncated(response) {
