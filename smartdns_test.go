@@ -108,6 +108,17 @@ func TestSmartDNSBestCandidateAllowsNoOptionalSuccess(t *testing.T) {
 	}
 }
 
+func TestSmartDNSBestCandidateDoesNotRejectOptionalFailures(t *testing.T) {
+	results := map[string]*smartDNSProbeResult{
+		"192.0.2.10": {ip: "192.0.2.10", optionalScore: 0, successful: 0},
+		"192.0.2.20": {ip: "192.0.2.20", optionalScore: 0, successful: 0},
+	}
+	best := smartDNSBestCandidate(results)
+	if best == nil || best.ip != "192.0.2.10" {
+		t.Fatalf("best candidate=%v, want stable lexical tie winner 192.0.2.10", best)
+	}
+}
+
 func TestSmartDNSBestCandidateRejectsRequiredCheckFailure(t *testing.T) {
 	results := map[string]*smartDNSProbeResult{
 		"192.0.2.10": {ip: "192.0.2.10", optionalScore: 7, successful: 8, latency: time.Second, requiredFailed: true},
