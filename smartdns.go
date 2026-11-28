@@ -19,9 +19,9 @@ const (
 )
 
 type smartDNSProbeJob struct {
-	ip        string
-	check     Check
-	required  bool
+	ip       string
+	check    Check
+	required bool
 }
 
 type smartDNSProbeResult struct {
