@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"net"
 	"testing"
+	"time"
 )
 
 func smartDNSTestResponse(q []byte, ips ...string) []byte {
