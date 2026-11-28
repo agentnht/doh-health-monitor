@@ -55,3 +55,43 @@ func TestActiveDoHCacheKeySeparatesSmartDNSResults(t *testing.T) {
 		t.Fatal("raw and SmartDNS cache namespaces must differ")
 	}
 }
+
+func TestSmartDNSUsesEditableConfiguredChecks(t *testing.T) {
+	snapshot := &Snapshot{groups: map[string]Group{
+		"google": {Checks: []Check{
+			{Domain: "custom.example"},
+			{Domain: "chatgpt.com"},
+			{Domain: "CUSTOM.example."},
+		}},
+	}}
+	checks := smartDNSConfiguredChecks(snapshot)
+	if len(checks) != 2 {
+		t.Fatalf("configured checks=%d, want 2 unique entries", len(checks))
+	}
+	if checks[0].Domain != "custom.example" || checks[1].Domain != "chatgpt.com" {
+		t.Fatalf("configured domains=%v, want custom.example and chatgpt.com", []string{checks[0].Domain, checks[1].Domain})
+	}
+}
+
+func TestSmartDNSBestCandidateScoresThenUsesMeanLatency(t *testing.T) {
+	results := map[string]*smartDNSProbeResult{
+		"192.0.2.10": {ip: "192.0.2.10", score: 2, latency: 400 * time.Millisecond},
+		"192.0.2.20": {ip: "192.0.2.20", score: 3, latency: 900 * time.Millisecond},
+		"192.0.2.30": {ip: "192.0.2.30", score: 3, latency: 300 * time.Millisecond},
+	}
+	best := smartDNSBestCandidate(results)
+	if best == nil || best.ip != "192.0.2.30" {
+		t.Fatalf("best candidate=%v, want 192.0.2.30", best)
+	}
+}
+
+func TestSmartDNSBestCandidateRejectsRequiredCheckFailure(t *testing.T) {
+	results := map[string]*smartDNSProbeResult{
+		"192.0.2.10": {ip: "192.0.2.10", score: 7, latency: time.Second, requiredFailed: true},
+		"192.0.2.20": {ip: "192.0.2.20", score: 2, latency: 500 * time.Millisecond},
+	}
+	best := smartDNSBestCandidate(results)
+	if best == nil || best.ip != "192.0.2.20" {
+		t.Fatalf("best candidate=%v, want 192.0.2.20", best)
+	}
+}
