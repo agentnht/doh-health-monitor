@@ -185,5 +185,5 @@ func activeDoHCacheKey(query []byte, snapshot *Snapshot) string {
 	if snapshot != nil && snapshot.cfg.SmartDNSEnabled {
 		return key + "|smartdns"
 	}
-	return key + "|doh"
+	return key
 }
