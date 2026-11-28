@@ -8,7 +8,9 @@ import (
 
 func smartDNSTestResponse(q []byte, ips ...string) []byte {
 	_, _, end, err := parseQuestion(q)
-	if err != nil { panic(err) }
+	if err != nil {
+		panic(err)
+	}
 	packet := append([]byte(nil), q[:end]...)
 	binary.BigEndian.PutUint16(packet[2:4], 0x8180)
 	binary.BigEndian.PutUint16(packet[6:8], uint16(len(ips)))
@@ -24,11 +26,19 @@ func TestSmartDNSKeepAddressSelectsSingleARecord(t *testing.T) {
 	query := makeDNSQuery("chatgpt.com", 1)
 	response := smartDNSTestResponse(query, "192.0.2.10", "192.0.2.20")
 	got, err := smartDNSKeepAddress(response, 1, "192.0.2.20")
-	if err != nil { t.Fatal(err) }
-	if count := dnsAnswerCount(got); count != 1 { t.Fatalf("answer count=%d, want 1", count) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := dnsAnswerCount(got); count != 1 {
+		t.Fatalf("answer count=%d, want 1", count)
+	}
 	ips, err := parseActiveDoHAddressRecords(got, 1)
-	if err != nil { t.Fatal(err) }
-	if len(ips) != 1 || ips[0] != "192.0.2.20" { t.Fatalf("selected answers=%v", ips) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ips) != 1 || ips[0] != "192.0.2.20" {
+		t.Fatalf("selected answers=%v", ips)
+	}
 }
 
 func TestSmartDNSKeepAddressRejectsMalformedPacket(t *testing.T) {
@@ -39,7 +49,9 @@ func TestSmartDNSKeepAddressRejectsMalformedPacket(t *testing.T) {
 
 func TestActiveDoHCacheKeySeparatesSmartDNSResults(t *testing.T) {
 	query := makeDNSQuery("chatgpt.com", 1)
-	raw := activeDoHCacheKey(query, &Snapshot{cfg: Config{SmartDNSEnabled:false}})
-	selected := activeDoHCacheKey(query, &Snapshot{cfg: Config{SmartDNSEnabled:true}})
-	if raw == selected { t.Fatal("raw and SmartDNS cache namespaces must differ") }
+	raw := activeDoHCacheKey(query, &Snapshot{cfg: Config{SmartDNSEnabled: false}})
+	selected := activeDoHCacheKey(query, &Snapshot{cfg: Config{SmartDNSEnabled: true}})
+	if raw == selected {
+		t.Fatal("raw and SmartDNS cache namespaces must differ")
+	}
 }
